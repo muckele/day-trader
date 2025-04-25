@@ -87,3 +87,26 @@ async function getRecommendations(symbol) {
 }
 
 module.exports = { getRecommendations };
+async function fetchIntraday(symbol) {
+  const resp = await axios.get('https://www.alphavantage.co/query', {
+    params: {
+      function: 'TIME_SERIES_INTRADAY',
+      symbol,
+      interval: '5min',
+      outputsize: 'compact',
+      apikey: API_KEY
+    }
+  });
+  const data = resp.data['Time Series (5min)'];
+  if (!data) throw new Error('Intraday data unavailable');
+  return Object.entries(data).map(([time, vals]) => ({
+    time,
+    open: +vals['1. open'],
+    high: +vals['2. high'],
+    low: +vals['3. low'],
+    close: +vals['4. close'],
+    volume: +vals['5. volume']
+  })).reverse();
+}
+
+module.exports = { getRecommendations, fetchIntraday };
