@@ -9,17 +9,18 @@ export default function Login() {
   const [error, setError] = useState('');
   const navigate = useNavigate();
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async e => {
     e.preventDefault();
     setError('');
     try {
+      // 1. POST credentials
       const res = await axios.post('/api/login', { username, password });
-      // Save the token in localStorage
+      // 2. Store token
       localStorage.setItem('token', res.data.token);
-      // Redirect to the home page (or wherever)
+      // 3. Redirect to home
       navigate('/');
     } catch (err) {
-      // Show error message
+      // 4. Show error
       setError(err.response?.data?.message || err.message);
     }
   };
@@ -45,10 +46,7 @@ export default function Login() {
           className="border p-2"
           required
         />
-        <button
-          type="submit"
-          className="bg-blue-600 text-white p-2 rounded"
-        >
+        <button type="submit" className="bg-blue-600 text-white p-2 rounded">
           Log In
         </button>
       </form>
