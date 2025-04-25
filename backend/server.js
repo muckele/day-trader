@@ -1,3 +1,30 @@
+app.use(express.json()); // at top, to parse JSON bodies
+
+app.post('/api/trade', async (req, res, next) => {
+  try {
+    const { symbol, side, qty } = req.body; // e.g. { symbol: 'AAPL', side: 'buy', qty: 1 }
+    const resp = await axios.post(
+      `${process.env.BROKER_BASE_URL}/v2/orders`,
+      {
+        symbol,
+        side,             // 'buy' | 'sell'
+        qty,
+        type: 'market',   // or 'limit', etc.
+        time_in_force: 'day'
+      },
+      {
+        headers: {
+          'APCA-API-KEY-ID': process.env.BROKER_API_KEY,
+          'APCA-API-SECRET-KEY': process.env.BROKER_API_SECRET
+        }
+      }
+    );
+    res.json(resp.data);
+  } catch (err) {
+    next(err);
+  }
+});
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
