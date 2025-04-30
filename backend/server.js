@@ -24,6 +24,7 @@ const bcrypt     = require('bcryptjs');
 
 // 4. Import your models & trade logic
 const User                = require('./models/User');
+const Log  = require('./models/Log');
 const { getRecommendations, fetchIntraday } = require('./tradeLogic');
 
 // 5. Create the Express app
@@ -71,6 +72,18 @@ app.post('/api/login', async (req, res, next) => {
     next(err);
   }
 });
+
+// ─── LOGOUT ────────────────────────────────────────────────────────────────
+app.post('/api/logout', auth, async (req, res, next) => {
+  try {
+    // req.user.username was set by your auth middleware
+    await Log.create({ username: req.user.username, action: 'logout' });
+    res.json({ message: 'Logged out successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
 
 // ─── 3. AUTH MIDDLEWARE ─────────────────────────────────────────────────────────
 function auth(req, res, next) {
