@@ -35,6 +35,9 @@ app.use(cors());
 // 7. Mount the Alpaca trade routes
 //    All routes defined in routes/trade.js are now under /api/trade
 app.use('/api/trade', require('./routes/trade'));
+app.use('/api/market',  require('./routes/market'));
+app.use('/api/analyze', require('./routes/analyze'));
+app.use('/api/company', require('./routes/company'));
 // Trade Recomendations 
 app.use('/api/recommendations', require('./routes/recommend'));
 

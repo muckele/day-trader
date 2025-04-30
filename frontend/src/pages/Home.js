@@ -1,3 +1,4 @@
+// src/pages/Home.js
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
@@ -16,27 +17,43 @@ export default function Home() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <p>Loading recommendations…</p>;
-  if (error)   return <p className="text-red-500">{error}</p>;
+  if (loading) return <p className="text-center mt-10 text-gray-500">Loading recommendations…</p>;
+  if (error)   return <p className="text-center mt-10 text-red-500">{error}</p>;
   
   return (
-    <div>
-      <h1 className="text-3xl font-bold mb-4">Your Daily Recommendations</h1>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {trades.map(({ symbol, recommendation }) => (
-          <div
-            key={symbol}
-            onClick={() => navigate(`/stock/${symbol}`)}
-            className="cursor-pointer border rounded-lg p-4 hover:shadow-lg transition"
-          >
-            <h2 className="text-xl font-semibold">{symbol}</h2>
-            <p className={`mt-2 font-bold ${
-              recommendation === 'LONG' ? 'text-green-600' : 'text-red-600'
-            }`}>
-              {recommendation === 'LONG' ? 'Buy' : 'Short'}
-            </p>
-          </div>
-        ))}
+    <div className="min-h-screen bg-gray-50 py-8">
+      <div className="max-w-6xl mx-auto px-4">
+        <h1 className="text-4xl font-extrabold text-gray-800 mb-6">
+          Your Daily Recommendations
+        </h1>
+        <div className="grid gap-6 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+          {trades.map(({ symbol, recommendation }) => {
+            const isBuy = recommendation === 'LONG';
+            return (
+              <div
+                key={symbol}
+                onClick={() => navigate(`/stock/${symbol}`)}
+                className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm hover:shadow-md transition cursor-pointer"
+              >
+                <div className="flex items-center justify-between">
+                  <h2 className="text-2xl font-semibold text-gray-900">{symbol}</h2>
+                  <span
+                    className={`px-2 py-1 rounded-full text-sm font-medium ${
+                      isBuy ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                    }`}
+                  >
+                    {isBuy ? 'BUY' : 'SHORT'}
+                  </span>
+                </div>
+                <p className="mt-2 text-gray-600">
+                  {isBuy
+                    ? 'Expect upward movement'
+                    : 'Expect downward trend'}
+                </p>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
