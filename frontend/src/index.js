@@ -9,7 +9,7 @@ import App from './App';
 import reportWebVitals from './reportWebVitals';
 
 // ─── 2. CONFIGURE AXIOS INTERCEPTORS ────────────────────────────────────────
-// Attach token to every request
+// Attach JWT token (if present) to every request
 axios.interceptors.request.use(config => {
   const token = localStorage.getItem('token');
   if (token) {
@@ -18,7 +18,7 @@ axios.interceptors.request.use(config => {
   return config;
 });
 
-// Redirect to /login on 401 Unauthorized
+// Redirect to /login on any 401 Unauthorized response
 axios.interceptors.response.use(
   response => response,
   error => {
