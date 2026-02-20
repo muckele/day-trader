@@ -16,6 +16,7 @@ import Skeleton from '../components/ui/Skeleton';
 import { getCache, setCache } from '../utils/cache';
 import { getApiError } from '../utils/api';
 import { emitToast } from '../utils/toast';
+import { useMarketStatus } from '../hooks/useMarketStatus';
 
 export default function Stock() {
   const { symbol } = useParams();
@@ -39,11 +40,16 @@ export default function Stock() {
   const [reloadKey, setReloadKey] = useState(0);
   const [tradeSide, setTradeSide] = useState('buy');
   const [tradeQty, setTradeQty] = useState(1);
+  const [tradeOrderType, setTradeOrderType] = useState('market');
+  const [tradeLimitPrice, setTradeLimitPrice] = useState('');
+  const [maxPricePerShare, setMaxPricePerShare] = useState('');
+  const [allowExtendedHours, setAllowExtendedHours] = useState(true);
   const [tradeError, setTradeError] = useState('');
   const [tradeResult, setTradeResult] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [aiRetryKey, setAiRetryKey] = useState(0);
+  const { status: marketStatus } = useMarketStatus();
 
   useEffect(() => {
     const fetchWithCache = async (key, ttl, fetcher) => {
@@ -312,10 +318,15 @@ export default function Stock() {
     return Number((priceInfo.price * multiplier).toFixed(2));
   }, [priceInfo, paperSettings, tradeSide]);
 
+  const normalizedTradeQty = useMemo(() => {
+    const numeric = Number(tradeQty);
+    return Number.isFinite(numeric) ? numeric : 0;
+  }, [tradeQty]);
+
   const estimatedNotional = useMemo(() => {
     if (!estimatedFillPrice) return 0;
-    return estimatedFillPrice * tradeQty;
-  }, [estimatedFillPrice, tradeQty]);
+    return estimatedFillPrice * normalizedTradeQty;
+  }, [estimatedFillPrice, normalizedTradeQty]);
 
   const estimatedPositionPct = useMemo(() => {
     if (!account?.equity || !estimatedNotional) return null;
@@ -328,18 +339,46 @@ export default function Stock() {
     const perShare = tradeSide === 'buy'
       ? estimatedFillPrice - stop
       : stop - estimatedFillPrice;
-    return Math.max(0, perShare) * tradeQty;
-  }, [recommendation, estimatedFillPrice, tradeSide, tradeQty]);
+    return Math.max(0, perShare) * normalizedTradeQty;
+  }, [recommendation, estimatedFillPrice, tradeSide, normalizedTradeQty]);
 
   const handleSubmitTrade = async () => {
+    if (!normalizedTradeQty || normalizedTradeQty <= 0) {
+      const message = 'Quantity must be greater than 0.';
+      setTradeError(message);
+      emitToast({ type: 'error', title: 'Trade blocked', message });
+      return;
+    }
+    const parsedLimitPrice = Number(tradeLimitPrice);
+    if (tradeOrderType === 'limit' && (!Number.isFinite(parsedLimitPrice) || parsedLimitPrice <= 0)) {
+      const message = 'Enter a valid limit price for limit orders.';
+      setTradeError(message);
+      emitToast({ type: 'error', title: 'Trade blocked', message });
+      return;
+    }
+    const parsedMaxPricePerShare = Number(maxPricePerShare);
+    if (
+      tradeSide === 'buy'
+      && maxPricePerShare !== ''
+      && (!Number.isFinite(parsedMaxPricePerShare) || parsedMaxPricePerShare <= 0)
+    ) {
+      const message = 'Enter a valid max cost per share.';
+      setTradeError(message);
+      emitToast({ type: 'error', title: 'Trade blocked', message });
+      return;
+    }
+
     setIsSubmitting(true);
     setTradeError('');
     try {
       const res = await axios.post('/api/paper-trades/order', {
         symbol,
         side: tradeSide,
-        qty: tradeQty,
-        orderType: 'market',
+        qty: normalizedTradeQty,
+        orderType: tradeOrderType,
+        limitPrice: tradeOrderType === 'limit' ? parsedLimitPrice : null,
+        maxPricePerShare: tradeSide === 'buy' && maxPricePerShare !== '' ? parsedMaxPricePerShare : null,
+        allowExtendedHours,
         strategyId: recommendation?.strategy?.strategyId || null,
         setupType: recommendation?.setupType || null,
         strategyTags: recommendation?.strategy?.tags || null,
@@ -351,7 +390,7 @@ export default function Stock() {
       emitToast({
         type: 'success',
         title: 'Order placed',
-        message: `${tradeSide.toUpperCase()} ${tradeQty} ${symbol} @ $${res.data.order?.fillPrice}`
+        message: `${tradeSide.toUpperCase()} ${normalizedTradeQty} ${symbol} @ $${res.data.order?.fillPrice}`
       });
     } catch (err) {
       const message = getApiError(err);
@@ -675,11 +714,71 @@ export default function Stock() {
             <label className="text-xs text-slate-500">Quantity</label>
             <input
               type="number"
-              min="1"
+              min="0.000001"
+              step="0.000001"
               value={tradeQty}
-              onChange={event => setTradeQty(Number(event.target.value))}
+              onChange={event => setTradeQty(event.target.value)}
               className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
             />
+            <label className="text-xs text-slate-500 mt-3">Order Type</label>
+            <div className="mt-1 flex gap-2">
+              <Button
+                variant={tradeOrderType === 'market' ? 'primary' : 'secondary'}
+                size="sm"
+                className="flex-1"
+                onClick={() => setTradeOrderType('market')}
+              >
+                Market
+              </Button>
+              <Button
+                variant={tradeOrderType === 'limit' ? 'primary' : 'secondary'}
+                size="sm"
+                className="flex-1"
+                onClick={() => setTradeOrderType('limit')}
+              >
+                Limit
+              </Button>
+            </div>
+            {tradeOrderType === 'limit' && (
+              <>
+                <label className="text-xs text-slate-500 mt-3">Limit Price ($)</label>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={tradeLimitPrice}
+                  onChange={event => setTradeLimitPrice(event.target.value)}
+                  className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                />
+              </>
+            )}
+            {tradeSide === 'buy' && (
+              <>
+                <label className="text-xs text-slate-500 mt-3">Max Cost Per Share ($)</label>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={maxPricePerShare}
+                  onChange={event => setMaxPricePerShare(event.target.value)}
+                  placeholder="Optional"
+                  className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                />
+              </>
+            )}
+            <label className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+              <input
+                type="checkbox"
+                checked={allowExtendedHours}
+                onChange={event => setAllowExtendedHours(event.target.checked)}
+              />
+              Allow extended-hours fills when market is closed
+            </label>
+            {marketStatus !== 'OPEN' && (
+              <p className="mt-2 text-xs text-amber-600">
+                Market is currently closed.
+              </p>
+            )}
             <div className="mt-2 text-xs text-slate-500">
               Est. fill ${estimatedFillPrice || '--'} · Notional {estimatedNotional ? `$${estimatedNotional.toFixed(2)}` : '--'}
             </div>
@@ -704,11 +803,17 @@ export default function Stock() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center px-4 z-50">
           <Card className="p-6 max-w-sm w-full">
             <p className="text-sm font-semibold text-slate-900 dark:text-white mb-2">Confirm Paper Trade</p>
-            <p className="text-sm text-slate-600 dark:text-slate-300">
-              {tradeSide.toUpperCase()} {tradeQty} {symbol}
+              <p className="text-sm text-slate-600 dark:text-slate-300">
+              {tradeSide.toUpperCase()} {normalizedTradeQty} {symbol}
             </p>
             <div className="mt-3 space-y-1 text-xs text-slate-500">
               <p>Estimated fill ${estimatedFillPrice || '--'}</p>
+              <p>Order type {tradeOrderType.toUpperCase()}</p>
+              {tradeOrderType === 'limit' && <p>Limit price ${tradeLimitPrice || '--'}</p>}
+              {tradeSide === 'buy' && maxPricePerShare !== '' && (
+                <p>Max cost/share ${maxPricePerShare}</p>
+              )}
+              <p>Extended-hours {allowExtendedHours ? 'Enabled' : 'Disabled'}</p>
               <p>Slippage {paperSettings?.slippageBps || 0} bps · Commission ${paperSettings?.commission || 0}</p>
               <p>
                 Position size {estimatedPositionPct ? `${estimatedPositionPct.toFixed(2)}%` : '--'}

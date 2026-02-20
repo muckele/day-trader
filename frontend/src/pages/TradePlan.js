@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { useNavigate } from 'react-router-dom';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
 import Button from '../components/ui/Button';
@@ -10,7 +9,6 @@ import { getApiError } from '../utils/api';
 import { emitToast } from '../utils/toast';
 
 export default function TradePlan() {
-  const navigate = useNavigate();
   const { status } = useMarketStatus();
   const [plan, setPlan] = useState(null);
   const [history, setHistory] = useState([]);
@@ -21,6 +19,21 @@ export default function TradePlan() {
   const [executionCheck, setExecutionCheck] = useState(null);
   const [checkingExecution, setCheckingExecution] = useState(false);
   const [executing, setExecuting] = useState(false);
+  const [executionQty, setExecutionQty] = useState('');
+  const [executionOrderType, setExecutionOrderType] = useState('market');
+  const [executionLimitPrice, setExecutionLimitPrice] = useState('');
+  const [executionMaxPricePerShare, setExecutionMaxPricePerShare] = useState('');
+  const [executionAllowExtendedHours, setExecutionAllowExtendedHours] = useState(true);
+
+  const closeExecutionModal = () => {
+    setSelectedIdea(null);
+    setExecutionCheck(null);
+    setExecutionQty('');
+    setExecutionOrderType('market');
+    setExecutionLimitPrice('');
+    setExecutionMaxPricePerShare('');
+    setExecutionAllowExtendedHours(true);
+  };
 
   const fetchPlan = async (rescore = false) => {
     if (rescore) {
@@ -88,6 +101,12 @@ export default function TradePlan() {
         ideaId: idea._id
       });
       setExecutionCheck(res.data);
+      const recommendedQty = Number(res.data?.projectedStats?.recommendedQty || 0);
+      setExecutionQty(recommendedQty > 0 ? String(recommendedQty) : '');
+      setExecutionOrderType('market');
+      setExecutionLimitPrice('');
+      setExecutionMaxPricePerShare('');
+      setExecutionAllowExtendedHours(true);
     } catch (err) {
       emitToast({ type: 'error', message: getApiError(err) });
       setExecutionCheck(null);
@@ -98,9 +117,24 @@ export default function TradePlan() {
 
   const handleExecute = async () => {
     if (!selectedIdea || !executionCheck?.eligible) return;
-    const qty = executionCheck.projectedStats?.recommendedQty || 0;
-    if (!qty) {
+    const qty = Number(executionQty);
+    if (!qty || qty <= 0) {
       emitToast({ type: 'error', message: 'Unable to calculate position size.' });
+      return;
+    }
+    const parsedLimitPrice = Number(executionLimitPrice);
+    if (executionOrderType === 'limit' && (!Number.isFinite(parsedLimitPrice) || parsedLimitPrice <= 0)) {
+      emitToast({ type: 'error', message: 'Enter a valid limit price.' });
+      return;
+    }
+    const side = selectedIdea.bias === 'SHORT' ? 'sell' : 'buy';
+    const parsedMaxPricePerShare = Number(executionMaxPricePerShare);
+    if (
+      side === 'buy'
+      && executionMaxPricePerShare !== ''
+      && (!Number.isFinite(parsedMaxPricePerShare) || parsedMaxPricePerShare <= 0)
+    ) {
+      emitToast({ type: 'error', message: 'Enter a valid max cost per share.' });
       return;
     }
 
@@ -108,15 +142,17 @@ export default function TradePlan() {
     try {
       await axios.post('/api/paper-trades/order', {
         symbol: selectedIdea.symbol,
-        side: selectedIdea.bias === 'SHORT' ? 'sell' : 'buy',
+        side,
         qty,
-        orderType: 'market',
+        orderType: executionOrderType,
+        limitPrice: executionOrderType === 'limit' ? parsedLimitPrice : null,
+        maxPricePerShare: side === 'buy' && executionMaxPricePerShare !== '' ? parsedMaxPricePerShare : null,
+        allowExtendedHours: executionAllowExtendedHours,
         strategyId: selectedIdea.strategyId,
         stopPrice: selectedIdea.stop
       });
       emitToast({ type: 'success', message: 'Paper trade executed.' });
-      setSelectedIdea(null);
-      setExecutionCheck(null);
+      closeExecutionModal();
       fetchPlan();
       fetchHistory();
     } catch (err) {
@@ -333,8 +369,7 @@ export default function TradePlan() {
                 </p>
               </div>
               <Button variant="ghost" size="sm" onClick={() => {
-                setSelectedIdea(null);
-                setExecutionCheck(null);
+                closeExecutionModal();
               }}>
                 Close
               </Button>
@@ -397,6 +432,80 @@ export default function TradePlan() {
                 </div>
               </div>
 
+              <div className="rounded-lg border border-slate-200/70 dark:border-slate-700 px-3 py-3 text-xs text-slate-600 dark:text-slate-300 space-y-3">
+                <p className="font-semibold text-slate-900 dark:text-white">Order Controls</p>
+                <div>
+                  <label className="text-slate-500">Quantity</label>
+                  <input
+                    type="number"
+                    min="0.000001"
+                    step="0.000001"
+                    value={executionQty}
+                    onChange={event => setExecutionQty(event.target.value)}
+                    className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-500">Order Type</label>
+                  <div className="mt-1 flex gap-2">
+                    <Button
+                      variant={executionOrderType === 'market' ? 'primary' : 'secondary'}
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => setExecutionOrderType('market')}
+                    >
+                      Market
+                    </Button>
+                    <Button
+                      variant={executionOrderType === 'limit' ? 'primary' : 'secondary'}
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => setExecutionOrderType('limit')}
+                    >
+                      Limit
+                    </Button>
+                  </div>
+                </div>
+                {executionOrderType === 'limit' && (
+                  <div>
+                    <label className="text-slate-500">Limit Price ($)</label>
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={executionLimitPrice}
+                      onChange={event => setExecutionLimitPrice(event.target.value)}
+                      className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                    />
+                  </div>
+                )}
+                {selectedIdea.bias !== 'SHORT' && (
+                  <div>
+                    <label className="text-slate-500">Max Cost Per Share ($)</label>
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={executionMaxPricePerShare}
+                      onChange={event => setExecutionMaxPricePerShare(event.target.value)}
+                      placeholder="Optional"
+                      className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                    />
+                  </div>
+                )}
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={executionAllowExtendedHours}
+                    onChange={event => setExecutionAllowExtendedHours(event.target.checked)}
+                  />
+                  Allow extended-hours fills when market is closed
+                </label>
+                {status !== 'OPEN' && (
+                  <p className="text-amber-600">Market is currently closed.</p>
+                )}
+              </div>
+
               {executionCheck.reasonsBlocked.length > 0 && (
                 <div className="rounded-lg border border-amber-200/60 bg-amber-50/70 px-3 py-2 text-xs text-amber-700">
                   <p className="font-semibold">Blocked reasons</p>
@@ -420,8 +529,7 @@ export default function TradePlan() {
               <Button
                 variant="secondary"
                 onClick={() => {
-                  setSelectedIdea(null);
-                  setExecutionCheck(null);
+                  closeExecutionModal();
                 }}
                 className="flex-1"
               >

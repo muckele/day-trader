@@ -20,13 +20,18 @@ function formatDateTime(value) {
 function mapEventType(eventType) {
   const map = {
     trade_executed: 'Trade Executed',
+    trade_failed: 'Trade Failed',
     trade_skipped_limit: 'Skipped: Limit',
     trade_skipped_locked: 'Skipped: Locked',
+    trade_skipped_circuit_breaker: 'Skipped: Circuit Breaker',
+    trade_skipped_duplicate_signal: 'Skipped: Duplicate Signal',
     trade_skipped_invalid_signal: 'Skipped: Invalid Signal',
     trade_skipped_no_quote: 'Skipped: No Quote',
     trade_skipped_scheduler_error: 'Skipped: Scheduler Error',
     robo_disabled: 'Robo Disabled',
     robo_settings_updated: 'Settings Updated',
+    circuit_breaker_armed: 'Circuit Breaker Armed',
+    circuit_breaker_reset: 'Circuit Breaker Reset',
     email_sent: 'Email Sent',
     email_failed: 'Email Failed'
   };
@@ -42,7 +47,9 @@ export default function RoboTrader() {
     enabled: false,
     dailyLimit: 0,
     weeklyLimit: 0,
-    monthlyLimit: 0
+    monthlyLimit: 0,
+    failureStreak: 0,
+    pausedUntil: null
   });
   const [usage, setUsage] = useState(null);
   const [audit, setAudit] = useState([]);
@@ -57,7 +64,9 @@ export default function RoboTrader() {
       enabled: Boolean(res.data?.settings?.enabled),
       dailyLimit: Number(res.data?.settings?.dailyLimit || 0),
       weeklyLimit: Number(res.data?.settings?.weeklyLimit || 0),
-      monthlyLimit: Number(res.data?.settings?.monthlyLimit || 0)
+      monthlyLimit: Number(res.data?.settings?.monthlyLimit || 0),
+      failureStreak: Number(res.data?.settings?.failureStreak || 0),
+      pausedUntil: res.data?.settings?.pausedUntil || null
     });
     setUsage(res.data?.usage || null);
   };
@@ -99,6 +108,12 @@ export default function RoboTrader() {
     ];
   }, [usage]);
 
+  const circuitBreakerActive = useMemo(() => {
+    if (!settings.pausedUntil) return false;
+    const pausedUntilTs = new Date(settings.pausedUntil).getTime();
+    return Number.isFinite(pausedUntilTs) && pausedUntilTs > Date.now();
+  }, [settings.pausedUntil]);
+
   const handleSave = async () => {
     setSaving(true);
     setError('');
@@ -115,7 +130,9 @@ export default function RoboTrader() {
         enabled: Boolean(res.data?.settings?.enabled),
         dailyLimit: Number(res.data?.settings?.dailyLimit || 0),
         weeklyLimit: Number(res.data?.settings?.weeklyLimit || 0),
-        monthlyLimit: Number(res.data?.settings?.monthlyLimit || 0)
+        monthlyLimit: Number(res.data?.settings?.monthlyLimit || 0),
+        failureStreak: Number(res.data?.settings?.failureStreak || 0),
+        pausedUntil: res.data?.settings?.pausedUntil || null
       });
       setUsage(res.data?.usage || null);
       setSuccess('Robo Trader settings updated.');
@@ -165,6 +182,14 @@ export default function RoboTrader() {
 
         {error && <p className="mt-4 text-sm text-[#ffb2c1]">{error}</p>}
         {success && <p className="mt-4 text-sm text-[#5dff90]">{success}</p>}
+        {circuitBreakerActive && (
+          <div className="mt-4 rounded-xl border border-amber-500/35 bg-amber-400/10 px-4 py-3">
+            <p className="text-sm font-semibold text-amber-200">Circuit breaker is active</p>
+            <p className="text-xs text-amber-100/80 mt-1">
+              Robo trading is paused until {formatDateTime(settings.pausedUntil)} after {settings.failureStreak} consecutive failures.
+            </p>
+          </div>
+        )}
 
         <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <label className="flex items-center justify-between rounded-xl border border-emerald-900/60 bg-[#0f1913] px-4 py-3">
