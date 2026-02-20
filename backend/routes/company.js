@@ -2,12 +2,24 @@ const express = require('express');
 const axios = require('axios');
 const router = express.Router();
 
-const RAW_DATA_URL =
-  process.env.APCA_DATA_URL ||
-  process.env.ALPACA_DATA_URL ||
-  'https://data.alpaca.markets';
+const RAW_TRADING_URL =
+  process.env.APCA_API_BASE_URL ||
+  process.env.ALPACA_API_BASE_URL ||
+  process.env.APCA_BASE_URL ||
+  process.env.ALPACA_BASE_URL;
 
-const DATA_URL = RAW_DATA_URL.replace(/\/v2\/?$/, '');
+function normalizeBaseUrl(url) {
+  return url.replace(/\/v2\/?$/, '').replace(/\/+$/, '');
+}
+
+const TRADING_BASE_URLS = [
+  RAW_TRADING_URL,
+  'https://paper-api.alpaca.markets',
+  'https://api.alpaca.markets'
+]
+  .filter(Boolean)
+  .map(normalizeBaseUrl)
+  .filter((value, index, list) => list.indexOf(value) === index);
 
 const API_KEY =
   process.env.BROKER_API_KEY ||
@@ -29,24 +41,37 @@ router.get('/:symbol', async (req, res) => {
   const symbol = req.params.symbol.toUpperCase();
 
   try {
-    // v1 assets returns a list, so we filter down to our symbol
-    const resp = await axios.get(
-      `${DATA_URL}/v1/assets`,
-      {
-        headers: {
-          'APCA-API-KEY-ID': API_KEY,
-          'APCA-API-SECRET-KEY': API_SECRET
-        },
-        params: {
-          asset_class: 'us_equity',
-          status: 'active'
-        }
-      }
-    );
+    let asset = null;
+    let sawNotFound = false;
+    let lastError = null;
 
-    const asset = resp.data.find(a => a.symbol === symbol);
+    for (const baseUrl of TRADING_BASE_URLS) {
+      try {
+        const resp = await axios.get(
+          `${baseUrl}/v2/assets/${symbol}`,
+          {
+            headers: {
+              'APCA-API-KEY-ID': API_KEY,
+              'APCA-API-SECRET-KEY': API_SECRET
+            }
+          }
+        );
+        asset = resp.data;
+        break;
+      } catch (err) {
+        if (err.response?.status === 404) {
+          sawNotFound = true;
+          continue;
+        }
+        lastError = err;
+      }
+    }
+
     if (!asset) {
-      return res.status(404).json({ error: `No asset found for ${symbol}` });
+      if (sawNotFound) {
+        return res.status(404).json({ error: `No asset found for ${symbol}` });
+      }
+      throw lastError || new Error('No trading API base URL available for company lookup.');
     }
 
     res.json({

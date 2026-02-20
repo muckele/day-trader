@@ -31,12 +31,9 @@ function getAlpacaConfig() {
   if (!API_KEY || !API_SECRET) {
     throw new Error('Missing Alpaca API keys (BROKER_API_KEY/BROKER_API_SECRET or APCA_API_KEY_ID/APCA_API_SECRET_KEY).');
   }
-  let apiUrl = API_URL;
-  if (!/\/v2\/?$/.test(apiUrl)) {
-    apiUrl = `${apiUrl.replace(/\/$/, '')}/v2`;
-  }
+  const dataBaseUrl = API_URL.replace(/\/v2\/?$/, '').replace(/\/+$/, '');
   return {
-    apiUrl,
+    dataBaseUrl,
     headers: {
       'APCA-API-KEY-ID': API_KEY,
       'APCA-API-SECRET-KEY': API_SECRET
@@ -44,23 +41,113 @@ function getAlpacaConfig() {
   };
 }
 
+function buildDailyBarsError(symbol, detail) {
+  const error = new Error(`Could not fetch daily bars for ${symbol}${detail ? `: ${detail}` : ''}`);
+  error.code = 'DATA_UNAVAILABLE';
+  return error;
+}
+
+function extractBarsPayload(data, symbol) {
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== 'object') return null;
+  if (Array.isArray(data.bars)) return data.bars;
+  if (data.bars === null) return null;
+  if (Array.isArray(data[symbol])) return data[symbol];
+  if (Array.isArray(data[symbol?.toUpperCase?.()])) return data[symbol.toUpperCase()];
+  if (Array.isArray(data[symbol?.toLowerCase?.()])) return data[symbol.toLowerCase()];
+  return null;
+}
+
+function isFeedRelatedMessage(value) {
+  return String(value || '').toLowerCase().includes('feed');
+}
+
+function hasUpstreamErrorPayload(data) {
+  return Boolean(
+    data &&
+    typeof data === 'object' &&
+    !Array.isArray(data) &&
+    (data.code !== undefined || data.message !== undefined)
+  );
+}
+
 /**
- * Fetches the last 365 daily bars for a symbol from Alpaca.
+ * Fetches recent daily bars for a symbol from Alpaca.
+ * We always provide a date range to avoid empty responses from endpoint defaults.
  * Returns an array of { t, o, h, l, c, v } objects, newest last.
  */
 async function fetchDaily(symbol) {
-  const { apiUrl, headers } = getAlpacaConfig();
-  const resp = await axios.get(
-    `${apiUrl}/stocks/${symbol}/bars`,  // apiUrl includes /v2
-    {
-      headers,
-      params: { timeframe: '1Day', limit: 365 }
+  const normalizedSymbol = symbol.toUpperCase();
+  const { dataBaseUrl, headers } = getAlpacaConfig();
+  const url = `${dataBaseUrl}/v2/stocks/${normalizedSymbol}/bars`;
+  const end = new Date();
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 400);
+  // Allow deploy-time override of Alpaca data feed; default to iex for broad compatibility.
+  const feed = process.env.APCA_DATA_FEED || 'iex';
+  const baseParams = {
+    timeframe: '1Day',
+    limit: 200,
+    adjustment: 'raw',
+    start: start.toISOString(),
+    end: end.toISOString()
+  };
+
+  const requestBars = async includeFeed => {
+    const params = includeFeed ? { ...baseParams, feed } : baseParams;
+    const resp = await axios.get(url, { headers, params });
+    return resp.data;
+  };
+
+  let triedWithoutFeed = false;
+  const retryWithoutFeed = async reason => {
+    if (triedWithoutFeed) {
+      throw buildDailyBarsError(normalizedSymbol, reason || 'No daily bars returned');
     }
-  );
-  if (!resp.data.bars) {
-    throw new Error(`Unexpected response from Alpaca for daily bars of ${symbol}`);
+    triedWithoutFeed = true;
+    try {
+      return await requestBars(false);
+    } catch (retryErr) {
+      throw buildDailyBarsError(normalizedSymbol, retryErr.response?.data?.message || retryErr.message);
+    }
+  };
+
+  let data;
+  try {
+    data = await requestBars(true);
+  } catch (err) {
+    const status = err.response?.status;
+    const detail = err.response?.data?.message || err.message;
+    const canRetryWithoutFeed = (status === 400 || status === 404 || status === 422)
+      && isFeedRelatedMessage(detail);
+    if (canRetryWithoutFeed) {
+      data = await retryWithoutFeed(detail);
+    } else {
+      throw buildDailyBarsError(normalizedSymbol, detail);
+    }
   }
-  return resp.data.bars;
+
+  if (hasUpstreamErrorPayload(data) && isFeedRelatedMessage(data.message || data.code)) {
+    data = await retryWithoutFeed(data.message || data.code);
+  }
+
+  if (hasUpstreamErrorPayload(data)) {
+    throw buildDailyBarsError(normalizedSymbol, data.message || data.code);
+  }
+
+  let bars = extractBarsPayload(data, normalizedSymbol);
+  if (!Array.isArray(bars) || bars.length === 0) {
+    data = await retryWithoutFeed('No daily bars returned');
+    if (hasUpstreamErrorPayload(data)) {
+      throw buildDailyBarsError(normalizedSymbol, data.message || data.code);
+    }
+    bars = extractBarsPayload(data, normalizedSymbol);
+    if (!Array.isArray(bars) || bars.length === 0) {
+      throw buildDailyBarsError(normalizedSymbol, 'No daily bars returned');
+    }
+  }
+
+  return bars;
 }
 
 /**
@@ -68,9 +155,10 @@ async function fetchDaily(symbol) {
  * Returns an array of { time, open, high, low, close, volume }, newest last.
  */
 async function fetchIntraday(symbol) {
-  const { apiUrl, headers } = getAlpacaConfig();
+  const normalizedSymbol = symbol.toUpperCase();
+  const { dataBaseUrl, headers } = getAlpacaConfig();
   const resp = await axios.get(
-    `${apiUrl}/stocks/${symbol}/bars`,  // apiUrl includes /v2
+    `${dataBaseUrl}/v2/stocks/${normalizedSymbol}/bars`,
     {
       headers,
       params: { timeframe: '5Min', limit: 500 }

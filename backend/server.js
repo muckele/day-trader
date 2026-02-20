@@ -24,17 +24,29 @@ const User                = require('./models/User');
 const Log                 = require('./models/Log');
 const { getRecommendations, fetchIntraday } = require('./tradeLogic');
 const auth                = require('./middleware/auth');      // ← imported
+const debugRoutes         = require('./routes/debug');
 
 // 5. Create the Express app
 const app = express();
 
 // 6. Global middleware
 app.use(express.json());
-const frontendOrigin = process.env.FRONTEND_ORIGIN;
+const isProduction = process.env.NODE_ENV === 'production';
+const configuredOrigins = (process.env.FRONTEND_ORIGIN || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
+const defaultDevOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000'];
+const allowedOrigins = new Set(
+  isProduction
+    ? configuredOrigins
+    : [...configuredOrigins, ...defaultDevOrigins]
+);
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
-    if (frontendOrigin && origin === frontendOrigin) return callback(null, true);
+    if (!isProduction && configuredOrigins.length === 0) return callback(null, true);
+    if (allowedOrigins.has(origin)) return callback(null, true);
     return callback(new Error('Not allowed by CORS'));
   }
 }));
@@ -54,6 +66,7 @@ app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/journal', require('./routes/journal'));
 app.use('/api/trade-plan', require('./routes/tradePlan'));
 app.use('/api/execution', require('./routes/execution'));
+app.use('/api/debug', debugRoutes);
 // Trade Recomendations 
 app.use('/api/recommendations', require('./routes/recommend'));
 

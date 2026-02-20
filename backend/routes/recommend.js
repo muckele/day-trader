@@ -23,12 +23,12 @@ async function getTodayRegime() {
 }
 
 router.get('/', async (req, res, next) => {
+  const status = getMarketStatus();
   try {
     const watchlist = ['AAPL','MSFT','GOOG'];
     const recs = await Promise.all(
       watchlist.map(sym => getRecommendations(sym))
     );
-    const status = getMarketStatus();
     const regime = await getTodayRegime();
     res.json({
       asOf: status.asOf,
@@ -37,7 +37,20 @@ router.get('/', async (req, res, next) => {
       nextClose: status.nextClose,
       recommendations: recs.map(rec => buildRecommendation(rec, { regime }))
     });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err?.code === 'DATA_UNAVAILABLE' || /daily bars/i.test(String(err?.message || ''))) {
+      return res.json({
+        asOf: status.asOf,
+        marketStatus: status.status,
+        nextOpen: status.nextOpen,
+        nextClose: status.nextClose,
+        recommendations: [],
+        warning: 'DATA_UNAVAILABLE',
+        message: 'Could not fetch daily bars'
+      });
+    }
+    next(err);
+  }
 });
 
 router.get('/:symbol', async (req, res, next) => {

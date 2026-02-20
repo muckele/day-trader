@@ -1,6 +1,17 @@
 app = "day-trader-backend"
 primary_region = "ord"
 
+# Recommended Fly secrets for this app (set via `fly secrets set ...`):
+# - APCA_API_KEY_ID
+# - APCA_API_SECRET_KEY
+# - APCA_DATA_URL
+# - APCA_DATA_FEED (example: iex)
+# - NEWSAPI_KEY
+# - DEEPSEEK_API_BASE_URL
+# - DEEPSEEK_API_KEY
+# - JWT_SECRET
+# - MONGO_URI
+
 [build]
   dockerfile = "Dockerfile"
 
