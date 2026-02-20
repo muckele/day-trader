@@ -9,10 +9,8 @@ import App from './App';
 import reportWebVitals from './reportWebVitals';
 import { getApiBaseUrl } from './utils/api';
 
-const savedTheme = localStorage.getItem('daytrader-theme');
-if (savedTheme === 'dark') {
-  document.documentElement.classList.add('dark');
-}
+document.documentElement.classList.add('dark');
+localStorage.setItem('daytrader-theme', 'dark');
 
 // ─── 2. CONFIGURE AXIOS ─────────────────────────────────────────────────────
 const apiBaseUrl = getApiBaseUrl();

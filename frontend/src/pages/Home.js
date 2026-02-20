@@ -245,12 +245,12 @@ export default function Home() {
     }
 
     if (watchlistError) {
-      return <p className="text-sm text-red-500">{watchlistError}</p>;
+      return <p className="text-sm text-[#ffb2c1]">{watchlistError}</p>;
     }
 
     if (!sortedSymbols.length) {
       return (
-        <div className="text-sm text-slate-500 py-4">
+        <div className="text-sm text-emerald-100/55 py-4">
           No watchlist items yet. Add a symbol to get started.
         </div>
       );
@@ -261,16 +261,22 @@ export default function Home() {
       const quote = quotes[symbol] || {};
       const data = sparklines[symbol] || [];
       const isUp = (quote.change || 0) >= 0;
+      const priceValue = Number(quote.price);
+      const changePctValue = Number(quote.changePercent);
+      const displayPrice = Number.isFinite(priceValue) ? `$${priceValue.toFixed(2)}` : '--';
+      const displayChangePct = Number.isFinite(changePctValue)
+        ? `${changePctValue >= 0 ? '+' : ''}${changePctValue.toFixed(2)}%`
+        : '--';
 
       return (
         <div
           key={symbol}
           onClick={() => navigate(`/stock/${symbol}`)}
-          className="group flex items-center justify-between gap-3 py-3 border-b border-slate-100 dark:border-slate-800 last:border-none hover:bg-slate-50/80 dark:hover:bg-slate-900/40 transition cursor-pointer px-2 rounded-lg"
+          className="group grid grid-cols-[1fr_auto_auto] items-center gap-3 py-3 px-2 rounded-xl border border-transparent hover:border-emerald-900/50 hover:bg-[#16221b]/85 transition cursor-pointer"
         >
           <div>
-            <p className="text-sm font-semibold text-slate-900 dark:text-white">{item.symbol}</p>
-            <p className="text-xs text-slate-500 dark:text-slate-400">{item.name}</p>
+            <p className="text-sm font-bold tracking-wide text-emerald-50">{item.symbol}</p>
+            <p className="text-xs text-emerald-100/55">{item.name}</p>
           </div>
           <div className="h-10 w-24">
             <ResponsiveContainer width="100%" height="100%">
@@ -278,7 +284,7 @@ export default function Home() {
                 <Line
                   type="monotone"
                   dataKey="price"
-                  stroke={isUp ? '#16a34a' : '#dc2626'}
+                  stroke={isUp ? '#00c805' : '#ff5c79'}
                   strokeWidth={2}
                   dot={false}
                 />
@@ -286,17 +292,18 @@ export default function Home() {
             </ResponsiveContainer>
           </div>
           <div className="text-right">
-            <p className="text-sm font-medium text-slate-900 dark:text-white">
-              {quote.price ? `$${quote.price}` : '--'}
+            <p className="text-sm font-semibold text-emerald-50">
+              {displayPrice}
             </p>
-            <p className={`text-xs ${isUp ? 'text-emerald-500' : 'text-red-500'}`}>
-              {quote.changePercent !== undefined ? `${quote.changePercent}%` : '--'}
+            <p className={`text-xs font-medium ${isUp ? 'text-[#5dff90]' : 'text-[#ff8ea4]'}`}>
+              {displayChangePct}
             </p>
           </div>
-          <div className="flex items-center gap-1 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition">
+          <div className="col-span-3 flex items-center gap-1 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition">
             <Button
               variant="ghost"
               size="sm"
+              className="!text-[11px]"
               onClick={event => {
                 event.stopPropagation();
                 setPinnedSymbols(prev => (
@@ -311,6 +318,7 @@ export default function Home() {
             <Button
               variant="ghost"
               size="sm"
+              className="!text-[11px]"
               onClick={event => {
                 event.stopPropagation();
                 setWatchlistSymbols(prev => prev.filter(item => item !== symbol));
@@ -348,13 +356,17 @@ export default function Home() {
   }, [showBlocked, trades]);
 
   const blockedCount = trades.filter(rec => rec.qualityGate && !rec.qualityGate.passed).length;
+  const formatLevel = value => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric.toFixed(2) : '--';
+  };
 
   if (loading) {
     return (
-      <div className="space-y-6">
-        <Card className="p-5">
+      <div className="space-y-7">
+        <Card className="p-6">
           <Skeleton className="h-4 w-40" />
-          <Skeleton className="h-8 w-64 mt-4" />
+          <Skeleton className="h-9 w-72 mt-4" />
         </Card>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <Card className="p-5">
@@ -380,8 +392,8 @@ export default function Home() {
 
   if (error) {
     return (
-      <Card className="p-6">
-        <p className="text-sm text-red-500">{error}</p>
+      <Card className="p-6 border-[#5f2a38] bg-[#2a1119]">
+        <p className="text-sm text-[#ffb2c1]">{error}</p>
         <Button variant="secondary" size="sm" className="mt-4" onClick={() => setRefreshKey(prev => prev + 1)}>
           Retry
         </Button>
@@ -390,18 +402,18 @@ export default function Home() {
   }
 
   return (
-    <div className="space-y-6">
-      <Card className="p-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-wide text-slate-400">Session Overview</p>
-          <p className="text-lg font-semibold text-slate-900 dark:text-white">
+    <div className="space-y-7">
+      <Card className="p-5 sm:p-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between bg-[linear-gradient(120deg,rgba(10,24,15,0.95)_0%,rgba(14,33,21,0.88)_60%,rgba(0,200,5,0.12)_100%)]">
+        <div className="space-y-1">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-emerald-100/45">Session Overview</p>
+          <p className="text-xl sm:text-2xl font-extrabold tracking-tight text-emerald-50">
             {marketStatus === 'OPEN' ? 'US Market Open' : 'US Market Closed'}
           </p>
           {marketStatus === 'CLOSED' && countdown && (
-            <p className="text-sm text-slate-500">Next open in {countdown}</p>
+            <p className="text-sm text-emerald-100/65">Next open in {countdown}</p>
           )}
           {marketStatus === 'OPEN' && nextClose && (
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-emerald-100/65">
               Closes at {new Date(nextClose).toLocaleTimeString()}
             </p>
           )}
@@ -412,21 +424,21 @@ export default function Home() {
       </Card>
 
       {recommendationWarning && (
-        <Card className="p-4 border-amber-200 bg-amber-50/70 dark:border-amber-500/20 dark:bg-amber-500/10">
-          <p className="text-sm text-amber-700 dark:text-amber-200">
+        <Card className="p-4 border-[#4b3f1e] bg-[#2b2615]">
+          <p className="text-sm text-[#f9d281]">
             {recommendationWarning}
           </p>
         </Card>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="p-5">
+        <Card className="p-5 sm:p-6">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <p className="text-xs uppercase tracking-wide text-slate-400">Watchlist</p>
-              <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Today</h2>
+              <p className="text-[11px] uppercase tracking-[0.2em] text-emerald-100/45">Watchlist</p>
+              <h2 className="text-xl font-extrabold tracking-tight text-emerald-50">Live Board</h2>
             </div>
-            <span className="text-xs text-slate-400">{watchlistSymbols.length} symbols</span>
+            <span className="text-xs text-emerald-100/50">{watchlistSymbols.length} symbols</span>
           </div>
 
           <div className="relative mb-4">
@@ -435,10 +447,10 @@ export default function Home() {
               value={searchTerm}
               onChange={event => setSearchTerm(event.target.value)}
               placeholder="Add symbol (AAPL, NVDA...)"
-              className="w-full rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400/50"
+              className="w-full rounded-xl border border-emerald-900/70 bg-[#0f1913] px-3.5 py-2.5 text-sm text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
             />
             {suggestions.length > 0 && (
-              <div className="absolute z-10 mt-2 w-full rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900">
+              <div className="absolute z-10 mt-2 w-full rounded-xl border border-emerald-900/70 bg-[#0f1813] shadow-xl">
                 {suggestions.map(item => (
                   <button
                     key={item.symbol}
@@ -446,24 +458,27 @@ export default function Home() {
                       setWatchlistSymbols(prev => [...prev, item.symbol]);
                       setSearchTerm('');
                     }}
-                    className="flex w-full items-center justify-between px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    className="flex w-full items-center justify-between px-3 py-2 text-sm text-emerald-100/90 hover:bg-[#1a261f]"
                   >
                     <span>{item.symbol}</span>
-                    <span className="text-xs text-slate-500">{item.name}</span>
+                    <span className="text-xs text-emerald-100/50">{item.name}</span>
                   </button>
                 ))}
               </div>
             )}
           </div>
 
-          <div className="divide-y divide-slate-100 dark:divide-slate-800">{watchlistRows}</div>
+          <div className="space-y-1">{watchlistRows}</div>
         </Card>
 
         <section className="lg:col-span-2 space-y-4">
-          <div className="flex items-center justify-between">
-            <h1 className="text-3xl font-extrabold text-slate-900 dark:text-white">
-              Daily Recommendations
-            </h1>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.2em] text-emerald-100/45">Setup Feed</p>
+              <h1 className="text-3xl font-extrabold tracking-tight text-emerald-50">
+                Daily Recommendations
+              </h1>
+            </div>
             <div className="flex items-center gap-2">
               <Badge variant="neutral">{visibleRecs.length} ideas</Badge>
               {blockedCount > 0 && (
@@ -484,12 +499,12 @@ export default function Home() {
               return (
                 <Card
                   key={rec.ticker}
-                  className="p-5 hover:shadow-md transition cursor-pointer"
+                  className="p-5 sm:p-6 transition cursor-pointer"
                   variant="default"
                   onClick={() => navigate(`/stock/${rec.ticker}`)}
                 >
                   <div className="flex items-center justify-between">
-                    <h2 className="text-2xl font-semibold text-slate-900 dark:text-white">{rec.ticker}</h2>
+                    <h2 className="text-2xl font-extrabold tracking-tight text-emerald-50">{rec.ticker}</h2>
                     <div className="flex items-center gap-2">
                       <Badge variant={isBuy ? 'success' : 'danger'}>
                         {isBuy ? 'BUY' : 'SHORT'}
@@ -501,21 +516,32 @@ export default function Home() {
                       )}
                     </div>
                   </div>
-                  <p className="mt-2 text-slate-600 dark:text-slate-300">
+                  <p className="mt-2 text-emerald-100/75 leading-relaxed">
                     {rec.rationale?.[0] || (isBuy
                       ? 'Expect upward movement'
                       : 'Expect downward trend')}
                   </p>
                   {isBlocked && (
-                    <p className="mt-2 text-xs text-amber-600">
+                    <p className="mt-2 text-xs text-[#f9d281]">
                       Blocked: {rec.qualityGate.blockedReasons?.[0] || 'Quality gate failed.'}
                     </p>
                   )}
-                  <div className="mt-4 text-xs text-slate-500 dark:text-slate-400">
-                    Entry {rec.entry?.price} · Stop {rec.risk?.stop} · Take {rec.risk?.takeProfit?.[0]}
+                  <div className="mt-4 grid grid-cols-3 gap-2 text-[11px]">
+                    <div className="rounded-lg bg-[#16231b] border border-emerald-900/50 px-2 py-1.5">
+                      <p className="text-emerald-100/45 uppercase tracking-wide">Entry</p>
+                      <p className="text-emerald-50 font-semibold">{formatLevel(rec.entry?.price)}</p>
+                    </div>
+                    <div className="rounded-lg bg-[#16231b] border border-emerald-900/50 px-2 py-1.5">
+                      <p className="text-emerald-100/45 uppercase tracking-wide">Stop</p>
+                      <p className="text-emerald-50 font-semibold">{formatLevel(rec.risk?.stop)}</p>
+                    </div>
+                    <div className="rounded-lg bg-[#16231b] border border-emerald-900/50 px-2 py-1.5">
+                      <p className="text-emerald-100/45 uppercase tracking-wide">Take</p>
+                      <p className="text-emerald-50 font-semibold">{formatLevel(rec.risk?.takeProfit?.[0])}</p>
+                    </div>
                   </div>
                   {rec.strategy?.strategyId && (
-                    <div className="mt-2 text-xs text-slate-400">
+                    <div className="mt-3 text-xs text-emerald-100/50">
                       Strategy {rec.strategy.strategyId}
                     </div>
                   )}

@@ -2,18 +2,18 @@ import React from 'react';
 import { cn } from '../../utils/classNames';
 
 const variants = {
-  neutral: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200',
-  success: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300',
-  warning: 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300',
-  danger: 'bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-300',
-  solid: 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
+  neutral: 'bg-[#1a261f] text-emerald-100/80 border border-emerald-900/60',
+  success: 'bg-[#0f3018] text-[#59ff84] border border-[#1f6b34]',
+  warning: 'bg-[#2b2615] text-[#f9d281] border border-[#4b3f1e]',
+  danger: 'bg-[#341a22] text-[#ff9db0] border border-[#5f2a38]',
+  solid: 'bg-[#0f1b14] text-[#48ff79] border border-[#00c805]/55'
 };
 
 export default function Badge({ children, className, variant = 'neutral' }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide',
+        'inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide backdrop-blur-sm',
         variants[variant],
         className
       )}

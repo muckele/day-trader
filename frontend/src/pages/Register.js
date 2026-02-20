@@ -8,6 +8,7 @@ import { getApiError } from '../utils/api';
 
 export default function Register() {
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -19,7 +20,7 @@ export default function Register() {
     setSuccess('');
     try {
       // 1. POST to /api/register
-      await axios.post('/api/register', { username, password });
+      await axios.post('/api/register', { username, email, password });
       // 2. Show success and redirect to login after a brief pause
       setSuccess('Account created! Redirecting to login…');
       setTimeout(() => navigate('/login'), 1500);
@@ -40,7 +41,15 @@ export default function Register() {
             placeholder="Username"
             value={username}
             onChange={e => setUsername(e.target.value)}
-            className="border border-slate-200/80 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-900"
+            className="border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+            required
+          />
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            className="border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
             required
           />
           <input
@@ -48,7 +57,7 @@ export default function Register() {
             placeholder="Password"
             value={password}
             onChange={e => setPassword(e.target.value)}
-            className="border border-slate-200/80 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-900"
+            className="border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
             required
           />
           <Button type="submit">Create Account</Button>

@@ -23,7 +23,7 @@ export default function Stock() {
   const [historical, setHistorical]= useState([]);
   const [company,    setCompany]   = useState(null);
   const [stats,      setStats]     = useState(null);
-  const [analysis, setAnalysis] = useState('');
+  const [analysis, setAnalysis] = useState(null);
   const [aiError, setAiError] = useState('');
   const [aiLoading, setAiLoading] = useState(true);
   const [recommendation, setRecommendation] = useState(null);
@@ -158,16 +158,15 @@ export default function Stock() {
         if (cancelled) return;
 
         if (analyzeData?.ok === false) {
-          setAnalysis('');
+          setAnalysis(null);
           setAiError(analyzeData.message || 'AI temporarily unavailable');
           return;
         }
 
-        const aiText = analyzeData?.analysis ?? analyzeData?.rationale ?? '';
-        setAnalysis(aiText);
+        setAnalysis(analyzeData?.analysis ?? null);
       } catch (err) {
         if (cancelled) return;
-        setAnalysis('');
+        setAnalysis(null);
         setAiError(getApiError(err));
       } finally {
         if (!cancelled) {
@@ -288,9 +287,9 @@ export default function Stock() {
     if (!active || !payload?.length) return null;
     const point = payload[0].payload;
     return (
-      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs shadow-sm dark:border-slate-700 dark:bg-slate-900">
-        <p className="text-slate-500">{point.rawTime}</p>
-        <p className="font-semibold text-slate-900 dark:text-white">${point.close}</p>
+      <div className="rounded-lg border border-emerald-900/70 bg-[#0f1713] px-3 py-2 text-xs shadow-sm">
+        <p className="text-emerald-100/55">{point.rawTime}</p>
+        <p className="font-semibold text-emerald-50">${point.close}</p>
       </div>
     );
   };
@@ -299,9 +298,9 @@ export default function Stock() {
     if (!active || !payload?.length) return null;
     const point = payload[0].payload;
     return (
-      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs shadow-sm dark:border-slate-700 dark:bg-slate-900">
-        <p className="text-slate-500">{point.rawTime}</p>
-        <p className="font-semibold text-slate-900 dark:text-white">RSI {point.rsi}</p>
+      <div className="rounded-lg border border-emerald-900/70 bg-[#0f1713] px-3 py-2 text-xs shadow-sm">
+        <p className="text-emerald-100/55">{point.rawTime}</p>
+        <p className="font-semibold text-emerald-50">RSI {point.rsi}</p>
       </div>
     );
   };
@@ -443,12 +442,12 @@ export default function Stock() {
                   <XAxis dataKey="label" hide />
                   <YAxis domain={['auto', 'auto']} hide />
                   <Tooltip content={<ChartTooltip />} />
-                  <Line type="monotone" dataKey="close" stroke="#111827" dot={false} strokeWidth={2} />
+                  <Line type="monotone" dataKey="close" stroke="#00c805" dot={false} strokeWidth={2} />
                   {showSma20 && (
-                    <Line type="monotone" dataKey="sma20" stroke="#10B981" dot={false} strokeWidth={1.5} />
+                    <Line type="monotone" dataKey="sma20" stroke="#6bff9c" dot={false} strokeWidth={1.5} />
                   )}
                   {showSma50 && (
-                    <Line type="monotone" dataKey="sma50" stroke="#3B82F6" dot={false} strokeWidth={1.5} />
+                    <Line type="monotone" dataKey="sma50" stroke="#43d86f" dot={false} strokeWidth={1.5} />
                   )}
                 </LineChart>
               </ResponsiveContainer>
@@ -525,7 +524,7 @@ export default function Stock() {
 
         <aside className="w-full lg:w-80 space-y-6">
           <Card className="p-6">
-            <p className="text-xs uppercase tracking-wide text-slate-500">AI Analysis</p>
+            <p className="text-xs uppercase tracking-wide text-slate-500">Deterministic Analysis</p>
             {aiLoading ? (
               <div className="mt-3 space-y-2">
                 <Skeleton className="h-3 w-full" />
@@ -539,9 +538,33 @@ export default function Stock() {
                   Retry
                 </Button>
               </>
+            ) : analysis && typeof analysis === 'object' ? (
+              <div className="mt-3 space-y-3 text-sm text-slate-700 dark:text-slate-200">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold">{analysis.setup?.setupType || 'NO_TRADE'}</span>
+                  <Badge variant="neutral">
+                    {analysis.setup?.bias || 'NEUTRAL'} · {analysis.setup?.confidenceScore ?? 0}
+                  </Badge>
+                </div>
+                <div className="text-xs text-slate-500 space-y-1">
+                  <p>Entry {analysis.levels?.entry ?? 'N/A'}</p>
+                  <p>Stop {analysis.levels?.stop ?? 'N/A'}</p>
+                  <p>Target {analysis.levels?.target ?? 'N/A'}</p>
+                </div>
+                <div className="text-xs text-slate-500">
+                  <p>Quality gate: {analysis.qualityGate?.passed ? 'Passed' : 'Blocked'}</p>
+                  {(analysis.qualityGate?.reasons || []).slice(0, 2).map(reason => (
+                    <p key={reason} className="text-amber-600">{reason}</p>
+                  ))}
+                </div>
+              </div>
+            ) : typeof analysis === 'string' && analysis ? (
+              <p className="mt-3 text-sm text-slate-700 dark:text-slate-200">
+                {analysis}
+              </p>
             ) : (
               <p className="mt-3 text-sm text-slate-700 dark:text-slate-200">
-                {analysis || 'No AI analysis available.'}
+                No deterministic analysis available.
               </p>
             )}
           </Card>
@@ -655,7 +678,7 @@ export default function Stock() {
               min="1"
               value={tradeQty}
               onChange={event => setTradeQty(Number(event.target.value))}
-              className="mt-1 w-full border border-slate-200/80 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-900"
+              className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
             />
             <div className="mt-2 text-xs text-slate-500">
               Est. fill ${estimatedFillPrice || '--'} · Notional {estimatedNotional ? `$${estimatedNotional.toFixed(2)}` : '--'}

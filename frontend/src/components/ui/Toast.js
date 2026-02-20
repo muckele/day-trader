@@ -2,10 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { cn } from '../../utils/classNames';
 
 const typeStyles = {
-  success: 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200',
-  error: 'border-red-200 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200',
-  warning: 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200',
-  info: 'border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
+  success: 'border-[#1f6b34] bg-[#0f3018] text-[#64ff8d]',
+  error: 'border-[#5f2a38] bg-[#30111a] text-[#ff9db0]',
+  warning: 'border-[#4b3f1e] bg-[#2b2615] text-[#f9d281]',
+  info: 'border-emerald-900/60 bg-[#131c17] text-emerald-100/85'
 };
 
 export function ToastProvider({ children }) {
@@ -53,7 +53,7 @@ export function ToastProvider({ children }) {
                 <p className="text-sm">{toast.message}</p>
               </div>
               <button
-                className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-200"
+                className="text-xs text-emerald-100/55 hover:text-emerald-200"
                 onClick={() => dismiss(toast.id)}
               >
                 Close
@@ -61,7 +61,7 @@ export function ToastProvider({ children }) {
             </div>
             {toast.action && (
               <button
-                className="mt-3 text-xs font-semibold text-slate-700 underline underline-offset-2 dark:text-slate-200"
+                className="mt-3 text-xs font-semibold text-emerald-200 underline underline-offset-2"
                 onClick={() => {
                   toast.action.onClick?.();
                   dismiss(toast.id);

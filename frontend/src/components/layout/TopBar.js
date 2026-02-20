@@ -1,29 +1,31 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import Badge from '../ui/Badge';
-import Button from '../ui/Button';
 import { useMarketStatus } from '../../hooks/useMarketStatus';
-import { useTheme } from '../../hooks/useTheme';
 
 export default function TopBar() {
   const { status, nextOpen, nextClose, countdown } = useMarketStatus();
-  const { theme, toggleTheme } = useTheme();
 
   const isOpen = status === 'OPEN';
   const nextTime = isOpen ? nextClose : nextOpen;
 
   return (
-    <header className="sticky top-0 z-40 border-b border-slate-200/80 bg-white/80 backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
-      <div className="max-w-6xl mx-auto px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <header className="sticky top-0 z-40 border-b border-emerald-800/45 bg-[linear-gradient(180deg,rgba(10,17,13,0.94)_0%,rgba(8,14,11,0.78)_100%)] backdrop-blur-2xl">
+      <div className="max-w-7xl mx-auto px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-4">
-          <Link to="/" className="text-lg font-bold text-slate-900 dark:text-white">
-            DayTrader
-          </Link>
+          <div className="flex items-center gap-3">
+            <Link to="/" className="text-lg sm:text-xl font-extrabold tracking-tight text-emerald-200 drop-shadow-[0_0_14px_rgba(0,200,5,0.28)]">
+              Day<span className="text-[#00c805]">Trader</span>
+            </Link>
+            <span className="hidden sm:inline text-[10px] uppercase tracking-[0.24em] text-emerald-100/40">
+              Paper Lab
+            </span>
+          </div>
           <Badge variant={isOpen ? 'success' : 'neutral'}>
             {isOpen ? 'Market Open' : 'Market Closed'}
           </Badge>
           {nextTime && (
-            <span className="text-xs text-slate-500 dark:text-slate-300">
+            <span className="text-xs text-emerald-100/70 tracking-wide">
               {isOpen ? 'Closes' : 'Opens'} {new Date(nextTime).toLocaleTimeString()}
               {countdown ? ` · ${countdown}` : ''}
             </span>
@@ -31,9 +33,6 @@ export default function TopBar() {
         </div>
         <div className="flex items-center gap-3">
           <Badge variant="solid">PAPER MODE</Badge>
-          <Button variant="secondary" size="sm" onClick={toggleTheme}>
-            {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
-          </Button>
         </div>
       </div>
     </header>

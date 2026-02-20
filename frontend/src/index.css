@@ -2,8 +2,195 @@
 @tailwind components;
 @tailwind utilities;
 
+@keyframes rh-glow-float {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.6;
+  }
+  50% {
+    transform: translate3d(0, -22px, 0) scale(1.04);
+    opacity: 0.9;
+  }
+}
+
+@keyframes rh-grid-drift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(36px, 0, 0);
+  }
+}
+
+@keyframes rh-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(0, 200, 5, 0.26), 0 10px 20px rgba(0, 0, 0, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 1px rgba(0, 200, 5, 0.5), 0 14px 28px rgba(0, 0, 0, 0.6);
+  }
+}
+
 @layer base {
+  :root {
+    color-scheme: dark;
+    --rh-bg: #070b08;
+    --rh-bg-soft: #0b110d;
+    --rh-surface: #111a15;
+    --rh-surface-2: #152019;
+    --rh-border: #1e3025;
+    --rh-text: #e9f3ec;
+    --rh-muted: #8ca297;
+    --rh-green: #00c805;
+    --rh-green-strong: #0de843;
+    --rh-red: #ff5c79;
+    --rh-shadow: 0 0 0 1px rgba(0, 200, 5, 0.18), 0 14px 28px rgba(0, 0, 0, 0.45);
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
   body {
-    @apply bg-slate-50 text-slate-900 font-sans;
+    font-family: "Avenir Next", "SF Pro Display", "Segoe UI", sans-serif;
+    color: var(--rh-text);
+    background:
+      radial-gradient(80% 120% at 100% -10%, rgba(0, 200, 5, 0.12), transparent 55%),
+      radial-gradient(55% 90% at 0% 10%, rgba(18, 40, 24, 0.55), transparent 55%),
+      linear-gradient(180deg, var(--rh-bg-soft) 0%, var(--rh-bg) 100%);
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -2;
+    background:
+      radial-gradient(620px circle at 82% -6%, rgba(0, 200, 5, 0.22), transparent 60%),
+      radial-gradient(460px circle at 6% 30%, rgba(33, 88, 50, 0.28), transparent 62%);
+    filter: blur(8px);
+    animation: rh-glow-float 16s ease-in-out infinite;
+  }
+
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+    background-image:
+      linear-gradient(rgba(16, 27, 20, 0.55) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(16, 27, 20, 0.55) 1px, transparent 1px);
+    background-size: 36px 36px;
+    opacity: 0.18;
+    animation: rh-grid-drift 22s linear infinite;
+  }
+
+  ::selection {
+    background: rgba(0, 200, 5, 0.3);
+    color: #effff1;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #0a110d;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #1f3025;
+    border-radius: 999px;
+    border: 2px solid #0a110d;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #2a4333;
+  }
+}
+
+@layer components {
+  .app-shell {
+    position: relative;
+    isolation: isolate;
+  }
+
+  .rh-card {
+    position: relative;
+    overflow: hidden;
+    transition: transform 180ms ease, border-color 220ms ease, box-shadow 220ms ease;
+    backdrop-filter: blur(10px);
+  }
+
+  .rh-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(
+      135deg,
+      rgba(0, 200, 5, 0.2),
+      transparent 45%,
+      rgba(0, 200, 5, 0.16)
+    );
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    -webkit-mask-composite: xor;
+    padding: 1px;
+    opacity: 0.5;
+  }
+
+  .rh-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(0, 200, 5, 0.4);
+    box-shadow: 0 0 0 1px rgba(0, 200, 5, 0.2), 0 18px 32px rgba(0, 0, 0, 0.56);
+  }
+
+  .rh-btn {
+    position: relative;
+    overflow: hidden;
+    transform: translateZ(0);
+    transition: transform 160ms ease, box-shadow 200ms ease, filter 180ms ease;
+  }
+
+  .rh-btn::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(112deg, transparent 20%, rgba(255, 255, 255, 0.24), transparent 44%);
+    transform: translateX(-130%);
+    transition: transform 520ms ease;
+  }
+
+  .rh-btn:hover::after {
+    transform: translateX(130%);
+  }
+
+  .rh-btn:hover {
+    transform: translateY(-1px);
+  }
+
+  .rh-btn:active {
+    transform: translateY(0);
+  }
+
+  .rh-btn-primary {
+    animation: rh-pulse 4s ease-in-out infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before,
+  body::after,
+  .rh-btn-primary {
+    animation: none !important;
   }
 }

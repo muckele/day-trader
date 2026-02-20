@@ -2,10 +2,10 @@ import React from 'react';
 import { cn } from '../../utils/classNames';
 
 const variants = {
-  primary: 'bg-slate-900 text-white hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100',
-  secondary: 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700',
-  ghost: 'bg-transparent text-slate-600 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800',
-  danger: 'bg-red-600 text-white hover:bg-red-500'
+  primary: 'rh-btn-primary bg-[#00c805] text-[#031107] hover:bg-[#0de843] shadow-[0_0_0_1px_rgba(0,200,5,0.28)]',
+  secondary: 'bg-[#17231c] text-emerald-50 hover:bg-[#1d2c23] border border-emerald-900/60',
+  ghost: 'bg-transparent text-emerald-100/80 hover:bg-[#1a261f] hover:text-emerald-200',
+  danger: 'bg-[#3a171f] text-[#ff9fb0] hover:bg-[#4b1d28] border border-[#5d2734]'
 };
 
 const sizes = {
@@ -26,7 +26,7 @@ export default function Button({
     <button
       type={type}
       className={cn(
-        'inline-flex items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/60 disabled:opacity-60 disabled:cursor-not-allowed',
+        'rh-btn inline-flex items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00c805]/40 disabled:opacity-60 disabled:cursor-not-allowed',
         variants[variant],
         sizes[size],
         className

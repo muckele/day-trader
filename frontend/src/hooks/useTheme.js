@@ -3,22 +3,18 @@ import { useEffect, useState } from 'react';
 const STORAGE_KEY = 'daytrader-theme';
 
 export function useTheme() {
-  const [theme, setTheme] = useState('light');
+  const [theme, setTheme] = useState('dark');
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    const initial = stored || 'light';
-    setTheme(initial);
-    document.documentElement.classList.toggle('dark', initial === 'dark');
+    localStorage.setItem(STORAGE_KEY, 'dark');
+    setTheme('dark');
+    document.documentElement.classList.add('dark');
   }, []);
 
   const toggleTheme = () => {
-    setTheme(prev => {
-      const next = prev === 'dark' ? 'light' : 'dark';
-      localStorage.setItem(STORAGE_KEY, next);
-      document.documentElement.classList.toggle('dark', next === 'dark');
-      return next;
-    });
+    localStorage.setItem(STORAGE_KEY, 'dark');
+    setTheme('dark');
+    document.documentElement.classList.add('dark');
   };
 
   return { theme, toggleTheme };

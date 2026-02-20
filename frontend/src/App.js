@@ -12,6 +12,7 @@ import Activity from './pages/Activity';
 import Discover from './pages/Discover';
 import Analytics from './pages/Analytics';
 import TradePlan from './pages/TradePlan';
+import RoboTrader from './pages/RoboTrader';
 
 export default function App() {
   return (
@@ -84,6 +85,14 @@ export default function App() {
             element={
               <PrivateRoute>
                 <Discover />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/robo"
+            element={
+              <PrivateRoute>
+                <RoboTrader />
               </PrivateRoute>
             }
           />
