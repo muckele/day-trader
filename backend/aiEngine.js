@@ -10,7 +10,11 @@ const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY;
  */
 async function analyze(symbol, quote, news) {
   if (!DEEPSEEK_BASE || !DEEPSEEK_KEY) {
-    throw new Error('Missing DeepSeek configuration (DEEPSEEK_API_BASE_URL / DEEPSEEK_API_KEY).');
+    const configError = new Error(
+      'Missing DeepSeek configuration (DEEPSEEK_API_BASE_URL / DEEPSEEK_API_KEY).'
+    );
+    configError.code = 'AI_UNAVAILABLE';
+    throw configError;
   }
   const prompt = `
 You are Bridgewater’s CEO Nir Bar Dea.
@@ -40,10 +44,12 @@ ${news.slice(0,5).map((a,i) => `${i+1}. ${a.title}`).join("\n")}
     return data.choices?.[0]?.text?.trim() || '';
   } catch (err) {
     console.error('DeepSeek API error:', err.response?.data || err.message);
-    throw new Error(
+    const providerError = new Error(
       'AI analysis failed: ' +
       (err.response?.data?.error?.message || err.message)
     );
+    providerError.code = 'AI_PROVIDER_ERROR';
+    throw providerError;
   }
 }
 
