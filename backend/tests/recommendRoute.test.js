@@ -16,6 +16,14 @@ function getRecommendHandler() {
   return layer.route.stack[0].handle;
 }
 
+function getRecommendSymbolHandler() {
+  const layer = recommendRouter.stack.find(
+    item => item.route && item.route.path === '/:symbol' && item.route.methods.get
+  );
+  assert.ok(layer, 'Expected GET /:symbol route to exist');
+  return layer.route.stack[0].handle;
+}
+
 function createMockRes() {
   return {
     statusCode: 200,
@@ -41,6 +49,31 @@ test('recommend route returns 200 with warning when daily bars are unavailable',
 
   const handler = getRecommendHandler();
   const req = {};
+  const res = createMockRes();
+  let nextErr = null;
+
+  await handler(req, res, err => {
+    nextErr = err;
+  });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.warning, 'DATA_UNAVAILABLE');
+  assert.equal(res.body.message, 'Could not fetch daily bars');
+  assert.ok(Array.isArray(res.body.recommendations));
+  assert.equal(res.body.recommendations.length, 0);
+});
+
+test('recommend symbol route returns 200 with warning when daily bars are unavailable', async t => {
+  t.mock.method(axios, 'get', async () => ({
+    data: {
+      code: 50010000,
+      message: 'upstream error'
+    }
+  }));
+
+  const handler = getRecommendSymbolHandler();
+  const req = { params: { symbol: 'aapl' } };
   const res = createMockRes();
   let nextErr = null;
 

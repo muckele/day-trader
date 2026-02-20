@@ -34,6 +34,9 @@ router.get('/intraday/:symbol', async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error('market intraday error:', err.response?.data || err.message);
+    if (err?.code === 'DATA_UNAVAILABLE') {
+      return res.json([]);
+    }
     res.status(500).json({ error: err.message || 'Failed to fetch intraday data' });
   }
 });
@@ -53,6 +56,9 @@ router.get('/historical/:symbol', async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error('market historical error:', err.response?.data || err.message);
+    if (err?.code === 'DATA_UNAVAILABLE') {
+      return res.json([]);
+    }
     res.status(500).json({ error: err.message || 'Failed to fetch historical data' });
   }
 });

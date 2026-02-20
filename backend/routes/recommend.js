@@ -22,6 +22,22 @@ async function getTodayRegime() {
   return snapshot;
 }
 
+function isDailyBarsUnavailable(err) {
+  return err?.code === 'DATA_UNAVAILABLE' || /daily bars/i.test(String(err?.message || ''));
+}
+
+function buildDataUnavailablePayload(status) {
+  return {
+    asOf: status.asOf,
+    marketStatus: status.status,
+    nextOpen: status.nextOpen,
+    nextClose: status.nextClose,
+    recommendations: [],
+    warning: 'DATA_UNAVAILABLE',
+    message: 'Could not fetch daily bars'
+  };
+}
+
 router.get('/', async (req, res, next) => {
   const status = getMarketStatus();
   try {
@@ -38,16 +54,8 @@ router.get('/', async (req, res, next) => {
       recommendations: recs.map(rec => buildRecommendation(rec, { regime }))
     });
   } catch (err) {
-    if (err?.code === 'DATA_UNAVAILABLE' || /daily bars/i.test(String(err?.message || ''))) {
-      return res.json({
-        asOf: status.asOf,
-        marketStatus: status.status,
-        nextOpen: status.nextOpen,
-        nextClose: status.nextClose,
-        recommendations: [],
-        warning: 'DATA_UNAVAILABLE',
-        message: 'Could not fetch daily bars'
-      });
+    if (isDailyBarsUnavailable(err)) {
+      return res.json(buildDataUnavailablePayload(status));
     }
     next(err);
   }
@@ -65,7 +73,12 @@ router.get('/:symbol', async (req, res, next) => {
       nextClose: status.nextClose,
       recommendations: [buildRecommendation(rec, { regime })]
     });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (isDailyBarsUnavailable(err)) {
+      return res.json(buildDataUnavailablePayload(getMarketStatus()));
+    }
+    next(err);
+  }
 });
 
 module.exports = router;

@@ -47,6 +47,12 @@ function buildDailyBarsError(symbol, detail) {
   return error;
 }
 
+function buildIntradayBarsError(symbol, detail) {
+  const error = new Error(`Could not fetch intraday bars for ${symbol}${detail ? `: ${detail}` : ''}`);
+  error.code = 'DATA_UNAVAILABLE';
+  return error;
+}
+
 function extractBarsPayload(data, symbol) {
   if (Array.isArray(data)) return data;
   if (!data || typeof data !== 'object') return null;
@@ -157,17 +163,74 @@ async function fetchDaily(symbol) {
 async function fetchIntraday(symbol) {
   const normalizedSymbol = symbol.toUpperCase();
   const { dataBaseUrl, headers } = getAlpacaConfig();
-  const resp = await axios.get(
-    `${dataBaseUrl}/v2/stocks/${normalizedSymbol}/bars`,
-    {
-      headers,
-      params: { timeframe: '5Min', limit: 500 }
+  const url = `${dataBaseUrl}/v2/stocks/${normalizedSymbol}/bars`;
+  const end = new Date();
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 14);
+  const feed = process.env.APCA_DATA_FEED || 'iex';
+  const baseParams = {
+    timeframe: '5Min',
+    limit: 500,
+    adjustment: 'raw',
+    start: start.toISOString(),
+    end: end.toISOString()
+  };
+
+  const requestBars = async includeFeed => {
+    const params = includeFeed ? { ...baseParams, feed } : baseParams;
+    const resp = await axios.get(url, { headers, params });
+    return resp.data;
+  };
+
+  let triedWithoutFeed = false;
+  const retryWithoutFeed = async reason => {
+    if (triedWithoutFeed) {
+      throw buildIntradayBarsError(normalizedSymbol, reason || 'No intraday bars returned');
     }
-  );
-  if (!resp.data.bars) {
-    throw new Error(`Unexpected response from Alpaca for intraday bars of ${symbol}`);
+    triedWithoutFeed = true;
+    try {
+      return await requestBars(false);
+    } catch (retryErr) {
+      throw buildIntradayBarsError(normalizedSymbol, retryErr.response?.data?.message || retryErr.message);
+    }
+  };
+
+  let data;
+  try {
+    data = await requestBars(true);
+  } catch (err) {
+    const status = err.response?.status;
+    const detail = err.response?.data?.message || err.message;
+    const canRetryWithoutFeed = (status === 400 || status === 404 || status === 422)
+      && isFeedRelatedMessage(detail);
+    if (canRetryWithoutFeed) {
+      data = await retryWithoutFeed(detail);
+    } else {
+      throw buildIntradayBarsError(normalizedSymbol, detail);
+    }
   }
-  return resp.data.bars.map(bar => ({
+
+  if (hasUpstreamErrorPayload(data) && isFeedRelatedMessage(data.message || data.code)) {
+    data = await retryWithoutFeed(data.message || data.code);
+  }
+
+  if (hasUpstreamErrorPayload(data)) {
+    throw buildIntradayBarsError(normalizedSymbol, data.message || data.code);
+  }
+
+  let bars = extractBarsPayload(data, normalizedSymbol);
+  if (!Array.isArray(bars) || bars.length === 0) {
+    data = await retryWithoutFeed('No intraday bars returned');
+    if (hasUpstreamErrorPayload(data)) {
+      throw buildIntradayBarsError(normalizedSymbol, data.message || data.code);
+    }
+    bars = extractBarsPayload(data, normalizedSymbol);
+    if (!Array.isArray(bars) || bars.length === 0) {
+      throw buildIntradayBarsError(normalizedSymbol, 'No intraday bars returned');
+    }
+  }
+
+  return bars.map(bar => ({
     time:   new Date(bar.t).toISOString(),
     open:   bar.o,
     high:   bar.h,
