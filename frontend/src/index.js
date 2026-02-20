@@ -7,8 +7,20 @@ import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
+import { getApiBaseUrl } from './utils/api';
 
-// ─── 2. CONFIGURE AXIOS INTERCEPTORS ────────────────────────────────────────
+const savedTheme = localStorage.getItem('daytrader-theme');
+if (savedTheme === 'dark') {
+  document.documentElement.classList.add('dark');
+}
+
+// ─── 2. CONFIGURE AXIOS ─────────────────────────────────────────────────────
+const apiBaseUrl = getApiBaseUrl();
+if (apiBaseUrl) {
+  axios.defaults.baseURL = apiBaseUrl;
+}
+
+// ─── 3. CONFIGURE AXIOS INTERCEPTORS ────────────────────────────────────────
 // Attach JWT token (if present) to every request
 axios.interceptors.request.use(config => {
   const token = localStorage.getItem('token');
@@ -29,7 +41,7 @@ axios.interceptors.response.use(
   }
 );
 
-// ─── 3. RENDER YOUR APP ──────────────────────────────────────────────────────
+// ─── 4. RENDER YOUR APP ──────────────────────────────────────────────────────
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   <React.StrictMode>
@@ -37,5 +49,5 @@ root.render(
   </React.StrictMode>
 );
 
-// ─── 4. OPTIONAL: PERFORMANCE LOGGING ─────────────────────────────────────────
+// ─── 5. OPTIONAL: PERFORMANCE LOGGING ─────────────────────────────────────────
 reportWebVitals();

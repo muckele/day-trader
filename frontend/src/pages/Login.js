@@ -2,6 +2,9 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { useNavigate, Link } from 'react-router-dom';
+import Card from '../components/ui/Card';
+import Button from '../components/ui/Button';
+import { getApiError } from '../utils/api';
 
 export default function Login() {
   const [username, setUsername] = useState('');
@@ -20,42 +23,41 @@ export default function Login() {
       // 3. Redirect to home
       navigate('/');
     } catch (err) {
-      // 4. Show error
-      setError(err.response?.data?.message || err.message);
+      setError(getApiError(err));
     }
   };
 
   return (
-    <div className="max-w-md mx-auto mt-20 p-6 border rounded shadow">
-      <h2 className="text-2xl mb-4">Login</h2>
-      {error && <p className="text-red-500 mb-2">{error}</p>}
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <input
-          type="text"
-          placeholder="Username"
-          value={username}
-          onChange={e => setUsername(e.target.value)}
-          className="border p-2"
-          required
-        />
-        <input
-          type="password"
-          placeholder="Password"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          className="border p-2"
-          required
-        />
-        <button type="submit" className="bg-blue-600 text-white p-2 rounded">
-          Log In
-        </button>
-      </form>
-      <p className="mt-4 text-center">
-        Don’t have an account?{' '}
-        <Link to="/register" className="text-blue-600 underline">
-          Sign up
-        </Link>
-      </p>
+    <div className="max-w-md mx-auto">
+      <Card className="p-6">
+        <h2 className="text-2xl font-semibold text-slate-900 dark:text-white mb-4">Login</h2>
+        {error && <p className="text-red-500 mb-2">{error}</p>}
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <input
+            type="text"
+            placeholder="Username"
+            value={username}
+            onChange={e => setUsername(e.target.value)}
+            className="border border-slate-200/80 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-900"
+            required
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            className="border border-slate-200/80 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-900"
+            required
+          />
+          <Button type="submit">Log In</Button>
+        </form>
+        <p className="mt-4 text-center text-sm text-slate-500">
+          Don&apos;t have an account?{' '}
+          <Link to="/register" className="text-slate-900 dark:text-white underline">
+            Sign up
+          </Link>
+        </p>
+      </Card>
     </div>
   );
 }
