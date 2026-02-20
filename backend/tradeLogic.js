@@ -77,6 +77,24 @@ function hasUpstreamErrorPayload(data) {
   );
 }
 
+function toBarTimeMs(bar) {
+  const value = bar?.t || bar?.time || bar?.timestamp || bar?.date;
+  if (!value) return NaN;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+function sortBarsChronologically(bars) {
+  return [...bars].sort((a, b) => {
+    const aTime = toBarTimeMs(a);
+    const bTime = toBarTimeMs(b);
+    if (!Number.isFinite(aTime) && !Number.isFinite(bTime)) return 0;
+    if (!Number.isFinite(aTime)) return -1;
+    if (!Number.isFinite(bTime)) return 1;
+    return aTime - bTime;
+  });
+}
+
 /**
  * Fetches recent daily bars for a symbol from Alpaca.
  * We always provide a date range to avoid empty responses from endpoint defaults.
@@ -95,6 +113,7 @@ async function fetchDaily(symbol) {
     timeframe: '1Day',
     limit: 200,
     adjustment: 'raw',
+    sort: 'desc',
     start: start.toISOString(),
     end: end.toISOString()
   };
@@ -153,7 +172,7 @@ async function fetchDaily(symbol) {
     }
   }
 
-  return bars;
+  return sortBarsChronologically(bars);
 }
 
 /**
@@ -172,6 +191,7 @@ async function fetchIntraday(symbol) {
     timeframe: '5Min',
     limit: 500,
     adjustment: 'raw',
+    sort: 'desc',
     start: start.toISOString(),
     end: end.toISOString()
   };
@@ -230,7 +250,8 @@ async function fetchIntraday(symbol) {
     }
   }
 
-  return bars.map(bar => ({
+  const sortedBars = sortBarsChronologically(bars);
+  return sortedBars.map(bar => ({
     time:   new Date(bar.t).toISOString(),
     open:   bar.o,
     high:   bar.h,
