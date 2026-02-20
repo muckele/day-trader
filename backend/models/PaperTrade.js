@@ -7,6 +7,8 @@ const paperTradeSchema = new mongoose.Schema(
     side: { type: String, enum: ['buy', 'sell'], required: true },
     qty: { type: Number, required: true },
     price: { type: Number, required: true },
+    extendedHours: { type: Boolean, default: false },
+    marketSession: { type: String, enum: ['regular', 'extended'], default: 'regular' },
     strategyId: { type: String, default: null },
     setupType: { type: String, default: null },
     strategyTags: { type: [String], default: [] },

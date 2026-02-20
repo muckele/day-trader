@@ -5,6 +5,7 @@ const PaperEquity = require('../models/PaperEquity');
 const PaperGuardrailEvent = require('../models/PaperGuardrailEvent');
 const RegimeSnapshot = require('../models/RegimeSnapshot');
 const { fetchQuotes } = require('../services/marketData');
+const { getMarketStatus } = require('../utils/marketStatus');
 const {
   applyTradeToPosition,
   buildPositions,
@@ -18,6 +19,112 @@ const { getStrategy } = require('../signal/strategies');
 const { linkTradeToPlan } = require('../tradePlanEngine');
 
 const ACCOUNT_ID = 'default';
+const MAX_QTY_DECIMALS = 6;
+
+function getDecimalPlaces(value) {
+  const text = String(value);
+  if (!text.includes('.')) return 0;
+  return text.split('.')[1].length;
+}
+
+function normalizeOrderInput({
+  symbol,
+  side,
+  qty,
+  orderType = 'market',
+  limitPrice,
+  maxPricePerShare,
+  allowExtendedHours = true
+}) {
+  const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+  if (!normalizedSymbol) {
+    throw new Error('Symbol is required.');
+  }
+
+  const normalizedSide = side === 'sell' ? 'sell' : side === 'buy' ? 'buy' : null;
+  if (!normalizedSide) {
+    throw new Error('side must be buy or sell.');
+  }
+
+  const numericQty = Number(qty);
+  if (!Number.isFinite(numericQty) || numericQty <= 0) {
+    throw new Error('qty must be a positive number.');
+  }
+  if (getDecimalPlaces(numericQty) > MAX_QTY_DECIMALS) {
+    throw new Error(`qty supports up to ${MAX_QTY_DECIMALS} decimal places.`);
+  }
+
+  const normalizedOrderType = String(orderType || 'market').toLowerCase();
+  if (!['market', 'limit'].includes(normalizedOrderType)) {
+    throw new Error('orderType must be market or limit.');
+  }
+
+  const parsedLimitPrice = limitPrice !== undefined && limitPrice !== null && limitPrice !== ''
+    ? Number(limitPrice)
+    : null;
+  if (normalizedOrderType === 'limit') {
+    if (!Number.isFinite(parsedLimitPrice) || parsedLimitPrice <= 0) {
+      throw new Error('limitPrice must be a positive number for limit orders.');
+    }
+  }
+
+  const parsedMaxPricePerShare = maxPricePerShare !== undefined && maxPricePerShare !== null && maxPricePerShare !== ''
+    ? Number(maxPricePerShare)
+    : null;
+  if (parsedMaxPricePerShare !== null) {
+    if (!Number.isFinite(parsedMaxPricePerShare) || parsedMaxPricePerShare <= 0) {
+      throw new Error('maxPricePerShare must be a positive number.');
+    }
+    if (normalizedSide !== 'buy') {
+      throw new Error('maxPricePerShare is only supported for buy orders.');
+    }
+  }
+
+  return {
+    normalizedSymbol,
+    normalizedSide,
+    numericQty,
+    normalizedOrderType,
+    parsedLimitPrice,
+    parsedMaxPricePerShare,
+    allowExtendedHours: allowExtendedHours !== false
+  };
+}
+
+function enforceMarketHours({ allowExtendedHours, now = new Date(), marketStatusProvider = getMarketStatus }) {
+  const market = marketStatusProvider(now);
+  const marketOpen = market.status === 'OPEN';
+  if (!marketOpen && !allowExtendedHours) {
+    throw new Error('Market is closed. Enable extended-hours trading to place this order.');
+  }
+
+  return {
+    marketStatus: market.status,
+    extendedHours: !marketOpen,
+    marketSession: marketOpen ? 'regular' : 'extended'
+  };
+}
+
+function enforcePriceControls({
+  side,
+  fillPrice,
+  orderType,
+  limitPrice,
+  maxPricePerShare
+}) {
+  if (orderType === 'limit' && Number.isFinite(limitPrice)) {
+    if (side === 'buy' && fillPrice > limitPrice) {
+      throw new Error('Limit price too low for fill.');
+    }
+    if (side === 'sell' && fillPrice < limitPrice) {
+      throw new Error('Limit price too high for fill.');
+    }
+  }
+
+  if (side === 'buy' && Number.isFinite(maxPricePerShare) && fillPrice > maxPricePerShare) {
+    throw new Error(`Estimated fill $${fillPrice.toFixed(2)} exceeds max price per share $${maxPricePerShare.toFixed(2)}.`);
+  }
+}
 
 async function getSettings() {
   const existing = await PaperSettings.findOne({ accountId: ACCOUNT_ID });
@@ -129,6 +236,8 @@ async function placeOrder({
   qty,
   orderType = 'market',
   limitPrice,
+  maxPricePerShare,
+  allowExtendedHours = true,
   strategyId,
   setupType,
   strategyTags,
@@ -136,39 +245,48 @@ async function placeOrder({
 }) {
   const now = new Date();
   const settings = await getSettings();
-  const normalizedSymbol = symbol.toUpperCase();
-  const numericQty = Number(qty);
-
-  if (!normalizedSymbol) {
-    throw new Error('Symbol is required.');
-  }
-  if (!['buy', 'sell'].includes(side)) {
-    throw new Error('side must be buy or sell.');
-  }
-  if (!Number.isFinite(numericQty) || numericQty <= 0) {
-    throw new Error('qty must be a positive number.');
-  }
+  const normalized = normalizeOrderInput({
+    symbol,
+    side,
+    qty,
+    orderType,
+    limitPrice,
+    maxPricePerShare,
+    allowExtendedHours
+  });
+  const {
+    normalizedSymbol,
+    normalizedSide,
+    numericQty,
+    normalizedOrderType,
+    parsedLimitPrice,
+    parsedMaxPricePerShare
+  } = normalized;
 
   const [quote] = await fetchQuotes([normalizedSymbol]);
   if (!quote || !quote.price) {
     throw new Error('Quote unavailable for symbol.');
   }
 
+  const marketContext = enforceMarketHours({
+    allowExtendedHours: normalized.allowExtendedHours,
+    now
+  });
+
   const slippageFactor = (settings.slippageBps || 0) / 10000;
   let fillPrice = quote.price;
-  fillPrice = side === 'buy'
+  fillPrice = normalizedSide === 'buy'
     ? fillPrice * (1 + slippageFactor)
     : fillPrice * (1 - slippageFactor);
   fillPrice = Number(fillPrice.toFixed(2));
 
-  if (orderType === 'limit' && typeof limitPrice === 'number') {
-    if (side === 'buy' && fillPrice > limitPrice) {
-      throw new Error('Limit price too low for fill.');
-    }
-    if (side === 'sell' && fillPrice < limitPrice) {
-      throw new Error('Limit price too high for fill.');
-    }
-  }
+  enforcePriceControls({
+    side: normalizedSide,
+    fillPrice,
+    orderType: normalizedOrderType,
+    limitPrice: parsedLimitPrice,
+    maxPricePerShare: parsedMaxPricePerShare
+  });
 
   const account = await getAccount();
   const equityBase = account.equity > 0 ? account.equity : settings.startingCash;
@@ -195,12 +313,12 @@ async function placeOrder({
   const { positions } = buildPositions(trades);
   const currentPosition = positions[normalizedSymbol] || { qty: 0, avgCost: 0 };
   const { realizedPnl } = applyTradeToPosition(currentPosition, {
-    side,
+    side: normalizedSide,
     qty: numericQty,
     price: fillPrice
   });
   const isClosing = currentPosition.qty !== 0
-    && currentPosition.qty * (side === 'buy' ? numericQty : -numericQty) < 0;
+    && currentPosition.qty * (normalizedSide === 'buy' ? numericQty : -numericQty) < 0;
   const commission = settings.commission || 0;
   const tradeRealized = realizedPnl - commission;
   const stopValue = stopPrice !== undefined && stopPrice !== null
@@ -219,10 +337,14 @@ async function placeOrder({
   const order = await PaperOrder.create({
     accountId: ACCOUNT_ID,
     symbol: normalizedSymbol,
-    side,
+    side: normalizedSide,
     qty: numericQty,
-    orderType,
-    limitPrice: typeof limitPrice === 'number' ? limitPrice : null,
+    orderType: normalizedOrderType,
+    limitPrice: Number.isFinite(parsedLimitPrice) ? parsedLimitPrice : null,
+    maxPricePerShare: Number.isFinite(parsedMaxPricePerShare) ? parsedMaxPricePerShare : null,
+    allowExtendedHours: normalized.allowExtendedHours,
+    extendedHours: marketContext.extendedHours,
+    marketSession: marketContext.marketSession,
     strategyId: strategyId || null,
     setupType: setupType || null,
     strategyTags: finalTags,
@@ -238,9 +360,11 @@ async function placeOrder({
   const trade = await PaperTrade.create({
     accountId: ACCOUNT_ID,
     symbol: normalizedSymbol,
-    side,
+    side: normalizedSide,
     qty: numericQty,
     price: fillPrice,
+    extendedHours: marketContext.extendedHours,
+    marketSession: marketContext.marketSession,
     strategyId: strategyId || null,
     setupType: setupType || null,
     strategyTags: finalTags,
@@ -297,5 +421,8 @@ module.exports = {
   getPositions,
   getAccount,
   getEquityCurve,
-  placeOrder
+  placeOrder,
+  normalizeOrderInput,
+  enforceMarketHours,
+  enforcePriceControls
 };

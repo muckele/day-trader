@@ -10,6 +10,8 @@ primary_region = "ord"
 # - MONGO_URI
 # - ROBO_EMAIL_PROVIDER (log|smtp)
 # - ROBO_FALLBACK_EMAIL
+# - ROBO_SIGNAL_RETENTION_DAYS (example: 90)
+# - ROBO_SIGNAL_CLEANUP_INTERVAL_MS (example: 21600000)
 # - SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM (if smtp provider)
 
 [build]

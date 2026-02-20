@@ -3,11 +3,15 @@ const RoboSettings = require('../models/RoboSettings');
 const RoboUsage = require('../models/RoboUsage');
 const RoboAuditLog = require('../models/RoboAuditLog');
 const RoboLock = require('../models/RoboLock');
+const RoboSignalExecution = require('../models/RoboSignalExecution');
 const paperBroker = require('../paper/paperBrokerClient');
 const { fetchQuotes } = require('./marketData');
 const emailService = require('./roboEmail');
 
 const LOCK_TTL_MS = 30 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_CIRCUIT_FAILURE_THRESHOLD = 3;
+const DEFAULT_CIRCUIT_COOLDOWN_MINUTES = 60;
 
 const defaultDeps = {
   User,
@@ -15,6 +19,7 @@ const defaultDeps = {
   RoboUsage,
   RoboAuditLog,
   RoboLock,
+  RoboSignalExecution,
   paperBroker,
   fetchQuotes,
   emailService
@@ -23,6 +28,12 @@ const defaultDeps = {
 function toFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function toFinitePositiveInt(value, fallback) {
+  const parsed = Math.floor(toFiniteNumber(value, fallback));
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
 }
 
 function normalizeLimit(limit) {
@@ -76,6 +87,32 @@ function parseDateInput(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function toIsoOrNull(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+function normalizeRetentionDays(value, fallback = 90) {
+  const parsed = Math.floor(toFiniteNumber(value, fallback));
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return parsed;
+}
+
+function getCircuitConfig() {
+  return {
+    failureThreshold: toFinitePositiveInt(
+      process.env.ROBO_CIRCUIT_FAILURE_THRESHOLD,
+      DEFAULT_CIRCUIT_FAILURE_THRESHOLD
+    ),
+    cooldownMinutes: toFinitePositiveInt(
+      process.env.ROBO_CIRCUIT_COOLDOWN_MINUTES,
+      DEFAULT_CIRCUIT_COOLDOWN_MINUTES
+    )
+  };
+}
+
 function sanitizeSettingsUpdate(input = {}) {
   const update = {};
   if (typeof input.enabled === 'boolean') update.enabled = input.enabled;
@@ -91,8 +128,17 @@ function toSettingsPayload(settingsDoc) {
     dailyLimit: toFiniteNumber(settingsDoc?.dailyLimit, 0),
     weeklyLimit: toFiniteNumber(settingsDoc?.weeklyLimit, 0),
     monthlyLimit: toFiniteNumber(settingsDoc?.monthlyLimit, 0),
+    failureStreak: Math.max(0, Math.floor(toFiniteNumber(settingsDoc?.failureStreak, 0))),
+    pausedUntil: settingsDoc?.pausedUntil || null,
     updatedAt: settingsDoc?.updatedAt || null
   };
+}
+
+function isCircuitBreakerActive(settingsPayload, now = new Date()) {
+  if (!settingsPayload?.pausedUntil) return false;
+  const pausedUntil = new Date(settingsPayload.pausedUntil);
+  if (Number.isNaN(pausedUntil.getTime())) return false;
+  return pausedUntil > now;
 }
 
 async function writeAuditLog(userId, eventType, payload, deps = defaultDeps) {
@@ -111,7 +157,9 @@ async function getOrCreateSettings(userId, deps = defaultDeps) {
     enabled: false,
     dailyLimit: 0,
     weeklyLimit: 0,
-    monthlyLimit: 0
+    monthlyLimit: 0,
+    failureStreak: 0,
+    pausedUntil: null
   });
   return settings;
 }
@@ -229,6 +277,64 @@ async function incrementUsageBuckets(userId, now, notional, deps = defaultDeps) 
   );
 }
 
+async function updateCircuitFields(userId, patch, deps = defaultDeps) {
+  if (!deps.RoboSettings?.updateOne) return;
+  await deps.RoboSettings.updateOne(
+    { userId },
+    { $set: patch }
+  );
+}
+
+async function resetCircuitStateIfNeeded(userId, settingsPayload, now = new Date(), deps = defaultDeps) {
+  const failureStreak = Math.max(0, Math.floor(toFiniteNumber(settingsPayload?.failureStreak, 0)));
+  const hasPause = Boolean(settingsPayload?.pausedUntil);
+  if (failureStreak === 0 && !hasPause) return;
+
+  await updateCircuitFields(userId, {
+    failureStreak: 0,
+    pausedUntil: null,
+    updatedAt: now
+  }, deps);
+  await writeAuditLog(userId, 'circuit_breaker_reset', {
+    previousFailureStreak: failureStreak,
+    previousPausedUntil: toIsoOrNull(settingsPayload?.pausedUntil),
+    at: now.toISOString()
+  }, deps);
+}
+
+async function markCircuitFailure(userId, settingsPayload, err, now = new Date(), deps = defaultDeps) {
+  const circuit = getCircuitConfig();
+  const nextFailureStreak = Math.max(0, Math.floor(toFiniteNumber(settingsPayload?.failureStreak, 0))) + 1;
+  const shouldPause = nextFailureStreak >= circuit.failureThreshold;
+  const pausedUntil = shouldPause
+    ? new Date(now.getTime() + (circuit.cooldownMinutes * 60 * 1000))
+    : null;
+
+  const patch = {
+    failureStreak: nextFailureStreak,
+    updatedAt: now
+  };
+  if (shouldPause) patch.pausedUntil = pausedUntil;
+
+  await updateCircuitFields(userId, patch, deps);
+  await writeAuditLog(userId, 'trade_failed', {
+    reason: err?.message || 'Unknown execution error',
+    failureStreak: nextFailureStreak,
+    failureThreshold: circuit.failureThreshold,
+    at: now.toISOString()
+  }, deps);
+
+  if (shouldPause) {
+    await writeAuditLog(userId, 'circuit_breaker_armed', {
+      reason: err?.message || 'Unknown execution error',
+      failureStreak: nextFailureStreak,
+      failureThreshold: circuit.failureThreshold,
+      cooldownMinutes: circuit.cooldownMinutes,
+      pausedUntil: pausedUntil.toISOString()
+    }, deps);
+  }
+}
+
 async function sendEmailWithRetry({ to, details }, deps = defaultDeps, maxAttempts = 3) {
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -259,9 +365,43 @@ function buildDefaultSignal(now = new Date()) {
   };
 }
 
+function deriveSignalId(candidateSignal, symbol, side, qty, now = new Date()) {
+  const explicit = String(candidateSignal?.signalId || candidateSignal?.attemptId || '').trim();
+  if (explicit) return explicit;
+  const generatedAt = String(candidateSignal?.generatedAt || now.toISOString());
+  return `auto:${symbol}:${side}:${qty}:${generatedAt}`;
+}
+
+async function claimSignalExecution({ userId, signalId, signalMeta, now = new Date() }, deps = defaultDeps) {
+  try {
+    await deps.RoboSignalExecution.create({
+      userId,
+      signalId,
+      status: 'processing',
+      startedAt: now,
+      ...signalMeta
+    });
+    return { claimed: true, existing: null };
+  } catch (err) {
+    if (err?.code === 11000) {
+      const existing = await deps.RoboSignalExecution.findOne({ userId, signalId }).lean();
+      return { claimed: false, existing };
+    }
+    throw err;
+  }
+}
+
+async function updateSignalExecution(userId, signalId, patch, now = new Date(), deps = defaultDeps) {
+  await deps.RoboSignalExecution.updateOne(
+    { userId, signalId },
+    { $set: { ...patch, updatedAt: now } }
+  );
+}
+
 async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, deps = defaultDeps) {
   const settings = await getOrCreateSettings(userId, deps);
   const settingsPayload = toSettingsPayload(settings);
+  let activeSettingsPayload = settingsPayload;
 
   if (!settingsPayload.enabled) {
     await writeAuditLog(userId, 'robo_disabled', {
@@ -269,6 +409,16 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
       at: now.toISOString()
     }, deps);
     return { ok: false, executed: false, skipped: true, reason: 'ROBO_DISABLED' };
+  }
+
+  if (isCircuitBreakerActive(settingsPayload, now)) {
+    await writeAuditLog(userId, 'trade_skipped_circuit_breaker', {
+      reason: 'Circuit breaker active due to recent execution failures.',
+      failureStreak: settingsPayload.failureStreak,
+      pausedUntil: toIsoOrNull(settingsPayload.pausedUntil),
+      at: now.toISOString()
+    }, deps);
+    return { ok: false, executed: false, skipped: true, reason: 'CIRCUIT_BREAKER' };
   }
 
   const owner = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
@@ -281,9 +431,11 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
     return { ok: false, executed: false, skipped: true, reason: 'LOCKED' };
   }
 
+  let claimedSignalId = null;
   try {
     const freshSettings = await getOrCreateSettings(userId, deps);
     const freshPayload = toSettingsPayload(freshSettings);
+    activeSettingsPayload = freshPayload;
     if (!freshPayload.enabled) {
       await writeAuditLog(userId, 'robo_disabled', {
         reason: 'Robo Trader disabled during execution.',
@@ -292,28 +444,70 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
       return { ok: false, executed: false, skipped: true, reason: 'ROBO_DISABLED' };
     }
 
+    if (isCircuitBreakerActive(freshPayload, now)) {
+      await writeAuditLog(userId, 'trade_skipped_circuit_breaker', {
+        reason: 'Circuit breaker active due to recent execution failures.',
+        failureStreak: freshPayload.failureStreak,
+        pausedUntil: toIsoOrNull(freshPayload.pausedUntil),
+        at: now.toISOString()
+      }, deps);
+      return { ok: false, executed: false, skipped: true, reason: 'CIRCUIT_BREAKER' };
+    }
+
     const candidateSignal = signal || buildDefaultSignal(now);
     const symbol = String(candidateSignal.symbol || '').toUpperCase();
     const side = candidateSignal.side === 'sell' ? 'sell' : 'buy';
     const qty = Math.max(1, Math.floor(toFiniteNumber(candidateSignal.qty, 1)));
+    const signalId = deriveSignalId(candidateSignal, symbol, side, qty, now);
 
     if (!symbol) {
       await writeAuditLog(userId, 'trade_skipped_invalid_signal', {
         reason: 'Signal missing symbol.',
-        signal: candidateSignal
+        signal: candidateSignal,
+        signalId
       }, deps);
       return { ok: false, executed: false, skipped: true, reason: 'INVALID_SIGNAL' };
     }
+
+    const claim = await claimSignalExecution({
+      userId,
+      signalId,
+      now,
+      signalMeta: {
+        symbol,
+        side,
+        qty,
+        strategyId: candidateSignal.strategyId || null,
+        strategyName: candidateSignal.strategyName || null
+      }
+    }, deps);
+    if (!claim.claimed) {
+      await writeAuditLog(userId, 'trade_skipped_duplicate_signal', {
+        signalId,
+        symbol,
+        side,
+        qty,
+        existingStatus: claim.existing?.status || null,
+        existingOrderId: claim.existing?.orderId || null
+      }, deps);
+      return { ok: false, executed: false, skipped: true, reason: 'DUPLICATE_SIGNAL', signalId };
+    }
+    claimedSignalId = signalId;
 
     const quotes = await deps.fetchQuotes([symbol]);
     const quote = Array.isArray(quotes) ? quotes[0] : null;
     const estimatedPrice = toFiniteNumber(quote?.price, NaN);
     if (!Number.isFinite(estimatedPrice) || estimatedPrice <= 0) {
+      await updateSignalExecution(userId, signalId, {
+        status: 'skipped',
+        reason: 'NO_QUOTE'
+      }, now, deps);
       await writeAuditLog(userId, 'trade_skipped_no_quote', {
         symbol,
+        signalId,
         reason: 'Quote unavailable for signal symbol.'
       }, deps);
-      return { ok: false, executed: false, skipped: true, reason: 'NO_QUOTE' };
+      return { ok: false, executed: false, skipped: true, reason: 'NO_QUOTE', signalId };
     }
 
     const estimatedNotional = Number((estimatedPrice * qty).toFixed(2));
@@ -326,8 +520,13 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
     });
 
     if (!limitDecision.allowed) {
+      await updateSignalExecution(userId, signalId, {
+        status: 'skipped',
+        reason: 'LIMIT_EXCEEDED'
+      }, now, deps);
       await writeAuditLog(userId, 'trade_skipped_limit', {
         symbol,
+        signalId,
         side,
         qty,
         estimatedPrice,
@@ -335,7 +534,7 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
         violations: limitDecision.violations,
         usage: usageSnapshot
       }, deps);
-      return { ok: false, executed: false, skipped: true, reason: 'LIMIT_EXCEEDED' };
+      return { ok: false, executed: false, skipped: true, reason: 'LIMIT_EXCEEDED', signalId };
     }
 
     const execution = await deps.paperBroker.placeOrder({
@@ -363,11 +562,19 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
       estimatedPrice,
       notional: executedNotional,
       usageNotional,
+      signalId,
       orderId: order._id || order.id || null,
       strategyName: candidateSignal.strategyName || null,
       timestamp: now.toISOString()
     };
     await writeAuditLog(userId, 'trade_executed', eventPayload, deps);
+    await resetCircuitStateIfNeeded(userId, freshPayload, now, deps);
+    await updateSignalExecution(userId, signalId, {
+      status: 'executed',
+      orderId: eventPayload.orderId || null,
+      executedAt: now,
+      notional: executedNotional
+    }, now, deps);
 
     const user = await deps.User.findById(userId).lean();
     const recipient = user?.email || process.env.ROBO_FALLBACK_EMAIL || null;
@@ -407,8 +614,27 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
       skipped: false,
       orderId: eventPayload.orderId,
       notional: executedNotional,
-      usageNotional
+      usageNotional,
+      signalId
     };
+  } catch (err) {
+    try {
+      await markCircuitFailure(userId, activeSettingsPayload, err, now, deps);
+    } catch (_circuitErr) {
+      // ignore circuit marker failures; original error should still propagate
+    }
+
+    if (claimedSignalId) {
+      try {
+        await updateSignalExecution(userId, claimedSignalId, {
+          status: 'failed',
+          reason: err?.message || 'Unknown execution error'
+        }, now, deps);
+      } catch (_signalErr) {
+        // ignore marker update errors; primary error should still propagate
+      }
+    }
+    throw err;
   } finally {
     await releaseUserLock(userId, owner, deps);
   }
@@ -450,6 +676,23 @@ async function getAuditLogsForUser(userId, { from, to, limit } = {}, deps = defa
   return deps.RoboAuditLog.find(query).sort({ createdAt: -1 }).limit(cap).lean();
 }
 
+async function cleanupSignalExecutions({ olderThanDays, now = new Date() } = {}, deps = defaultDeps) {
+  const retentionDays = normalizeRetentionDays(
+    olderThanDays ?? process.env.ROBO_SIGNAL_RETENTION_DAYS,
+    90
+  );
+  const cutoff = new Date(now.getTime() - (retentionDays * DAY_MS));
+  const result = await deps.RoboSignalExecution.deleteMany({
+    updatedAt: { $lt: cutoff }
+  });
+
+  return {
+    retentionDays,
+    cutoff,
+    deletedCount: Number(result?.deletedCount || 0)
+  };
+}
+
 async function runSchedulerTick(deps = defaultDeps) {
   const enabled = await deps.RoboSettings.find({ enabled: true }).lean();
   for (const setting of enabled) {
@@ -471,6 +714,7 @@ module.exports = {
   updateSettingsForUser,
   getUsageSnapshotForUser,
   getAuditLogsForUser,
+  cleanupSignalExecutions,
   runRoboTradeForUser,
   runSchedulerTick
 };

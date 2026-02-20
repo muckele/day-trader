@@ -6,7 +6,9 @@ const roboSettingsSchema = new mongoose.Schema(
     enabled: { type: Boolean, default: false },
     dailyLimit: { type: Number, default: 0 },
     weeklyLimit: { type: Number, default: 0 },
-    monthlyLimit: { type: Number, default: 0 }
+    monthlyLimit: { type: Number, default: 0 },
+    failureStreak: { type: Number, default: 0 },
+    pausedUntil: { type: Date, default: null }
   },
   {
     timestamps: { createdAt: 'createdAt', updatedAt: 'updatedAt' }

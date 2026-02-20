@@ -22,6 +22,7 @@ Robo Trader adds:
 - User settings (`enabled`, `dailyLimit`, `weeklyLimit`, `monthlyLimit`)
 - Usage buckets (`day`, `week`, `month`) tracked in UTC
 - Audit trail events (`trade_executed`, `trade_skipped_limit`, `robo_disabled`, `email_sent`, `email_failed`, etc.)
+- Signal idempotency (`userId + signalId`) to prevent duplicate order placement on retries
 
 API endpoints:
 
@@ -47,6 +48,10 @@ Robo Trader:
 - `ROBO_SIGNAL_QTY` (default `1`)
 - `ROBO_SIGNAL_SIDE` (`buy`/`sell`, default `buy`)
 - `ROBO_FALLBACK_EMAIL` (optional fallback recipient)
+- `ROBO_SIGNAL_RETENTION_DAYS` (default `90`; cleanup age for idempotency records)
+- `ROBO_SIGNAL_CLEANUP_INTERVAL_MS` (default `21600000` = 6 hours)
+- `ROBO_CIRCUIT_FAILURE_THRESHOLD` (default `3`; consecutive failures before pause)
+- `ROBO_CIRCUIT_COOLDOWN_MINUTES` (default `60`; pause duration after threshold hit)
 
 Robo email provider:
 

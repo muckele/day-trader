@@ -9,6 +9,8 @@ function mapSettingsPayload(settings) {
     dailyLimit: Number(settings?.dailyLimit || 0),
     weeklyLimit: Number(settings?.weeklyLimit || 0),
     monthlyLimit: Number(settings?.monthlyLimit || 0),
+    failureStreak: Number(settings?.failureStreak || 0),
+    pausedUntil: settings?.pausedUntil || null,
     updatedAt: settings?.updatedAt || null
   };
 }
