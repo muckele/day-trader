@@ -1,38 +1,72 @@
-// backend/routes/company.js
-const router = require('express').Router();
-const axios  = require('axios');
+const express = require('express');
+const axios = require('axios');
+const router = express.Router();
 
-const DATA_URL = process.env.APCA_DATA_URL;
-const H = {
-  'APCA-API-KEY-ID':     process.env.BROKER_API_KEY,
-  'APCA-API-SECRET-KEY': process.env.BROKER_API_SECRET
-};
+const RAW_DATA_URL =
+  process.env.APCA_DATA_URL ||
+  process.env.ALPACA_DATA_URL ||
+  'https://data.alpaca.markets';
 
-router.get('/:symbol', async (req, res, next) => {
+const DATA_URL = RAW_DATA_URL.replace(/\/v2\/?$/, '');
+
+const API_KEY =
+  process.env.BROKER_API_KEY ||
+  process.env.APCA_API_KEY_ID ||
+  process.env.ALPACA_API_KEY;
+
+const API_SECRET =
+  process.env.BROKER_API_SECRET ||
+  process.env.APCA_API_SECRET_KEY ||
+  process.env.ALPACA_API_SECRET;
+
+router.get('/:symbol', async (req, res) => {
+  if (!API_KEY || !API_SECRET) {
+    return res.status(500).json({
+      error: 'Missing Alpaca API keys (BROKER_API_KEY/BROKER_API_SECRET or APCA_API_KEY_ID/APCA_API_SECRET_KEY).'
+    });
+  }
+
+  const symbol = req.params.symbol.toUpperCase();
+
   try {
-    const sym = req.params.symbol;
-
-    // 1. Asset metadata
-    const assetRes = await axios.get(`${DATA_URL}/assets/${sym}`, { headers: H });
-
-    // 2. Fundamentals (annual, limit=1)
-    const fundRes = await axios.get(
-      `${DATA_URL}/stocks/${sym}/fundamentals`,
-      { headers: H, params: { timeframe: 'annual', limit: 1 } }
+    // v1 assets returns a list, so we filter down to our symbol
+    const resp = await axios.get(
+      `${DATA_URL}/v1/assets`,
+      {
+        headers: {
+          'APCA-API-KEY-ID': API_KEY,
+          'APCA-API-SECRET-KEY': API_SECRET
+        },
+        params: {
+          asset_class: 'us_equity',
+          status: 'active'
+        }
+      }
     );
-    const [fund] = Array.isArray(fundRes.data) ? fundRes.data : [fundRes.data];
+
+    const asset = resp.data.find(a => a.symbol === symbol);
+    if (!asset) {
+      return res.status(404).json({ error: `No asset found for ${symbol}` });
+    }
 
     res.json({
-      company: assetRes.data,
+      company: {
+        symbol: asset.symbol,
+        name: asset.name,
+        exchange: asset.exchange,
+        asset_class: asset.asset_class,
+        status: asset.status
+      },
       stats: {
-        marketcap:     fund.market_cap,
-        peRatio:       fund.pe_ratio,
-        dividendYield: fund.dividend_yield,
-        employees:     fund.employees
+        marketcap: null,
+        peRatio: null,
+        dividendYield: null,
+        employees: null
       }
     });
   } catch (err) {
-    next(err);
+    console.error('company.js error:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to fetch company info' });
   }
 });
 

@@ -30,7 +30,14 @@ const app = express();
 
 // 6. Global middleware
 app.use(express.json());
-app.use(cors());
+const frontendOrigin = process.env.FRONTEND_ORIGIN;
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (frontendOrigin && origin === frontendOrigin) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  }
+}));
 
 // 7. Mount the Alpaca trade routes
 //    All routes defined in routes/trade.js are now under /api/trade
@@ -38,6 +45,15 @@ app.use('/api/trade', require('./routes/trade'));
 app.use('/api/market',  require('./routes/market'));
 app.use('/api/analyze', require('./routes/analyze'));
 app.use('/api/company', require('./routes/company'));
+app.use('/api/watchlist', require('./routes/watchlist'));
+app.use('/api/paper-trades', require('./routes/paperTrades'));
+app.use('/api/regime', require('./routes/regime'));
+app.use('/api/backtest', require('./routes/backtest'));
+app.use('/api/strategies', require('./routes/strategies'));
+app.use('/api/analytics', require('./routes/analytics'));
+app.use('/api/journal', require('./routes/journal'));
+app.use('/api/trade-plan', require('./routes/tradePlan'));
+app.use('/api/execution', require('./routes/execution'));
 // Trade Recomendations 
 app.use('/api/recommendations', require('./routes/recommend'));
 
@@ -95,6 +111,10 @@ app.get('/', (req, res) => {
   res.send('📈 Day Trader API — public endpoint');
 });
 
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', asOf: new Date().toISOString() });
+});
+
 app.get('/api/recommend/:symbol', async (req, res, next) => {
   try {
     const recs = await getRecommendations(req.params.symbol.toUpperCase());
@@ -121,6 +141,6 @@ app.use((err, req, res, next) => {
 
 // ─── 13. START SERVER ───────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () =>
-  console.log(`Day Trader API listening on http://localhost:${PORT}`)
+app.listen(PORT, '0.0.0.0', () =>
+  console.log(`Day Trader API listening on http://0.0.0.0:${PORT}`)
 );
