@@ -25,6 +25,7 @@ const Log                 = require('./models/Log');
 const { getRecommendations, fetchIntraday } = require('./tradeLogic');
 const auth                = require('./middleware/auth');      // ← imported
 const debugRoutes         = require('./routes/debug');
+const { startRoboScheduler } = require('./services/roboScheduler');
 
 // 5. Create the Express app
 const app = express();
@@ -67,6 +68,7 @@ app.use('/api/journal', require('./routes/journal'));
 app.use('/api/trade-plan', require('./routes/tradePlan'));
 app.use('/api/execution', require('./routes/execution'));
 app.use('/api/debug', debugRoutes);
+app.use('/api/robo', require('./routes/robo'));
 // Trade Recomendations 
 app.use('/api/recommendations', require('./routes/recommend'));
 
@@ -74,13 +76,17 @@ app.use('/api/recommendations', require('./routes/recommend'));
 // ─── 8. REGISTER ────────────────────────────────────────────────────────────────
 app.post('/api/register', async (req, res, next) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, email } = req.body;
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (!normalizedEmail) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
     const hash = await bcrypt.hash(password, 10);
-    await User.create({ username, hash });
+    await User.create({ username, email: normalizedEmail, hash });
     res.json({ message: 'User registered successfully' });
   } catch (err) {
     if (err.code === 11000) {
-      return res.status(409).json({ message: 'Username already taken' });
+      return res.status(409).json({ message: 'Username or email already taken' });
     }
     next(err);
   }
@@ -157,3 +163,4 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, '0.0.0.0', () =>
   console.log(`Day Trader API listening on http://0.0.0.0:${PORT}`)
 );
+startRoboScheduler();

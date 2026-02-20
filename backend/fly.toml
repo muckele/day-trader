@@ -6,11 +6,11 @@ primary_region = "ord"
 # - APCA_API_SECRET_KEY
 # - APCA_DATA_URL
 # - APCA_DATA_FEED (example: iex)
-# - NEWSAPI_KEY
-# - DEEPSEEK_API_BASE_URL
-# - DEEPSEEK_API_KEY
 # - JWT_SECRET
 # - MONGO_URI
+# - ROBO_EMAIL_PROVIDER (log|smtp)
+# - ROBO_FALLBACK_EMAIL
+# - SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM (if smtp provider)
 
 [build]
   dockerfile = "Dockerfile"
