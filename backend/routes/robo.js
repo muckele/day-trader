@@ -1,7 +1,11 @@
 const router = require('express').Router();
+const requireMongo = require('../middleware/requireMongo');
 const auth = require('../middleware/auth');
 const User = require('../models/User');
 const roboEngine = require('../services/roboTraderEngine');
+const { getSchedulerStatus } = require('../services/roboScheduler');
+
+router.use(requireMongo);
 
 function mapSettingsPayload(settings) {
   return {
@@ -75,5 +79,40 @@ router.get('/audit', auth, async (req, res, next) => {
     next(err);
   }
 });
+
+router.get('/status', auth, async (req, res, next) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: 'User not found.' });
+
+    const status = await roboEngine.getStatusForUser(user._id);
+    res.json({
+      ...status,
+      scheduler: getSchedulerStatus()
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+async function runOnceHandler(req, res, next) {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: 'User not found.' });
+
+    const signal = req.body?.signal || null;
+    const result = await roboEngine.runRoboTradeForUser({
+      userId: user._id,
+      signal
+    });
+    res.json({ result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+router.post('/run-once', auth, runOnceHandler);
+router.post('/run_once', auth, runOnceHandler);
+router.post('/runOnce', auth, runOnceHandler);
 
 module.exports = router;

@@ -213,6 +213,38 @@ export default function Portfolio() {
             <p>{settings.maxDailyLossPct}%</p>
           </div>
           <div>
+            <p className="text-xs text-slate-500">Per Symbol Cap</p>
+            <p>{settings.maxSymbolExposurePct}%</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">Sector Cap</p>
+            <p>{settings.maxSectorExposurePct}%</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">Cluster Cap</p>
+            <p>{settings.maxCorrelationClusterPct}%</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">Max VaR</p>
+            <p>{settings.maxVarPct}%</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">Crypto Position Cap</p>
+            <p>{settings.cryptoMaxPositionPct}%</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">Crypto Daily Loss</p>
+            <p>{settings.cryptoMaxDailyLossPct}%</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">Short Margin</p>
+            <p>{settings.shortMaintenanceMarginPct}%</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">Short Max Borrow APR</p>
+            <p>{settings.shortMaxBorrowFeeApr}%</p>
+          </div>
+          <div>
             <p className="text-xs text-slate-500">Slippage</p>
             <p>{settings.slippageBps} bps</p>
           </div>

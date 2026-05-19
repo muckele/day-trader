@@ -14,12 +14,28 @@ const {
   calculatePositionMetrics
 } = require('./paperMath');
 const { evaluateGuardrails, updateCooldownState } = require('./guardrails');
+const { evaluateUnifiedRisk } = require('./riskEngine');
+const {
+  inferAssetClass,
+  normalizeCompactSymbol,
+  getShortBorrowProfile
+} = require('./marketMeta');
 const { detectRegime } = require('../signal/regimeDetector');
 const { getStrategy } = require('../signal/strategies');
 const { linkTradeToPlan } = require('../tradePlanEngine');
+const {
+  recordFilledExecution,
+  recordRejectedExecution
+} = require('../services/executionTelemetryService');
+const {
+  buildClientOrderId,
+  shouldSyncPaperTradesToAlpaca,
+  submitAlpacaPaperOrder
+} = require('../services/alpacaTradingClient');
 
 const ACCOUNT_ID = 'default';
-const MAX_QTY_DECIMALS = 6;
+const MAX_EQUITY_QTY_DECIMALS = 6;
+const MAX_CRYPTO_QTY_DECIMALS = 8;
 
 function getDecimalPlaces(value) {
   const text = String(value);
@@ -31,15 +47,27 @@ function normalizeOrderInput({
   symbol,
   side,
   qty,
+  assetClass,
   orderType = 'market',
   limitPrice,
+  timeInForce = 'day',
+  goodTilDate,
+  takeProfitPrice,
+  stopLossPrice,
+  trailingStopPct,
+  stopPrice,
   maxPricePerShare,
   allowExtendedHours = true
 }) {
-  const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+  const rawSymbol = String(symbol || '').trim().toUpperCase();
+  const normalizedSymbol = normalizeCompactSymbol(rawSymbol);
   if (!normalizedSymbol) {
     throw new Error('Symbol is required.');
   }
+  const normalizedAssetClass = inferAssetClass({
+    symbol: rawSymbol || normalizedSymbol,
+    assetClass
+  });
 
   const normalizedSide = side === 'sell' ? 'sell' : side === 'buy' ? 'buy' : null;
   if (!normalizedSide) {
@@ -50,22 +78,80 @@ function normalizeOrderInput({
   if (!Number.isFinite(numericQty) || numericQty <= 0) {
     throw new Error('qty must be a positive number.');
   }
-  if (getDecimalPlaces(numericQty) > MAX_QTY_DECIMALS) {
-    throw new Error(`qty supports up to ${MAX_QTY_DECIMALS} decimal places.`);
+  const maxQtyDecimals = normalizedAssetClass === 'crypto'
+    ? MAX_CRYPTO_QTY_DECIMALS
+    : MAX_EQUITY_QTY_DECIMALS;
+  if (getDecimalPlaces(numericQty) > maxQtyDecimals) {
+    throw new Error(`qty supports up to ${maxQtyDecimals} decimal places.`);
   }
 
   const normalizedOrderType = String(orderType || 'market').toLowerCase();
-  if (!['market', 'limit'].includes(normalizedOrderType)) {
-    throw new Error('orderType must be market or limit.');
+  if (!['market', 'limit', 'stop_limit', 'trailing_stop'].includes(normalizedOrderType)) {
+    throw new Error('orderType must be market, limit, stop_limit, or trailing_stop.');
   }
 
   const parsedLimitPrice = limitPrice !== undefined && limitPrice !== null && limitPrice !== ''
     ? Number(limitPrice)
     : null;
-  if (normalizedOrderType === 'limit') {
+  if (normalizedOrderType === 'limit' || normalizedOrderType === 'stop_limit') {
     if (!Number.isFinite(parsedLimitPrice) || parsedLimitPrice <= 0) {
       throw new Error('limitPrice must be a positive number for limit orders.');
     }
+  }
+
+  const parsedStopTriggerPrice = stopPrice !== undefined && stopPrice !== null && stopPrice !== ''
+    ? Number(stopPrice)
+    : null;
+  if (normalizedOrderType === 'stop_limit') {
+    if (!Number.isFinite(parsedStopTriggerPrice) || parsedStopTriggerPrice <= 0) {
+      throw new Error('stopPrice must be a positive number for stop-limit orders.');
+    }
+  }
+
+  let normalizedTimeInForce = String(timeInForce || 'day').toLowerCase();
+  if (!['day', 'gtc', 'gtd', 'ioc'].includes(normalizedTimeInForce)) {
+    throw new Error('timeInForce must be day, gtc, gtd, or ioc.');
+  }
+  if (normalizedAssetClass === 'crypto') {
+    if (normalizedTimeInForce === 'day') {
+      normalizedTimeInForce = 'gtc';
+    }
+    if (!['gtc', 'ioc'].includes(normalizedTimeInForce)) {
+      throw new Error('Crypto timeInForce must be gtc or ioc.');
+    }
+  }
+  const parsedGoodTilDate = goodTilDate ? new Date(goodTilDate) : null;
+  if (normalizedTimeInForce === 'gtd') {
+    if (!parsedGoodTilDate || Number.isNaN(parsedGoodTilDate.getTime())) {
+      throw new Error('goodTilDate is required for GTD orders.');
+    }
+    if (parsedGoodTilDate <= new Date()) {
+      throw new Error('goodTilDate must be in the future.');
+    }
+  }
+
+  const parsedTakeProfitPrice = takeProfitPrice !== undefined && takeProfitPrice !== null && takeProfitPrice !== ''
+    ? Number(takeProfitPrice)
+    : null;
+  if (parsedTakeProfitPrice !== null && (!Number.isFinite(parsedTakeProfitPrice) || parsedTakeProfitPrice <= 0)) {
+    throw new Error('takeProfitPrice must be a positive number.');
+  }
+
+  const parsedStopLossPrice = stopLossPrice !== undefined && stopLossPrice !== null && stopLossPrice !== ''
+    ? Number(stopLossPrice)
+    : null;
+  if (parsedStopLossPrice !== null && (!Number.isFinite(parsedStopLossPrice) || parsedStopLossPrice <= 0)) {
+    throw new Error('stopLossPrice must be a positive number.');
+  }
+
+  const parsedTrailingStopPct = trailingStopPct !== undefined && trailingStopPct !== null && trailingStopPct !== ''
+    ? Number(trailingStopPct)
+    : null;
+  if (normalizedOrderType === 'trailing_stop' && (!Number.isFinite(parsedTrailingStopPct) || parsedTrailingStopPct <= 0)) {
+    throw new Error('trailingStopPct must be a positive number for trailing stop orders.');
+  }
+  if (parsedTrailingStopPct !== null && (!Number.isFinite(parsedTrailingStopPct) || parsedTrailingStopPct <= 0)) {
+    throw new Error('trailingStopPct must be a positive number.');
   }
 
   const parsedMaxPricePerShare = maxPricePerShare !== undefined && maxPricePerShare !== null && maxPricePerShare !== ''
@@ -82,16 +168,37 @@ function normalizeOrderInput({
 
   return {
     normalizedSymbol,
+    rawSymbol,
+    normalizedAssetClass,
     normalizedSide,
     numericQty,
     normalizedOrderType,
+    normalizedTimeInForce,
+    parsedGoodTilDate,
     parsedLimitPrice,
+    parsedTakeProfitPrice,
+    parsedStopLossPrice,
+    parsedTrailingStopPct,
+    parsedStopTriggerPrice,
     parsedMaxPricePerShare,
     allowExtendedHours: allowExtendedHours !== false
   };
 }
 
-function enforceMarketHours({ allowExtendedHours, now = new Date(), marketStatusProvider = getMarketStatus }) {
+function enforceMarketHours({
+  allowExtendedHours,
+  assetClass = 'equity',
+  now = new Date(),
+  marketStatusProvider = getMarketStatus
+}) {
+  if (assetClass === 'crypto') {
+    return {
+      marketStatus: 'OPEN',
+      extendedHours: false,
+      marketSession: 'crypto'
+    };
+  }
+
   const market = marketStatusProvider(now);
   const marketOpen = market.status === 'OPEN';
   if (!marketOpen && !allowExtendedHours) {
@@ -110,6 +217,7 @@ function enforcePriceControls({
   fillPrice,
   orderType,
   limitPrice,
+  stopTriggerPrice,
   maxPricePerShare
 }) {
   if (orderType === 'limit' && Number.isFinite(limitPrice)) {
@@ -118,6 +226,21 @@ function enforcePriceControls({
     }
     if (side === 'sell' && fillPrice < limitPrice) {
       throw new Error('Limit price too high for fill.');
+    }
+  }
+
+  if (orderType === 'stop_limit' && Number.isFinite(stopTriggerPrice)) {
+    if (side === 'buy' && fillPrice < stopTriggerPrice) {
+      throw new Error('Stop trigger not reached for stop-limit buy order.');
+    }
+    if (side === 'sell' && fillPrice > stopTriggerPrice) {
+      throw new Error('Stop trigger not reached for stop-limit sell order.');
+    }
+    if (side === 'buy' && fillPrice > limitPrice) {
+      throw new Error('Limit price too low for stop-limit buy order.');
+    }
+    if (side === 'sell' && fillPrice < limitPrice) {
+      throw new Error('Limit price too high for stop-limit sell order.');
     }
   }
 
@@ -139,6 +262,19 @@ async function updateSettings(updates) {
     'commission',
     'maxPositionPct',
     'maxDailyLossPct',
+    'maxSymbolExposurePct',
+    'maxSectorExposurePct',
+    'maxCorrelationClusterPct',
+    'maxVarPct',
+    'varVolatilityPct',
+    'cryptoMaxPositionPct',
+    'cryptoMaxDailyLossPct',
+    'cryptoMinNotional',
+    'cryptoLotSize',
+    'cryptoVarVolPct',
+    'shortMaintenanceMarginPct',
+    'shortMaxBorrowFeeApr',
+    'shortForceBuyInDays',
     'cooldownHours'
   ];
   const filtered = {};
@@ -165,20 +301,28 @@ async function getOrders() {
 async function getPositions() {
   const trades = await PaperTrade.find({ accountId: ACCOUNT_ID }).sort({ filledAt: 1 }).lean();
   const { positions } = buildPositions(trades);
+  const symbolMeta = trades.reduce((acc, trade) => {
+    const key = normalizeCompactSymbol(trade.symbol);
+    acc[key] = {
+      assetClass: trade.assetClass || inferAssetClass({ symbol: trade.symbol })
+    };
+    return acc;
+  }, {});
   const symbols = Object.keys(positions).filter(symbol => positions[symbol].qty !== 0);
   const quotes = symbols.length ? await fetchQuotes(symbols) : [];
   const quoteMap = {};
   quotes.forEach(quote => {
-    quoteMap[quote.symbol] = quote;
+    quoteMap[normalizeCompactSymbol(quote.symbol)] = quote;
   });
 
   return symbols.map(symbol => {
     const position = positions[symbol];
-    const quote = quoteMap[symbol];
+    const quote = quoteMap[normalizeCompactSymbol(symbol)];
     const marketPrice = quote?.price || position.avgCost || 0;
     const metrics = calculatePositionMetrics(position, marketPrice);
     return {
       symbol,
+      assetClass: symbolMeta[symbol]?.assetClass || inferAssetClass({ symbol }),
       qty: position.qty,
       avgCost: Number(position.avgCost.toFixed(2)),
       marketPrice,
@@ -230,67 +374,274 @@ async function getRegimeAtTrade(now) {
   return snapshot;
 }
 
+function calculateShortHoldingDays(trades, symbol, now = new Date()) {
+  const normalizedSymbol = normalizeCompactSymbol(symbol);
+  let qty = 0;
+  let shortOpenedAt = null;
+
+  trades
+    .filter(trade => normalizeCompactSymbol(trade.symbol) === normalizedSymbol)
+    .forEach(trade => {
+      const deltaQty = trade.side === 'buy' ? Number(trade.qty || 0) : -Number(trade.qty || 0);
+      const previousQty = qty;
+      qty += deltaQty;
+
+      if (previousQty >= 0 && qty < 0) {
+        shortOpenedAt = new Date(trade.filledAt);
+      } else if (qty >= 0) {
+        shortOpenedAt = null;
+      }
+    });
+
+  if (qty >= 0 || !shortOpenedAt) return 0;
+  const msOpen = now.getTime() - shortOpenedAt.getTime();
+  return msOpen > 0 ? (msOpen / (24 * 60 * 60 * 1000)) : 0;
+}
+
+function calculateShortOpenQty(currentQty, side, requestedQty) {
+  if (side !== 'sell') return 0;
+  if (currentQty < 0) return requestedQty;
+  if (currentQty >= 0) return Math.max(0, requestedQty - currentQty);
+  return 0;
+}
+
+async function createAttachedExitOrders({
+  parentOrder,
+  now,
+  side,
+  qty,
+  assetClass,
+  strategyId,
+  setupType,
+  strategyTags,
+  allowExtendedHours,
+  marketSession,
+  extendedHours,
+  timeInForce,
+  goodTilDate,
+  takeProfitPrice,
+  stopLossPrice,
+  trailingStopPct
+}) {
+  const exitSide = side === 'buy' ? 'sell' : 'buy';
+  const hasBracket = Number.isFinite(takeProfitPrice) || Number.isFinite(stopLossPrice);
+  const ocoGroupId = hasBracket && Number.isFinite(takeProfitPrice) && Number.isFinite(stopLossPrice)
+    ? `oco:${parentOrder._id}`
+    : null;
+  const attached = [];
+
+  if (Number.isFinite(takeProfitPrice)) {
+    const order = await PaperOrder.create({
+      accountId: ACCOUNT_ID,
+      parentOrderId: parentOrder._id,
+      ocoGroupId,
+      symbol: parentOrder.symbol,
+      assetClass,
+      side: exitSide,
+      qty,
+      orderType: 'take_profit',
+      timeInForce,
+      goodTilDate: goodTilDate || null,
+      limitPrice: Number(takeProfitPrice.toFixed(4)),
+      allowExtendedHours,
+      extendedHours,
+      marketSession,
+      strategyId: strategyId || null,
+      setupType: setupType || null,
+      strategyTags: strategyTags || [],
+      status: 'open',
+      notional: Number((qty * takeProfitPrice).toFixed(2)),
+      filledAt: now
+    });
+    attached.push(order);
+  }
+
+  if (Number.isFinite(stopLossPrice)) {
+    const order = await PaperOrder.create({
+      accountId: ACCOUNT_ID,
+      parentOrderId: parentOrder._id,
+      ocoGroupId,
+      symbol: parentOrder.symbol,
+      assetClass,
+      side: exitSide,
+      qty,
+      orderType: 'stop_loss',
+      timeInForce,
+      goodTilDate: goodTilDate || null,
+      stopPrice: Number(stopLossPrice.toFixed(4)),
+      allowExtendedHours,
+      extendedHours,
+      marketSession,
+      strategyId: strategyId || null,
+      setupType: setupType || null,
+      strategyTags: strategyTags || [],
+      status: 'open',
+      notional: Number((qty * stopLossPrice).toFixed(2)),
+      filledAt: now
+    });
+    attached.push(order);
+  }
+
+  if (Number.isFinite(trailingStopPct)) {
+    const order = await PaperOrder.create({
+      accountId: ACCOUNT_ID,
+      parentOrderId: parentOrder._id,
+      ocoGroupId: ocoGroupId || `trail:${parentOrder._id}`,
+      symbol: parentOrder.symbol,
+      assetClass,
+      side: exitSide,
+      qty,
+      orderType: 'trailing_stop',
+      timeInForce,
+      goodTilDate: goodTilDate || null,
+      trailingStopPct: Number(trailingStopPct.toFixed(4)),
+      allowExtendedHours,
+      extendedHours,
+      marketSession,
+      strategyId: strategyId || null,
+      setupType: setupType || null,
+      strategyTags: strategyTags || [],
+      status: 'open',
+      filledAt: now
+    });
+    attached.push(order);
+  }
+
+  return attached;
+}
+
 async function placeOrder({
   symbol,
   side,
   qty,
+  assetClass,
   orderType = 'market',
   limitPrice,
+  timeInForce = 'day',
+  goodTilDate,
+  takeProfitPrice,
+  stopLossPrice,
+  trailingStopPct,
   maxPricePerShare,
   allowExtendedHours = true,
   strategyId,
   setupType,
   strategyTags,
-  stopPrice
+  stopPrice,
+  origin = 'manual',
+  metadata = {}
 }) {
+  const requestStartMs = Date.now();
   const now = new Date();
   const settings = await getSettings();
   const normalized = normalizeOrderInput({
     symbol,
     side,
     qty,
+    assetClass,
     orderType,
     limitPrice,
+    timeInForce,
+    goodTilDate,
+    takeProfitPrice,
+    stopLossPrice,
+    trailingStopPct,
+    stopPrice,
     maxPricePerShare,
     allowExtendedHours
   });
   const {
     normalizedSymbol,
+    normalizedAssetClass,
     normalizedSide,
     numericQty,
     normalizedOrderType,
+    normalizedTimeInForce,
+    parsedGoodTilDate,
     parsedLimitPrice,
+    parsedTakeProfitPrice,
+    parsedStopLossPrice,
+    parsedTrailingStopPct,
+    parsedStopTriggerPrice,
     parsedMaxPricePerShare
   } = normalized;
 
-  const [quote] = await fetchQuotes([normalizedSymbol]);
+  if (normalizedAssetClass === 'crypto') {
+    const minNotional = Number(settings.cryptoMinNotional || 0);
+    const lotSize = Number(settings.cryptoLotSize || 0);
+    if (lotSize > 0) {
+      const lots = numericQty / lotSize;
+      const roundedLots = Math.round(lots);
+      if (Math.abs(lots - roundedLots) > 1e-6) {
+        throw new Error(`Crypto quantity must align to lot size ${lotSize}.`);
+      }
+    }
+    if (minNotional > 0 && Number.isFinite(parsedLimitPrice) && (parsedLimitPrice * numericQty) < minNotional) {
+      throw new Error(`Crypto notional must be at least $${minNotional.toFixed(2)}.`);
+    }
+  }
+
+  const [quote] = await fetchQuotes([normalizedSymbol], { assetClass: normalizedAssetClass });
   if (!quote || !quote.price) {
     throw new Error('Quote unavailable for symbol.');
   }
 
+  const estimatedPrice = Number(Number(quote.price).toFixed(4));
   const marketContext = enforceMarketHours({
     allowExtendedHours: normalized.allowExtendedHours,
+    assetClass: normalizedAssetClass,
     now
   });
 
   const slippageFactor = (settings.slippageBps || 0) / 10000;
-  let fillPrice = quote.price;
+  let fillPrice = estimatedPrice;
   fillPrice = normalizedSide === 'buy'
     ? fillPrice * (1 + slippageFactor)
     : fillPrice * (1 - slippageFactor);
-  fillPrice = Number(fillPrice.toFixed(2));
+  fillPrice = Number(fillPrice.toFixed(4));
 
   enforcePriceControls({
     side: normalizedSide,
     fillPrice,
     orderType: normalizedOrderType,
     limitPrice: parsedLimitPrice,
+    stopTriggerPrice: parsedStopTriggerPrice,
     maxPricePerShare: parsedMaxPricePerShare
   });
 
   const account = await getAccount();
+  const trades = await PaperTrade.find({ accountId: ACCOUNT_ID }).sort({ filledAt: 1 }).lean();
+  const { positions } = buildPositions(trades);
+  const currentPosition = positions[normalizedSymbol] || { qty: 0, avgCost: 0 };
   const equityBase = account.equity > 0 ? account.equity : settings.startingCash;
-  const orderNotional = fillPrice * numericQty;
+  const orderNotional = Number((fillPrice * numericQty).toFixed(2));
+
+  if (normalizedAssetClass === 'crypto') {
+    const minNotional = Number(settings.cryptoMinNotional || 0);
+    if (minNotional > 0 && orderNotional < minNotional) {
+      throw new Error(`Crypto notional must be at least $${minNotional.toFixed(2)}.`);
+    }
+  }
+
+  const unifiedRisk = evaluateUnifiedRisk({
+    symbol: normalizedSymbol,
+    side: normalizedSide,
+    assetClass: normalizedAssetClass,
+    orderNotional,
+    account,
+    settings,
+    currentPositionQty: currentPosition.qty
+  });
+  if (!unifiedRisk.ok) {
+    await PaperGuardrailEvent.create({
+      accountId: ACCOUNT_ID,
+      symbol: normalizedSymbol,
+      orderNotional,
+      reason: unifiedRisk.reason
+    });
+    throw new Error(unifiedRisk.reason);
+  }
+
   const guardrail = evaluateGuardrails({
     equity: equityBase,
     orderNotional,
@@ -309,9 +660,49 @@ async function placeOrder({
     throw new Error(guardrail.reason);
   }
 
-  const trades = await PaperTrade.find({ accountId: ACCOUNT_ID }).sort({ filledAt: 1 }).lean();
-  const { positions } = buildPositions(trades);
-  const currentPosition = positions[normalizedSymbol] || { qty: 0, avgCost: 0 };
+  const shortOpenQty = calculateShortOpenQty(currentPosition.qty, normalizedSide, numericQty);
+  const borrowProfile = shortOpenQty > 0 && normalizedAssetClass !== 'crypto'
+    ? getShortBorrowProfile(normalizedSymbol)
+    : null;
+  if (shortOpenQty > 0 && normalizedAssetClass !== 'crypto') {
+    if (!borrowProfile.borrowable) {
+      throw new Error(`No shares available to borrow for short sale of ${normalizedSymbol}.`);
+    }
+
+    const maxBorrowFee = Number(settings.shortMaxBorrowFeeApr || 0);
+    if (maxBorrowFee > 0 && borrowProfile.feeApr > maxBorrowFee) {
+      throw new Error(
+        `Borrow fee (${borrowProfile.feeApr.toFixed(2)}% APR) exceeds configured max (${maxBorrowFee.toFixed(2)}%).`
+      );
+    }
+
+    const existingShortQty = currentPosition.qty < 0 ? Math.abs(currentPosition.qty) : 0;
+    const projectedShortQty = existingShortQty + shortOpenQty;
+    const maintenanceMarginPct = Number(settings.shortMaintenanceMarginPct || 30);
+    const requiredMargin = projectedShortQty * fillPrice * (maintenanceMarginPct / 100);
+    if (account.cash < requiredMargin) {
+      throw new Error(
+        `Insufficient margin for short position. Required $${requiredMargin.toFixed(2)} at ${maintenanceMarginPct}% maintenance.`
+      );
+    }
+
+    const shortHoldDays = calculateShortHoldingDays(trades, normalizedSymbol, now);
+    const shortForceBuyInDays = Number(settings.shortForceBuyInDays || 0);
+    if (shortForceBuyInDays > 0 && shortHoldDays >= shortForceBuyInDays && borrowProfile.hardToBorrow) {
+      const reason = `Forced buy-in simulation triggered for ${normalizedSymbol} after ${shortHoldDays.toFixed(1)} days hard-to-borrow short exposure.`;
+      await PaperGuardrailEvent.create({
+        accountId: ACCOUNT_ID,
+        symbol: normalizedSymbol,
+        orderNotional,
+        reason
+      });
+      throw new Error(reason);
+    }
+  }
+
+  const borrowFeeAccrued = shortOpenQty > 0 && borrowProfile
+    ? Number(((shortOpenQty * fillPrice) * (borrowProfile.feeApr / 100) / 365).toFixed(4))
+    : 0;
   const { realizedPnl } = applyTradeToPosition(currentPosition, {
     side: normalizedSide,
     qty: numericQty,
@@ -319,10 +710,15 @@ async function placeOrder({
   });
   const isClosing = currentPosition.qty !== 0
     && currentPosition.qty * (normalizedSide === 'buy' ? numericQty : -numericQty) < 0;
-  const commission = settings.commission || 0;
-  const tradeRealized = realizedPnl - commission;
-  const stopValue = stopPrice !== undefined && stopPrice !== null
-    ? Number(stopPrice)
+  const commission = Number(settings.commission || 0);
+  const tradeRealized = realizedPnl - commission - borrowFeeAccrued;
+  const stopValue = parsedStopLossPrice !== null
+    ? parsedStopLossPrice
+    : (stopPrice !== undefined && stopPrice !== null
+      ? Number(stopPrice)
+      : null);
+  const stopTriggerValue = parsedStopTriggerPrice !== null
+    ? parsedStopTriggerPrice
     : null;
   const riskPerShare = stopValue ? Math.abs(fillPrice - stopValue) : null;
   const rMultiple = isClosing && riskPerShare
@@ -333,14 +729,61 @@ async function placeOrder({
     ? strategyTags
     : (strategy?.tags || []);
   const regimeAtTrade = await getRegimeAtTrade(now);
+  const fillLatencyMs = Date.now() - requestStartMs;
+  const effectiveSlippageBps = estimatedPrice > 0
+    ? Number((((normalizedSide === 'buy'
+      ? (fillPrice - estimatedPrice)
+      : (estimatedPrice - fillPrice)) / estimatedPrice) * 10000).toFixed(2))
+    : 0;
+  const borrowStatus = borrowProfile
+    ? (borrowProfile.borrowable
+      ? (borrowProfile.hardToBorrow ? 'hard_to_borrow' : 'borrowable')
+      : 'unavailable')
+    : 'none';
+  let alpacaPaperOrder = null;
+  if (shouldSyncPaperTradesToAlpaca()) {
+    const clientOrderId = buildClientOrderId({
+      origin,
+      symbol: normalizedSymbol,
+      now
+    });
+    alpacaPaperOrder = await submitAlpacaPaperOrder({
+      symbol: normalizedSymbol,
+      assetClass: normalizedAssetClass,
+      side: normalizedSide,
+      qty: numericQty,
+      orderType: normalizedOrderType,
+      timeInForce: normalizedTimeInForce,
+      limitPrice: parsedLimitPrice,
+      stopPrice: stopTriggerValue,
+      takeProfitPrice: parsedTakeProfitPrice,
+      stopLossPrice: parsedStopLossPrice,
+      trailingStopPct: parsedTrailingStopPct,
+      allowExtendedHours: marketContext.extendedHours && normalized.allowExtendedHours,
+      clientOrderId
+    }, {
+      pollStatusAttempts: 3,
+      pollStatusDelayMs: 300
+    });
+  }
 
   const order = await PaperOrder.create({
     accountId: ACCOUNT_ID,
+    broker: alpacaPaperOrder?.broker || 'paper',
+    externalOrderId: alpacaPaperOrder?.order?.id || null,
+    clientOrderId: alpacaPaperOrder?.order?.client_order_id || alpacaPaperOrder?.payload?.client_order_id || null,
+    brokerOrderStatus: alpacaPaperOrder?.order?.status || null,
     symbol: normalizedSymbol,
+    assetClass: normalizedAssetClass,
     side: normalizedSide,
     qty: numericQty,
     orderType: normalizedOrderType,
+    timeInForce: normalizedTimeInForce,
+    goodTilDate: parsedGoodTilDate || null,
     limitPrice: Number.isFinite(parsedLimitPrice) ? parsedLimitPrice : null,
+    takeProfitPrice: Number.isFinite(parsedTakeProfitPrice) ? parsedTakeProfitPrice : null,
+    stopLossPrice: Number.isFinite(parsedStopLossPrice) ? parsedStopLossPrice : null,
+    trailingStopPct: Number.isFinite(parsedTrailingStopPct) ? parsedTrailingStopPct : null,
     maxPricePerShare: Number.isFinite(parsedMaxPricePerShare) ? parsedMaxPricePerShare : null,
     allowExtendedHours: normalized.allowExtendedHours,
     extendedHours: marketContext.extendedHours,
@@ -348,9 +791,15 @@ async function placeOrder({
     strategyId: strategyId || null,
     setupType: setupType || null,
     strategyTags: finalTags,
-    stopPrice: stopValue,
+    estimatedPrice,
+    stopPrice: stopTriggerValue !== null ? stopTriggerValue : stopValue,
     status: 'filled',
     fillPrice,
+    fillLatencyMs,
+    effectiveSlippageBps,
+    shortBorrowFeeApr: borrowProfile?.feeApr || null,
+    borrowStatus,
+    forcedBuyIn: false,
     commission,
     slippageBps: settings.slippageBps || 0,
     notional: orderNotional,
@@ -359,7 +808,12 @@ async function placeOrder({
 
   const trade = await PaperTrade.create({
     accountId: ACCOUNT_ID,
+    broker: alpacaPaperOrder?.broker || 'paper',
+    externalOrderId: alpacaPaperOrder?.order?.id || null,
+    clientOrderId: alpacaPaperOrder?.order?.client_order_id || alpacaPaperOrder?.payload?.client_order_id || null,
+    brokerOrderStatus: alpacaPaperOrder?.order?.status || null,
     symbol: normalizedSymbol,
+    assetClass: normalizedAssetClass,
     side: normalizedSide,
     qty: numericQty,
     price: fillPrice,
@@ -368,6 +822,12 @@ async function placeOrder({
     strategyId: strategyId || null,
     setupType: setupType || null,
     strategyTags: finalTags,
+    estimatedPrice,
+    effectiveSlippageBps,
+    fillLatencyMs,
+    shortBorrowFeeApr: borrowProfile?.feeApr || null,
+    borrowFeeAccrued,
+    forcedBuyIn: false,
     stopPrice: stopValue,
     riskPerShare: riskPerShare ? Number(riskPerShare.toFixed(4)) : null,
     rMultiple: rMultiple !== null ? Number(rMultiple.toFixed(2)) : null,
@@ -383,6 +843,25 @@ async function placeOrder({
     realizedPnl: tradeRealized,
     orderId: order._id,
     filledAt: now
+  });
+
+  const attachedOrders = await createAttachedExitOrders({
+    parentOrder: order,
+    now,
+    side: normalizedSide,
+    qty: numericQty,
+    assetClass: normalizedAssetClass,
+    strategyId: strategyId || null,
+    setupType: setupType || null,
+    strategyTags: finalTags,
+    allowExtendedHours: normalized.allowExtendedHours,
+    marketSession: marketContext.marketSession,
+    extendedHours: marketContext.extendedHours,
+    timeInForce: normalizedTimeInForce,
+    goodTilDate: parsedGoodTilDate || null,
+    takeProfitPrice: Number.isFinite(parsedTakeProfitPrice) ? parsedTakeProfitPrice : null,
+    stopLossPrice: Number.isFinite(parsedStopLossPrice) ? parsedStopLossPrice : null,
+    trailingStopPct: Number.isFinite(parsedTrailingStopPct) ? parsedTrailingStopPct : null
   });
 
   const tradePlanId = await linkTradeToPlan(trade, ACCOUNT_ID);
@@ -410,7 +889,125 @@ async function placeOrder({
     totalPnl: updatedAccount.totalPnl
   });
 
-  return { order, trade, account: updatedAccount, positions: updatedAccount.positions };
+  await recordFilledExecution({
+    broker: alpacaPaperOrder?.broker || 'paper',
+    origin,
+    request: {
+      accountId: ACCOUNT_ID,
+      origin,
+      broker: 'paper',
+      symbol: normalizedSymbol,
+      assetClass: normalizedAssetClass,
+      side: normalizedSide,
+      qty: numericQty,
+      orderType: normalizedOrderType,
+      timeInForce: normalizedTimeInForce,
+      limitPrice: parsedLimitPrice,
+      stopPrice: stopTriggerValue !== null ? stopTriggerValue : stopValue,
+      takeProfitPrice: parsedTakeProfitPrice,
+      stopLossPrice: parsedStopLossPrice,
+      trailingStopPct: parsedTrailingStopPct,
+      maxPricePerShare: parsedMaxPricePerShare,
+      allowExtendedHours: normalized.allowExtendedHours,
+      strategyId: strategyId || null,
+      setupType: setupType || null,
+      metadata
+    },
+    order,
+    trade,
+    brokerOrder: alpacaPaperOrder?.order || null
+  });
+
+  return {
+    order,
+    trade,
+    attachedOrders,
+    brokerOrder: alpacaPaperOrder?.order || null,
+    account: updatedAccount,
+    positions: updatedAccount.positions
+  };
+}
+
+async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejected') {
+  try {
+    const now = new Date();
+    let normalized = null;
+    try {
+      normalized = normalizeOrderInput(payload);
+    } catch (_err) {
+      // Best effort logging; proceed with raw values.
+    }
+
+    const symbol = normalizeCompactSymbol(normalized?.normalizedSymbol || payload.symbol || '');
+    if (!symbol) return null;
+    const side = normalized?.normalizedSide || (payload.side === 'sell' ? 'sell' : 'buy');
+    const qty = Math.max(0.000001, Number(normalized?.numericQty || payload.qty || 0.000001));
+    const assetClass = normalized?.normalizedAssetClass
+      || inferAssetClass({ symbol: payload.symbol, assetClass: payload.assetClass });
+    const orderTypeValue = String(normalized?.normalizedOrderType || payload.orderType || 'market').toLowerCase();
+    const timeInForceValue = String(normalized?.normalizedTimeInForce || payload.timeInForce || 'day').toLowerCase();
+    const limitPriceValue = normalized?.parsedLimitPrice ?? Number(payload.limitPrice);
+    const stopPriceValue = normalized?.parsedStopTriggerPrice ?? Number(payload.stopPrice);
+    const takeProfitValue = normalized?.parsedTakeProfitPrice ?? Number(payload.takeProfitPrice);
+    const stopLossValue = normalized?.parsedStopLossPrice ?? Number(payload.stopLossPrice);
+    const trailingStopValue = normalized?.parsedTrailingStopPct ?? Number(payload.trailingStopPct);
+    const maxPriceValue = normalized?.parsedMaxPricePerShare ?? Number(payload.maxPricePerShare);
+    const estimatedPrice = Number(payload.estimatedPrice);
+    const notional = Number(payload.notional);
+
+    const rejectedOrder = await PaperOrder.create({
+      accountId: ACCOUNT_ID,
+      broker: shouldSyncPaperTradesToAlpaca() ? 'alpaca' : 'paper',
+      symbol,
+      assetClass,
+      side,
+      qty,
+      orderType: orderTypeValue,
+      timeInForce: ['day', 'gtc', 'gtd', 'ioc'].includes(timeInForceValue) ? timeInForceValue : 'day',
+      goodTilDate: normalized?.parsedGoodTilDate || (payload.goodTilDate ? new Date(payload.goodTilDate) : null),
+      limitPrice: Number.isFinite(limitPriceValue) ? limitPriceValue : null,
+      stopPrice: Number.isFinite(stopPriceValue) ? stopPriceValue : null,
+      takeProfitPrice: Number.isFinite(takeProfitValue) ? takeProfitValue : null,
+      stopLossPrice: Number.isFinite(stopLossValue) ? stopLossValue : null,
+      trailingStopPct: Number.isFinite(trailingStopValue) ? trailingStopValue : null,
+      maxPricePerShare: Number.isFinite(maxPriceValue) ? maxPriceValue : null,
+      allowExtendedHours: payload.allowExtendedHours !== false,
+      status: 'rejected',
+      estimatedPrice: Number.isFinite(estimatedPrice) ? estimatedPrice : null,
+      notional: Number.isFinite(notional) ? notional : null,
+      rejectedReason,
+      filledAt: now
+    });
+    await recordRejectedExecution({
+      broker: 'paper',
+      origin: payload.origin || 'manual',
+      rejectedReason,
+      request: {
+        accountId: ACCOUNT_ID,
+        origin: payload.origin || 'manual',
+        broker: 'paper',
+        symbol,
+        assetClass,
+        side,
+        qty,
+        orderType: orderTypeValue,
+        timeInForce: timeInForceValue,
+        limitPrice: Number.isFinite(limitPriceValue) ? limitPriceValue : null,
+        stopPrice: Number.isFinite(stopPriceValue) ? stopPriceValue : null,
+        takeProfitPrice: Number.isFinite(takeProfitValue) ? takeProfitValue : null,
+        stopLossPrice: Number.isFinite(stopLossValue) ? stopLossValue : null,
+        trailingStopPct: Number.isFinite(trailingStopValue) ? trailingStopValue : null,
+        maxPricePerShare: Number.isFinite(maxPriceValue) ? maxPriceValue : null,
+        allowExtendedHours: payload.allowExtendedHours !== false,
+        strategyId: payload.strategyId || null,
+        setupType: payload.setupType || null,
+        metadata: payload.metadata || {}
+      }
+    });
+    return rejectedOrder;
+  } catch (_err) {
+    return null;
+  }
 }
 
 module.exports = {
@@ -422,6 +1019,7 @@ module.exports = {
   getAccount,
   getEquityCurve,
   placeOrder,
+  recordRejectedOrder,
   normalizeOrderInput,
   enforceMarketHours,
   enforcePriceControls

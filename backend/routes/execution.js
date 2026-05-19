@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const requireMongo = require('../middleware/requireMongo');
 const TradePlan = require('../models/TradePlan');
 const PaperTrade = require('../models/PaperTrade');
 const ExecutionAuditLog = require('../models/ExecutionAuditLog');
@@ -6,6 +7,8 @@ const paperBroker = require('../paper/paperBrokerClient');
 const { evaluateExecutionGate } = require('../executionGate');
 
 const ACCOUNT_ID = 'default';
+
+router.use(requireMongo);
 
 router.post('/check', async (req, res, next) => {
   try {

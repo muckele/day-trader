@@ -16,6 +16,72 @@ function resolveStrategy(rec, trendScore) {
   return 'SMA_CROSS';
 }
 
+function scoreLabel(value) {
+  if (value >= 70) return 'HIGH';
+  if (value >= 40) return 'MEDIUM';
+  return 'LOW';
+}
+
+function buildRecommendationFromIdea(idea, options = {}) {
+  const bias = String(idea?.bias || 'LONG').toUpperCase();
+  const latestClose = Number(idea?.latestClose ?? idea?.factors?.latestClose ?? 0);
+  const atrPct = Number(idea?.factors?.atrPct ?? 0);
+  const atrDollar = latestClose > 0 && atrPct > 0 ? latestClose * (atrPct / 100) : latestClose * 0.03;
+  const stop = bias === 'SHORT'
+    ? latestClose + (1.5 * atrDollar)
+    : latestClose - (1.5 * atrDollar);
+  const takeProfit = bias === 'SHORT'
+    ? latestClose - (2 * atrDollar)
+    : latestClose + (2 * atrDollar);
+  const confidenceScore = Number(idea?.confidenceScore || 0);
+
+  return {
+    ticker: idea.symbol,
+    bias,
+    assetClass: idea.assetClass || 'equity',
+    setupType: idea.strategyBucket || 'ranked_idea',
+    entry: {
+      type: idea.preferredEntryType || 'LIMIT_ON_PULLBACK',
+      price: Number(latestClose.toFixed(2)),
+      note: 'Derived from the latest daily close and factor model.'
+    },
+    risk: {
+      stop: Number(stop.toFixed(2)),
+      takeProfit: [Number(takeProfit.toFixed(2))],
+      timeHorizon: idea.suggestedHoldingPeriod || 'SWING',
+      positionSizePct: 3
+    },
+    signals: {
+      trend: Number(((idea?.factors?.scores?.longTrendScore || idea?.factors?.scores?.shortTrendScore || 0) / 100).toFixed(2)),
+      momentum: Number(((idea?.factors?.momentum20 || 0) / 100).toFixed(2)),
+      volatility: Number(((idea?.factors?.atrPct || 0) / 100).toFixed(2)),
+      volume: Number(((idea?.factors?.avgDollarVolume20 || 0) / 100000000).toFixed(2)),
+      sentiment: 0
+    },
+    score: {
+      value: confidenceScore,
+      label: scoreLabel(confidenceScore)
+    },
+    qualityGate: idea.qualityGate || {
+      passed: false,
+      blockedReasons: ['No quality-gate payload available.']
+    },
+    regime: options.regime || null,
+    strategy: {
+      strategyId: idea.strategyId || null,
+      tags: Array.isArray(idea.thesisTags) ? idea.thesisTags : [],
+      expectedHold: idea.suggestedHoldingPeriod || 'SWING'
+    },
+    rationale: Array.isArray(idea.whyItRankedHighly) ? idea.whyItRankedHighly : [],
+    invalidation: Array.isArray(idea.disqualifyingRisks) && idea.disqualifyingRisks.length
+      ? idea.disqualifyingRisks
+      : ['Setup invalidated if quality, regime, or liquidity conditions deteriorate.'],
+    paperEligible: idea.paperEligible !== false,
+    liveEligible: idea.liveEligible === true,
+    disclaimer: 'Educational purposes only. Not financial advice.'
+  };
+}
+
 function buildRecommendation(rec, options = {}) {
   const bias = rec.recommendation === 'LONG' ? 'LONG' : 'SHORT';
   const entryPrice = rec.latestClose;
@@ -109,4 +175,4 @@ function validateRecommendation(rec) {
   return { valid: errors.length === 0, errors };
 }
 
-module.exports = { buildRecommendation, validateRecommendation };
+module.exports = { buildRecommendation, buildRecommendationFromIdea, validateRecommendation };

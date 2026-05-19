@@ -1,5 +1,9 @@
 // backend/middleware/auth.js
 
+const { ensureSlowBufferCompat } = require('../utils/nodeCompat');
+
+ensureSlowBufferCompat();
+
 const jwt = require('jsonwebtoken');
 
 module.exports = function auth(req, res, next) {

@@ -1,3 +1,4 @@
+const axios = require('axios');
 const User = require('../models/User');
 const RoboSettings = require('../models/RoboSettings');
 const RoboUsage = require('../models/RoboUsage');
@@ -5,13 +6,45 @@ const RoboAuditLog = require('../models/RoboAuditLog');
 const RoboLock = require('../models/RoboLock');
 const RoboSignalExecution = require('../models/RoboSignalExecution');
 const paperBroker = require('../paper/paperBrokerClient');
-const { fetchQuotes } = require('./marketData');
+const { fetchQuotes, isCryptoSymbol } = require('./marketData');
 const emailService = require('./roboEmail');
+const { getMarketStatus } = require('../utils/marketStatus');
+const { evaluateTradePolicy } = require('./tradePolicyService');
+const { writeRiskEvent } = require('./riskEventService');
+const { createStrategyRun, finalizeStrategyRun } = require('./strategyRunService');
+const { recordFilledExecution, recordRejectedExecution } = require('./executionTelemetryService');
+const {
+  buildAlpacaOrderPayload,
+  buildClientOrderId,
+  getAlpacaTradingConfig
+} = require('./alpacaTradingClient');
 
 const LOCK_TTL_MS = 30 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_CIRCUIT_FAILURE_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_COOLDOWN_MINUTES = 60;
+const DEFAULT_SIGNAL_UNIVERSE = [
+  'AAPL',
+  'MSFT',
+  'NVDA',
+  'AMZN',
+  'GOOG',
+  'META',
+  'TSLA',
+  'SPY',
+  'QQQ',
+  'IWM',
+  'DIA',
+  'TLT',
+  'AGG',
+  'BND',
+  'HYG',
+  'LQD',
+  'GLD',
+  'SLV'
+];
+const AUTO_STRATEGY_ID = 'ROBO_MULTI_SYMBOL_V1';
+const AUTO_STRATEGY_NAME = 'ROBO_MULTI_SYMBOL';
 
 const defaultDeps = {
   User,
@@ -34,6 +67,101 @@ function toFinitePositiveInt(value, fallback) {
   const parsed = Math.floor(toFiniteNumber(value, fallback));
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
+}
+
+function parseCsvValues(value) {
+  return String(value || '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeTradeSide(value, fallback = 'buy') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'buy' || normalized === 'long' || normalized === 'cover') return 'buy';
+  if (normalized === 'sell' || normalized === 'short') return 'sell';
+  return fallback;
+}
+
+function getExecutionBackend() {
+  const raw = String(process.env.ROBO_EXECUTION_BACKEND || 'paper').trim().toLowerCase();
+  return raw === 'alpaca' ? 'alpaca' : 'paper';
+}
+
+async function placeAlpacaOrder({
+  symbol,
+  side,
+  qty,
+  assetClass = 'equity',
+  allowExtendedHours,
+  estimatedPrice
+}) {
+  const config = getAlpacaTradingConfig();
+  if (!config.apiKey || !config.apiSecret) {
+    const err = new Error('Alpaca API credentials are not configured for Robo execution.');
+    err.code = 'ALPACA_NOT_CONFIGURED';
+    throw err;
+  }
+
+  try {
+    const payload = buildAlpacaOrderPayload({
+      symbol,
+      assetClass,
+      side,
+      qty,
+      orderType: 'market',
+      timeInForce: assetClass === 'crypto' ? 'gtc' : 'day',
+      allowExtendedHours,
+      clientOrderId: buildClientOrderId({ origin: 'robo', symbol })
+    });
+    const response = await axios.post(
+      `${config.baseUrl}/v2/orders`,
+      payload,
+      {
+        headers: {
+          'APCA-API-KEY-ID': config.apiKey,
+          'APCA-API-SECRET-KEY': config.apiSecret
+        },
+        timeout: 20000
+      }
+    );
+
+    const orderData = response?.data || {};
+    const orderId = orderData.id || orderData.client_order_id || null;
+    const fillPrice = Number(
+      toFiniteNumber(orderData.filled_avg_price, estimatedPrice).toFixed(4)
+    );
+    const filledQty = toFiniteNumber(orderData.filled_qty, qty);
+    const responseNotional = toFiniteNumber(orderData.notional, NaN);
+    const notional = Number.isFinite(responseNotional) && responseNotional > 0
+      ? Number(responseNotional.toFixed(2))
+      : Number((filledQty * fillPrice).toFixed(2));
+
+    return {
+      order: {
+        id: orderId,
+        _id: orderId,
+        notional,
+        fillPrice
+      },
+      trade: {
+        notional,
+        price: fillPrice
+      }
+    };
+  } catch (err) {
+    const upstreamMessage = err?.response?.data?.message || err?.message || 'Unknown Alpaca order error';
+    const wrapped = new Error(`Alpaca order failed: ${upstreamMessage}`);
+    wrapped.code = err?.code || 'ALPACA_ORDER_FAILED';
+    wrapped.status = err?.response?.status || null;
+    throw wrapped;
+  }
+}
+
+function normalizeAllowedSide(value) {
+  const normalized = normalizeTradeSide(value, '');
+  if (normalized === 'buy' || normalized === 'sell') return normalized;
+  return null;
 }
 
 function normalizeLimit(limit) {
@@ -81,6 +209,12 @@ function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function toMinuteIsoString(value = new Date()) {
+  const date = new Date(value);
+  date.setUTCSeconds(0, 0);
+  return date.toISOString();
+}
+
 function parseDateInput(value) {
   if (!value) return null;
   const parsed = new Date(value);
@@ -110,6 +244,35 @@ function getCircuitConfig() {
       process.env.ROBO_CIRCUIT_COOLDOWN_MINUTES,
       DEFAULT_CIRCUIT_COOLDOWN_MINUTES
     )
+  };
+}
+
+function getExecutionControls() {
+  const anomalyThreshold = toFiniteNumber(process.env.ROBO_SLIPPAGE_ANOMALY_BPS_THRESHOLD, 0);
+  return {
+    minMinutesBetweenExecutions: Math.max(
+      0,
+      toFinitePositiveInt(process.env.ROBO_MIN_MINUTES_BETWEEN_EXECUTIONS, 0)
+    ),
+    minMinutesBetweenSymbolExecutions: Math.max(
+      0,
+      toFinitePositiveInt(process.env.ROBO_MIN_MINUTES_BETWEEN_SYMBOL_EXECUTIONS, 0)
+    ),
+    maxExecutionsPerDay: Math.max(
+      0,
+      toFinitePositiveInt(process.env.ROBO_MAX_EXECUTIONS_PER_DAY, 0)
+    ),
+    maxExecutionsPerStrategyPerDay: Math.max(
+      0,
+      toFinitePositiveInt(process.env.ROBO_MAX_EXECUTIONS_PER_STRATEGY_PER_DAY, 0)
+    ),
+    slippageAnomalyLookback: Math.max(
+      1,
+      toFinitePositiveInt(process.env.ROBO_SLIPPAGE_ANOMALY_LOOKBACK, 5)
+    ),
+    slippageAnomalyBpsThreshold: Number.isFinite(anomalyThreshold) ? Math.max(0, anomalyThreshold) : 0,
+    allowExtendedHours: process.env.ROBO_ALLOW_EXTENDED_HOURS !== 'false',
+    killSwitchEnabled: process.env.ROBO_KILL_SWITCH === 'true'
   };
 }
 
@@ -352,16 +515,197 @@ async function sendEmailWithRetry({ to, details }, deps = defaultDeps, maxAttemp
 }
 
 function buildDefaultSignal(now = new Date()) {
-  const symbol = String(process.env.ROBO_SIGNAL_SYMBOL || 'AAPL').toUpperCase();
+  const configuredUniverse = getSignalUniverse();
+  const hasExplicitUniverse = parseCsvValues(process.env.ROBO_SIGNAL_UNIVERSE).length > 0;
+  const minuteBucket = Math.max(0, Math.floor(now.getTime() / (60 * 1000)));
+  const defaultSymbol = configuredUniverse[minuteBucket % configuredUniverse.length];
+  const symbol = String(
+    hasExplicitUniverse
+      ? (defaultSymbol || 'AAPL')
+      : (process.env.ROBO_SIGNAL_SYMBOL || defaultSymbol || 'AAPL')
+  ).toUpperCase();
   const qty = Math.max(1, Math.floor(toFiniteNumber(process.env.ROBO_SIGNAL_QTY, 1)));
-  const side = process.env.ROBO_SIGNAL_SIDE === 'sell' ? 'sell' : 'buy';
+  const side = normalizeTradeSide(process.env.ROBO_SIGNAL_SIDE, 'buy');
   return {
     symbol,
     side,
     qty,
     strategyId: null,
     strategyName: 'ROBO_PLACEHOLDER',
-    generatedAt: now.toISOString()
+    // Minute-level bucketing keeps auto signal IDs stable across concurrent scheduler instances.
+    generatedAt: toMinuteIsoString(now)
+  };
+}
+
+function getSignalUniverse() {
+  const configured = parseCsvValues(process.env.ROBO_SIGNAL_UNIVERSE)
+    .map(item => String(item || '').toUpperCase())
+    .filter(Boolean);
+  if (configured.length) {
+    return Array.from(new Set(configured));
+  }
+
+  const single = String(process.env.ROBO_SIGNAL_SYMBOL || '').trim().toUpperCase();
+  if (single) return [single];
+  return DEFAULT_SIGNAL_UNIVERSE;
+}
+
+function getAllowedSignalSides() {
+  const configured = parseCsvValues(process.env.ROBO_ALLOWED_SIDES || process.env.ROBO_SIGNAL_SIDE || 'buy,sell')
+    .map(normalizeAllowedSide)
+    .filter(Boolean);
+  if (configured.length) {
+    return Array.from(new Set(configured));
+  }
+  return ['buy', 'sell'];
+}
+
+function getSignalSelectionConfig() {
+  const threshold = toFiniteNumber(process.env.ROBO_SIGNAL_CHANGE_THRESHOLD_PCT, 0.25);
+  return {
+    allowedSides: getAllowedSignalSides(),
+    changeThresholdPct: Number.isFinite(threshold) ? Math.max(0, threshold) : 0.25,
+    recentLookbackMinutes: Math.max(
+      0,
+      toFinitePositiveInt(process.env.ROBO_SIGNAL_RECENT_LOOKBACK_MINUTES, 180)
+    ),
+    recentWindowLimit: Math.max(
+      1,
+      toFinitePositiveInt(process.env.ROBO_SIGNAL_RECENT_WINDOW_LIMIT, 20)
+    ),
+    targetNotional: Math.max(
+      0,
+      toFiniteNumber(process.env.ROBO_TARGET_NOTIONAL, 0)
+    ),
+    fallbackQty: Math.max(
+      1,
+      toFinitePositiveInt(process.env.ROBO_SIGNAL_QTY, 1)
+    )
+  };
+}
+
+function deriveSignalSide(changePct, allowedSides, thresholdPct) {
+  const safeChangePct = Number.isFinite(changePct) ? changePct : 0;
+  if (safeChangePct >= thresholdPct && allowedSides.includes('buy')) {
+    return 'buy';
+  }
+  if (safeChangePct <= -thresholdPct && allowedSides.includes('sell')) {
+    return 'sell';
+  }
+  if (safeChangePct >= 0 && allowedSides.includes('buy')) {
+    return 'buy';
+  }
+  if (safeChangePct < 0 && allowedSides.includes('sell')) {
+    return 'sell';
+  }
+  return allowedSides[0] || 'buy';
+}
+
+function resolveSignalQty({
+  price,
+  targetNotional,
+  fallbackQty
+}) {
+  if (targetNotional > 0 && Number.isFinite(price) && price > 0) {
+    return Math.max(1, Math.floor(targetNotional / price) || 1);
+  }
+  return Math.max(1, Math.floor(fallbackQty || 1));
+}
+
+function normalizeQuoteSymbol(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+function buildSignalCandidates(quotes, selectionConfig) {
+  const allowed = new Set(selectionConfig.allowedSides);
+  const threshold = selectionConfig.changeThresholdPct;
+  const bySymbol = new Map();
+
+  (quotes || []).forEach(quote => {
+    const symbol = normalizeQuoteSymbol(quote?.symbol);
+    const price = toFiniteNumber(quote?.price, NaN);
+    const changePercent = toFiniteNumber(quote?.changePercent, 0);
+    if (!symbol || !Number.isFinite(price) || price <= 0) return;
+    const side = deriveSignalSide(changePercent, selectionConfig.allowedSides, threshold);
+    if (!allowed.has(side)) return;
+    bySymbol.set(symbol, {
+      symbol,
+      price,
+      changePercent: Number(changePercent.toFixed(4)),
+      side,
+      score: Math.abs(changePercent),
+      assetClass: isCryptoSymbol(symbol) ? 'crypto' : 'equity'
+    });
+  });
+
+  return Array.from(bySymbol.values())
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.symbol.localeCompare(b.symbol);
+    });
+}
+
+async function getRecentlyExecutedSymbols(userId, now, selectionConfig, deps = defaultDeps) {
+  if (!deps.RoboSignalExecution?.find || selectionConfig.recentLookbackMinutes <= 0) {
+    return new Set();
+  }
+
+  const cutoff = new Date(now.getTime() - (selectionConfig.recentLookbackMinutes * 60 * 1000));
+  let query = deps.RoboSignalExecution.find({
+    userId,
+    status: 'executed',
+    executedAt: { $gte: cutoff }
+  });
+  if (!query) return new Set();
+  if (typeof query.sort === 'function') {
+    query = query.sort({ executedAt: -1 });
+  }
+  if (typeof query.limit === 'function') {
+    query = query.limit(selectionConfig.recentWindowLimit);
+  }
+  if (typeof query.lean === 'function') {
+    query = query.lean();
+  }
+
+  const recent = await query;
+  if (!Array.isArray(recent)) return new Set();
+  return new Set(
+    recent
+      .map(entry => normalizeQuoteSymbol(entry?.symbol))
+      .filter(Boolean)
+  );
+}
+
+async function buildAutoSignalForUser({ userId, now = new Date() }, deps = defaultDeps) {
+  const universe = getSignalUniverse();
+  if (!universe.length) return null;
+
+  const selectionConfig = getSignalSelectionConfig();
+  const quotes = await deps.fetchQuotes(universe);
+  const candidates = buildSignalCandidates(quotes, selectionConfig);
+  if (!candidates.length) return null;
+
+  const recentSymbols = await getRecentlyExecutedSymbols(userId, now, selectionConfig, deps);
+  const selected = candidates.find(candidate => !recentSymbols.has(candidate.symbol))
+    || candidates[0];
+  if (!selected) return null;
+
+  const qty = resolveSignalQty({
+    price: selected.price,
+    targetNotional: selectionConfig.targetNotional,
+    fallbackQty: selectionConfig.fallbackQty
+  });
+
+  return {
+    symbol: selected.symbol,
+    side: selected.side,
+    qty,
+    assetClass: selected.assetClass,
+    strategyId: AUTO_STRATEGY_ID,
+    strategyName: AUTO_STRATEGY_NAME,
+    generatedAt: toMinuteIsoString(now)
   };
 }
 
@@ -398,10 +742,114 @@ async function updateSignalExecution(userId, signalId, patch, now = new Date(), 
   );
 }
 
+async function findRecentExecutedSignal(userId, cutoff, deps = defaultDeps) {
+  if (!deps.RoboSignalExecution?.findOne) return null;
+  const query = deps.RoboSignalExecution.findOne({
+    userId,
+    status: 'executed',
+    executedAt: { $gte: cutoff }
+  });
+  if (!query) return null;
+
+  if (typeof query.sort === 'function') {
+    const sorted = query.sort({ executedAt: -1 });
+    if (sorted && typeof sorted.lean === 'function') return sorted.lean();
+    return sorted;
+  }
+
+  if (typeof query.lean === 'function') return query.lean();
+  return query;
+}
+
+async function countExecutedSignalsSince(userId, since, deps = defaultDeps) {
+  if (!deps.RoboSignalExecution?.countDocuments) return 0;
+  const count = await deps.RoboSignalExecution.countDocuments({
+    userId,
+    status: 'executed',
+    executedAt: { $gte: since }
+  });
+  return Number.isFinite(Number(count)) ? Number(count) : 0;
+}
+
+async function countExecutedSignalsForStrategySince(userId, strategyId, since, deps = defaultDeps) {
+  if (!strategyId || !deps.RoboSignalExecution?.countDocuments) return 0;
+  const count = await deps.RoboSignalExecution.countDocuments({
+    userId,
+    strategyId,
+    status: 'executed',
+    executedAt: { $gte: since }
+  });
+  return Number.isFinite(Number(count)) ? Number(count) : 0;
+}
+
+async function findRecentExecutedSignalForSymbol(userId, symbol, cutoff, deps = defaultDeps) {
+  if (!symbol || !deps.RoboSignalExecution?.findOne) return null;
+  const query = deps.RoboSignalExecution.findOne({
+    userId,
+    symbol,
+    status: 'executed',
+    executedAt: { $gte: cutoff }
+  });
+  if (!query) return null;
+  if (typeof query.sort === 'function') {
+    const sorted = query.sort({ executedAt: -1 });
+    if (sorted && typeof sorted.lean === 'function') return sorted.lean();
+    return sorted;
+  }
+  if (typeof query.lean === 'function') return query.lean();
+  return query;
+}
+
+function deriveSlippageBpsFromEvent(event) {
+  const payload = event?.payload || {};
+  const fromPayload = toFiniteNumber(payload.slippageBps, NaN);
+  if (Number.isFinite(fromPayload)) return Math.abs(fromPayload);
+
+  const estimatedPrice = toFiniteNumber(payload.estimatedPrice, NaN);
+  const fillPrice = toFiniteNumber(payload.fillPrice, NaN);
+  const side = normalizeTradeSide(payload.side, 'buy');
+  if (!Number.isFinite(estimatedPrice) || estimatedPrice <= 0 || !Number.isFinite(fillPrice)) {
+    return NaN;
+  }
+  const adverse = side === 'buy'
+    ? (fillPrice - estimatedPrice)
+    : (estimatedPrice - fillPrice);
+  return Math.abs((adverse / estimatedPrice) * 10000);
+}
+
+function detectExecutionAnomaly(events, thresholdBps) {
+  if (!Array.isArray(events) || events.length === 0 || !(thresholdBps > 0)) {
+    return { anomalous: false, maxBps: 0, avgBps: 0, samples: 0 };
+  }
+  const samples = events
+    .map(deriveSlippageBpsFromEvent)
+    .filter(value => Number.isFinite(value));
+  if (!samples.length) {
+    return { anomalous: false, maxBps: 0, avgBps: 0, samples: 0 };
+  }
+  const maxBps = Math.max(...samples);
+  const avgBps = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  return {
+    anomalous: maxBps >= thresholdBps,
+    maxBps: Number(maxBps.toFixed(2)),
+    avgBps: Number(avgBps.toFixed(2)),
+    samples: samples.length
+  };
+}
+
 async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, deps = defaultDeps) {
   const settings = await getOrCreateSettings(userId, deps);
   const settingsPayload = toSettingsPayload(settings);
   let activeSettingsPayload = settingsPayload;
+  const executionControls = getExecutionControls();
+
+  if (executionControls.killSwitchEnabled) {
+    await writeAuditLog(userId, 'trade_skipped_kill_switch', {
+      reason: 'Global Robo kill switch is enabled.',
+      at: now.toISOString()
+    }, deps);
+    return { ok: false, executed: false, skipped: true, reason: 'KILL_SWITCH' };
+  }
 
   if (!settingsPayload.enabled) {
     await writeAuditLog(userId, 'robo_disabled', {
@@ -432,6 +880,20 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
   }
 
   let claimedSignalId = null;
+  let strategyRun = null;
+  let candidateSignal = null;
+  let symbol = null;
+  let side = 'buy';
+  let qty = 0;
+  let signalId = null;
+  let executionBackend = null;
+  const finalizeRun = async (status, payload = {}) => {
+    if (!strategyRun) return null;
+    return finalizeStrategyRun(strategyRun, {
+      status,
+      ...payload
+    });
+  };
   try {
     const freshSettings = await getOrCreateSettings(userId, deps);
     const freshPayload = toSettingsPayload(freshSettings);
@@ -454,11 +916,62 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
       return { ok: false, executed: false, skipped: true, reason: 'CIRCUIT_BREAKER' };
     }
 
-    const candidateSignal = signal || buildDefaultSignal(now);
-    const symbol = String(candidateSignal.symbol || '').toUpperCase();
-    const side = candidateSignal.side === 'sell' ? 'sell' : 'buy';
-    const qty = Math.max(1, Math.floor(toFiniteNumber(candidateSignal.qty, 1)));
-    const signalId = deriveSignalId(candidateSignal, symbol, side, qty, now);
+    if (executionControls.killSwitchEnabled) {
+      await writeAuditLog(userId, 'trade_skipped_kill_switch', {
+        reason: 'Global Robo kill switch is enabled.',
+        at: now.toISOString()
+      }, deps);
+      return { ok: false, executed: false, skipped: true, reason: 'KILL_SWITCH' };
+    }
+
+    if (!executionControls.allowExtendedHours) {
+      const market = getMarketStatus(now);
+      if (market.status !== 'OPEN') {
+        await writeAuditLog(userId, 'trade_skipped_market_closed', {
+          reason: 'Robo execution is limited to regular market hours.',
+          marketStatus: market.status,
+          nextOpen: market.nextOpen || null,
+          at: now.toISOString()
+        }, deps);
+        return { ok: false, executed: false, skipped: true, reason: 'MARKET_CLOSED' };
+      }
+    }
+
+    if (executionControls.maxExecutionsPerDay > 0) {
+      const dayStart = getBucketStart(now, 'day');
+      const executedToday = await countExecutedSignalsSince(userId, dayStart, deps);
+      if (executedToday >= executionControls.maxExecutionsPerDay) {
+        await writeAuditLog(userId, 'trade_skipped_max_trades', {
+          reason: 'Reached max Robo executions for the current day.',
+          executedToday,
+          maxExecutionsPerDay: executionControls.maxExecutionsPerDay,
+          dayStart: dayStart.toISOString(),
+          at: now.toISOString()
+        }, deps);
+        return { ok: false, executed: false, skipped: true, reason: 'MAX_TRADES_REACHED' };
+      }
+    }
+
+    if (executionControls.minMinutesBetweenExecutions > 0) {
+      const cutoff = new Date(now.getTime() - (executionControls.minMinutesBetweenExecutions * 60 * 1000));
+      const recentExecuted = await findRecentExecutedSignal(userId, cutoff, deps);
+      if (recentExecuted) {
+        await writeAuditLog(userId, 'trade_skipped_cooldown', {
+          reason: 'Robo execution cooldown is active.',
+          minMinutesBetweenExecutions: executionControls.minMinutesBetweenExecutions,
+          lastExecutedAt: recentExecuted.executedAt || recentExecuted.updatedAt || null,
+          at: now.toISOString()
+        }, deps);
+        return { ok: false, executed: false, skipped: true, reason: 'COOLDOWN_ACTIVE' };
+      }
+    }
+
+    candidateSignal = signal || buildDefaultSignal(now);
+    symbol = String(candidateSignal.symbol || '').toUpperCase();
+    side = normalizeTradeSide(candidateSignal.side, 'buy');
+    qty = Math.max(1, Math.floor(toFiniteNumber(candidateSignal.qty, 1)));
+    signalId = deriveSignalId(candidateSignal, symbol, side, qty, now);
+    executionBackend = getExecutionBackend();
 
     if (!symbol) {
       await writeAuditLog(userId, 'trade_skipped_invalid_signal', {
@@ -467,6 +980,146 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
         signalId
       }, deps);
       return { ok: false, executed: false, skipped: true, reason: 'INVALID_SIGNAL' };
+    }
+
+    strategyRun = await createStrategyRun({
+      strategyId: candidateSignal.strategyId || AUTO_STRATEGY_ID,
+      strategyName: candidateSignal.strategyName || AUTO_STRATEGY_NAME,
+      runType: 'robo',
+      mode: executionBackend === 'alpaca' ? 'live' : 'paper',
+      symbol,
+      universe: [symbol],
+      parameters: {
+        signalSide: side,
+        qty,
+        assetClass: candidateSignal.assetClass || 'equity',
+        executionBackend
+      },
+      source: 'robo',
+      summary: {
+        signalId
+      },
+      context: {
+        userId: String(userId),
+        strategyName: candidateSignal.strategyName || AUTO_STRATEGY_NAME
+      }
+    });
+
+    const policyDecision = await evaluateTradePolicy({
+      symbol,
+      side,
+      assetClass: candidateSignal.assetClass || 'equity',
+      strategyId: candidateSignal.strategyId || null,
+      executionBackend,
+      alpacaBaseUrl: getAlpacaTradingConfig().baseUrl,
+      orderNotional: 0
+    });
+    if (!policyDecision.ok) {
+      const reason = policyDecision.reasons[0] || 'Automated trade blocked by policy.';
+      await writeAuditLog(userId, 'trade_skipped_policy', {
+        symbol,
+        signalId,
+        side,
+        qty,
+        reasons: policyDecision.reasons,
+        instrument: policyDecision.instrument,
+        mode: policyDecision.mode,
+        at: now.toISOString()
+      }, deps);
+      await writeRiskEvent({
+        source: 'robo_trader',
+        severity: 'warning',
+        eventType: 'policy_blocked',
+        symbol,
+        strategyId: candidateSignal.strategyId || null,
+        assetClass: candidateSignal.assetClass || 'equity',
+        message: reason,
+        payload: {
+          signalId,
+          reasons: policyDecision.reasons,
+          instrument: policyDecision.instrument,
+          mode: policyDecision.mode
+        }
+      });
+      await finalizeRun('skipped', {
+        summary: {
+          signalId,
+          reason: 'POLICY_BLOCKED'
+        },
+        result: {
+          reasons: policyDecision.reasons
+        }
+      });
+      return { ok: false, executed: false, skipped: true, reason: 'POLICY_BLOCKED', signalId };
+    }
+
+    if (executionControls.maxExecutionsPerStrategyPerDay > 0 && candidateSignal.strategyId) {
+      const dayStart = getBucketStart(now, 'day');
+      const executedForStrategy = await countExecutedSignalsForStrategySince(
+        userId,
+        candidateSignal.strategyId,
+        dayStart,
+        deps
+      );
+      if (executedForStrategy >= executionControls.maxExecutionsPerStrategyPerDay) {
+        await writeAuditLog(userId, 'trade_skipped_strategy_limit', {
+          reason: 'Reached max Robo executions for strategy today.',
+          strategyId: candidateSignal.strategyId,
+          executedForStrategy,
+          maxExecutionsPerStrategyPerDay: executionControls.maxExecutionsPerStrategyPerDay,
+          dayStart: dayStart.toISOString(),
+          at: now.toISOString()
+        }, deps);
+        await finalizeRun('skipped', {
+          summary: { signalId, reason: 'STRATEGY_LIMIT' }
+        });
+        return { ok: false, executed: false, skipped: true, reason: 'STRATEGY_LIMIT' };
+      }
+    }
+
+    if (executionControls.minMinutesBetweenSymbolExecutions > 0) {
+      const symbolCutoff = new Date(
+        now.getTime() - (executionControls.minMinutesBetweenSymbolExecutions * 60 * 1000)
+      );
+      const recentBySymbol = await findRecentExecutedSignalForSymbol(userId, symbol, symbolCutoff, deps);
+      if (recentBySymbol) {
+        await writeAuditLog(userId, 'trade_skipped_symbol_cooldown', {
+          reason: 'Symbol-level Robo cooldown is active.',
+          symbol,
+          minMinutesBetweenSymbolExecutions: executionControls.minMinutesBetweenSymbolExecutions,
+          lastExecutedAt: recentBySymbol.executedAt || recentBySymbol.updatedAt || null,
+          at: now.toISOString()
+        }, deps);
+        await finalizeRun('skipped', {
+          summary: { signalId, reason: 'SYMBOL_COOLDOWN' }
+        });
+        return { ok: false, executed: false, skipped: true, reason: 'SYMBOL_COOLDOWN' };
+      }
+    }
+
+    if (executionControls.slippageAnomalyBpsThreshold > 0 && deps.RoboAuditLog?.find) {
+      const recentEvents = await deps.RoboAuditLog.find({
+        userId,
+        eventType: 'trade_executed'
+      })
+        .sort({ createdAt: -1 })
+        .limit(executionControls.slippageAnomalyLookback)
+        .lean();
+      const anomaly = detectExecutionAnomaly(
+        recentEvents,
+        executionControls.slippageAnomalyBpsThreshold
+      );
+      if (anomaly.anomalous) {
+        await writeAuditLog(userId, 'trade_skipped_anomaly', {
+          reason: 'Execution anomaly guardrail triggered due to slippage spike.',
+          thresholdBps: executionControls.slippageAnomalyBpsThreshold,
+          maxRecentSlippageBps: anomaly.maxBps,
+          avgRecentSlippageBps: anomaly.avgBps,
+          samples: anomaly.samples,
+          at: now.toISOString()
+        }, deps);
+        return { ok: false, executed: false, skipped: true, reason: 'ANOMALY_GUARDRAIL' };
+      }
     }
 
     const claim = await claimSignalExecution({
@@ -494,7 +1147,10 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
     }
     claimedSignalId = signalId;
 
-    const quotes = await deps.fetchQuotes([symbol]);
+    const quotes = await deps.fetchQuotes(
+      [symbol],
+      candidateSignal.assetClass ? { assetClass: candidateSignal.assetClass } : undefined
+    );
     const quote = Array.isArray(quotes) ? quotes[0] : null;
     const estimatedPrice = toFiniteNumber(quote?.price, NaN);
     if (!Number.isFinite(estimatedPrice) || estimatedPrice <= 0) {
@@ -507,6 +1163,9 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
         signalId,
         reason: 'Quote unavailable for signal symbol.'
       }, deps);
+      await finalizeRun('skipped', {
+        summary: { signalId, reason: 'NO_QUOTE' }
+      });
       return { ok: false, executed: false, skipped: true, reason: 'NO_QUOTE', signalId };
     }
 
@@ -520,6 +1179,14 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
     });
 
     if (!limitDecision.allowed) {
+      const limitLabelMap = {
+        daily: 'daily',
+        weekly: 'weekly',
+        monthly: 'monthly'
+      };
+      const violatedLabels = limitDecision.violations
+        .map(item => limitLabelMap[item] || item)
+        .join(', ');
       await updateSignalExecution(userId, signalId, {
         status: 'skipped',
         reason: 'LIMIT_EXCEEDED'
@@ -531,26 +1198,57 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
         qty,
         estimatedPrice,
         attemptNotional: spendingNotional,
+        reason: `Would exceed ${violatedLabels} spending limit${limitDecision.violations.length > 1 ? 's' : ''}.`,
         violations: limitDecision.violations,
         usage: usageSnapshot
       }, deps);
+      await finalizeRun('skipped', {
+        summary: { signalId, reason: 'LIMIT_EXCEEDED' },
+        result: {
+          usage: usageSnapshot,
+          violations: limitDecision.violations
+        }
+      });
       return { ok: false, executed: false, skipped: true, reason: 'LIMIT_EXCEEDED', signalId };
     }
 
-    const execution = await deps.paperBroker.placeOrder({
-      symbol,
-      side,
-      qty,
-      orderType: 'market',
-      strategyId: candidateSignal.strategyId || null,
-      setupType: 'ROBO',
-      strategyTags: ['robo'],
-      stopPrice: candidateSignal.stopPrice || null
-    });
+    const execution = executionBackend === 'alpaca'
+      ? await placeAlpacaOrder({
+          symbol,
+          side,
+          qty,
+          assetClass: candidateSignal.assetClass || 'equity',
+          allowExtendedHours: executionControls.allowExtendedHours,
+          estimatedPrice
+        })
+      : await deps.paperBroker.placeOrder({
+          symbol,
+          side,
+          qty,
+          assetClass: candidateSignal.assetClass || undefined,
+          orderType: 'market',
+          allowExtendedHours: executionControls.allowExtendedHours,
+          strategyId: candidateSignal.strategyId || null,
+          setupType: 'ROBO',
+          strategyTags: ['robo'],
+          stopPrice: candidateSignal.stopPrice || null,
+          origin: 'robo',
+          metadata: {
+            userId: String(userId),
+            signalId,
+            strategyName: candidateSignal.strategyName || AUTO_STRATEGY_NAME
+          }
+        });
 
     const order = execution?.order || {};
     const trade = execution?.trade || {};
     const executedNotional = Number(toFiniteNumber(order.notional, trade.notional || estimatedNotional).toFixed(2));
+    const fillPrice = Number(toFiniteNumber(order.fillPrice, trade.price || estimatedPrice).toFixed(4));
+    const slippageBps = estimatedPrice > 0
+      ? Number((((side === 'buy'
+        ? (fillPrice - estimatedPrice)
+        : (estimatedPrice - fillPrice)) / estimatedPrice) * 10000).toFixed(2))
+      : 0;
     const usageNotional = side === 'buy' ? executedNotional : 0;
 
     await incrementUsageBuckets(userId, now, usageNotional, deps);
@@ -560,8 +1258,11 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
       side,
       qty,
       estimatedPrice,
+      fillPrice,
+      slippageBps,
       notional: executedNotional,
       usageNotional,
+      executionBackend,
       signalId,
       orderId: order._id || order.id || null,
       strategyName: candidateSignal.strategyName || null,
@@ -575,6 +1276,52 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
       executedAt: now,
       notional: executedNotional
     }, now, deps);
+
+    if (executionBackend === 'alpaca') {
+      await recordFilledExecution({
+        broker: 'alpaca',
+        origin: 'robo',
+        request: {
+          accountId: String(userId),
+          origin: 'robo',
+          broker: 'alpaca',
+          symbol,
+          assetClass: candidateSignal.assetClass || 'equity',
+          side,
+          qty,
+          orderType: 'market',
+          timeInForce: 'day',
+          allowExtendedHours: executionControls.allowExtendedHours,
+          strategyId: candidateSignal.strategyId || AUTO_STRATEGY_ID,
+          setupType: 'ROBO',
+          metadata: {
+            signalId,
+            strategyName: candidateSignal.strategyName || AUTO_STRATEGY_NAME
+          }
+        },
+        order: {
+          id: eventPayload.orderId,
+          fillPrice,
+          notional: executedNotional,
+          estimatedPrice,
+          fillLatencyMs: null,
+          effectiveSlippageBps: slippageBps,
+          filledAt: now
+        },
+        trade: {
+          symbol,
+          assetClass: candidateSignal.assetClass || 'equity',
+          side,
+          qty,
+          price: fillPrice,
+          notional: executedNotional,
+          strategyId: candidateSignal.strategyId || AUTO_STRATEGY_ID,
+          setupType: 'ROBO',
+          realizedPnl: null,
+          filledAt: now
+        }
+      });
+    }
 
     const user = await deps.User.findById(userId).lean();
     const recipient = user?.email || process.env.ROBO_FALLBACK_EMAIL || null;
@@ -608,6 +1355,22 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
       }, deps);
     }
 
+    await finalizeRun('completed', {
+      metrics: {
+        slippageBps,
+        notional: executedNotional
+      },
+      summary: {
+        signalId,
+        orderId: eventPayload.orderId,
+        reason: 'EXECUTED'
+      },
+      result: {
+        executionBackend,
+        orderId: eventPayload.orderId
+      }
+    });
+
     return {
       ok: true,
       executed: true,
@@ -618,6 +1381,49 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
       signalId
     };
   } catch (err) {
+    if (executionBackend === 'alpaca' && symbol && qty > 0) {
+      await recordRejectedExecution({
+        broker: 'alpaca',
+        origin: 'robo',
+        rejectedReason: err?.message || 'Execution failed',
+        request: {
+          accountId: String(userId),
+          origin: 'robo',
+          broker: 'alpaca',
+          symbol,
+          assetClass: candidateSignal?.assetClass || 'equity',
+          side,
+          qty,
+          orderType: 'market',
+          timeInForce: 'day',
+          allowExtendedHours: executionControls.allowExtendedHours,
+          strategyId: candidateSignal?.strategyId || AUTO_STRATEGY_ID,
+          setupType: 'ROBO',
+          metadata: {
+            signalId,
+            strategyName: candidateSignal?.strategyName || AUTO_STRATEGY_NAME
+          }
+        }
+      });
+    } else if (symbol && qty > 0 && typeof deps.paperBroker?.recordRejectedOrder === 'function') {
+      await deps.paperBroker.recordRejectedOrder({
+        symbol,
+        side,
+        qty,
+        assetClass: candidateSignal?.assetClass || 'equity',
+        orderType: 'market',
+        allowExtendedHours: executionControls.allowExtendedHours,
+        strategyId: candidateSignal?.strategyId || AUTO_STRATEGY_ID,
+        setupType: 'ROBO',
+        origin: 'robo',
+        metadata: {
+          userId: String(userId),
+          signalId,
+          strategyName: candidateSignal?.strategyName || AUTO_STRATEGY_NAME
+        }
+      }, err?.message || 'Execution failed');
+    }
+
     try {
       await markCircuitFailure(userId, activeSettingsPayload, err, now, deps);
     } catch (_circuitErr) {
@@ -634,6 +1440,13 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
         // ignore marker update errors; primary error should still propagate
       }
     }
+    await finalizeRun('failed', {
+      summary: {
+        signalId,
+        reason: err?.message || 'Execution failed'
+      },
+      error: err?.message || 'Execution failed'
+    });
     throw err;
   } finally {
     await releaseUserLock(userId, owner, deps);
@@ -693,11 +1506,75 @@ async function cleanupSignalExecutions({ olderThanDays, now = new Date() } = {},
   };
 }
 
+async function getStatusForUser(userId, now = new Date(), deps = defaultDeps) {
+  const settingsDoc = await getOrCreateSettings(userId, deps);
+  const usage = await getUsageSnapshotForUser(userId, now, deps);
+  const settings = toSettingsPayload(settingsDoc);
+  const lastEvent = await deps.RoboAuditLog.findOne({ userId }).sort({ createdAt: -1 }).lean();
+  const lastTrade = await deps.RoboAuditLog.findOne({ userId, eventType: 'trade_executed' })
+    .sort({ createdAt: -1 })
+    .lean();
+  const since = new Date(now.getTime() - (24 * 60 * 60 * 1000));
+  const recentEvents = await deps.RoboAuditLog.find({
+    userId,
+    createdAt: { $gte: since }
+  }).lean();
+
+  const counters24h = recentEvents.reduce((acc, event) => {
+    acc[event.eventType] = (acc[event.eventType] || 0) + 1;
+    return acc;
+  }, {});
+
+  const executedToday = await countExecutedSignalsSince(userId, getBucketStart(now, 'day'), deps);
+  const executionControls = getExecutionControls();
+  const signalSelection = getSignalSelectionConfig();
+
+  return {
+    settings,
+    usage,
+    executionControls,
+    lastEvent: lastEvent
+      ? {
+          eventType: lastEvent.eventType,
+          createdAt: lastEvent.createdAt,
+          payload: lastEvent.payload || {}
+        }
+      : null,
+    lastTrade: lastTrade
+      ? {
+          createdAt: lastTrade.createdAt,
+          payload: lastTrade.payload || {}
+        }
+      : null,
+    counters24h,
+    executedToday,
+    signalSelection: {
+      universe: getSignalUniverse(),
+      allowedSides: signalSelection.allowedSides,
+      changeThresholdPct: signalSelection.changeThresholdPct,
+      targetNotional: signalSelection.targetNotional
+    }
+  };
+}
+
 async function runSchedulerTick(deps = defaultDeps) {
   const enabled = await deps.RoboSettings.find({ enabled: true }).lean();
   for (const setting of enabled) {
     try {
-      await runRoboTradeForUser({ userId: setting.userId }, deps);
+      const now = new Date();
+      const signal = await buildAutoSignalForUser({
+        userId: setting.userId,
+        now
+      }, deps);
+      if (!signal) {
+        await writeAuditLog(setting.userId, 'trade_skipped_no_signal', {
+          reason: 'No eligible symbols from configured Robo signal universe.',
+          universe: getSignalUniverse(),
+          at: now.toISOString()
+        }, deps);
+        continue;
+      }
+      await runRoboTradeForUser({ userId: setting.userId, signal, now }, deps);
     } catch (err) {
       await writeAuditLog(setting.userId, 'trade_skipped_scheduler_error', {
         reason: err?.message || 'Unknown scheduler error'
@@ -714,7 +1591,9 @@ module.exports = {
   updateSettingsForUser,
   getUsageSnapshotForUser,
   getAuditLogsForUser,
+  getStatusForUser,
   cleanupSignalExecutions,
+  buildAutoSignalForUser,
   runRoboTradeForUser,
   runSchedulerTick
 };

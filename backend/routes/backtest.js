@@ -2,8 +2,10 @@ const router = require('express').Router();
 const { fetchDaily } = require('../tradeLogic');
 const { backtestStrategy } = require('../backtest/backtestEngine');
 const { getStrategy, STRATEGIES } = require('../signal/strategies');
+const { createStrategyRun, finalizeStrategyRun } = require('../services/strategyRunService');
 
 router.post('/', async (req, res) => {
+  let strategyRun = null;
   try {
     const { symbol, strategyId, start, end, timeframe } = req.body || {};
     if (!symbol || !strategyId) {
@@ -18,6 +20,27 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Unknown strategyId.' });
     }
 
+    strategyRun = await createStrategyRun({
+      strategyId,
+      strategyName: strategy.name,
+      runType: 'backtest',
+      mode: 'simulation',
+      symbol: symbol.toUpperCase(),
+      universe: [symbol.toUpperCase()],
+      parameters: {
+        start: start || null,
+        end: end || null,
+        timeframe: timeframe || '1D'
+      },
+      source: 'backtest',
+      summary: {
+        symbol: symbol.toUpperCase()
+      },
+      context: {
+        route: '/api/backtest'
+      }
+    });
+
     const bars = await fetchDaily(symbol.toUpperCase());
     const filtered = bars.filter(bar => {
       const date = new Date(bar.t).toISOString().slice(0, 10);
@@ -27,10 +50,29 @@ router.post('/', async (req, res) => {
     });
 
     if (filtered.length < 50) {
+      await finalizeStrategyRun(strategyRun, {
+        status: 'failed',
+        summary: { symbol: symbol.toUpperCase(), reason: 'NOT_ENOUGH_DATA' },
+        error: 'Not enough data for backtest.'
+      });
       return res.status(400).json({ error: 'Not enough data for backtest.' });
     }
 
     const results = backtestStrategy(filtered, strategyId);
+    await finalizeStrategyRun(strategyRun, {
+      status: 'completed',
+      metrics: {
+        tradeCount: results.tradeCount,
+        winRate: results.winRate,
+        avgR: results.avgR,
+        maxDrawdown: results.maxDrawdown
+      },
+      summary: {
+        symbol: symbol.toUpperCase(),
+        strategyId
+      },
+      result: results
+    });
     res.json({
       symbol: symbol.toUpperCase(),
       strategy,
@@ -40,6 +82,13 @@ router.post('/', async (req, res) => {
       ...results
     });
   } catch (err) {
+    await finalizeStrategyRun(strategyRun, {
+      status: 'failed',
+      error: err.message,
+      summary: {
+        reason: 'BACKTEST_ERROR'
+      }
+    });
     res.status(500).json({ error: err.message });
   }
 });

@@ -172,6 +172,14 @@ export default function Activity() {
                   {item.side.toUpperCase()} {item.qty} @ $
                   {item.type === 'order' ? item.fillPrice : item.price}
                 </p>
+                {item.type === 'order' && (
+                  <p className="text-xs text-slate-500">
+                    {String(item.orderType || 'market').toUpperCase()} · {String(item.status || '--').toUpperCase()}
+                    {Number.isFinite(Number(item.effectiveSlippageBps))
+                      ? ` · Slippage ${Number(item.effectiveSlippageBps).toFixed(2)} bps`
+                      : ''}
+                  </p>
+                )}
                 {item.strategyId && (
                   <p className="text-xs text-slate-500">Strategy {item.strategyId}</p>
                 )}

@@ -9,13 +9,14 @@ const links = [
   { to: '/portfolio', label: 'Portfolio' },
   { to: '/activity', label: 'Activity' },
   { to: '/analytics', label: 'Analytics' },
+  { to: '/trading-system', label: 'System' },
   { to: '/discover', label: 'Discover' }
 ];
 
 export default function BottomNav() {
   return (
     <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-[#0a100c]/96 border-t border-emerald-900/65 px-2 py-2 z-40 backdrop-blur-xl shadow-[0_-10px_24px_rgba(0,0,0,0.45)]">
-      <div className="grid grid-cols-8 gap-2 text-[10px]">
+      <div className="grid grid-cols-9 gap-2 text-[10px]">
         {links.map(link => (
           <NavLink
             key={`${link.to}-${link.label}`}

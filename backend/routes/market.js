@@ -1,7 +1,12 @@
 const express = require('express');
 const axios = require('axios');
 const { fetchDaily, fetchIntraday } = require('../tradeLogic');
-const { fetchQuotes, fetchSparkline } = require('../services/marketData');
+const {
+  fetchQuotes,
+  fetchSparkline,
+  isCryptoSymbol,
+  normalizeCryptoProviderSymbol
+} = require('../services/marketData');
 const { getMarketStatus } = require('../utils/marketStatus');
 
 const router = express.Router();
@@ -27,9 +32,46 @@ function missingCredentials() {
   return !API_KEY || !API_SECRET;
 }
 
+function extractCryptoBars(payload, symbol) {
+  const providerSymbol = normalizeCryptoProviderSymbol(symbol);
+  const compactSymbol = providerSymbol.replace('/', '');
+  const bars = payload?.bars || {};
+  return bars[providerSymbol] || bars[compactSymbol] || bars[symbol] || [];
+}
+
 router.get('/intraday/:symbol', async (req, res) => {
   try {
     const symbol = req.params.symbol.toUpperCase();
+    if (isCryptoSymbol(symbol)) {
+      if (missingCredentials()) {
+        return res.json([]);
+      }
+      const resp = await axios.get(
+        `${DATA_URL}/v1beta3/crypto/us/bars`,
+        {
+          headers: {
+            'APCA-API-KEY-ID': API_KEY,
+            'APCA-API-SECRET-KEY': API_SECRET
+          },
+          params: {
+            symbols: normalizeCryptoProviderSymbol(symbol),
+            timeframe: '5Min',
+            limit: 400
+          }
+        }
+      );
+      const bars = extractCryptoBars(resp.data, symbol);
+      return res.json(
+        bars.map(bar => ({
+          time: new Date(bar.t).toISOString(),
+          open: bar.o,
+          high: bar.h,
+          low: bar.l,
+          close: bar.c,
+          volume: bar.v
+        }))
+      );
+    }
     const data = await fetchIntraday(symbol);
     res.json(data);
   } catch (err) {
@@ -48,6 +90,32 @@ router.get('/status', (req, res) => {
 router.get('/historical/:symbol', async (req, res) => {
   try {
     const symbol = req.params.symbol.toUpperCase();
+    if (isCryptoSymbol(symbol)) {
+      if (missingCredentials()) {
+        return res.json([]);
+      }
+      const resp = await axios.get(
+        `${DATA_URL}/v1beta3/crypto/us/bars`,
+        {
+          headers: {
+            'APCA-API-KEY-ID': API_KEY,
+            'APCA-API-SECRET-KEY': API_SECRET
+          },
+          params: {
+            symbols: normalizeCryptoProviderSymbol(symbol),
+            timeframe: '1Day',
+            limit: 365
+          }
+        }
+      );
+      const bars = extractCryptoBars(resp.data, symbol);
+      return res.json(
+        bars.map(bar => ({
+          date: new Date(bar.t).toISOString().slice(0, 10),
+          close: bar.c
+        }))
+      );
+    }
     const bars = await fetchDaily(symbol);
     const data = bars.map(bar => ({
       date: new Date(bar.t).toISOString().slice(0, 10),
@@ -65,12 +133,13 @@ router.get('/historical/:symbol', async (req, res) => {
 
 router.post('/quotes', async (req, res) => {
   const symbols = req.body?.symbols || [];
+  const assetClass = req.body?.assetClass;
   if (!Array.isArray(symbols) || symbols.length === 0) {
     return res.status(400).json({ error: 'symbols must be a non-empty array.' });
   }
 
   try {
-    const data = await fetchQuotes(symbols);
+    const data = await fetchQuotes(symbols, { assetClass });
     res.json(data);
   } catch (err) {
     console.error('market quotes error:', err.response?.data || err.message);
@@ -81,12 +150,13 @@ router.post('/quotes', async (req, res) => {
 router.post('/sparkline', async (req, res) => {
   const symbol = req.body?.symbol?.toUpperCase();
   const range = req.body?.range || '1D';
+  const assetClass = req.body?.assetClass;
   if (!symbol) {
     return res.status(400).json({ error: 'symbol is required.' });
   }
 
   try {
-    const data = await fetchSparkline(symbol, range);
+    const data = await fetchSparkline(symbol, range, { assetClass });
     res.json(data);
   } catch (err) {
     console.error('market sparkline error:', err.response?.data || err.message);

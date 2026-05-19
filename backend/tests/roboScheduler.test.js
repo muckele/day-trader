@@ -5,7 +5,9 @@ const { startRoboScheduler } = require('../services/roboScheduler');
 
 test('startRoboScheduler runs scheduler tick and retention cleanup', async t => {
   const previousDisabled = process.env.ROBO_SCHEDULER_DISABLED;
+  const previousRequireDb = process.env.ROBO_SCHEDULER_REQUIRE_DB;
   delete process.env.ROBO_SCHEDULER_DISABLED;
+  process.env.ROBO_SCHEDULER_REQUIRE_DB = 'false';
 
   let tickCalls = 0;
   const cleanupCalls = [];
@@ -34,6 +36,8 @@ test('startRoboScheduler runs scheduler tick and retention cleanup', async t => 
   } finally {
     if (previousDisabled === undefined) delete process.env.ROBO_SCHEDULER_DISABLED;
     else process.env.ROBO_SCHEDULER_DISABLED = previousDisabled;
+    if (previousRequireDb === undefined) delete process.env.ROBO_SCHEDULER_REQUIRE_DB;
+    else process.env.ROBO_SCHEDULER_REQUIRE_DB = previousRequireDb;
   }
 });
 
@@ -55,5 +59,38 @@ test('startRoboScheduler returns no-op when disabled', async t => {
   } finally {
     if (previousDisabled === undefined) delete process.env.ROBO_SCHEDULER_DISABLED;
     else process.env.ROBO_SCHEDULER_DISABLED = previousDisabled;
+  }
+});
+
+test('startRoboScheduler skips ticks when DB is unavailable and requirement is enabled', async t => {
+  const previousRequired = process.env.ROBO_SCHEDULER_REQUIRE_DB;
+  process.env.ROBO_SCHEDULER_REQUIRE_DB = 'true';
+
+  let tickCalls = 0;
+  let cleanupCalls = 0;
+  t.mock.method(roboEngine, 'runSchedulerTick', async () => {
+    tickCalls += 1;
+  });
+  t.mock.method(roboEngine, 'cleanupSignalExecutions', async () => {
+    cleanupCalls += 1;
+    return { deletedCount: 0, retentionDays: 7 };
+  });
+
+  try {
+    const stop = startRoboScheduler({
+      intervalMs: 20,
+      cleanupIntervalMs: 20,
+      startupDelayMs: 0,
+      isDbReady: () => false
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 80));
+    stop();
+
+    assert.equal(tickCalls, 0);
+    assert.equal(cleanupCalls, 0);
+  } finally {
+    if (previousRequired === undefined) delete process.env.ROBO_SCHEDULER_REQUIRE_DB;
+    else process.env.ROBO_SCHEDULER_REQUIRE_DB = previousRequired;
   }
 });

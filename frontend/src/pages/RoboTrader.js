@@ -23,10 +23,18 @@ function mapEventType(eventType) {
     trade_failed: 'Trade Failed',
     trade_skipped_limit: 'Skipped: Limit',
     trade_skipped_locked: 'Skipped: Locked',
+    trade_skipped_cooldown: 'Skipped: Cooldown',
+    trade_skipped_symbol_cooldown: 'Skipped: Symbol Cooldown',
+    trade_skipped_max_trades: 'Skipped: Max Trades',
+    trade_skipped_strategy_limit: 'Skipped: Strategy Limit',
+    trade_skipped_market_closed: 'Skipped: Market Closed',
+    trade_skipped_kill_switch: 'Skipped: Kill Switch',
+    trade_skipped_anomaly: 'Skipped: Anomaly Guardrail',
     trade_skipped_circuit_breaker: 'Skipped: Circuit Breaker',
     trade_skipped_duplicate_signal: 'Skipped: Duplicate Signal',
     trade_skipped_invalid_signal: 'Skipped: Invalid Signal',
     trade_skipped_no_quote: 'Skipped: No Quote',
+    trade_skipped_no_signal: 'Skipped: No Signal',
     trade_skipped_scheduler_error: 'Skipped: Scheduler Error',
     robo_disabled: 'Robo Disabled',
     robo_settings_updated: 'Settings Updated',
@@ -36,6 +44,19 @@ function mapEventType(eventType) {
     email_failed: 'Email Failed'
   };
   return map[eventType] || eventType;
+}
+
+function describeEventReason(event) {
+  if (!event || typeof event !== 'object') return '';
+  const payload = event.payload || {};
+  if (payload.reason) return payload.reason;
+  if (event.eventType === 'trade_skipped_limit' && Array.isArray(payload.violations) && payload.violations.length) {
+    return `Would exceed ${payload.violations.join(', ')} spending limit${payload.violations.length > 1 ? 's' : ''}.`;
+  }
+  if (event.eventType === 'trade_skipped_limit' && Number.isFinite(Number(payload.attemptNotional))) {
+    return `Attempted notional ${formatMoney(payload.attemptNotional)} exceeds configured limits.`;
+  }
+  return '';
 }
 
 export default function RoboTrader() {
@@ -54,6 +75,8 @@ export default function RoboTrader() {
   const [usage, setUsage] = useState(null);
   const [audit, setAudit] = useState([]);
   const [auditLoading, setAuditLoading] = useState(true);
+  const [status, setStatus] = useState(null);
+  const [runningNow, setRunningNow] = useState(false);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [limit, setLimit] = useState(100);
@@ -85,19 +108,24 @@ export default function RoboTrader() {
     }
   }, []);
 
+  const loadStatus = useCallback(async () => {
+    const res = await axios.get('/api/robo/status');
+    setStatus(res.data || null);
+  }, []);
+
   useEffect(() => {
     (async () => {
       setLoading(true);
-        setError('');
+      setError('');
       try {
-        await Promise.all([loadSettings(), loadAudit()]);
+        await Promise.all([loadSettings(), loadAudit(), loadStatus()]);
       } catch (err) {
         setError(getApiError(err));
       } finally {
         setLoading(false);
       }
     })();
-  }, [loadAudit]);
+  }, [loadAudit, loadStatus]);
 
   const usageCards = useMemo(() => {
     if (!usage) return [];
@@ -136,11 +164,31 @@ export default function RoboTrader() {
       });
       setUsage(res.data?.usage || null);
       setSuccess('Robo Trader settings updated.');
-      await loadAudit({ from, to, limit });
+      await Promise.all([loadAudit({ from, to, limit }), loadStatus()]);
     } catch (err) {
       setError(getApiError(err));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleRunOnce = async () => {
+    setRunningNow(true);
+    setError('');
+    setSuccess('');
+    try {
+      const res = await axios.post('/api/robo/run-once');
+      const result = res.data?.result;
+      if (result?.ok) {
+        setSuccess('Robo trade executed.');
+      } else {
+        setSuccess(`Robo run skipped: ${result?.reason || 'UNKNOWN'}`);
+      }
+      await Promise.all([loadStatus(), loadAudit({ from, to, limit }), loadSettings()]);
+    } catch (err) {
+      setError(getApiError(err));
+    } finally {
+      setRunningNow(false);
     }
   };
 
@@ -244,10 +292,66 @@ export default function RoboTrader() {
         </div>
 
         <div className="mt-5">
-          <Button onClick={handleSave} disabled={saving}>
-            {saving ? 'Saving...' : 'Save Robo Settings'}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={handleSave} disabled={saving}>
+              {saving ? 'Saving...' : 'Save Robo Settings'}
+            </Button>
+            <Button variant="secondary" onClick={handleRunOnce} disabled={runningNow}>
+              {runningNow ? 'Running...' : 'Run Once'}
+            </Button>
+          </div>
         </div>
+      </Card>
+
+      <Card className="p-6">
+        <h2 className="text-lg font-semibold text-emerald-50">Robo Status</h2>
+        {!status ? (
+          <p className="text-sm text-emerald-100/55 mt-2">No status available.</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+            <div className="rounded-xl border border-emerald-900/60 bg-[#0f1913] p-4">
+              <p className="text-xs uppercase tracking-wide text-emerald-100/50">Scheduler</p>
+              <p className="text-sm text-emerald-50 mt-2">
+                Enabled: {status.scheduler?.enabled ? 'Yes' : 'No'} | Running: {status.scheduler?.running ? 'Yes' : 'No'}
+              </p>
+              <p className="text-xs text-emerald-100/55 mt-1">Last tick: {formatDateTime(status.scheduler?.lastTickAt)}</p>
+              <p className="text-xs text-emerald-100/55">Last success: {formatDateTime(status.scheduler?.lastSuccessAt)}</p>
+              {status.scheduler?.lastError && (
+                <p className="text-xs text-amber-200 mt-1">Last error: {status.scheduler.lastError}</p>
+              )}
+            </div>
+            <div className="rounded-xl border border-emerald-900/60 bg-[#0f1913] p-4">
+              <p className="text-xs uppercase tracking-wide text-emerald-100/50">Execution</p>
+              <p className="text-sm text-emerald-50 mt-2">Executed today: {status.executedToday ?? 0}</p>
+              <p className="text-xs text-emerald-100/55 mt-1">
+                Max/day: {status.executionControls?.maxExecutionsPerDay || 'unlimited'} · Strategy/day: {status.executionControls?.maxExecutionsPerStrategyPerDay || 'unlimited'}
+              </p>
+              <p className="text-xs text-emerald-100/55">
+                Cooldown: {status.executionControls?.minMinutesBetweenExecutions || 0}m · Symbol cooldown: {status.executionControls?.minMinutesBetweenSymbolExecutions || 0}m
+              </p>
+              <p className="text-xs text-emerald-100/55 mt-1">
+                Last trade: {formatDateTime(status.lastTrade?.createdAt)}
+              </p>
+              <p className="text-xs text-emerald-100/55">
+                Last event: {status.lastEvent ? mapEventType(status.lastEvent.eventType) : '--'}
+              </p>
+              {status.lastEvent && describeEventReason(status.lastEvent) && (
+                <p className="text-xs text-amber-200 mt-1">{describeEventReason(status.lastEvent)}</p>
+              )}
+            </div>
+            <div className="rounded-xl border border-emerald-900/60 bg-[#0f1913] p-4 sm:col-span-2">
+              <p className="text-xs uppercase tracking-wide text-emerald-100/50">Signal Universe</p>
+              <p className="text-sm text-emerald-50 mt-2 break-words">
+                {(status.signalSelection?.universe || []).join(', ') || '--'}
+              </p>
+              <p className="text-xs text-emerald-100/55 mt-2">
+                Allowed sides: {(status.signalSelection?.allowedSides || []).join(', ') || '--'}
+                {' '}· Threshold: {status.signalSelection?.changeThresholdPct ?? '--'}%
+                {' '}· Target notional: {status.signalSelection?.targetNotional ? formatMoney(status.signalSelection.targetNotional) : 'Off'}
+              </p>
+            </div>
+          </div>
+        )}
       </Card>
 
       <Card className="p-6">

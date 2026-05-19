@@ -1,6 +1,9 @@
 const router = require('express').Router();
+const requireMongo = require('../middleware/requireMongo');
 const RegimeSnapshot = require('../models/RegimeSnapshot');
 const { detectRegime } = require('../signal/regimeDetector');
+
+router.use(requireMongo);
 
 router.get('/today', async (req, res, next) => {
   try {

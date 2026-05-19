@@ -10,6 +10,7 @@ const links = [
   { to: '/portfolio', label: 'Portfolio' },
   { to: '/activity', label: 'Activity' },
   { to: '/analytics', label: 'Analytics' },
+  { to: '/trading-system', label: 'Trading System' },
   { to: '/discover', label: 'Discover' }
 ];
 

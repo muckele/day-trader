@@ -1,25 +1,72 @@
 // backend/routes/recommend.js
 const router = require('express').Router();
-const { getRecommendations } = require('../tradeLogic');
 const { getMarketStatus } = require('../utils/marketStatus');
-const { buildRecommendation } = require('../utils/recommendationSchema');
+const { buildRecommendationFromIdea } = require('../utils/recommendationSchema');
 const RegimeSnapshot = require('../models/RegimeSnapshot');
 const { detectRegime } = require('../signal/regimeDetector');
+const { generateRecommendationLists } = require('../services/recommendationEngine');
+const mongoState = require('../utils/mongoState');
 
 async function getTodayRegime() {
   const today = new Date().toISOString().slice(0, 10);
-  let snapshot = await RegimeSnapshot.findOne({ date: today }).lean();
-  if (!snapshot) {
+  try {
+    if (!mongoState.isMongoReady()) {
+      const detected = await detectRegime();
+      return {
+        date: today,
+        trendChop: detected.trendChop,
+        vol: detected.vol,
+        risk: detected.risk,
+        notes: detected.notes,
+        source: 'runtime_fallback'
+      };
+    }
+    let snapshot = await RegimeSnapshot.findOne({ date: today }).lean();
+    if (snapshot) return snapshot;
+
     const detected = await detectRegime();
-    snapshot = await RegimeSnapshot.create({
-      date: today,
-      trendChop: detected.trendChop,
-      vol: detected.vol,
-      risk: detected.risk,
-      notes: detected.notes
-    });
+    try {
+      snapshot = await RegimeSnapshot.create({
+        date: today,
+        trendChop: detected.trendChop,
+        vol: detected.vol,
+        risk: detected.risk,
+        notes: detected.notes
+      });
+    } catch (persistErr) {
+      // Degrade gracefully when DB is unavailable; keep recommendations alive.
+      return {
+        date: today,
+        trendChop: detected.trendChop,
+        vol: detected.vol,
+        risk: detected.risk,
+        notes: detected.notes,
+        source: 'runtime_fallback'
+      };
+    }
+    return snapshot;
+  } catch (err) {
+    try {
+      const detected = await detectRegime();
+      return {
+        date: today,
+        trendChop: detected.trendChop,
+        vol: detected.vol,
+        risk: detected.risk,
+        notes: detected.notes,
+        source: 'runtime_fallback'
+      };
+    } catch (_detectErr) {
+      return {
+        date: today,
+        trendChop: 'CHOP',
+        vol: 'CONTRACTION',
+        risk: 'RISK_OFF',
+        notes: ['Regime detection unavailable; using fallback regime.'],
+        source: 'default_fallback'
+      };
+    }
   }
-  return snapshot;
 }
 
 function isDailyBarsUnavailable(err) {
@@ -41,17 +88,22 @@ function buildDataUnavailablePayload(status) {
 router.get('/', async (req, res, next) => {
   const status = getMarketStatus();
   try {
-    const watchlist = ['AAPL','MSFT','GOOG'];
-    const recs = await Promise.all(
-      watchlist.map(sym => getRecommendations(sym))
-    );
     const regime = await getTodayRegime();
+    const recommendationSet = await generateRecommendationLists({
+      regime
+    });
     res.json({
       asOf: status.asOf,
       marketStatus: status.status,
       nextOpen: status.nextOpen,
       nextClose: status.nextClose,
-      recommendations: recs.map(rec => buildRecommendation(rec, { regime }))
+      regime,
+      engineVersion: recommendationSet.engineVersion,
+      universe: recommendationSet.universe,
+      warnings: recommendationSet.warnings,
+      featureFlags: recommendationSet.featureFlags,
+      lists: recommendationSet.lists,
+      recommendations: recommendationSet.topIdeas.map(idea => buildRecommendationFromIdea(idea, { regime }))
     });
   } catch (err) {
     if (isDailyBarsUnavailable(err)) {
@@ -63,15 +115,23 @@ router.get('/', async (req, res, next) => {
 
 router.get('/:symbol', async (req, res, next) => {
   try {
-    const rec = await getRecommendations(req.params.symbol.toUpperCase());
     const status = getMarketStatus();
     const regime = await getTodayRegime();
+    const recommendationSet = await generateRecommendationLists({
+      universe: [req.params.symbol.toUpperCase()],
+      regime,
+      persist: false
+    });
     res.json({
       asOf: status.asOf,
       marketStatus: status.status,
       nextOpen: status.nextOpen,
       nextClose: status.nextClose,
-      recommendations: [buildRecommendation(rec, { regime })]
+      regime,
+      engineVersion: recommendationSet.engineVersion,
+      warnings: recommendationSet.warnings,
+      lists: recommendationSet.lists,
+      recommendations: recommendationSet.topIdeas.map(idea => buildRecommendationFromIdea(idea, { regime }))
     });
   } catch (err) {
     if (isDailyBarsUnavailable(err)) {

@@ -1,8 +1,12 @@
 const router = require('express').Router();
+const requireMongo = require('../middleware/requireMongo');
 const PaperTrade = require('../models/PaperTrade');
+const PaperOrder = require('../models/PaperOrder');
 const PaperEquity = require('../models/PaperEquity');
 const PaperSettings = require('../models/PaperSettings');
 const PaperGuardrailEvent = require('../models/PaperGuardrailEvent');
+const BrokerOrder = require('../models/BrokerOrder');
+const Fill = require('../models/Fill');
 const paperBroker = require('../paper/paperBrokerClient');
 const {
   parseRange,
@@ -16,6 +20,8 @@ const {
 const { buildSnapshot } = require('../analytics/snapshot');
 
 const ACCOUNT_ID = 'default';
+
+router.use(requireMongo);
 
 function sum(values) {
   return values.reduce((acc, value) => acc + value, 0);
@@ -37,6 +43,115 @@ function rollingMetrics(trades, days) {
   return {
     pnl: Number(pnl.toFixed(2)),
     winRate
+  };
+}
+
+function median(values) {
+  if (!values.length) return null;
+  const ordered = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(ordered.length / 2);
+  if (ordered.length % 2 === 0) {
+    return Number(((ordered[middle - 1] + ordered[middle]) / 2).toFixed(2));
+  }
+  return Number(ordered[middle].toFixed(2));
+}
+
+function buildExecutionQualityPayload({ range, orders, fills }) {
+  const filledOrders = orders.filter(order => order.status === 'filled');
+  const rejectedOrders = orders.filter(order => order.status === 'rejected');
+  const attemptedOrders = filledOrders.length + rejectedOrders.length;
+  const rejectRate = attemptedOrders
+    ? Number(((rejectedOrders.length / attemptedOrders) * 100).toFixed(2))
+    : 0;
+
+  const slippageValues = filledOrders
+    .map(order => Number(order.slippageBps ?? order.effectiveSlippageBps))
+    .filter(value => Number.isFinite(value));
+  const avgSlippageBps = slippageValues.length
+    ? Number((sum(slippageValues) / slippageValues.length).toFixed(2))
+    : 0;
+  const maxSlippageBps = slippageValues.length
+    ? Number(Math.max(...slippageValues).toFixed(2))
+    : 0;
+
+  const latencyValues = filledOrders
+    .map(order => Number(order.fillLatencyMs))
+    .filter(value => Number.isFinite(value) && value >= 0);
+  const avgFillLatencyMs = latencyValues.length
+    ? Number((sum(latencyValues) / latencyValues.length).toFixed(2))
+    : null;
+  const medianFillLatencyMs = median(latencyValues);
+
+  const rejectReasonMap = rejectedOrders.reduce((acc, order) => {
+    const key = String(order.rejectionReason || order.rejectedReason || 'UNKNOWN');
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const topRejectReasons = Object.entries(rejectReasonMap)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([reason, count]) => ({ reason, count }));
+
+  const pnlBySetupMap = fills.reduce((acc, fill) => {
+    const key = String(fill.setupType || 'UNSPECIFIED');
+    if (!acc[key]) {
+      acc[key] = { setupType: key, trades: 0, totalPnl: 0 };
+    }
+    acc[key].trades += 1;
+    acc[key].totalPnl += Number(fill.realizedPnl || 0);
+    return acc;
+  }, {});
+  const pnlBySetup = Object.values(pnlBySetupMap)
+    .map(item => ({
+      setupType: item.setupType,
+      trades: item.trades,
+      totalPnl: Number(item.totalPnl.toFixed(2))
+    }))
+    .sort((a, b) => b.totalPnl - a.totalPnl);
+
+  const pnlByRegimeMap = fills.reduce((acc, fill) => {
+    const regime = fill.regimeAtTrade || {};
+    const key = `${regime.trendChop || 'NA'}|${regime.vol || 'NA'}|${regime.risk || 'NA'}`;
+    if (!acc[key]) {
+      acc[key] = {
+        regime: {
+          trendChop: regime.trendChop || 'NA',
+          vol: regime.vol || 'NA',
+          risk: regime.risk || 'NA'
+        },
+        trades: 0,
+        totalPnl: 0
+      };
+    }
+    acc[key].trades += 1;
+    acc[key].totalPnl += Number(fill.realizedPnl || 0);
+    return acc;
+  }, {});
+  const pnlByRegime = Object.values(pnlByRegimeMap)
+    .map(item => ({
+      regime: item.regime,
+      trades: item.trades,
+      totalPnl: Number(item.totalPnl.toFixed(2))
+    }))
+    .sort((a, b) => b.totalPnl - a.totalPnl);
+
+  return {
+    range,
+    counts: {
+      attemptedOrders,
+      filledOrders: filledOrders.length,
+      rejectedOrders: rejectedOrders.length
+    },
+    quality: {
+      rejectRate,
+      avgSlippageBps,
+      maxSlippageBps,
+      avgFillLatencyMs,
+      medianFillLatencyMs
+    },
+    topRejectReasons,
+    pnlBySetup,
+    pnlByRegime
   };
 }
 
@@ -236,6 +351,54 @@ router.get('/trades.csv', async (req, res, next) => {
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="paper-trades.csv"');
     res.send(csvLines.join('\n'));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/execution-quality', async (req, res, next) => {
+  try {
+    const { range = '30d' } = req.query;
+    const startDate = parseRange(range);
+    const brokerOrderQuery = { accountId: ACCOUNT_ID };
+    const fillQuery = { accountId: ACCOUNT_ID };
+    const paperOrderQuery = { accountId: ACCOUNT_ID };
+    const tradeQuery = { accountId: ACCOUNT_ID };
+    if (startDate) {
+      brokerOrderQuery.submittedAt = { $gte: startDate };
+      fillQuery.filledAt = { $gte: startDate };
+      paperOrderQuery.filledAt = { $gte: startDate };
+      tradeQuery.filledAt = { $gte: startDate };
+    }
+
+    const [brokerOrders, fills] = await Promise.all([
+      BrokerOrder.find(brokerOrderQuery).sort({ submittedAt: 1 }).lean(),
+      Fill.find(fillQuery).sort({ filledAt: 1 }).lean()
+    ]);
+
+    if (brokerOrders.length || fills.length) {
+      return res.json(buildExecutionQualityPayload({
+        range,
+        orders: brokerOrders,
+        fills
+      }));
+    }
+
+    const [paperOrders, trades] = await Promise.all([
+      PaperOrder.find(paperOrderQuery).sort({ filledAt: 1 }).lean(),
+      PaperTrade.find(tradeQuery).sort({ filledAt: 1 }).lean()
+    ]);
+
+    return res.json(buildExecutionQualityPayload({
+      range,
+      orders: paperOrders.map(order => ({
+        ...order,
+        slippageBps: order.effectiveSlippageBps,
+        rejectionReason: order.rejectedReason,
+        submittedAt: order.filledAt
+      })),
+      fills: trades
+    }));
   } catch (err) {
     next(err);
   }

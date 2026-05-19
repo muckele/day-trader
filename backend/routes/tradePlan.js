@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const requireMongo = require('../middleware/requireMongo');
 const TradePlan = require('../models/TradePlan');
 const TradePlanLog = require('../models/TradePlanLog');
 const PaperTrade = require('../models/PaperTrade');
@@ -13,6 +14,8 @@ const {
 } = require('../tradePlanEngine');
 
 const ACCOUNT_ID = 'default';
+
+router.use(requireMongo);
 
 router.get('/today', async (req, res, next) => {
   try {

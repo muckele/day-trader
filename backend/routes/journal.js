@@ -1,9 +1,12 @@
 const router = require('express').Router();
+const requireMongo = require('../middleware/requireMongo');
 const PaperJournalEntry = require('../models/PaperJournalEntry');
 const PaperTrade = require('../models/PaperTrade');
 const { parseRange } = require('../analytics/analyticsUtils');
 
 const ACCOUNT_ID = 'default';
+
+router.use(requireMongo);
 
 function parseTags(tags) {
   if (Array.isArray(tags)) return tags;

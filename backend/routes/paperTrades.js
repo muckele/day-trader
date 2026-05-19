@@ -1,5 +1,8 @@
 const router = require('express').Router();
+const requireMongo = require('../middleware/requireMongo');
 const paperBroker = require('../paper/paperBrokerClient');
+
+router.use(requireMongo);
 
 router.post('/order', async (req, res) => {
   try {
@@ -7,30 +10,53 @@ router.post('/order', async (req, res) => {
       symbol,
       side,
       qty,
+      assetClass,
       orderType,
+      timeInForce,
+      goodTilDate,
+      takeProfitPrice,
+      stopLossPrice,
+      trailingStopPct,
       limitPrice,
       maxPricePerShare,
       allowExtendedHours,
       strategyId,
       setupType,
       strategyTags,
-      stopPrice
+      stopPrice,
+      origin,
+      metadata
     } = req.body || {};
+    const resolvedOrigin = origin || (strategyId ? 'trade_plan' : 'manual');
     const result = await paperBroker.placeOrder({
       symbol,
       side,
       qty,
+      assetClass,
       orderType,
+      timeInForce,
+      goodTilDate,
+      takeProfitPrice,
+      stopLossPrice,
+      trailingStopPct,
       limitPrice,
       maxPricePerShare,
       allowExtendedHours,
       strategyId,
       setupType,
       strategyTags,
-      stopPrice
+      stopPrice,
+      origin: resolvedOrigin,
+      metadata: metadata || {}
     });
     res.json(result);
   } catch (err) {
+    const payload = req.body || {};
+    await paperBroker.recordRejectedOrder({
+      ...payload,
+      origin: payload.origin || (payload.strategyId ? 'trade_plan' : 'manual'),
+      metadata: payload.metadata || {}
+    }, err.message).catch(() => {});
     res.status(400).json({ error: err.message });
   }
 });

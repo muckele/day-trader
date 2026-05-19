@@ -150,3 +150,96 @@ test('GET /audit returns robo audit events list', async t => {
     }
   });
 });
+
+test('GET /status returns user robo status and scheduler details', async t => {
+  t.mock.method(User, 'findOne', async () => ({ _id: 'user-4' }));
+  t.mock.method(roboEngine, 'getStatusForUser', async () => ({
+    settings: {
+      enabled: true,
+      dailyLimit: 1000,
+      weeklyLimit: 5000,
+      monthlyLimit: 10000,
+      failureStreak: 0,
+      pausedUntil: null
+    },
+    usage: {
+      day: { spentNotional: 250, remaining: 750, limit: 1000 },
+      week: { spentNotional: 900, remaining: 4100, limit: 5000 },
+      month: { spentNotional: 1200, remaining: 8800, limit: 10000 }
+    },
+    executedToday: 2,
+    lastEvent: { eventType: 'trade_executed', createdAt: '2026-02-26T17:00:00.000Z', payload: {} },
+    lastTrade: { createdAt: '2026-02-26T17:00:00.000Z', payload: { symbol: 'AAPL' } },
+    counters24h: { trade_executed: 2 }
+  }));
+
+  const handler = getRouteHandler('/status', 'get');
+  const req = { user: { username: 'matt' } };
+  const res = createMockRes();
+  let nextErr = null;
+
+  await handler(req, res, err => {
+    nextErr = err;
+  });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.settings.enabled, true);
+  assert.equal(res.body.executedToday, 2);
+  assert.ok(res.body.scheduler);
+});
+
+test('POST /run-once triggers one robo execution', async t => {
+  const calls = [];
+  t.mock.method(User, 'findOne', async () => ({ _id: 'user-5' }));
+  t.mock.method(roboEngine, 'runRoboTradeForUser', async input => {
+    calls.push(input);
+    return { ok: false, executed: false, skipped: true, reason: 'LIMIT_EXCEEDED' };
+  });
+
+  const handler = getRouteHandler('/run-once', 'post');
+  const req = { user: { username: 'matt' }, body: {} };
+  const res = createMockRes();
+  let nextErr = null;
+
+  await handler(req, res, err => {
+    nextErr = err;
+  });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].userId, 'user-5');
+  assert.equal(res.body.result.reason, 'LIMIT_EXCEEDED');
+});
+
+test('POST /run_once and /runOnce aliases trigger one robo execution', async t => {
+  const calls = [];
+  t.mock.method(User, 'findOne', async () => ({ _id: 'user-6' }));
+  t.mock.method(roboEngine, 'runRoboTradeForUser', async input => {
+    calls.push(input);
+    return { ok: true, executed: false, skipped: true, reason: 'COOLDOWN_ACTIVE' };
+  });
+
+  const underscoreHandler = getRouteHandler('/run_once', 'post');
+  const camelHandler = getRouteHandler('/runOnce', 'post');
+
+  const req = { user: { username: 'matt' }, body: {} };
+  const res1 = createMockRes();
+  const res2 = createMockRes();
+  let nextErr = null;
+
+  await underscoreHandler(req, res1, err => {
+    nextErr = err;
+  });
+  await camelHandler(req, res2, err => {
+    nextErr = err;
+  });
+
+  assert.equal(nextErr, null);
+  assert.equal(res1.statusCode, 200);
+  assert.equal(res2.statusCode, 200);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].userId, 'user-6');
+  assert.equal(calls[1].userId, 'user-6');
+});

@@ -13,10 +13,16 @@ import Discover from './pages/Discover';
 import Analytics from './pages/Analytics';
 import TradePlan from './pages/TradePlan';
 import RoboTrader from './pages/RoboTrader';
+import TradingSystem from './pages/TradingSystem';
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter
+      future={{
+        v7_startTransition: true,
+        v7_relativeSplatPath: true
+      }}
+    >
       <AppLayout>
         <Routes>
           {/* Public route */}
@@ -93,6 +99,14 @@ export default function App() {
             element={
               <PrivateRoute>
                 <RoboTrader />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/trading-system"
+            element={
+              <PrivateRoute>
+                <TradingSystem />
               </PrivateRoute>
             }
           />

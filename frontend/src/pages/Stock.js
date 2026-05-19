@@ -18,6 +18,12 @@ import { getApiError } from '../utils/api';
 import { emitToast } from '../utils/toast';
 import { useMarketStatus } from '../hooks/useMarketStatus';
 
+function looksCryptoSymbol(value) {
+  const symbol = String(value || '').toUpperCase();
+  if (!symbol) return false;
+  return symbol.includes('/') || (/(USD|USDT|USDC)$/.test(symbol) && symbol.length >= 6);
+}
+
 export default function Stock() {
   const { symbol } = useParams();
   const [intraday,   setIntraday]  = useState([]);
@@ -40,8 +46,15 @@ export default function Stock() {
   const [reloadKey, setReloadKey] = useState(0);
   const [tradeSide, setTradeSide] = useState('buy');
   const [tradeQty, setTradeQty] = useState(1);
+  const [tradeAssetClass, setTradeAssetClass] = useState(looksCryptoSymbol(symbol) ? 'crypto' : 'equity');
   const [tradeOrderType, setTradeOrderType] = useState('market');
   const [tradeLimitPrice, setTradeLimitPrice] = useState('');
+  const [tradeStopTriggerPrice, setTradeStopTriggerPrice] = useState('');
+  const [tradeTimeInForce, setTradeTimeInForce] = useState('day');
+  const [tradeGoodTilDate, setTradeGoodTilDate] = useState('');
+  const [tradeTakeProfitPrice, setTradeTakeProfitPrice] = useState('');
+  const [tradeStopLossPrice, setTradeStopLossPrice] = useState('');
+  const [tradeTrailingStopPct, setTradeTrailingStopPct] = useState('');
   const [maxPricePerShare, setMaxPricePerShare] = useState('');
   const [allowExtendedHours, setAllowExtendedHours] = useState(true);
   const [tradeError, setTradeError] = useState('');
@@ -50,6 +63,10 @@ export default function Stock() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [aiRetryKey, setAiRetryKey] = useState(0);
   const { status: marketStatus } = useMarketStatus();
+
+  useEffect(() => {
+    setTradeAssetClass(looksCryptoSymbol(symbol) ? 'crypto' : 'equity');
+  }, [symbol]);
 
   useEffect(() => {
     const fetchWithCache = async (key, ttl, fetcher) => {
@@ -350,8 +367,18 @@ export default function Stock() {
       return;
     }
     const parsedLimitPrice = Number(tradeLimitPrice);
-    if (tradeOrderType === 'limit' && (!Number.isFinite(parsedLimitPrice) || parsedLimitPrice <= 0)) {
-      const message = 'Enter a valid limit price for limit orders.';
+    if (
+      (tradeOrderType === 'limit' || tradeOrderType === 'stop_limit')
+      && (!Number.isFinite(parsedLimitPrice) || parsedLimitPrice <= 0)
+    ) {
+      const message = 'Enter a valid limit price for limit/stop-limit orders.';
+      setTradeError(message);
+      emitToast({ type: 'error', title: 'Trade blocked', message });
+      return;
+    }
+    const parsedStopTriggerPrice = Number(tradeStopTriggerPrice);
+    if (tradeOrderType === 'stop_limit' && (!Number.isFinite(parsedStopTriggerPrice) || parsedStopTriggerPrice <= 0)) {
+      const message = 'Enter a valid stop trigger price for stop-limit orders.';
       setTradeError(message);
       emitToast({ type: 'error', title: 'Trade blocked', message });
       return;
@@ -367,30 +394,83 @@ export default function Stock() {
       emitToast({ type: 'error', title: 'Trade blocked', message });
       return;
     }
+    const parsedTakeProfitPrice = Number(tradeTakeProfitPrice);
+    if (
+      tradeTakeProfitPrice !== ''
+      && (!Number.isFinite(parsedTakeProfitPrice) || parsedTakeProfitPrice <= 0)
+    ) {
+      const message = 'Enter a valid take-profit price.';
+      setTradeError(message);
+      emitToast({ type: 'error', title: 'Trade blocked', message });
+      return;
+    }
+    const parsedStopLossPrice = Number(tradeStopLossPrice);
+    if (
+      tradeStopLossPrice !== ''
+      && (!Number.isFinite(parsedStopLossPrice) || parsedStopLossPrice <= 0)
+    ) {
+      const message = 'Enter a valid stop-loss price.';
+      setTradeError(message);
+      emitToast({ type: 'error', title: 'Trade blocked', message });
+      return;
+    }
+    const parsedTrailingStopPct = Number(tradeTrailingStopPct);
+    if (
+      tradeTrailingStopPct !== ''
+      && (!Number.isFinite(parsedTrailingStopPct) || parsedTrailingStopPct <= 0)
+    ) {
+      const message = 'Enter a valid trailing stop %.';
+      setTradeError(message);
+      emitToast({ type: 'error', title: 'Trade blocked', message });
+      return;
+    }
+    if (tradeOrderType === 'trailing_stop' && tradeTrailingStopPct === '') {
+      const message = 'Trailing stop % is required for trailing-stop orders.';
+      setTradeError(message);
+      emitToast({ type: 'error', title: 'Trade blocked', message });
+      return;
+    }
+    if (tradeTimeInForce === 'gtd' && !tradeGoodTilDate) {
+      const message = 'Good-till-date is required when time-in-force is GTD.';
+      setTradeError(message);
+      emitToast({ type: 'error', title: 'Trade blocked', message });
+      return;
+    }
 
     setIsSubmitting(true);
     setTradeError('');
     try {
       const res = await axios.post('/api/paper-trades/order', {
         symbol,
+        assetClass: tradeAssetClass,
         side: tradeSide,
         qty: normalizedTradeQty,
         orderType: tradeOrderType,
-        limitPrice: tradeOrderType === 'limit' ? parsedLimitPrice : null,
+        timeInForce: tradeTimeInForce,
+        goodTilDate: tradeTimeInForce === 'gtd' ? tradeGoodTilDate : null,
+        limitPrice: (tradeOrderType === 'limit' || tradeOrderType === 'stop_limit') ? parsedLimitPrice : null,
+        stopPrice: tradeOrderType === 'stop_limit'
+          ? parsedStopTriggerPrice
+          : (recommendation?.risk?.stop || null),
+        takeProfitPrice: tradeTakeProfitPrice !== '' ? parsedTakeProfitPrice : null,
+        stopLossPrice: tradeStopLossPrice !== '' ? parsedStopLossPrice : null,
+        trailingStopPct: tradeTrailingStopPct !== '' ? parsedTrailingStopPct : null,
         maxPricePerShare: tradeSide === 'buy' && maxPricePerShare !== '' ? parsedMaxPricePerShare : null,
         allowExtendedHours,
         strategyId: recommendation?.strategy?.strategyId || null,
         setupType: recommendation?.setupType || null,
-        strategyTags: recommendation?.strategy?.tags || null,
-        stopPrice: recommendation?.risk?.stop || null
+        strategyTags: recommendation?.strategy?.tags || null
       });
       setTradeResult(res.data);
       setAccount(res.data.account || account);
       setConfirmOpen(false);
+      const brokerOrderId = res.data.brokerOrder?.id || res.data.order?.externalOrderId || null;
       emitToast({
         type: 'success',
         title: 'Order placed',
-        message: `${tradeSide.toUpperCase()} ${normalizedTradeQty} ${symbol} @ $${res.data.order?.fillPrice}`
+        message: `${tradeSide.toUpperCase()} ${normalizedTradeQty} ${symbol} @ $${res.data.order?.fillPrice}${
+          brokerOrderId ? ` · Alpaca ${String(brokerOrderId).slice(0, 8)}` : ''
+        }`
       });
     } catch (err) {
       const message = getApiError(err);
@@ -714,18 +794,27 @@ export default function Stock() {
             <label className="text-xs text-slate-500">Quantity</label>
             <input
               type="number"
-              min="0.000001"
-              step="0.000001"
+              min={tradeAssetClass === 'crypto' ? '0.00000001' : '0.000001'}
+              step={tradeAssetClass === 'crypto' ? '0.00000001' : '0.000001'}
               value={tradeQty}
               onChange={event => setTradeQty(event.target.value)}
               className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
             />
+            <label className="text-xs text-slate-500 mt-3">Asset Class</label>
+            <select
+              value={tradeAssetClass}
+              onChange={event => setTradeAssetClass(event.target.value)}
+              className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+            >
+              <option value="equity">Equity</option>
+              <option value="crypto">Crypto</option>
+            </select>
             <label className="text-xs text-slate-500 mt-3">Order Type</label>
-            <div className="mt-1 flex gap-2">
+            <div className="mt-1 grid grid-cols-2 gap-2">
               <Button
                 variant={tradeOrderType === 'market' ? 'primary' : 'secondary'}
                 size="sm"
-                className="flex-1"
+                className="w-full"
                 onClick={() => setTradeOrderType('market')}
               >
                 Market
@@ -733,13 +822,29 @@ export default function Stock() {
               <Button
                 variant={tradeOrderType === 'limit' ? 'primary' : 'secondary'}
                 size="sm"
-                className="flex-1"
+                className="w-full"
                 onClick={() => setTradeOrderType('limit')}
               >
                 Limit
               </Button>
+              <Button
+                variant={tradeOrderType === 'stop_limit' ? 'primary' : 'secondary'}
+                size="sm"
+                className="w-full"
+                onClick={() => setTradeOrderType('stop_limit')}
+              >
+                Stop-Limit
+              </Button>
+              <Button
+                variant={tradeOrderType === 'trailing_stop' ? 'primary' : 'secondary'}
+                size="sm"
+                className="w-full"
+                onClick={() => setTradeOrderType('trailing_stop')}
+              >
+                Trailing Stop
+              </Button>
             </div>
-            {tradeOrderType === 'limit' && (
+            {(tradeOrderType === 'limit' || tradeOrderType === 'stop_limit') && (
               <>
                 <label className="text-xs text-slate-500 mt-3">Limit Price ($)</label>
                 <input
@@ -752,6 +857,71 @@ export default function Stock() {
                 />
               </>
             )}
+            {tradeOrderType === 'stop_limit' && (
+              <>
+                <label className="text-xs text-slate-500 mt-3">Stop Trigger Price ($)</label>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={tradeStopTriggerPrice}
+                  onChange={event => setTradeStopTriggerPrice(event.target.value)}
+                  className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                />
+              </>
+            )}
+            <label className="text-xs text-slate-500 mt-3">Time in Force</label>
+            <select
+              value={tradeTimeInForce}
+              onChange={event => setTradeTimeInForce(event.target.value)}
+              className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+            >
+              <option value="day">DAY</option>
+              <option value="gtc">GTC</option>
+              <option value="gtd">GTD</option>
+              <option value="ioc">IOC</option>
+            </select>
+            {tradeTimeInForce === 'gtd' && (
+              <>
+                <label className="text-xs text-slate-500 mt-3">Good-Til Date</label>
+                <input
+                  type="datetime-local"
+                  value={tradeGoodTilDate}
+                  onChange={event => setTradeGoodTilDate(event.target.value)}
+                  className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                />
+              </>
+            )}
+            <label className="text-xs text-slate-500 mt-3">Take-Profit Price ($)</label>
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={tradeTakeProfitPrice}
+              onChange={event => setTradeTakeProfitPrice(event.target.value)}
+              placeholder="Optional"
+              className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+            />
+            <label className="text-xs text-slate-500 mt-3">Stop-Loss Price ($)</label>
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={tradeStopLossPrice}
+              onChange={event => setTradeStopLossPrice(event.target.value)}
+              placeholder="Optional"
+              className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+            />
+            <label className="text-xs text-slate-500 mt-3">Trailing Stop (%)</label>
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={tradeTrailingStopPct}
+              onChange={event => setTradeTrailingStopPct(event.target.value)}
+              placeholder="Optional"
+              className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+            />
             {tradeSide === 'buy' && (
               <>
                 <label className="text-xs text-slate-500 mt-3">Max Cost Per Share ($)</label>
@@ -771,12 +941,18 @@ export default function Stock() {
                 type="checkbox"
                 checked={allowExtendedHours}
                 onChange={event => setAllowExtendedHours(event.target.checked)}
+                disabled={tradeAssetClass === 'crypto'}
               />
               Allow extended-hours fills when market is closed
             </label>
-            {marketStatus !== 'OPEN' && (
+            {tradeAssetClass === 'equity' && marketStatus !== 'OPEN' && (
               <p className="mt-2 text-xs text-amber-600">
                 Market is currently closed.
+              </p>
+            )}
+            {tradeAssetClass === 'crypto' && (
+              <p className="mt-2 text-xs text-emerald-500">
+                Crypto trades are evaluated as 24/7 market.
               </p>
             )}
             <div className="mt-2 text-xs text-slate-500">
@@ -793,6 +969,11 @@ export default function Stock() {
               <div className="mt-3 text-xs text-slate-600 dark:text-slate-400">
                 Filled {tradeResult.order?.side?.toUpperCase()} {tradeResult.order?.qty} @ $
                 {tradeResult.order?.fillPrice}
+                {tradeResult.brokerOrder?.id && (
+                  <span className="block text-emerald-600 dark:text-emerald-400">
+                    Alpaca paper order {String(tradeResult.brokerOrder.id).slice(0, 8)}
+                  </span>
+                )}
               </div>
             )}
           </Card>
@@ -808,8 +989,19 @@ export default function Stock() {
             </p>
             <div className="mt-3 space-y-1 text-xs text-slate-500">
               <p>Estimated fill ${estimatedFillPrice || '--'}</p>
+              <p>Asset class {tradeAssetClass.toUpperCase()}</p>
               <p>Order type {tradeOrderType.toUpperCase()}</p>
-              {tradeOrderType === 'limit' && <p>Limit price ${tradeLimitPrice || '--'}</p>}
+              {(tradeOrderType === 'limit' || tradeOrderType === 'stop_limit') && (
+                <p>Limit price ${tradeLimitPrice || '--'}</p>
+              )}
+              {tradeOrderType === 'stop_limit' && (
+                <p>Stop trigger ${tradeStopTriggerPrice || '--'}</p>
+              )}
+              <p>Time in force {tradeTimeInForce.toUpperCase()}</p>
+              {tradeTimeInForce === 'gtd' && <p>Good-til {tradeGoodTilDate || '--'}</p>}
+              {tradeTakeProfitPrice !== '' && <p>Take-profit ${tradeTakeProfitPrice}</p>}
+              {tradeStopLossPrice !== '' && <p>Stop-loss ${tradeStopLossPrice}</p>}
+              {tradeTrailingStopPct !== '' && <p>Trailing stop {tradeTrailingStopPct}%</p>}
               {tradeSide === 'buy' && maxPricePerShare !== '' && (
                 <p>Max cost/share ${maxPricePerShare}</p>
               )}

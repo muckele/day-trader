@@ -5,7 +5,12 @@
   "main": "index.js",
   "scripts": {
     "test": "node --test",
-    "start": "node server.js"
+    "start": "node server.js",
+    "alpaca:check": "node scripts/check-alpaca-paper.js",
+    "smoke:api": "node scripts/smoke-api.js",
+    "mongo:check": "node scripts/check-mongo.js",
+    "restart:check": "bash ./scripts/restart-and-check.sh",
+    "verify:local": "npm run restart:check && npm run smoke:api"
   },
   "keywords": [],
   "author": "",

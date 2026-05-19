@@ -4,10 +4,15 @@ primary_region = "ord"
 # Recommended Fly secrets for this app (set via `fly secrets set ...`):
 # - APCA_API_KEY_ID
 # - APCA_API_SECRET_KEY
+# - APCA_BASE_URL=https://paper-api.alpaca.markets
 # - APCA_DATA_URL
 # - APCA_DATA_FEED (example: iex)
+# - APP_PAPER_TRADES_SYNC_TO_ALPACA=true
 # - JWT_SECRET
 # - MONGO_URI
+# - MONGO_URI_DIRECT (optional Atlas direct/seed-list fallback)
+# - MONGO_PREFER_LOCAL=false
+# - MONGO_IP_FAMILY=4
 # - ROBO_EMAIL_PROVIDER (log|smtp)
 # - ROBO_FALLBACK_EMAIL
 # - ROBO_SIGNAL_RETENTION_DAYS (example: 90)

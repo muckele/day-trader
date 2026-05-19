@@ -23,6 +23,7 @@ export default function Analytics() {
   const [summary, setSummary] = useState(null);
   const [strategies, setStrategies] = useState([]);
   const [regimes, setRegimes] = useState({ trendChop: [], vol: [], risk: [] });
+  const [executionQuality, setExecutionQuality] = useState(null);
   const [journal, setJournal] = useState([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -31,15 +32,17 @@ export default function Analytics() {
     setLoading(true);
     try {
       const params = { range, symbol, strategyId, regime };
-      const [summaryRes, strategiesRes, regimesRes, journalRes] = await Promise.all([
+      const [summaryRes, strategiesRes, regimesRes, qualityRes, journalRes] = await Promise.all([
           axios.get('/api/analytics/summary', { params }),
           axios.get('/api/analytics/strategies', { params: { range } }),
           axios.get('/api/analytics/regimes', { params: { range } }),
+          axios.get('/api/analytics/execution-quality', { params: { range } }),
           axios.get('/api/journal', { params: { range, symbol, strategyId } })
         ]);
       setSummary(summaryRes.data);
       setStrategies(strategiesRes.data);
       setRegimes(regimesRes.data.regimes);
+      setExecutionQuality(qualityRes.data || null);
       setJournal(journalRes.data || []);
     } catch (err) {
       const message = getApiError(err);
@@ -264,6 +267,69 @@ export default function Analytics() {
           </div>
         </div>
       </Card>
+
+      {executionQuality && (
+        <Card className="p-6">
+          <p className="text-sm font-semibold text-slate-900 dark:text-white mb-4">Execution Quality</p>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm text-slate-600 dark:text-slate-300">
+            <div>
+              <p className="text-xs text-slate-500">Reject Rate</p>
+              <p>{executionQuality.quality?.rejectRate ?? 0}%</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500">Avg Slippage</p>
+              <p>{executionQuality.quality?.avgSlippageBps ?? 0} bps</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500">Max Slippage</p>
+              <p>{executionQuality.quality?.maxSlippageBps ?? 0} bps</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500">Avg Fill Latency</p>
+              <p>{executionQuality.quality?.avgFillLatencyMs ?? '--'} ms</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500">Median Fill Latency</p>
+              <p>{executionQuality.quality?.medianFillLatencyMs ?? '--'} ms</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+            <div>
+              <p className="text-xs uppercase text-slate-400 mb-2">Top Reject Reasons</p>
+              {executionQuality.topRejectReasons?.length ? (
+                <div className="space-y-1 text-xs text-slate-600 dark:text-slate-300">
+                  {executionQuality.topRejectReasons.map(item => (
+                    <div key={item.reason} className="flex items-center justify-between">
+                      <span className="truncate pr-2">{item.reason}</span>
+                      <span>{item.count}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">No rejected orders in range.</p>
+              )}
+            </div>
+            <div>
+              <p className="text-xs uppercase text-slate-400 mb-2">P/L by Setup</p>
+              {executionQuality.pnlBySetup?.length ? (
+                <div className="space-y-1 text-xs text-slate-600 dark:text-slate-300">
+                  {executionQuality.pnlBySetup.slice(0, 8).map(item => (
+                    <div key={item.setupType} className="flex items-center justify-between">
+                      <span>{item.setupType}</span>
+                      <span className={item.totalPnl >= 0 ? 'text-emerald-500' : 'text-red-500'}>
+                        ${item.totalPnl}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">No setup attribution data in range.</p>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card className="p-6">

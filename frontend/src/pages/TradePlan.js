@@ -8,6 +8,12 @@ import { useMarketStatus } from '../hooks/useMarketStatus';
 import { getApiError } from '../utils/api';
 import { emitToast } from '../utils/toast';
 
+function looksCryptoSymbol(value) {
+  const symbol = String(value || '').toUpperCase();
+  if (!symbol) return false;
+  return symbol.includes('/') || (/(USD|USDT|USDC)$/.test(symbol) && symbol.length >= 6);
+}
+
 export default function TradePlan() {
   const { status } = useMarketStatus();
   const [plan, setPlan] = useState(null);
@@ -20,8 +26,15 @@ export default function TradePlan() {
   const [checkingExecution, setCheckingExecution] = useState(false);
   const [executing, setExecuting] = useState(false);
   const [executionQty, setExecutionQty] = useState('');
+  const [executionAssetClass, setExecutionAssetClass] = useState('equity');
   const [executionOrderType, setExecutionOrderType] = useState('market');
   const [executionLimitPrice, setExecutionLimitPrice] = useState('');
+  const [executionStopTriggerPrice, setExecutionStopTriggerPrice] = useState('');
+  const [executionTimeInForce, setExecutionTimeInForce] = useState('day');
+  const [executionGoodTilDate, setExecutionGoodTilDate] = useState('');
+  const [executionTakeProfitPrice, setExecutionTakeProfitPrice] = useState('');
+  const [executionStopLossPrice, setExecutionStopLossPrice] = useState('');
+  const [executionTrailingStopPct, setExecutionTrailingStopPct] = useState('');
   const [executionMaxPricePerShare, setExecutionMaxPricePerShare] = useState('');
   const [executionAllowExtendedHours, setExecutionAllowExtendedHours] = useState(true);
 
@@ -29,8 +42,15 @@ export default function TradePlan() {
     setSelectedIdea(null);
     setExecutionCheck(null);
     setExecutionQty('');
+    setExecutionAssetClass('equity');
     setExecutionOrderType('market');
     setExecutionLimitPrice('');
+    setExecutionStopTriggerPrice('');
+    setExecutionTimeInForce('day');
+    setExecutionGoodTilDate('');
+    setExecutionTakeProfitPrice('');
+    setExecutionStopLossPrice('');
+    setExecutionTrailingStopPct('');
     setExecutionMaxPricePerShare('');
     setExecutionAllowExtendedHours(true);
   };
@@ -103,8 +123,15 @@ export default function TradePlan() {
       setExecutionCheck(res.data);
       const recommendedQty = Number(res.data?.projectedStats?.recommendedQty || 0);
       setExecutionQty(recommendedQty > 0 ? String(recommendedQty) : '');
+      setExecutionAssetClass(looksCryptoSymbol(idea.symbol) ? 'crypto' : 'equity');
       setExecutionOrderType('market');
       setExecutionLimitPrice('');
+      setExecutionStopTriggerPrice('');
+      setExecutionTimeInForce('day');
+      setExecutionGoodTilDate('');
+      setExecutionTakeProfitPrice('');
+      setExecutionStopLossPrice('');
+      setExecutionTrailingStopPct('');
       setExecutionMaxPricePerShare('');
       setExecutionAllowExtendedHours(true);
     } catch (err) {
@@ -123,8 +150,16 @@ export default function TradePlan() {
       return;
     }
     const parsedLimitPrice = Number(executionLimitPrice);
-    if (executionOrderType === 'limit' && (!Number.isFinite(parsedLimitPrice) || parsedLimitPrice <= 0)) {
+    if (
+      (executionOrderType === 'limit' || executionOrderType === 'stop_limit')
+      && (!Number.isFinite(parsedLimitPrice) || parsedLimitPrice <= 0)
+    ) {
       emitToast({ type: 'error', message: 'Enter a valid limit price.' });
+      return;
+    }
+    const parsedStopTriggerPrice = Number(executionStopTriggerPrice);
+    if (executionOrderType === 'stop_limit' && (!Number.isFinite(parsedStopTriggerPrice) || parsedStopTriggerPrice <= 0)) {
+      emitToast({ type: 'error', message: 'Enter a valid stop trigger price.' });
       return;
     }
     const side = selectedIdea.bias === 'SHORT' ? 'sell' : 'buy';
@@ -137,19 +172,58 @@ export default function TradePlan() {
       emitToast({ type: 'error', message: 'Enter a valid max cost per share.' });
       return;
     }
+    const parsedTakeProfitPrice = Number(executionTakeProfitPrice);
+    if (
+      executionTakeProfitPrice !== ''
+      && (!Number.isFinite(parsedTakeProfitPrice) || parsedTakeProfitPrice <= 0)
+    ) {
+      emitToast({ type: 'error', message: 'Enter a valid take-profit price.' });
+      return;
+    }
+    const parsedStopLossPrice = Number(executionStopLossPrice);
+    if (
+      executionStopLossPrice !== ''
+      && (!Number.isFinite(parsedStopLossPrice) || parsedStopLossPrice <= 0)
+    ) {
+      emitToast({ type: 'error', message: 'Enter a valid stop-loss price.' });
+      return;
+    }
+    const parsedTrailingStopPct = Number(executionTrailingStopPct);
+    if (
+      executionTrailingStopPct !== ''
+      && (!Number.isFinite(parsedTrailingStopPct) || parsedTrailingStopPct <= 0)
+    ) {
+      emitToast({ type: 'error', message: 'Enter a valid trailing stop %.' });
+      return;
+    }
+    if (executionOrderType === 'trailing_stop' && executionTrailingStopPct === '') {
+      emitToast({ type: 'error', message: 'Trailing stop % is required for trailing stop orders.' });
+      return;
+    }
+    if (executionTimeInForce === 'gtd' && !executionGoodTilDate) {
+      emitToast({ type: 'error', message: 'Good-till-date is required for GTD orders.' });
+      return;
+    }
 
     setExecuting(true);
     try {
       await axios.post('/api/paper-trades/order', {
         symbol: selectedIdea.symbol,
+        assetClass: executionAssetClass,
         side,
         qty,
         orderType: executionOrderType,
-        limitPrice: executionOrderType === 'limit' ? parsedLimitPrice : null,
+        timeInForce: executionTimeInForce,
+        goodTilDate: executionTimeInForce === 'gtd' ? executionGoodTilDate : null,
+        limitPrice: (executionOrderType === 'limit' || executionOrderType === 'stop_limit') ? parsedLimitPrice : null,
+        stopPrice: executionOrderType === 'stop_limit' ? parsedStopTriggerPrice : selectedIdea.stop,
+        takeProfitPrice: executionTakeProfitPrice !== '' ? parsedTakeProfitPrice : null,
+        stopLossPrice: executionStopLossPrice !== '' ? parsedStopLossPrice : null,
+        trailingStopPct: executionTrailingStopPct !== '' ? parsedTrailingStopPct : null,
         maxPricePerShare: side === 'buy' && executionMaxPricePerShare !== '' ? parsedMaxPricePerShare : null,
         allowExtendedHours: executionAllowExtendedHours,
         strategyId: selectedIdea.strategyId,
-        stopPrice: selectedIdea.stop
+        setupType: selectedIdea.setupType || null
       });
       emitToast({ type: 'success', message: 'Paper trade executed.' });
       closeExecutionModal();
@@ -438,20 +512,31 @@ export default function TradePlan() {
                   <label className="text-slate-500">Quantity</label>
                   <input
                     type="number"
-                    min="0.000001"
-                    step="0.000001"
+                    min={executionAssetClass === 'crypto' ? '0.00000001' : '0.000001'}
+                    step={executionAssetClass === 'crypto' ? '0.00000001' : '0.000001'}
                     value={executionQty}
                     onChange={event => setExecutionQty(event.target.value)}
                     className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
                   />
                 </div>
                 <div>
+                  <label className="text-slate-500">Asset Class</label>
+                  <select
+                    value={executionAssetClass}
+                    onChange={event => setExecutionAssetClass(event.target.value)}
+                    className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                  >
+                    <option value="equity">Equity</option>
+                    <option value="crypto">Crypto</option>
+                  </select>
+                </div>
+                <div>
                   <label className="text-slate-500">Order Type</label>
-                  <div className="mt-1 flex gap-2">
+                  <div className="mt-1 grid grid-cols-2 gap-2">
                     <Button
                       variant={executionOrderType === 'market' ? 'primary' : 'secondary'}
                       size="sm"
-                      className="flex-1"
+                      className="w-full"
                       onClick={() => setExecutionOrderType('market')}
                     >
                       Market
@@ -459,14 +544,30 @@ export default function TradePlan() {
                     <Button
                       variant={executionOrderType === 'limit' ? 'primary' : 'secondary'}
                       size="sm"
-                      className="flex-1"
+                      className="w-full"
                       onClick={() => setExecutionOrderType('limit')}
                     >
                       Limit
                     </Button>
+                    <Button
+                      variant={executionOrderType === 'stop_limit' ? 'primary' : 'secondary'}
+                      size="sm"
+                      className="w-full"
+                      onClick={() => setExecutionOrderType('stop_limit')}
+                    >
+                      Stop-Limit
+                    </Button>
+                    <Button
+                      variant={executionOrderType === 'trailing_stop' ? 'primary' : 'secondary'}
+                      size="sm"
+                      className="w-full"
+                      onClick={() => setExecutionOrderType('trailing_stop')}
+                    >
+                      Trailing Stop
+                    </Button>
                   </div>
                 </div>
-                {executionOrderType === 'limit' && (
+                {(executionOrderType === 'limit' || executionOrderType === 'stop_limit') && (
                   <div>
                     <label className="text-slate-500">Limit Price ($)</label>
                     <input
@@ -479,6 +580,79 @@ export default function TradePlan() {
                     />
                   </div>
                 )}
+                {executionOrderType === 'stop_limit' && (
+                  <div>
+                    <label className="text-slate-500">Stop Trigger Price ($)</label>
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={executionStopTriggerPrice}
+                      onChange={event => setExecutionStopTriggerPrice(event.target.value)}
+                      className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                    />
+                  </div>
+                )}
+                <div>
+                  <label className="text-slate-500">Time in Force</label>
+                  <select
+                    value={executionTimeInForce}
+                    onChange={event => setExecutionTimeInForce(event.target.value)}
+                    className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                  >
+                    <option value="day">DAY</option>
+                    <option value="gtc">GTC</option>
+                    <option value="gtd">GTD</option>
+                    <option value="ioc">IOC</option>
+                  </select>
+                </div>
+                {executionTimeInForce === 'gtd' && (
+                  <div>
+                    <label className="text-slate-500">Good-Til Date</label>
+                    <input
+                      type="datetime-local"
+                      value={executionGoodTilDate}
+                      onChange={event => setExecutionGoodTilDate(event.target.value)}
+                      className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                    />
+                  </div>
+                )}
+                <div>
+                  <label className="text-slate-500">Take-Profit Price ($)</label>
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={executionTakeProfitPrice}
+                    onChange={event => setExecutionTakeProfitPrice(event.target.value)}
+                    placeholder="Optional"
+                    className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-500">Stop-Loss Price ($)</label>
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={executionStopLossPrice}
+                    onChange={event => setExecutionStopLossPrice(event.target.value)}
+                    placeholder="Optional"
+                    className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-500">Trailing Stop (%)</label>
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={executionTrailingStopPct}
+                    onChange={event => setExecutionTrailingStopPct(event.target.value)}
+                    placeholder="Optional"
+                    className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                  />
+                </div>
                 {selectedIdea.bias !== 'SHORT' && (
                   <div>
                     <label className="text-slate-500">Max Cost Per Share ($)</label>
@@ -498,11 +672,15 @@ export default function TradePlan() {
                     type="checkbox"
                     checked={executionAllowExtendedHours}
                     onChange={event => setExecutionAllowExtendedHours(event.target.checked)}
+                    disabled={executionAssetClass === 'crypto'}
                   />
                   Allow extended-hours fills when market is closed
                 </label>
-                {status !== 'OPEN' && (
+                {executionAssetClass === 'equity' && status !== 'OPEN' && (
                   <p className="text-amber-600">Market is currently closed.</p>
+                )}
+                {executionAssetClass === 'crypto' && (
+                  <p className="text-emerald-500">Crypto trades are evaluated as 24/7 market.</p>
                 )}
               </div>
 
