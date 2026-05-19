@@ -24,6 +24,11 @@ function looksCryptoSymbol(value) {
   return symbol.includes('/') || (/(USD|USDT|USDC)$/.test(symbol) && symbol.length >= 6);
 }
 
+function formatOrderPrice(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric.toFixed(2) : null;
+}
+
 export default function Stock() {
   const { symbol } = useParams();
   const [intraday,   setIntraday]  = useState([]);
@@ -465,10 +470,15 @@ export default function Stock() {
       setAccount(res.data.account || account);
       setConfirmOpen(false);
       const brokerOrderId = res.data.brokerOrder?.id || res.data.order?.externalOrderId || null;
+      const orderStatus = String(res.data.order?.status || '').toLowerCase();
+      const filled = orderStatus === 'filled';
+      const fillPrice = formatOrderPrice(res.data.order?.fillPrice);
       emitToast({
         type: 'success',
-        title: 'Order placed',
-        message: `${tradeSide.toUpperCase()} ${normalizedTradeQty} ${symbol} @ $${res.data.order?.fillPrice}${
+        title: filled ? 'Order filled' : 'Order submitted',
+        message: `${tradeSide.toUpperCase()} ${normalizedTradeQty} ${symbol}${
+          filled && fillPrice ? ` @ $${fillPrice}` : ` · ${String(orderStatus || 'open').toUpperCase()}`
+        }${
           brokerOrderId ? ` · Alpaca ${String(brokerOrderId).slice(0, 8)}` : ''
         }`
       });
@@ -967,8 +977,11 @@ export default function Stock() {
             {tradeError && <p className="text-xs text-red-600 mt-2">{tradeError}</p>}
             {tradeResult && (
               <div className="mt-3 text-xs text-slate-600 dark:text-slate-400">
-                Filled {tradeResult.order?.side?.toUpperCase()} {tradeResult.order?.qty} @ $
-                {tradeResult.order?.fillPrice}
+                {String(tradeResult.order?.status || '').toLowerCase() === 'filled' ? 'Filled' : 'Submitted'}{' '}
+                {tradeResult.order?.side?.toUpperCase()} {tradeResult.order?.qty}
+                {formatOrderPrice(tradeResult.order?.fillPrice)
+                  ? ` @ $${formatOrderPrice(tradeResult.order?.fillPrice)}`
+                  : ` · ${String(tradeResult.order?.status || 'open').toUpperCase()}`}
                 {tradeResult.brokerOrder?.id && (
                   <span className="block text-emerald-600 dark:text-emerald-400">
                     Alpaca paper order {String(tradeResult.brokerOrder.id).slice(0, 8)}

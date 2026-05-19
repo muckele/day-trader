@@ -42,7 +42,7 @@ function buildOrder({ research, settings, side, confidenceScore, rewardRiskRatio
     estimatedNotional: targetNotional > 0 ? round(targetNotional, 2) : null,
     stopLoss: null,
     takeProfit: null,
-    extendedHours: Boolean(settings.allowExtendedHours && research.assetClass === 'stocks'),
+    extendedHours: false,
     strategyId,
     confidenceScore,
     rewardRiskRatio,

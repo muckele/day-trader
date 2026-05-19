@@ -309,6 +309,9 @@ router.get('/performance', async (req, res, next) => {
     if (!user) return res.status(401).json({ message: 'User not found.' });
     const settings = await getMappedSettingsForUser(user._id);
     const environment = req.query.environment === 'live' ? 'live' : settings.mode;
+    if (environment === 'live' && !settings.liveTradingExplicitlyEnabled) {
+      return res.status(403).json({ message: 'Live performance data requires explicit live trading opt-in.' });
+    }
     const [decisions, orders] = await Promise.all([
       RoboTradeDecision.find({ userId: user._id }).sort({ decidedAt: -1 }).limit(250).lean(),
       RoboTradeOrder.find({ userId: user._id }).sort({ createdAt: -1 }).limit(250).lean()

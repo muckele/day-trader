@@ -3,7 +3,11 @@ const assert = require('node:assert/strict');
 const {
   normalizeOrderInput,
   enforceMarketHours,
-  enforcePriceControls
+  enforcePriceControls,
+  getAlpacaFillPrice,
+  getAlpacaFilledQty,
+  mapAlpacaPaperOrderStatus,
+  reconcileAlpacaPaperOrder
 } = require('../paper/paperBrokerClient');
 
 test('normalizeOrderInput accepts fractional quantity and limit settings', () => {
@@ -142,4 +146,44 @@ test('enforcePriceControls applies limit and max price constraints for buys', ()
     }),
     /exceeds max price per share/
   );
+});
+
+test('Alpaca paper order status helpers preserve open broker states', () => {
+  assert.equal(mapAlpacaPaperOrderStatus({ status: 'accepted' }), 'open');
+  assert.equal(mapAlpacaPaperOrderStatus({ status: 'new' }), 'open');
+  assert.equal(mapAlpacaPaperOrderStatus({ status: 'filled' }), 'filled');
+  assert.equal(mapAlpacaPaperOrderStatus({ status: 'canceled' }), 'cancelled');
+  assert.equal(mapAlpacaPaperOrderStatus({ status: 'rejected' }), 'rejected');
+  assert.equal(getAlpacaFilledQty({ filled_qty: '0.5' }, 1), 0.5);
+  assert.equal(getAlpacaFillPrice({ filled_avg_price: '123.45' }, 100), 123.45);
+});
+
+test('reconcileAlpacaPaperOrder keeps accepted broker orders open locally', async () => {
+  const saved = [];
+  const order = {
+    _id: 'paper-order-1',
+    externalOrderId: 'alpaca-order-1',
+    clientOrderId: 'client-1',
+    status: 'open',
+    save: async function save() {
+      saved.push({ status: this.status, brokerOrderStatus: this.brokerOrderStatus });
+      return this;
+    }
+  };
+
+  const result = await reconcileAlpacaPaperOrder(order, {
+    readOrder: async () => ({
+      id: 'alpaca-order-1',
+      client_order_id: 'client-1',
+      status: 'accepted',
+      filled_qty: '0'
+    })
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'open');
+  assert.equal(result.trade, null);
+  assert.equal(order.status, 'open');
+  assert.equal(order.brokerOrderStatus, 'accepted');
+  assert.equal(saved.length, 1);
 });

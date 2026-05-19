@@ -13,6 +13,15 @@ function formatTime(value) {
   return new Date(value).toLocaleString();
 }
 
+function formatMoney(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(2) : null;
+}
+
+function orderTimestamp(order) {
+  return order.filledAt || order.updatedAt || order.createdAt;
+}
+
 export default function Activity() {
   const [orders, setOrders] = useState([]);
   const [trades, setTrades] = useState([]);
@@ -66,7 +75,7 @@ export default function Activity() {
     const orderItems = orders.map(item => ({
       type: 'order',
       ...item,
-      timestamp: item.filledAt
+      timestamp: orderTimestamp(item)
     }));
     const tradeItems = trades.map(item => ({
       type: 'trade',
@@ -169,8 +178,12 @@ export default function Activity() {
                   <p className="text-xs text-slate-500">{formatTime(item.timestamp)}</p>
                 </div>
                 <p className="text-sm text-slate-600 dark:text-slate-300">
-                  {item.side.toUpperCase()} {item.qty} @ $
-                  {item.type === 'order' ? item.fillPrice : item.price}
+                  {item.side.toUpperCase()} {item.qty}{' '}
+                  {item.type === 'order'
+                    ? (formatMoney(item.fillPrice)
+                      ? `@ $${formatMoney(item.fillPrice)}`
+                      : (formatMoney(item.notional) ? `· Notional $${formatMoney(item.notional)}` : '· Pending fill'))
+                    : `@ $${formatMoney(item.price) || '--'}`}
                 </p>
                 {item.type === 'order' && (
                   <p className="text-xs text-slate-500">

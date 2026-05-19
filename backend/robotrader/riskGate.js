@@ -57,13 +57,64 @@ function isReducingPosition(side, currentPositionQty) {
   return (side === 'sell' && currentPositionQty > 0) || (side === 'buy' && currentPositionQty < 0);
 }
 
-function getProjectedPositionValue({ currentValue, currentQty, side, estimatedNotional }) {
+function isRiskReducingOnly({
+  side,
+  currentPositionQty,
+  qty,
+  estimatedNotional,
+  currentPositionValue
+}) {
+  if (!isReducingPosition(side, currentPositionQty)) return false;
+  const safeQty = Math.max(0, toFiniteNumber(qty, 0));
+  const safeNotional = Math.max(0, toFiniteNumber(estimatedNotional, 0));
+  const safeCurrentValue = Math.max(0, toFiniteNumber(currentPositionValue, 0));
+  const absPositionQty = Math.abs(toFiniteNumber(currentPositionQty, 0));
+
+  if (safeQty > 0) return safeQty <= absPositionQty;
+  if (safeNotional > 0 && safeCurrentValue > 0) return safeNotional <= safeCurrentValue;
+  return false;
+}
+
+function wouldRequireShortSelling({
+  side,
+  currentPositionQty,
+  qty,
+  estimatedNotional,
+  currentPositionValue
+}) {
+  if (side !== 'sell') return false;
+  if (currentPositionQty <= 0) return true;
+  return !isRiskReducingOnly({
+    side,
+    currentPositionQty,
+    qty,
+    estimatedNotional,
+    currentPositionValue
+  });
+}
+
+function getProjectedPositionValue({ currentValue, currentQty, side, estimatedNotional, qty }) {
   const safeCurrentValue = Math.max(0, toFiniteNumber(currentValue, 0));
   const safeEstimatedNotional = Math.max(0, toFiniteNumber(estimatedNotional, 0));
-  if (isReducingPosition(side, currentQty)) {
-    return Math.max(0, safeCurrentValue - safeEstimatedNotional);
+  const safeQty = Math.max(0, toFiniteNumber(qty, 0));
+  const safeCurrentQty = toFiniteNumber(currentQty, 0);
+
+  if (!isReducingPosition(side, safeCurrentQty)) {
+    return safeCurrentValue + safeEstimatedNotional;
   }
-  return safeCurrentValue + safeEstimatedNotional;
+
+  if (safeQty > 0 && safeCurrentQty !== 0) {
+    const absCurrentQty = Math.abs(safeCurrentQty);
+    const priceEstimate = safeEstimatedNotional > 0
+      ? safeEstimatedNotional / safeQty
+      : (safeCurrentValue > 0 ? safeCurrentValue / absCurrentQty : 0);
+    const nextQty = side === 'buy'
+      ? safeCurrentQty + safeQty
+      : safeCurrentQty - safeQty;
+    return Math.abs(nextQty) * priceEstimate;
+  }
+
+  return Math.abs(safeCurrentValue - safeEstimatedNotional);
 }
 
 function hasDuplicateOpenOrder(symbol, openOrders = []) {
@@ -96,6 +147,7 @@ function evaluateRoboRisk({
   decision = {},
   orderInput = {},
   environment = 'paper',
+  marketClock = null,
   now = new Date()
 } = {}) {
   const checks = [];
@@ -110,13 +162,31 @@ function evaluateRoboRisk({
   const estimatedNotional = notional || toFiniteNumber(orderInput.estimatedNotional, 0);
   const currentPositionQty = getPositionQty(symbol, positions);
   const currentPositionValue = getPositionValue(symbol, positions);
-  const reducingPosition = isReducingPosition(side, currentPositionQty);
+  const riskReducingOnly = isRiskReducingOnly({
+    side,
+    currentPositionQty,
+    qty,
+    estimatedNotional,
+    currentPositionValue
+  });
+  const requiresShortSelling = wouldRequireShortSelling({
+    side,
+    currentPositionQty,
+    qty,
+    estimatedNotional,
+    currentPositionValue
+  });
   const projectedPositionValue = getProjectedPositionValue({
     currentValue: currentPositionValue,
     currentQty: currentPositionQty,
     side,
-    estimatedNotional
+    estimatedNotional,
+    qty
   });
+  const marketIsOpen = marketClock
+    ? Boolean(marketClock.is_open ?? marketClock.isOpen)
+    : true;
+  const extendedHoursRequested = Boolean(orderInput.extendedHours || orderInput.extended_hours);
 
   const runCheck = (name, passed, message, severity = 'warning', metadata = {}) => {
     addCheck(checks, name, passed, message, severity, metadata);
@@ -140,6 +210,21 @@ function evaluateRoboRisk({
     `${assetClass} is not enabled in allowed asset classes.`
   );
   runCheck(
+    'market_hours',
+    assetClass !== 'stocks' || marketIsOpen || extendedHoursRequested,
+    'Market is closed and this order is not marked as a valid extended-hours order.',
+    'warning',
+    {
+      marketIsOpen,
+      extendedHoursRequested
+    }
+  );
+  runCheck(
+    'extended_hours_allowed',
+    !extendedHoursRequested || settings.allowExtendedHours === true,
+    'Extended-hours trading is not enabled for this user.'
+  );
+  runCheck(
     'crypto_enabled',
     assetClass !== 'crypto' || settings.allowCryptoTrading === true,
     'Crypto trading is not explicitly enabled for this user.'
@@ -151,7 +236,7 @@ function evaluateRoboRisk({
   );
   runCheck(
     'short_allowed',
-    !(side === 'sell' && currentPositionQty <= 0) || settings.allowShortSelling === true,
+    !requiresShortSelling || settings.allowShortSelling === true,
     'Short selling is not enabled for this user.'
   );
 
@@ -161,24 +246,24 @@ function evaluateRoboRisk({
   runCheck('trades_per_day', toFiniteNumber(tradesToday, 0) < toFiniteNumber(settings.maxTradesPerDay, 0), 'Max trades per day is exceeded.');
   runCheck(
     'open_positions',
-    reducingPosition || currentPositionQty !== 0 || countOpenPositions(positions) < toFiniteNumber(settings.maxOpenPositions, 0),
+    riskReducingOnly || currentPositionQty !== 0 || countOpenPositions(positions) < toFiniteNumber(settings.maxOpenPositions, 0),
     'Max open positions is exceeded.'
   );
   runCheck(
     'trade_amount',
-    reducingPosition || estimatedNotional <= toFiniteNumber(settings.maxTradeAmount, 0),
+    riskReducingOnly || estimatedNotional <= toFiniteNumber(settings.maxTradeAmount, 0),
     'Trade amount exceeds user max trade amount.',
     'warning',
     { estimatedNotional, maxTradeAmount: settings.maxTradeAmount }
   );
   runCheck(
     'position_size',
-    reducingPosition || projectedPositionValue <= toFiniteNumber(settings.maxPositionSize, 0),
+    riskReducingOnly || projectedPositionValue <= toFiniteNumber(settings.maxPositionSize, 0),
     'Position size would exceed user limit.',
     'warning',
     { projectedPositionValue, maxPositionSize: settings.maxPositionSize }
   );
-  runCheck('buying_power', side !== 'buy' || estimatedNotional <= getAccountBuyingPower(account), 'Buying power is insufficient.');
+  runCheck('buying_power', side !== 'buy' || riskReducingOnly || estimatedNotional <= getAccountBuyingPower(account), 'Buying power is insufficient.');
   runCheck('duplicate_order', !hasDuplicateOpenOrder(symbol, openOrders), 'Trade duplicates an existing open order.');
   runCheck('symbol_cooldown', !tradedTooRecently(symbol, recentOrders, now), 'The same symbol was traded too recently.');
   runCheck(
@@ -197,7 +282,15 @@ function evaluateRoboRisk({
   );
   runCheck(
     'stop_loss_required',
-    reducingPosition || Boolean(orderInput.stopLoss || orderInput.stop_loss || orderInput.stopPrice || orderInput.stop_price || assetClass !== 'stocks'),
+    riskReducingOnly || Boolean(
+      orderInput.stopLoss
+      || orderInput.stop_loss
+      || orderInput.stopPrice
+      || orderInput.stop_price
+      || orderInput.riskStopPrice
+      || orderInput.risk_stop_price
+      || assetClass !== 'stocks'
+    ),
     'Required stop loss is missing.'
   );
   runCheck(
@@ -224,5 +317,7 @@ module.exports = {
   REWARD_RISK_MINIMUMS,
   evaluateRoboRisk,
   getProjectedPositionValue,
-  isReducingPosition
+  isReducingPosition,
+  isRiskReducingOnly,
+  wouldRequireShortSelling
 };

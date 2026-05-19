@@ -29,6 +29,7 @@ const {
 } = require('../services/executionTelemetryService');
 const {
   buildClientOrderId,
+  readAlpacaPaperOrder,
   shouldSyncPaperTradesToAlpaca,
   submitAlpacaPaperOrder
 } = require('../services/alpacaTradingClient');
@@ -249,6 +250,28 @@ function enforcePriceControls({
   }
 }
 
+function mapAlpacaPaperOrderStatus(order = {}) {
+  const status = String(order.status || '').toLowerCase();
+  if (status === 'filled') return 'filled';
+  if (['canceled', 'cancelled', 'expired'].includes(status)) return 'cancelled';
+  if (status === 'rejected') return 'rejected';
+  return 'open';
+}
+
+function isTerminalAlpacaStatus(status) {
+  return ['filled', 'canceled', 'cancelled', 'expired', 'rejected'].includes(String(status || '').toLowerCase());
+}
+
+function getAlpacaFilledQty(order = {}, fallback = 0) {
+  const filledQty = Number(order.filled_qty ?? order.filledQty);
+  return Number.isFinite(filledQty) && filledQty > 0 ? filledQty : fallback;
+}
+
+function getAlpacaFillPrice(order = {}, fallback = null) {
+  const filledAvgPrice = Number(order.filled_avg_price ?? order.filledAvgPrice);
+  return Number.isFinite(filledAvgPrice) && filledAvgPrice > 0 ? filledAvgPrice : fallback;
+}
+
 async function getSettings() {
   const existing = await PaperSettings.findOne({ accountId: ACCOUNT_ID });
   if (existing) return existing;
@@ -290,12 +313,264 @@ async function updateSettings(updates) {
   return settings;
 }
 
+async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
+  now = new Date()
+} = {}) {
+  const existingTrade = await PaperTrade.findOne({ orderId: order._id });
+  if (existingTrade) return existingTrade;
+
+  const filledQty = getAlpacaFilledQty(brokerOrder, order.qty);
+  const fillPrice = getAlpacaFillPrice(brokerOrder, order.fillPrice || order.estimatedPrice);
+  if (!Number.isFinite(filledQty) || filledQty <= 0 || !Number.isFinite(fillPrice) || fillPrice <= 0) {
+    return null;
+  }
+
+  const filledAt = brokerOrder.filled_at ? new Date(brokerOrder.filled_at) : now;
+  const settings = await getSettings();
+  const trades = await PaperTrade.find({
+    accountId: ACCOUNT_ID,
+    filledAt: { $lte: filledAt }
+  }).sort({ filledAt: 1 }).lean();
+  const { positions } = buildPositions(trades);
+  const currentPosition = positions[order.symbol] || { qty: 0, avgCost: 0 };
+  const shortOpenQty = calculateShortOpenQty(currentPosition.qty, order.side, filledQty);
+  const borrowProfile = shortOpenQty > 0 && order.assetClass !== 'crypto'
+    ? getShortBorrowProfile(order.symbol)
+    : null;
+  const borrowFeeAccrued = shortOpenQty > 0 && borrowProfile
+    ? Number(((shortOpenQty * fillPrice) * (borrowProfile.feeApr / 100) / 365).toFixed(4))
+    : 0;
+  const { realizedPnl } = applyTradeToPosition(currentPosition, {
+    side: order.side,
+    qty: filledQty,
+    price: fillPrice
+  });
+  const commission = Number(order.commission || settings.commission || 0);
+  const tradeRealized = realizedPnl - commission - borrowFeeAccrued;
+  const stopValue = Number.isFinite(Number(order.stopLossPrice))
+    ? Number(order.stopLossPrice)
+    : (Number.isFinite(Number(order.stopPrice)) ? Number(order.stopPrice) : null);
+  const riskPerShare = stopValue ? Math.abs(fillPrice - stopValue) : null;
+  const isClosing = currentPosition.qty !== 0
+    && currentPosition.qty * (order.side === 'buy' ? filledQty : -filledQty) < 0;
+  const rMultiple = isClosing && riskPerShare
+    ? tradeRealized / (riskPerShare * filledQty)
+    : null;
+  const regimeAtTrade = await getRegimeAtTrade(filledAt);
+  const notional = Number((filledQty * fillPrice).toFixed(2));
+
+  const trade = await PaperTrade.create({
+    accountId: ACCOUNT_ID,
+    broker: 'alpaca',
+    externalOrderId: brokerOrder.id || order.externalOrderId || null,
+    clientOrderId: brokerOrder.client_order_id || order.clientOrderId || null,
+    brokerOrderStatus: brokerOrder.status || order.brokerOrderStatus || null,
+    symbol: order.symbol,
+    assetClass: order.assetClass,
+    side: order.side,
+    qty: filledQty,
+    price: fillPrice,
+    extendedHours: Boolean(order.extendedHours),
+    marketSession: order.marketSession,
+    strategyId: order.strategyId || null,
+    setupType: order.setupType || null,
+    strategyTags: order.strategyTags || [],
+    estimatedPrice: order.estimatedPrice,
+    effectiveSlippageBps: Number.isFinite(Number(order.estimatedPrice)) && Number(order.estimatedPrice) > 0
+      ? Number((((order.side === 'buy'
+        ? (fillPrice - Number(order.estimatedPrice))
+        : (Number(order.estimatedPrice) - fillPrice)) / Number(order.estimatedPrice)) * 10000).toFixed(2))
+      : order.effectiveSlippageBps,
+    fillLatencyMs: order.fillLatencyMs,
+    shortBorrowFeeApr: borrowProfile?.feeApr || order.shortBorrowFeeApr || null,
+    borrowFeeAccrued,
+    forcedBuyIn: false,
+    stopPrice: stopValue,
+    riskPerShare: riskPerShare ? Number(riskPerShare.toFixed(4)) : null,
+    rMultiple: rMultiple !== null ? Number(rMultiple.toFixed(2)) : null,
+    regimeAtTrade: regimeAtTrade ? {
+      date: regimeAtTrade.date,
+      trendChop: regimeAtTrade.trendChop,
+      vol: regimeAtTrade.vol,
+      risk: regimeAtTrade.risk,
+      notes: regimeAtTrade.notes || []
+    } : null,
+    commission,
+    notional,
+    realizedPnl: tradeRealized,
+    orderId: order._id,
+    filledAt
+  });
+
+  const hasAttachedOrders = await PaperOrder.exists({ parentOrderId: order._id });
+  if (!hasAttachedOrders) {
+    await createAttachedExitOrders({
+      parentOrder: order,
+      now: filledAt,
+      side: order.side,
+      qty: filledQty,
+      assetClass: order.assetClass,
+      strategyId: order.strategyId || null,
+      setupType: order.setupType || null,
+      strategyTags: order.strategyTags || [],
+      allowExtendedHours: order.allowExtendedHours,
+      marketSession: order.marketSession,
+      extendedHours: order.extendedHours,
+      timeInForce: order.timeInForce,
+      goodTilDate: order.goodTilDate || null,
+      takeProfitPrice: Number.isFinite(Number(order.takeProfitPrice)) ? Number(order.takeProfitPrice) : null,
+      stopLossPrice: Number.isFinite(Number(order.stopLossPrice)) ? Number(order.stopLossPrice) : null,
+      trailingStopPct: Number.isFinite(Number(order.trailingStopPct)) ? Number(order.trailingStopPct) : null
+    });
+  }
+
+  const tradePlanId = await linkTradeToPlan(trade, ACCOUNT_ID);
+  if (tradePlanId) {
+    trade.tradePlanId = tradePlanId;
+    await trade.save();
+  }
+
+  const { consecutiveLosses, cooldownUntil } = updateCooldownState(
+    settings,
+    tradeRealized,
+    filledAt
+  );
+  settings.consecutiveLosses = consecutiveLosses;
+  settings.cooldownUntil = cooldownUntil;
+  await settings.save();
+
+  const updatedAccount = await getAccount();
+  await PaperEquity.create({
+    accountId: ACCOUNT_ID,
+    timestamp: filledAt,
+    equity: updatedAccount.equity,
+    cash: updatedAccount.cash,
+    positionsValue: updatedAccount.positionsValue,
+    dailyPnl: updatedAccount.dailyPnl,
+    totalPnl: updatedAccount.totalPnl
+  });
+
+  await recordFilledExecution({
+    broker: 'alpaca',
+    origin: order.origin || order.setupType || 'manual',
+    request: {
+      accountId: ACCOUNT_ID,
+      origin: order.origin || 'manual',
+      broker: 'paper',
+      symbol: order.symbol,
+      assetClass: order.assetClass,
+      side: order.side,
+      qty: filledQty,
+      orderType: order.orderType,
+      timeInForce: order.timeInForce,
+      limitPrice: order.limitPrice,
+      stopPrice: order.stopPrice,
+      takeProfitPrice: order.takeProfitPrice,
+      stopLossPrice: order.stopLossPrice,
+      trailingStopPct: order.trailingStopPct,
+      maxPricePerShare: order.maxPricePerShare,
+      allowExtendedHours: order.allowExtendedHours,
+      strategyId: order.strategyId || null,
+      setupType: order.setupType || null,
+      metadata: { reconciledFromAlpacaPaperOrder: true }
+    },
+    order,
+    trade,
+    brokerOrder
+  });
+
+  return trade;
+}
+
+async function reconcileAlpacaPaperOrder(order, {
+  now = new Date(),
+  readOrder = readAlpacaPaperOrder
+} = {}) {
+  if (!order?.externalOrderId) return { ok: false, reason: 'MISSING_EXTERNAL_ORDER_ID' };
+
+  const brokerOrder = await readOrder(order.externalOrderId);
+  const brokerStatus = String(brokerOrder.status || '').toLowerCase();
+  const localStatus = mapAlpacaPaperOrderStatus(brokerOrder);
+  const brokerFilledQty = getAlpacaFilledQty(brokerOrder, 0);
+  const brokerFillPrice = getAlpacaFillPrice(brokerOrder, null);
+  const hasFill = brokerFilledQty > 0 && Number.isFinite(brokerFillPrice) && brokerFillPrice > 0;
+  const shouldCreateTrade = brokerStatus === 'filled'
+    || (hasFill && isTerminalAlpacaStatus(brokerStatus));
+
+  order.externalOrderId = brokerOrder.id || order.externalOrderId;
+  order.clientOrderId = brokerOrder.client_order_id || order.clientOrderId;
+  order.brokerOrderStatus = brokerOrder.status || order.brokerOrderStatus;
+  order.status = localStatus;
+  if (hasFill) {
+    order.fillPrice = brokerFillPrice;
+    order.notional = Number((brokerFilledQty * brokerFillPrice).toFixed(2));
+  }
+  if (brokerOrder.filled_at) {
+    order.filledAt = new Date(brokerOrder.filled_at);
+  } else if (localStatus !== 'filled') {
+    order.filledAt = null;
+  }
+  if (localStatus === 'rejected') {
+    order.rejectedReason = brokerOrder.reject_reason || brokerOrder.rejected_reason || order.rejectedReason;
+  }
+  await order.save();
+
+  const trade = shouldCreateTrade
+    ? await createFilledTradeFromSyncedOrder(order, brokerOrder, { now })
+    : null;
+
+  return {
+    ok: true,
+    order,
+    trade,
+    brokerOrder,
+    status: localStatus
+  };
+}
+
+async function reconcileOpenAlpacaPaperOrders({
+  limit = 50,
+  now = new Date(),
+  readOrder = readAlpacaPaperOrder
+} = {}) {
+  const orders = await PaperOrder.find({
+    accountId: ACCOUNT_ID,
+    broker: 'alpaca',
+    status: 'open',
+    externalOrderId: { $nin: [null, ''] }
+  }).sort({ updatedAt: 1 }).limit(Math.min(Math.max(Number(limit) || 50, 1), 200));
+
+  let updated = 0;
+  const errors = [];
+  for (const order of orders) {
+    try {
+      await reconcileAlpacaPaperOrder(order, { now, readOrder });
+      updated += 1;
+    } catch (err) {
+      errors.push({
+        orderId: String(order._id),
+        externalOrderId: order.externalOrderId,
+        message: err?.message || 'Could not reconcile Alpaca paper order.'
+      });
+    }
+  }
+
+  return {
+    ok: errors.length === 0,
+    checked: orders.length,
+    updated,
+    errors
+  };
+}
+
 async function getTrades() {
+  await reconcileOpenAlpacaPaperOrders().catch(() => null);
   return PaperTrade.find({ accountId: ACCOUNT_ID }).sort({ filledAt: -1 }).lean();
 }
 
 async function getOrders() {
-  return PaperOrder.find({ accountId: ACCOUNT_ID }).sort({ filledAt: -1 }).lean();
+  await reconcileOpenAlpacaPaperOrders().catch(() => null);
+  return PaperOrder.find({ accountId: ACCOUNT_ID }).sort({ updatedAt: -1, filledAt: -1 }).lean();
 }
 
 async function getPositions() {
@@ -700,18 +975,9 @@ async function placeOrder({
     }
   }
 
-  const borrowFeeAccrued = shortOpenQty > 0 && borrowProfile
-    ? Number(((shortOpenQty * fillPrice) * (borrowProfile.feeApr / 100) / 365).toFixed(4))
-    : 0;
-  const { realizedPnl } = applyTradeToPosition(currentPosition, {
-    side: normalizedSide,
-    qty: numericQty,
-    price: fillPrice
-  });
   const isClosing = currentPosition.qty !== 0
     && currentPosition.qty * (normalizedSide === 'buy' ? numericQty : -numericQty) < 0;
   const commission = Number(settings.commission || 0);
-  const tradeRealized = realizedPnl - commission - borrowFeeAccrued;
   const stopValue = parsedStopLossPrice !== null
     ? parsedStopLossPrice
     : (stopPrice !== undefined && stopPrice !== null
@@ -719,10 +985,6 @@ async function placeOrder({
       : null);
   const stopTriggerValue = parsedStopTriggerPrice !== null
     ? parsedStopTriggerPrice
-    : null;
-  const riskPerShare = stopValue ? Math.abs(fillPrice - stopValue) : null;
-  const rMultiple = isClosing && riskPerShare
-    ? tradeRealized / (riskPerShare * numericQty)
     : null;
   const strategy = strategyId ? getStrategy(strategyId) : null;
   const finalTags = Array.isArray(strategyTags) && strategyTags.length
@@ -740,39 +1002,8 @@ async function placeOrder({
       ? (borrowProfile.hardToBorrow ? 'hard_to_borrow' : 'borrowable')
       : 'unavailable')
     : 'none';
-  let alpacaPaperOrder = null;
-  if (shouldSyncPaperTradesToAlpaca()) {
-    const clientOrderId = buildClientOrderId({
-      origin,
-      symbol: normalizedSymbol,
-      now
-    });
-    alpacaPaperOrder = await submitAlpacaPaperOrder({
-      symbol: normalizedSymbol,
-      assetClass: normalizedAssetClass,
-      side: normalizedSide,
-      qty: numericQty,
-      orderType: normalizedOrderType,
-      timeInForce: normalizedTimeInForce,
-      limitPrice: parsedLimitPrice,
-      stopPrice: stopTriggerValue,
-      takeProfitPrice: parsedTakeProfitPrice,
-      stopLossPrice: parsedStopLossPrice,
-      trailingStopPct: parsedTrailingStopPct,
-      allowExtendedHours: marketContext.extendedHours && normalized.allowExtendedHours,
-      clientOrderId
-    }, {
-      pollStatusAttempts: 3,
-      pollStatusDelayMs: 300
-    });
-  }
-
-  const order = await PaperOrder.create({
+  const baseOrderPayload = {
     accountId: ACCOUNT_ID,
-    broker: alpacaPaperOrder?.broker || 'paper',
-    externalOrderId: alpacaPaperOrder?.order?.id || null,
-    clientOrderId: alpacaPaperOrder?.order?.client_order_id || alpacaPaperOrder?.payload?.client_order_id || null,
-    brokerOrderStatus: alpacaPaperOrder?.order?.status || null,
     symbol: normalizedSymbol,
     assetClass: normalizedAssetClass,
     side: normalizedSide,
@@ -793,8 +1024,6 @@ async function placeOrder({
     strategyTags: finalTags,
     estimatedPrice,
     stopPrice: stopTriggerValue !== null ? stopTriggerValue : stopValue,
-    status: 'filled',
-    fillPrice,
     fillLatencyMs,
     effectiveSlippageBps,
     shortBorrowFeeApr: borrowProfile?.feeApr || null,
@@ -802,9 +1031,111 @@ async function placeOrder({
     forcedBuyIn: false,
     commission,
     slippageBps: settings.slippageBps || 0,
-    notional: orderNotional,
-    filledAt: now
+    notional: orderNotional
+  };
+  let alpacaPaperOrder = null;
+  let order = null;
+  const syncToAlpaca = shouldSyncPaperTradesToAlpaca();
+  if (syncToAlpaca) {
+    const clientOrderId = buildClientOrderId({
+      origin,
+      symbol: normalizedSymbol,
+      now
+    });
+    order = await PaperOrder.create({
+      ...baseOrderPayload,
+      broker: 'alpaca',
+      clientOrderId,
+      brokerOrderStatus: 'pending_submit',
+      status: 'open',
+      fillPrice: null,
+      filledAt: null
+    });
+    try {
+      alpacaPaperOrder = await submitAlpacaPaperOrder({
+        symbol: normalizedSymbol,
+        assetClass: normalizedAssetClass,
+        side: normalizedSide,
+        qty: numericQty,
+        orderType: normalizedOrderType,
+        timeInForce: normalizedTimeInForce,
+        limitPrice: parsedLimitPrice,
+        stopPrice: stopTriggerValue,
+        takeProfitPrice: parsedTakeProfitPrice,
+        stopLossPrice: parsedStopLossPrice,
+        trailingStopPct: parsedTrailingStopPct,
+        allowExtendedHours: marketContext.extendedHours && normalized.allowExtendedHours,
+        clientOrderId
+      }, {
+        pollStatusAttempts: 3,
+        pollStatusDelayMs: 300
+      });
+    } catch (err) {
+      order.status = 'rejected';
+      order.brokerOrderStatus = 'rejected';
+      order.rejectedReason = err.message;
+      await order.save();
+      throw err;
+    }
+
+    const brokerOrder = alpacaPaperOrder?.order || {};
+    const localStatus = mapAlpacaPaperOrderStatus(brokerOrder);
+    const brokerFillPrice = getAlpacaFillPrice(brokerOrder, fillPrice);
+    const brokerFilledQty = getAlpacaFilledQty(brokerOrder, numericQty);
+    order.externalOrderId = brokerOrder.id || null;
+    order.clientOrderId = brokerOrder.client_order_id || alpacaPaperOrder?.payload?.client_order_id || clientOrderId;
+    order.brokerOrderStatus = brokerOrder.status || null;
+    order.status = localStatus;
+    order.fillPrice = localStatus === 'filled' ? brokerFillPrice : null;
+    order.notional = localStatus === 'filled'
+      ? Number((brokerFillPrice * brokerFilledQty).toFixed(2))
+      : orderNotional;
+    order.filledAt = localStatus === 'filled'
+      ? (brokerOrder.filled_at ? new Date(brokerOrder.filled_at) : now)
+      : null;
+    await order.save();
+
+    if (localStatus !== 'filled') {
+      const updatedAccount = await getAccount();
+      return {
+        order,
+        trade: null,
+        attachedOrders: [],
+        brokerOrder,
+        account: updatedAccount,
+        positions: updatedAccount.positions
+      };
+    }
+  } else {
+    order = await PaperOrder.create({
+      ...baseOrderPayload,
+      broker: 'paper',
+      status: 'filled',
+      fillPrice,
+      filledAt: now
+    });
+  }
+
+  const executedQty = syncToAlpaca
+    ? getAlpacaFilledQty(alpacaPaperOrder?.order || {}, numericQty)
+    : numericQty;
+  const executedFillPrice = syncToAlpaca
+    ? getAlpacaFillPrice(alpacaPaperOrder?.order || {}, fillPrice)
+    : fillPrice;
+  const executedNotional = Number((executedQty * executedFillPrice).toFixed(2));
+  const executedBorrowFeeAccrued = shortOpenQty > 0 && borrowProfile
+    ? Number(((Math.min(shortOpenQty, executedQty) * executedFillPrice) * (borrowProfile.feeApr / 100) / 365).toFixed(4))
+    : 0;
+  const { realizedPnl: executedRealizedPnl } = applyTradeToPosition(currentPosition, {
+    side: normalizedSide,
+    qty: executedQty,
+    price: executedFillPrice
   });
+  const executedTradeRealized = executedRealizedPnl - commission - executedBorrowFeeAccrued;
+  const executedRiskPerShare = stopValue ? Math.abs(executedFillPrice - stopValue) : null;
+  const executedRMultiple = isClosing && executedRiskPerShare
+    ? executedTradeRealized / (executedRiskPerShare * executedQty)
+    : null;
 
   const trade = await PaperTrade.create({
     accountId: ACCOUNT_ID,
@@ -815,8 +1146,8 @@ async function placeOrder({
     symbol: normalizedSymbol,
     assetClass: normalizedAssetClass,
     side: normalizedSide,
-    qty: numericQty,
-    price: fillPrice,
+    qty: executedQty,
+    price: executedFillPrice,
     extendedHours: marketContext.extendedHours,
     marketSession: marketContext.marketSession,
     strategyId: strategyId || null,
@@ -826,11 +1157,11 @@ async function placeOrder({
     effectiveSlippageBps,
     fillLatencyMs,
     shortBorrowFeeApr: borrowProfile?.feeApr || null,
-    borrowFeeAccrued,
+    borrowFeeAccrued: executedBorrowFeeAccrued,
     forcedBuyIn: false,
     stopPrice: stopValue,
-    riskPerShare: riskPerShare ? Number(riskPerShare.toFixed(4)) : null,
-    rMultiple: rMultiple !== null ? Number(rMultiple.toFixed(2)) : null,
+    riskPerShare: executedRiskPerShare ? Number(executedRiskPerShare.toFixed(4)) : null,
+    rMultiple: executedRMultiple !== null ? Number(executedRMultiple.toFixed(2)) : null,
     regimeAtTrade: regimeAtTrade ? {
       date: regimeAtTrade.date,
       trendChop: regimeAtTrade.trendChop,
@@ -839,8 +1170,8 @@ async function placeOrder({
       notes: regimeAtTrade.notes || []
     } : null,
     commission,
-    notional: orderNotional,
-    realizedPnl: tradeRealized,
+    notional: executedNotional,
+    realizedPnl: executedTradeRealized,
     orderId: order._id,
     filledAt: now
   });
@@ -849,7 +1180,7 @@ async function placeOrder({
     parentOrder: order,
     now,
     side: normalizedSide,
-    qty: numericQty,
+    qty: executedQty,
     assetClass: normalizedAssetClass,
     strategyId: strategyId || null,
     setupType: setupType || null,
@@ -871,7 +1202,7 @@ async function placeOrder({
 
   const { consecutiveLosses, cooldownUntil } = updateCooldownState(
     settings,
-    tradeRealized,
+    executedTradeRealized,
     now
   );
   settings.consecutiveLosses = consecutiveLosses;
@@ -899,7 +1230,7 @@ async function placeOrder({
       symbol: normalizedSymbol,
       assetClass: normalizedAssetClass,
       side: normalizedSide,
-      qty: numericQty,
+      qty: executedQty,
       orderType: normalizedOrderType,
       timeInForce: normalizedTimeInForce,
       limitPrice: parsedLimitPrice,
@@ -1020,7 +1351,14 @@ module.exports = {
   getEquityCurve,
   placeOrder,
   recordRejectedOrder,
+  createFilledTradeFromSyncedOrder,
   normalizeOrderInput,
   enforceMarketHours,
-  enforcePriceControls
+  enforcePriceControls,
+  getAlpacaFillPrice,
+  getAlpacaFilledQty,
+  isTerminalAlpacaStatus,
+  mapAlpacaPaperOrderStatus,
+  reconcileAlpacaPaperOrder,
+  reconcileOpenAlpacaPaperOrders
 };

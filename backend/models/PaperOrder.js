@@ -21,7 +21,7 @@ const paperOrderSchema = new mongoose.Schema(
     parentOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'PaperOrder', default: null },
     ocoGroupId: { type: String, default: null },
     maxPricePerShare: { type: Number, default: null },
-    allowExtendedHours: { type: Boolean, default: true },
+    allowExtendedHours: { type: Boolean, default: false },
     extendedHours: { type: Boolean, default: false },
     marketSession: { type: String, enum: ['regular', 'extended', 'crypto'], default: 'regular' },
     strategyId: { type: String, default: null },

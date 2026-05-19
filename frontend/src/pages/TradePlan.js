@@ -207,7 +207,7 @@ export default function TradePlan() {
 
     setExecuting(true);
     try {
-      await axios.post('/api/paper-trades/order', {
+      const res = await axios.post('/api/paper-trades/order', {
         symbol: selectedIdea.symbol,
         assetClass: executionAssetClass,
         side,
@@ -225,7 +225,11 @@ export default function TradePlan() {
         strategyId: selectedIdea.strategyId,
         setupType: selectedIdea.setupType || null
       });
-      emitToast({ type: 'success', message: 'Paper trade executed.' });
+      const status = String(res.data?.order?.status || '').toLowerCase();
+      emitToast({
+        type: 'success',
+        message: status === 'filled' ? 'Paper trade filled.' : 'Paper order submitted.'
+      });
       closeExecutionModal();
       fetchPlan();
       fetchHistory();

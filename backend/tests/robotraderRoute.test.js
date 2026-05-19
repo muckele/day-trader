@@ -70,3 +70,27 @@ test('POST /robotrader/reconcile blocks requested live mode without explicit opt
   assert.equal(res.statusCode, 403);
   assert.match(res.body.message, /explicit live trading opt-in/);
 });
+
+test('GET /robotrader/performance blocks live account reads without explicit opt-in', async t => {
+  t.mock.method(User, 'findOne', async () => ({ _id: 'user-route-live-performance-block' }));
+  t.mock.method(RoboSettings, 'findOne', () => ({
+    sort: () => ({
+      mode: 'paper',
+      liveTradingExplicitlyEnabled: false,
+      allowedAssetClasses: ['stocks']
+    })
+  }));
+
+  const handler = getRouteHandler('/performance', 'get');
+  const req = {
+    user: { username: 'matt' },
+    query: { environment: 'live' }
+  };
+  const res = createMockRes();
+  let nextErr = null;
+  await handler(req, res, err => { nextErr = err; });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 403);
+  assert.match(res.body.message, /explicit live trading opt-in/);
+});

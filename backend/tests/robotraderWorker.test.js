@@ -1,7 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { mapSettings } = require('../robotrader/settingsService');
-const { runRoboTraderForUser, runWorkerTick } = require('../robotrader/worker');
+const {
+  adaptOrderForMarketSession,
+  resolveWorkerLockTtlMs,
+  runRoboTraderForUser,
+  runWorkerTick
+} = require('../robotrader/worker');
 
 function chain(result) {
   return {
@@ -110,6 +115,7 @@ function createDeps({ approved = true } = {}) {
     }),
     createAlpacaBroker: () => ({
       getAccount: async () => ({ buying_power: '10000', equity: '10000', last_equity: '10000', status: 'ACTIVE' }),
+      getClock: async () => ({ is_open: true }),
       getPositions: async () => [],
       listOrders: async () => [],
       submitOrder: async input => {
@@ -197,4 +203,57 @@ test('robotrader worker blocks live mode before broker access without explicit o
   assert.equal(result.reason, 'LIVE_TRADING_NOT_ENABLED');
   assert.equal(brokerCreated, false);
   assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_live_blocked'), true);
+});
+
+test('robotrader worker skips when a per-user lock is already held', async () => {
+  const context = createDeps({ approved: true });
+  let brokerCreated = false;
+  context.deps.acquireWorkerLock = async () => false;
+  context.deps.releaseWorkerLock = async () => {
+    throw new Error('release should not be called when lock was not acquired');
+  };
+  context.deps.createAlpacaBroker = () => {
+    brokerCreated = true;
+    throw new Error('broker should not be created');
+  };
+
+  const result = await runRoboTraderForUser({ userId: 'user-worker', modeOverride: 'paper', runOnce: true }, context.deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'ROBOTRADER_LOCKED');
+  assert.equal(brokerCreated, false);
+  assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_worker_locked'), true);
+});
+
+test('robotrader worker lock TTL falls back when env value is invalid', () => {
+  assert.equal(resolveWorkerLockTtlMs({ ROBOTRADER_WORKER_LOCK_TTL_MS: 'bad' }), 10 * 60 * 1000);
+  assert.equal(resolveWorkerLockTtlMs({ ROBOTRADER_WORKER_LOCK_TTL_MS: '1000' }), 10 * 60 * 1000);
+  assert.equal(resolveWorkerLockTtlMs({ ROBOTRADER_WORKER_LOCK_TTL_MS: '45000' }), 45000);
+});
+
+test('robotrader worker converts stock orders to valid extended-hours limit orders', () => {
+  const order = adaptOrderForMarketSession({
+    symbol: 'AAPL',
+    assetClass: 'stocks',
+    side: 'buy',
+    orderType: 'market',
+    orderClass: 'bracket',
+    timeInForce: 'day',
+    qty: 1,
+    estimatedNotional: 200,
+    stopLoss: { stop_price: 190 },
+    takeProfit: { limit_price: 215 }
+  }, {
+    settings: { allowExtendedHours: true },
+    marketClock: { is_open: false },
+    research: { price: 200 }
+  });
+
+  assert.equal(order.orderType, 'limit');
+  assert.equal(order.orderClass, 'simple');
+  assert.equal(order.extendedHours, true);
+  assert.equal(order.limitPrice, 201);
+  assert.equal(order.stopLoss, null);
+  assert.equal(order.takeProfit, null);
+  assert.equal(order.riskStopPrice, 190);
 });

@@ -2,6 +2,7 @@ const RoboSettings = require('../models/RoboSettings');
 const RoboTradeDecision = require('../models/RoboTradeDecision');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
 const RoboAuditLog = require('../models/RoboAuditLog');
+const RoboLock = require('../models/RoboLock');
 const { getRecommendationUniverse } = require('../config/tradingConfig');
 const { isCryptoSymbol } = require('../services/marketData');
 const {
@@ -17,6 +18,15 @@ const { evaluateRoboRisk } = require('./riskGate');
 const { createAlpacaBroker } = require('./alpacaBroker');
 
 const TERMINAL_ORDER_STATUSES = ['filled', 'canceled', 'cancelled', 'expired', 'rejected'];
+
+function resolveWorkerLockTtlMs(env = process.env) {
+  const parsed = Number(env.ROBOTRADER_WORKER_LOCK_TTL_MS);
+  return Number.isFinite(parsed) && parsed >= 30 * 1000
+    ? parsed
+    : 10 * 60 * 1000;
+}
+
+const WORKER_LOCK_TTL_MS = resolveWorkerLockTtlMs();
 
 function toFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);
@@ -92,6 +102,121 @@ function buildSymbolUniverse(settings) {
 
 async function writeAudit(userId, eventType, payload, deps) {
   return deps.RoboAuditLog.create({ userId, eventType, payload: payload || {} });
+}
+
+async function acquireWorkerLock(userId, owner, now = new Date(), deps = defaultDeps) {
+  if (!deps.RoboLock?.findOneAndUpdate) return true;
+  const lockedUntil = new Date(now.getTime() + WORKER_LOCK_TTL_MS);
+  try {
+    const lock = await deps.RoboLock.findOneAndUpdate(
+      {
+        userId,
+        $or: [
+          { lockedUntil: { $lte: now } },
+          { lockedUntil: { $exists: false } }
+        ]
+      },
+      {
+        $set: {
+          owner,
+          lockedUntil
+        }
+      },
+      {
+        upsert: true,
+        new: true
+      }
+    );
+    return Boolean(lock);
+  } catch (err) {
+    if (err?.code === 11000) return false;
+    throw err;
+  }
+}
+
+async function releaseWorkerLock(userId, owner, deps = defaultDeps) {
+  if (!deps.RoboLock?.updateOne) return;
+  await deps.RoboLock.updateOne(
+    { userId, owner },
+    { $set: { lockedUntil: new Date(0) } }
+  );
+}
+
+async function refreshWorkerLock(userId, owner, now = new Date(), deps = defaultDeps) {
+  if (!deps.RoboLock?.updateOne) return;
+  await deps.RoboLock.updateOne(
+    { userId, owner },
+    { $set: { lockedUntil: new Date(now.getTime() + WORKER_LOCK_TTL_MS) } }
+  );
+}
+
+function startWorkerLockHeartbeat(userId, owner, deps = defaultDeps) {
+  if (!deps.RoboLock?.updateOne) return () => {};
+  const intervalMs = Math.max(15 * 1000, Math.floor(WORKER_LOCK_TTL_MS / 3));
+  const timer = setInterval(() => {
+    refreshWorkerLock(userId, owner, new Date(), deps).catch(() => {});
+  }, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+  return () => clearInterval(timer);
+}
+
+function getNestedPrice(input, objectKey, fieldKey) {
+  const camelKey = fieldKey.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+  const value = input?.[objectKey]?.[fieldKey] ?? input?.[objectKey]?.[camelKey];
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function extractRiskStopPrice(orderInput = {}) {
+  const direct = Number(orderInput.riskStopPrice ?? orderInput.risk_stop_price);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const stopPrice = Number(orderInput.stopPrice ?? orderInput.stop_price);
+  if (Number.isFinite(stopPrice) && stopPrice > 0) return stopPrice;
+  return getNestedPrice(orderInput, orderInput.stop_loss ? 'stop_loss' : 'stopLoss', 'stop_price');
+}
+
+function roundOrderPrice(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return Number(numeric.toFixed(numeric >= 1 ? 2 : 4));
+}
+
+function adaptOrderForMarketSession(orderInput = {}, {
+  settings = {},
+  marketClock = null,
+  research = {}
+} = {}) {
+  const assetClass = normalizeAssetClass(orderInput.assetClass) || 'stocks';
+  const marketOpen = marketClock ? Boolean(marketClock.is_open ?? marketClock.isOpen) : true;
+  if (assetClass !== 'stocks' || marketOpen || settings.allowExtendedHours !== true) {
+    return orderInput;
+  }
+
+  const referencePrice = Number(
+    orderInput.limitPrice
+    ?? orderInput.limit_price
+    ?? research.price
+    ?? research.quote?.price
+  );
+  const limitPrice = roundOrderPrice(orderInput.limitPrice ?? orderInput.limit_price)
+    || roundOrderPrice(orderInput.side === 'sell' ? referencePrice * 0.995 : referencePrice * 1.005);
+  if (!limitPrice) return orderInput;
+
+  const timeInForce = ['day', 'gtc'].includes(String(orderInput.timeInForce || '').toLowerCase())
+    ? String(orderInput.timeInForce).toLowerCase()
+    : 'day';
+
+  return {
+    ...orderInput,
+    orderType: 'limit',
+    orderClass: 'simple',
+    timeInForce,
+    limitPrice,
+    extendedHours: true,
+    takeProfit: null,
+    stopLoss: null,
+    riskStopPrice: extractRiskStopPrice(orderInput)
+  };
 }
 
 function buildOrderInputFromDecision(decision, settings) {
@@ -294,15 +419,34 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
     return { ok: false, skipped: true, reason: 'ROBOTRADER_DISABLED', runId };
   }
 
+  const lockOwner = runId;
+  const lockAcquired = typeof deps.acquireWorkerLock === 'function'
+    ? await deps.acquireWorkerLock(userId, lockOwner, now, deps)
+    : await acquireWorkerLock(userId, lockOwner, now, deps);
+  if (!lockAcquired) {
+    await writeAudit(userId, 'robotrader_worker_locked', {
+      reason: 'Another RoboTrader worker run is already active for this user.',
+      runId,
+      at: now.toISOString()
+    }, deps);
+    return { ok: false, skipped: true, reason: 'ROBOTRADER_LOCKED', runId };
+  }
+
+  const stopLockHeartbeat = typeof deps.startWorkerLockHeartbeat === 'function'
+    ? deps.startWorkerLockHeartbeat(userId, lockOwner, deps)
+    : startWorkerLockHeartbeat(userId, lockOwner, deps);
+  try {
   const broker = deps.createAlpacaBroker({ mode: environment });
   let account = {};
   let positions = [];
   let openOrders = [];
+  let marketClock = null;
   try {
-    [account, positions, openOrders] = await Promise.all([
+    [account, positions, openOrders, marketClock] = await Promise.all([
       broker.getAccount(),
       broker.getPositions(),
-      broker.listOrders({ status: 'open', limit: 100, nested: true })
+      broker.listOrders({ status: 'open', limit: 100, nested: true }),
+      typeof broker.getClock === 'function' ? broker.getClock() : Promise.resolve(null)
     ]);
   } catch (err) {
     await writeAudit(userId, 'robotrader_broker_error', {
@@ -333,7 +477,7 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
 
   for (const decision of decisions) {
     const research = researchItems.find(item => item.symbol === decision.symbol) || {};
-    const orderInput = decision.recommendedOrder
+    const baseOrderInput = decision.recommendedOrder
       ? buildOrderInputFromDecision(decision, settings)
       : {
           symbol: decision.symbol,
@@ -344,6 +488,11 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
           qty: 1,
           estimatedNotional: 0
         };
+    const orderInput = adaptOrderForMarketSession(baseOrderInput, {
+      settings,
+      marketClock,
+      research
+    });
 
     const riskResult = deps.evaluateRoboRisk({
       settings,
@@ -356,6 +505,7 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
       decision,
       orderInput,
       environment,
+      marketClock,
       now
     });
 
@@ -417,6 +567,20 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
     decisionsSaved: savedDecisions.length,
     submittedOrder: submittedOrder || null
   };
+  } finally {
+    stopLockHeartbeat();
+    try {
+      const release = typeof deps.releaseWorkerLock === 'function'
+        ? deps.releaseWorkerLock
+        : releaseWorkerLock;
+      await release(userId, lockOwner, deps);
+    } catch (err) {
+      await writeAudit(userId, 'robotrader_worker_lock_release_error', {
+        runId,
+        reason: err?.message || 'Could not release RoboTrader worker lock.'
+      }, deps).catch(() => {});
+    }
+  }
 }
 
 async function runWorkerTick(deps = defaultDeps) {
@@ -500,12 +664,18 @@ const defaultDeps = {
   RoboTradeDecision,
   RoboTradeOrder,
   RoboAuditLog,
+  RoboLock,
+  acquireWorkerLock,
+  adaptOrderForMarketSession,
   buildResearchBatch,
   createAlpacaBroker,
   evaluateResearchBatch,
   evaluateRoboRisk,
   getOrCreateRoboTraderSettings,
   mapSettings,
+  refreshWorkerLock,
+  releaseWorkerLock,
+  startWorkerLockHeartbeat,
   updateRoboTraderSettings
 };
 
@@ -513,7 +683,13 @@ module.exports = {
   buildDecisionIdempotencyKey,
   buildRunId,
   buildSymbolUniverse,
+  acquireWorkerLock,
+  adaptOrderForMarketSession,
   emergencyStop,
+  refreshWorkerLock,
+  releaseWorkerLock,
+  resolveWorkerLockTtlMs,
+  startWorkerLockHeartbeat,
   runRoboTraderForUser,
   runWorkerTick
 };
