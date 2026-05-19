@@ -84,6 +84,16 @@ Robo Trader adds:
 - Audit trail events (`trade_executed`, `trade_skipped_limit`, `robo_disabled`, `email_sent`, `email_failed`, etc.)
 - Signal idempotency (`userId + signalId`) to prevent duplicate order placement on retries
 
+Phase 1 RoboTrader adds a richer server-side automation layer without removing the older `/api/robo` routes:
+
+- Extended per-user settings with `isEnabled`, paper/live mode, allowed/blocked symbols, asset-class permissions, max trade size, max daily loss, max open positions, max trades per day, fractional/extended-hours/options/crypto toggles, risk level, manual approval threshold, `lastRunAt`, and `pausedReason`
+- Paper mode remains the default. Live mode requires explicit opt-in plus the confirmation phrase `I understand live trading risk`.
+- Background execution runs from the backend scheduler when Mongo is connected and `ROBOTRADER_WORKER_DISABLED` is not `true`.
+- Alpaca order validation uses a code-level capability matrix before submitting orders.
+- Decisions are persisted in `RoboTradeDecision`; submitted/reconciled broker orders are persisted in `RoboTradeOrder`.
+- Emergency stop disables RoboTrader immediately and can cancel open RoboTrader-created Alpaca orders.
+- Reconciliation checks local RoboTrader orders against Alpaca and records status changes/discrepancies.
+
 API endpoints:
 
 - `GET /api/robo/settings`
@@ -91,6 +101,20 @@ API endpoints:
 - `GET /api/robo/audit?from=&to=&limit=`
 - `GET /api/robo/status`
 - `POST /api/robo/run-once`
+- `GET /api/robotrader/settings`
+- `PUT /api/robotrader/settings`
+- `POST /api/robotrader/enable`
+- `POST /api/robotrader/disable`
+- `POST /api/robotrader/emergency-stop`
+- `GET /api/robotrader/decisions`
+- `GET /api/robotrader/orders`
+- `POST /api/robotrader/orders/:orderId/cancel`
+- `POST /api/robotrader/orders/:orderId/replace`
+- `POST /api/robotrader/positions/:symbol/close`
+- `GET /api/robotrader/performance`
+- `GET /api/robotrader/audit`
+- `POST /api/robotrader/run-once-paper`
+- `POST /api/robotrader/reconcile`
 
 Execution quality endpoint:
 
@@ -156,6 +180,13 @@ Robo Trader:
 - `ROBO_KILL_SWITCH` (`true` to halt all Robo executions)
 - `ROBO_SLIPPAGE_ANOMALY_BPS_THRESHOLD` (default `0`; set `>0` to block executions when recent slippage spikes)
 - `ROBO_SLIPPAGE_ANOMALY_LOOKBACK` (default `5`; recent trade samples used for anomaly detection)
+- `ROBOTRADER_WORKER_DISABLED` (`true` to disable the Phase 1 RoboTrader worker loop)
+- `ROBOTRADER_RECONCILIATION_DISABLED` (`true` to disable scheduled RoboTrader order reconciliation)
+- `ROBOTRADER_RECONCILIATION_INTERVAL_MS` (default `300000`)
+- `ROBOTRADER_SYMBOL_UNIVERSE` (optional comma-separated symbols for the Phase 1 worker)
+- `ROBOTRADER_MAX_SYMBOLS_PER_RUN` (default `5`)
+- `APCA_PAPER_BASE_URL`, `APCA_PAPER_API_KEY_ID`, `APCA_PAPER_API_SECRET_KEY` (optional paper-specific Alpaca credentials; falls back to existing `APCA_*`)
+- `APCA_LIVE_BASE_URL`, `APCA_LIVE_API_KEY_ID`, `APCA_LIVE_API_SECRET_KEY` (live credentials; live mode remains disabled unless user settings explicitly opt in)
 
 Paper trading + risk:
 

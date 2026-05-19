@@ -245,6 +245,7 @@ app.use('/api/trade-plan', require('./routes/tradePlan'));
 app.use('/api/execution', require('./routes/execution'));
 app.use('/api/debug', debugRoutes);
 app.use('/api/robo', require('./routes/robo'));
+app.use('/api/robotrader', require('./routes/robotrader'));
 app.use('/api/trading-system', require('./routes/tradingSystem'));
 // Trade Recomendations 
 app.use('/api/recommendations', require('./routes/recommend'));

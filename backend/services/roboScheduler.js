@@ -1,5 +1,7 @@
 const roboEngine = require('./roboTraderEngine');
 const mongoose = require('mongoose');
+const roboTraderWorker = require('../robotrader/worker');
+const { reconcileRoboOrders } = require('../robotrader/reconciliation');
 
 const schedulerState = {
   enabled: true,
@@ -11,7 +13,9 @@ const schedulerState = {
   lastSuccessAt: null,
   lastError: null,
   lastDurationMs: null,
-  lastCleanupAt: null
+  lastCleanupAt: null,
+  lastPhase1WorkerAt: null,
+  lastReconciliationAt: null
 };
 
 function toFinitePositiveInt(value, fallback) {
@@ -31,6 +35,7 @@ function defaultIsDbReady() {
 function startRoboScheduler({
   intervalMs = 60 * 1000,
   cleanupIntervalMs = Number(process.env.ROBO_SIGNAL_CLEANUP_INTERVAL_MS) || (6 * 60 * 60 * 1000),
+  reconciliationIntervalMs = Number(process.env.ROBOTRADER_RECONCILIATION_INTERVAL_MS) || (5 * 60 * 1000),
   retentionDays = process.env.ROBO_SIGNAL_RETENTION_DAYS,
   startupDelayMs = 5000,
   isDbReady = defaultIsDbReady
@@ -50,6 +55,7 @@ function startRoboScheduler({
   );
   let lastSkipLogAt = 0;
   let lastCleanupAt = 0;
+  let lastReconciliationAt = 0;
   let running = false;
   const tick = async () => {
     if (running) return;
@@ -73,6 +79,10 @@ function startRoboScheduler({
 
       schedulerState.lastSkipReason = null;
       await roboEngine.runSchedulerTick();
+      if (process.env.ROBOTRADER_WORKER_DISABLED !== 'true' && isDbReady()) {
+        await roboTraderWorker.runWorkerTick();
+        schedulerState.lastPhase1WorkerAt = new Date();
+      }
       schedulerState.lastSuccessAt = new Date();
       schedulerState.lastError = null;
       const nowMs = Date.now();
@@ -88,6 +98,20 @@ function startRoboScheduler({
           }
         } catch (err) {
           console.error('Robo scheduler cleanup failed:', err.message);
+        }
+      }
+      const reconciliationEveryMs = toFinitePositiveInt(reconciliationIntervalMs, 5 * 60 * 1000);
+      if (
+        process.env.ROBOTRADER_RECONCILIATION_DISABLED !== 'true'
+        && isDbReady()
+        && (nowMs - lastReconciliationAt) >= reconciliationEveryMs
+      ) {
+        lastReconciliationAt = nowMs;
+        schedulerState.lastReconciliationAt = new Date(nowMs);
+        try {
+          await reconcileRoboOrders({ mode: 'paper' });
+        } catch (err) {
+          console.error('RoboTrader reconciliation failed:', err.message);
         }
       }
     } catch (err) {
@@ -123,7 +147,9 @@ function getSchedulerStatus() {
     lastSuccessAt: schedulerState.lastSuccessAt,
     lastError: schedulerState.lastError,
     lastDurationMs: schedulerState.lastDurationMs,
-    lastCleanupAt: schedulerState.lastCleanupAt
+    lastCleanupAt: schedulerState.lastCleanupAt,
+    lastPhase1WorkerAt: schedulerState.lastPhase1WorkerAt,
+    lastReconciliationAt: schedulerState.lastReconciliationAt
   };
 }
 
