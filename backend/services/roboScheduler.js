@@ -14,8 +14,11 @@ const schedulerState = {
   lastError: null,
   lastDurationMs: null,
   lastCleanupAt: null,
+  lastLegacySchedulerAt: null,
   lastPhase1WorkerAt: null,
-  lastReconciliationAt: null
+  lastReconciliationAt: null,
+  legacySchedulerEnabled: null,
+  phase1WorkerEnabled: null
 };
 
 function toFinitePositiveInt(value, fallback) {
@@ -30,6 +33,28 @@ function isSchedulerDbRequired() {
 
 function defaultIsDbReady() {
   return mongoose.connection.readyState === 1;
+}
+
+function isEnvTrue(value) {
+  return String(value || '').trim().toLowerCase() === 'true';
+}
+
+function isPhase1WorkerEnabled() {
+  return !isEnvTrue(process.env.ROBOTRADER_WORKER_DISABLED);
+}
+
+function isLegacySchedulerEnabled() {
+  if (isEnvTrue(process.env.ROBO_LEGACY_SCHEDULER_DISABLED)) return false;
+
+  const phase1Enabled = isPhase1WorkerEnabled();
+  const legacyExplicitlyEnabled = isEnvTrue(process.env.ROBO_LEGACY_SCHEDULER_ENABLED);
+  const dualAutomationAllowed = isEnvTrue(process.env.ROBO_ALLOW_DUAL_AUTOMATION);
+
+  if (legacyExplicitlyEnabled) {
+    return !phase1Enabled || dualAutomationAllowed;
+  }
+
+  return !phase1Enabled;
 }
 
 function startRoboScheduler({
@@ -78,8 +103,16 @@ function startRoboScheduler({
       }
 
       schedulerState.lastSkipReason = null;
-      await roboEngine.runSchedulerTick();
-      if (process.env.ROBOTRADER_WORKER_DISABLED !== 'true' && isDbReady()) {
+      const shouldRunLegacyScheduler = isLegacySchedulerEnabled();
+      const shouldRunPhase1Worker = isPhase1WorkerEnabled();
+      schedulerState.legacySchedulerEnabled = shouldRunLegacyScheduler;
+      schedulerState.phase1WorkerEnabled = shouldRunPhase1Worker;
+
+      if (shouldRunLegacyScheduler) {
+        await roboEngine.runSchedulerTick();
+        schedulerState.lastLegacySchedulerAt = new Date();
+      }
+      if (shouldRunPhase1Worker && isDbReady()) {
         await roboTraderWorker.runWorkerTick();
         schedulerState.lastPhase1WorkerAt = new Date();
       }
@@ -148,12 +181,17 @@ function getSchedulerStatus() {
     lastError: schedulerState.lastError,
     lastDurationMs: schedulerState.lastDurationMs,
     lastCleanupAt: schedulerState.lastCleanupAt,
+    lastLegacySchedulerAt: schedulerState.lastLegacySchedulerAt,
     lastPhase1WorkerAt: schedulerState.lastPhase1WorkerAt,
-    lastReconciliationAt: schedulerState.lastReconciliationAt
+    lastReconciliationAt: schedulerState.lastReconciliationAt,
+    legacySchedulerEnabled: schedulerState.legacySchedulerEnabled,
+    phase1WorkerEnabled: schedulerState.phase1WorkerEnabled
   };
 }
 
 module.exports = {
   startRoboScheduler,
-  getSchedulerStatus
+  getSchedulerStatus,
+  isLegacySchedulerEnabled,
+  isPhase1WorkerEnabled
 };

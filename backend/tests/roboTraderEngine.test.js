@@ -533,6 +533,78 @@ test('runRoboTradeForUser skips when max executions per day is reached', async (
   }
 });
 
+test('runRoboTradeForUser uses settings maxTradesPerDay when no env cap is configured', async () => {
+  const events = [];
+  let orderAttempted = false;
+  const previousDailyCap = process.env.ROBO_MAX_EXECUTIONS_PER_DAY;
+  const previousSymbolCooldown = process.env.ROBO_MIN_MINUTES_BETWEEN_SYMBOL_EXECUTIONS;
+  delete process.env.ROBO_MAX_EXECUTIONS_PER_DAY;
+  process.env.ROBO_MIN_MINUTES_BETWEEN_SYMBOL_EXECUTIONS = '0';
+
+  const deps = {
+    User: {},
+    RoboSettings: {
+      findOne: async () => ({
+        enabled: true,
+        dailyLimit: 1000,
+        weeklyLimit: 5000,
+        monthlyLimit: 10000,
+        maxTradesPerDay: 2,
+        failureStreak: 0,
+        pausedUntil: null
+      })
+    },
+    RoboUsage: {},
+    RoboAuditLog: {
+      create: async entry => {
+        events.push(entry);
+        return entry;
+      }
+    },
+    RoboSignalExecution: {
+      countDocuments: async () => 2,
+      findOne: () => ({ lean: async () => null }),
+      create: async payload => ({ _id: 'signal-settings-max', ...payload }),
+      updateOne: async () => ({ acknowledged: true })
+    },
+    RoboLock: {
+      findOneAndUpdate: async () => ({ _id: 'lock-settings-max' }),
+      updateOne: async () => ({ acknowledged: true })
+    },
+    paperBroker: {
+      placeOrder: async () => {
+        orderAttempted = true;
+        return {};
+      }
+    },
+    fetchQuotes: async () => [{ symbol: 'AAPL', price: 100 }],
+    emailService: {
+      sendTradeEmail: async () => ({ provider: 'log', messageId: 'noop' })
+    }
+  };
+
+  try {
+    const result = await runRoboTradeForUser(
+      {
+        userId: 'user-settings-max',
+        signal: { symbol: 'AAPL', side: 'buy', qty: 1 },
+        now: new Date('2026-02-20T16:00:00.000Z')
+      },
+      deps
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'MAX_TRADES_REACHED');
+    assert.equal(orderAttempted, false);
+    assert.equal(events.some(event => event.eventType === 'trade_skipped_max_trades'), true);
+  } finally {
+    if (previousDailyCap === undefined) delete process.env.ROBO_MAX_EXECUTIONS_PER_DAY;
+    else process.env.ROBO_MAX_EXECUTIONS_PER_DAY = previousDailyCap;
+    if (previousSymbolCooldown === undefined) delete process.env.ROBO_MIN_MINUTES_BETWEEN_SYMBOL_EXECUTIONS;
+    else process.env.ROBO_MIN_MINUTES_BETWEEN_SYMBOL_EXECUTIONS = previousSymbolCooldown;
+  }
+});
+
 test('runRoboTradeForUser skips when kill switch is enabled', async () => {
   const events = [];
   const previousKillSwitch = process.env.ROBO_KILL_SWITCH;
@@ -702,6 +774,78 @@ test('runRoboTradeForUser skips when symbol cooldown is active', async () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.reason, 'SYMBOL_COOLDOWN');
+    assert.equal(events.some(event => event.eventType === 'trade_skipped_symbol_cooldown'), true);
+  } finally {
+    if (previousCooldown === undefined) delete process.env.ROBO_MIN_MINUTES_BETWEEN_SYMBOL_EXECUTIONS;
+    else process.env.ROBO_MIN_MINUTES_BETWEEN_SYMBOL_EXECUTIONS = previousCooldown;
+  }
+});
+
+test('runRoboTradeForUser applies the default symbol cooldown when env is unset', async () => {
+  const events = [];
+  let orderAttempted = false;
+  const previousCooldown = process.env.ROBO_MIN_MINUTES_BETWEEN_SYMBOL_EXECUTIONS;
+  delete process.env.ROBO_MIN_MINUTES_BETWEEN_SYMBOL_EXECUTIONS;
+
+  const deps = {
+    User: {},
+    RoboSettings: {
+      findOne: async () => ({
+        enabled: true,
+        dailyLimit: 1000,
+        weeklyLimit: 5000,
+        monthlyLimit: 10000,
+        maxTradesPerDay: 3,
+        failureStreak: 0,
+        pausedUntil: null
+      })
+    },
+    RoboUsage: {},
+    RoboAuditLog: {
+      create: async entry => {
+        events.push(entry);
+        return entry;
+      }
+    },
+    RoboSignalExecution: {
+      findOne: query => ({
+        sort: () => ({
+          lean: async () => (query?.symbol === 'AAPL' ? { executedAt: new Date('2026-02-20T12:00:00.000Z') } : null)
+        })
+      }),
+      countDocuments: async () => 0,
+      create: async payload => ({ _id: 'signal-default-symbol-cooldown', ...payload }),
+      updateOne: async () => ({ acknowledged: true })
+    },
+    RoboLock: {
+      findOneAndUpdate: async () => ({ _id: 'lock-default-symbol-cooldown' }),
+      updateOne: async () => ({ acknowledged: true })
+    },
+    paperBroker: {
+      placeOrder: async () => {
+        orderAttempted = true;
+        return {};
+      }
+    },
+    fetchQuotes: async () => [{ symbol: 'AAPL', price: 100 }],
+    emailService: {
+      sendTradeEmail: async () => ({ provider: 'log', messageId: 'noop' })
+    }
+  };
+
+  try {
+    const result = await runRoboTradeForUser(
+      {
+        userId: 'user-default-symbol-cooldown',
+        signal: { symbol: 'AAPL', side: 'buy', qty: 1 },
+        now: new Date('2026-02-20T16:00:00.000Z')
+      },
+      deps
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'SYMBOL_COOLDOWN');
+    assert.equal(orderAttempted, false);
     assert.equal(events.some(event => event.eventType === 'trade_skipped_symbol_cooldown'), true);
   } finally {
     if (previousCooldown === undefined) delete process.env.ROBO_MIN_MINUTES_BETWEEN_SYMBOL_EXECUTIONS;

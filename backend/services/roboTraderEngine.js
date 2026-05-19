@@ -45,6 +45,8 @@ const DEFAULT_SIGNAL_UNIVERSE = [
 ];
 const AUTO_STRATEGY_ID = 'ROBO_MULTI_SYMBOL_V1';
 const AUTO_STRATEGY_NAME = 'ROBO_MULTI_SYMBOL';
+const DEFAULT_LEGACY_MAX_EXECUTIONS_PER_DAY = 3;
+const DEFAULT_LEGACY_SYMBOL_COOLDOWN_MINUTES = 24 * 60;
 
 const defaultDeps = {
   User,
@@ -66,6 +68,13 @@ function toFiniteNumber(value, fallback = 0) {
 function toFinitePositiveInt(value, fallback) {
   const parsed = Math.floor(toFiniteNumber(value, fallback));
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function toOptionalNonNegativeInt(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
   return parsed;
 }
 
@@ -247,8 +256,16 @@ function getCircuitConfig() {
   };
 }
 
-function getExecutionControls() {
+function getExecutionControls(settingsPayload = {}) {
   const anomalyThreshold = toFiniteNumber(process.env.ROBO_SLIPPAGE_ANOMALY_BPS_THRESHOLD, 0);
+  const configuredMaxExecutionsPerDay = toOptionalNonNegativeInt(process.env.ROBO_MAX_EXECUTIONS_PER_DAY);
+  const configuredSymbolCooldownMinutes = toOptionalNonNegativeInt(
+    process.env.ROBO_MIN_MINUTES_BETWEEN_SYMBOL_EXECUTIONS
+  );
+  const settingsMaxTradesPerDay = toFinitePositiveInt(
+    settingsPayload?.maxTradesPerDay,
+    DEFAULT_LEGACY_MAX_EXECUTIONS_PER_DAY
+  );
   return {
     minMinutesBetweenExecutions: Math.max(
       0,
@@ -256,11 +273,15 @@ function getExecutionControls() {
     ),
     minMinutesBetweenSymbolExecutions: Math.max(
       0,
-      toFinitePositiveInt(process.env.ROBO_MIN_MINUTES_BETWEEN_SYMBOL_EXECUTIONS, 0)
+      configuredSymbolCooldownMinutes === null
+        ? DEFAULT_LEGACY_SYMBOL_COOLDOWN_MINUTES
+        : configuredSymbolCooldownMinutes
     ),
     maxExecutionsPerDay: Math.max(
       0,
-      toFinitePositiveInt(process.env.ROBO_MAX_EXECUTIONS_PER_DAY, 0)
+      configuredMaxExecutionsPerDay === null
+        ? settingsMaxTradesPerDay
+        : configuredMaxExecutionsPerDay
     ),
     maxExecutionsPerStrategyPerDay: Math.max(
       0,
@@ -291,6 +312,7 @@ function toSettingsPayload(settingsDoc) {
     dailyLimit: toFiniteNumber(settingsDoc?.dailyLimit, 0),
     weeklyLimit: toFiniteNumber(settingsDoc?.weeklyLimit, 0),
     monthlyLimit: toFiniteNumber(settingsDoc?.monthlyLimit, 0),
+    maxTradesPerDay: toFinitePositiveInt(settingsDoc?.maxTradesPerDay, DEFAULT_LEGACY_MAX_EXECUTIONS_PER_DAY),
     failureStreak: Math.max(0, Math.floor(toFiniteNumber(settingsDoc?.failureStreak, 0))),
     pausedUntil: settingsDoc?.pausedUntil || null,
     updatedAt: settingsDoc?.updatedAt || null
@@ -841,7 +863,7 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
   const settings = await getOrCreateSettings(userId, deps);
   const settingsPayload = toSettingsPayload(settings);
   let activeSettingsPayload = settingsPayload;
-  const executionControls = getExecutionControls();
+  let executionControls = getExecutionControls(settingsPayload);
 
   if (executionControls.killSwitchEnabled) {
     await writeAuditLog(userId, 'trade_skipped_kill_switch', {
@@ -898,6 +920,7 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
     const freshSettings = await getOrCreateSettings(userId, deps);
     const freshPayload = toSettingsPayload(freshSettings);
     activeSettingsPayload = freshPayload;
+    executionControls = getExecutionControls(freshPayload);
     if (!freshPayload.enabled) {
       await writeAuditLog(userId, 'robo_disabled', {
         reason: 'Robo Trader disabled during execution.',
@@ -1077,6 +1100,31 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
       }
     }
 
+    const claim = await claimSignalExecution({
+      userId,
+      signalId,
+      now,
+      signalMeta: {
+        symbol,
+        side,
+        qty,
+        strategyId: candidateSignal.strategyId || null,
+        strategyName: candidateSignal.strategyName || null
+      }
+    }, deps);
+    if (!claim.claimed) {
+      await writeAuditLog(userId, 'trade_skipped_duplicate_signal', {
+        signalId,
+        symbol,
+        side,
+        qty,
+        existingStatus: claim.existing?.status || null,
+        existingOrderId: claim.existing?.orderId || null
+      }, deps);
+      return { ok: false, executed: false, skipped: true, reason: 'DUPLICATE_SIGNAL', signalId };
+    }
+    claimedSignalId = signalId;
+
     if (executionControls.minMinutesBetweenSymbolExecutions > 0) {
       const symbolCutoff = new Date(
         now.getTime() - (executionControls.minMinutesBetweenSymbolExecutions * 60 * 1000)
@@ -1090,6 +1138,10 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
           lastExecutedAt: recentBySymbol.executedAt || recentBySymbol.updatedAt || null,
           at: now.toISOString()
         }, deps);
+        await updateSignalExecution(userId, signalId, {
+          status: 'skipped',
+          reason: 'SYMBOL_COOLDOWN'
+        }, now, deps);
         await finalizeRun('skipped', {
           summary: { signalId, reason: 'SYMBOL_COOLDOWN' }
         });
@@ -1118,34 +1170,13 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
           samples: anomaly.samples,
           at: now.toISOString()
         }, deps);
+        await updateSignalExecution(userId, signalId, {
+          status: 'skipped',
+          reason: 'ANOMALY_GUARDRAIL'
+        }, now, deps);
         return { ok: false, executed: false, skipped: true, reason: 'ANOMALY_GUARDRAIL' };
       }
     }
-
-    const claim = await claimSignalExecution({
-      userId,
-      signalId,
-      now,
-      signalMeta: {
-        symbol,
-        side,
-        qty,
-        strategyId: candidateSignal.strategyId || null,
-        strategyName: candidateSignal.strategyName || null
-      }
-    }, deps);
-    if (!claim.claimed) {
-      await writeAuditLog(userId, 'trade_skipped_duplicate_signal', {
-        signalId,
-        symbol,
-        side,
-        qty,
-        existingStatus: claim.existing?.status || null,
-        existingOrderId: claim.existing?.orderId || null
-      }, deps);
-      return { ok: false, executed: false, skipped: true, reason: 'DUPLICATE_SIGNAL', signalId };
-    }
-    claimedSignalId = signalId;
 
     const quotes = await deps.fetchQuotes(
       [symbol],
@@ -1526,7 +1557,7 @@ async function getStatusForUser(userId, now = new Date(), deps = defaultDeps) {
   }, {});
 
   const executedToday = await countExecutedSignalsSince(userId, getBucketStart(now, 'day'), deps);
-  const executionControls = getExecutionControls();
+  const executionControls = getExecutionControls(settings);
   const signalSelection = getSignalSelectionConfig();
 
   return {
