@@ -77,6 +77,57 @@ test('buildAlpacaOrderPayload formats crypto symbols and requires crypto-compati
   );
 });
 
+test('buildAlpacaOrderPayload rejects invalid Alpaca order combinations before submit', () => {
+  assert.throws(
+    () => buildAlpacaOrderPayload({
+      symbol: 'AAPL',
+      assetClass: 'equity',
+      side: 'buy',
+      qty: 1,
+      orderType: 'bad_type',
+      timeInForce: 'day',
+      clientOrderId: 'client-invalid-1'
+    }),
+    /equity orders support/
+  );
+  assert.throws(
+    () => buildAlpacaOrderPayload({
+      symbol: 'AAPL',
+      assetClass: 'equity',
+      side: 'buy',
+      qty: 1,
+      orderType: 'limit',
+      timeInForce: 'day',
+      clientOrderId: 'client-invalid-2'
+    }),
+    /positive limitPrice/
+  );
+  assert.throws(
+    () => buildAlpacaOrderPayload({
+      symbol: 'AAPL',
+      assetClass: 'equity',
+      side: 'sell',
+      qty: 1,
+      orderType: 'stop',
+      timeInForce: 'day',
+      clientOrderId: 'client-invalid-3'
+    }),
+    /positive stopPrice/
+  );
+  assert.throws(
+    () => buildAlpacaOrderPayload({
+      symbol: 'AAPL',
+      assetClass: 'equity',
+      side: 'sell',
+      qty: 1,
+      orderType: 'trailing_stop',
+      timeInForce: 'day',
+      clientOrderId: 'client-invalid-4'
+    }),
+    /positive trailingStopPct/
+  );
+});
+
 test('submitAlpacaPaperOrder posts to the paper endpoint and rejects live endpoints', async () => {
   const calls = [];
   const httpClient = {

@@ -67,6 +67,17 @@ function buildOrderLookup(userId, orderId) {
   return { userId, $or: or };
 }
 
+async function getMappedSettingsForUser(userId) {
+  return mapSettings(await getOrCreateRoboTraderSettings(userId));
+}
+
+function ensureLiveTradingAllowed(settings, action = 'Live trading') {
+  if (settings.liveTradingExplicitlyEnabled) return null;
+  const err = new Error(`${action} requires explicit live trading opt-in.`);
+  err.status = 403;
+  throw err;
+}
+
 router.get('/settings', async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
@@ -225,6 +236,9 @@ router.post('/orders/:orderId/replace', sensitiveRateLimit({ max: 12 }), async (
     if (!order.externalOrderId) {
       return res.status(400).json({ message: 'Order does not have an Alpaca order id.' });
     }
+    if (order.environment === 'live') {
+      ensureLiveTradingAllowed(await getMappedSettingsForUser(user._id), 'Live order replacement');
+    }
     const broker = createAlpacaBroker({ mode: order.environment });
     const response = await broker.replaceOrder(order.externalOrderId, req.body || {});
     order.alpacaResponse = response || order.alpacaResponse;
@@ -244,7 +258,7 @@ router.post('/orders/:orderId/replace', sensitiveRateLimit({ max: 12 }), async (
     });
     res.json({ order });
   } catch (err) {
-    next(err);
+    handleRouteError(err, res, next);
   }
 });
 
@@ -252,7 +266,7 @@ router.post('/positions/:symbol/close', sensitiveRateLimit({ max: 12 }), async (
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
-    const settings = mapSettings(await getOrCreateRoboTraderSettings(user._id));
+    const settings = await getMappedSettingsForUser(user._id);
     const environment = req.body?.environment === 'live' ? 'live' : settings.mode;
     if (environment === 'live' && !settings.liveTradingExplicitlyEnabled) {
       return res.status(403).json({ message: 'Live position closing requires explicit live trading opt-in.' });
@@ -293,7 +307,7 @@ router.get('/performance', async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
-    const settings = mapSettings(await getOrCreateRoboTraderSettings(user._id));
+    const settings = await getMappedSettingsForUser(user._id);
     const environment = req.query.environment === 'live' ? 'live' : settings.mode;
     const [decisions, orders] = await Promise.all([
       RoboTradeDecision.find({ userId: user._id }).sort({ decidedAt: -1 }).limit(250).lean(),
@@ -347,12 +361,13 @@ router.post('/reconcile', sensitiveRateLimit({ max: 8 }), async (req, res, next)
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
-    const settings = mapSettings(await getOrCreateRoboTraderSettings(user._id));
-    if (settings.mode === 'live' && !settings.liveTradingExplicitlyEnabled) {
+    const settings = await getMappedSettingsForUser(user._id);
+    const requestedMode = req.body?.mode === 'live' ? 'live' : 'paper';
+    if (requestedMode === 'live' && !settings.liveTradingExplicitlyEnabled) {
       return res.status(403).json({ message: 'Live reconciliation requires explicit live trading opt-in.' });
     }
     const result = await reconcileRoboOrders({
-      mode: req.body?.mode === 'live' ? 'live' : 'paper'
+      mode: requestedMode
     });
     res.json({ result });
   } catch (err) {

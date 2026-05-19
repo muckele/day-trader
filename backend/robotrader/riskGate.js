@@ -53,6 +53,19 @@ function getPositionQty(symbol, positions = []) {
   return toFiniteNumber(position.qty, 0);
 }
 
+function isReducingPosition(side, currentPositionQty) {
+  return (side === 'sell' && currentPositionQty > 0) || (side === 'buy' && currentPositionQty < 0);
+}
+
+function getProjectedPositionValue({ currentValue, currentQty, side, estimatedNotional }) {
+  const safeCurrentValue = Math.max(0, toFiniteNumber(currentValue, 0));
+  const safeEstimatedNotional = Math.max(0, toFiniteNumber(estimatedNotional, 0));
+  if (isReducingPosition(side, currentQty)) {
+    return Math.max(0, safeCurrentValue - safeEstimatedNotional);
+  }
+  return safeCurrentValue + safeEstimatedNotional;
+}
+
 function hasDuplicateOpenOrder(symbol, openOrders = []) {
   const normalized = normalizeSymbol(symbol);
   return (openOrders || []).some(order => {
@@ -96,6 +109,14 @@ function evaluateRoboRisk({
   const qty = toFiniteNumber(orderInput.qty, 0);
   const estimatedNotional = notional || toFiniteNumber(orderInput.estimatedNotional, 0);
   const currentPositionQty = getPositionQty(symbol, positions);
+  const currentPositionValue = getPositionValue(symbol, positions);
+  const reducingPosition = isReducingPosition(side, currentPositionQty);
+  const projectedPositionValue = getProjectedPositionValue({
+    currentValue: currentPositionValue,
+    currentQty: currentPositionQty,
+    side,
+    estimatedNotional
+  });
 
   const runCheck = (name, passed, message, severity = 'warning', metadata = {}) => {
     addCheck(checks, name, passed, message, severity, metadata);
@@ -138,20 +159,26 @@ function evaluateRoboRisk({
   runCheck('order_capability', capability.ok, capability.errors.join(' ') || 'Order capability allowed.');
   runCheck('daily_loss_limit', Math.abs(Math.min(0, toFiniteNumber(dailyPnl, 0))) < toFiniteNumber(settings.maxDailyLoss, 0), 'Max daily loss is exceeded.');
   runCheck('trades_per_day', toFiniteNumber(tradesToday, 0) < toFiniteNumber(settings.maxTradesPerDay, 0), 'Max trades per day is exceeded.');
-  runCheck('open_positions', countOpenPositions(positions) < toFiniteNumber(settings.maxOpenPositions, 0), 'Max open positions is exceeded.');
+  runCheck(
+    'open_positions',
+    reducingPosition || currentPositionQty !== 0 || countOpenPositions(positions) < toFiniteNumber(settings.maxOpenPositions, 0),
+    'Max open positions is exceeded.'
+  );
   runCheck(
     'trade_amount',
-    estimatedNotional <= toFiniteNumber(settings.maxTradeAmount, 0),
+    reducingPosition || estimatedNotional <= toFiniteNumber(settings.maxTradeAmount, 0),
     'Trade amount exceeds user max trade amount.',
     'warning',
     { estimatedNotional, maxTradeAmount: settings.maxTradeAmount }
   );
   runCheck(
     'position_size',
-    (getPositionValue(symbol, positions) + estimatedNotional) <= toFiniteNumber(settings.maxPositionSize, 0),
-    'Position size would exceed user limit.'
+    reducingPosition || projectedPositionValue <= toFiniteNumber(settings.maxPositionSize, 0),
+    'Position size would exceed user limit.',
+    'warning',
+    { projectedPositionValue, maxPositionSize: settings.maxPositionSize }
   );
-  runCheck('buying_power', estimatedNotional <= getAccountBuyingPower(account), 'Buying power is insufficient.');
+  runCheck('buying_power', side !== 'buy' || estimatedNotional <= getAccountBuyingPower(account), 'Buying power is insufficient.');
   runCheck('duplicate_order', !hasDuplicateOpenOrder(symbol, openOrders), 'Trade duplicates an existing open order.');
   runCheck('symbol_cooldown', !tradedTooRecently(symbol, recentOrders, now), 'The same symbol was traded too recently.');
   runCheck(
@@ -170,7 +197,7 @@ function evaluateRoboRisk({
   );
   runCheck(
     'stop_loss_required',
-    Boolean(orderInput.stopLoss || orderInput.stop_loss || orderInput.stopPrice || orderInput.stop_price || assetClass !== 'stocks'),
+    reducingPosition || Boolean(orderInput.stopLoss || orderInput.stop_loss || orderInput.stopPrice || orderInput.stop_price || assetClass !== 'stocks'),
     'Required stop loss is missing.'
   );
   runCheck(
@@ -195,5 +222,7 @@ function evaluateRoboRisk({
 module.exports = {
   CONFIDENCE_MINIMUMS,
   REWARD_RISK_MINIMUMS,
-  evaluateRoboRisk
+  evaluateRoboRisk,
+  getProjectedPositionValue,
+  isReducingPosition
 };

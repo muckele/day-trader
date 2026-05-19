@@ -49,7 +49,9 @@ The Phase 1 matrix blocks invalid combinations before Alpaca submission:
 
 ## Worker Behavior
 
-The scheduler calls the Phase 1 worker when Mongo is connected and `ROBOTRADER_WORKER_DISABLED` is not `true`. The older Robo signal loop is disabled by default while the Phase 1 worker is active so the two automation engines do not submit competing orders.
+The scheduler calls the Phase 1 worker when Mongo is connected and `ROBOTRADER_WORKER_DISABLED` is not `true`. The older Robo signal loop is disabled by default and only runs when `ROBO_LEGACY_SCHEDULER_ENABLED=true`; dual automation also requires `ROBO_ALLOW_DUAL_AUTOMATION=true`.
+
+The backend Fly service keeps at least one machine running so the scheduler can continue working while the user is logged out.
 
 For each enabled user, the worker:
 

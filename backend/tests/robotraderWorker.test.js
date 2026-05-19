@@ -18,7 +18,7 @@ function createDeps({ approved = true } = {}) {
   const brokerSubmissions = [];
   const deps = {
     RoboSettings: {
-      find: () => ({ lean: async () => [{ userId: 'user-worker', isEnabled: true }] }),
+      find: () => chain([{ userId: 'user-worker', isEnabled: true }]),
       updateOne: async () => ({ matchedCount: 1 })
     },
     RoboTradeDecision: {
@@ -158,4 +158,43 @@ test('robotrader worker tick finds enabled users', async () => {
   assert.equal(result.ok, true);
   assert.equal(result.usersChecked, 1);
   assert.equal(context.createdDecisions.length, 1);
+});
+
+test('robotrader worker tick dedupes duplicate enabled settings for a user', async () => {
+  const context = createDeps({ approved: false });
+  context.deps.RoboSettings.find = () => chain([
+    { userId: 'user-worker', isEnabled: true },
+    { userId: 'user-worker', enabled: true }
+  ]);
+
+  const result = await runWorkerTick(context.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.settingsMatched, 2);
+  assert.equal(result.usersChecked, 1);
+  assert.equal(context.createdDecisions.length, 1);
+});
+
+test('robotrader worker blocks live mode before broker access without explicit opt-in', async () => {
+  const context = createDeps({ approved: true });
+  let brokerCreated = false;
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    mode: 'live',
+    liveTradingExplicitlyEnabled: false,
+    allowedAssetClasses: ['stocks']
+  });
+  context.deps.createAlpacaBroker = () => {
+    brokerCreated = true;
+    throw new Error('broker should not be created');
+  };
+
+  const result = await runRoboTraderForUser({ userId: 'user-worker' }, context.deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'LIVE_TRADING_NOT_ENABLED');
+  assert.equal(brokerCreated, false);
+  assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_live_blocked'), true);
 });

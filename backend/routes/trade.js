@@ -2,26 +2,49 @@
 
 const router = require('express').Router();
 const auth   = require('../middleware/auth'); // your JWT middleware
-const {
-  buildClientOrderId,
-  submitAlpacaPaperOrder
-} = require('../services/alpacaTradingClient');
+const requireMongo = require('../middleware/requireMongo');
+const paperBroker = require('../paper/paperBrokerClient');
 
 // POST /api/trade/execute
-router.post('/execute', auth, async (req, res, next) => {
-  const { symbol, side, qty } = req.body;
+router.post('/execute', auth, requireMongo, async (req, res, next) => {
   try {
-    const result = await submitAlpacaPaperOrder({
-      symbol,
-      qty,
-      side,
-      orderType: 'market',
-      timeInForce: 'day',
-      clientOrderId: buildClientOrderId({ origin: 'manual', symbol })
+    const payload = req.body || {};
+    const result = await paperBroker.placeOrder({
+      symbol: payload.symbol,
+      side: payload.side,
+      qty: payload.qty,
+      assetClass: payload.assetClass,
+      orderType: payload.orderType || 'market',
+      timeInForce: payload.timeInForce || 'day',
+      goodTilDate: payload.goodTilDate,
+      takeProfitPrice: payload.takeProfitPrice,
+      stopLossPrice: payload.stopLossPrice,
+      trailingStopPct: payload.trailingStopPct,
+      limitPrice: payload.limitPrice,
+      maxPricePerShare: payload.maxPricePerShare,
+      allowExtendedHours: payload.allowExtendedHours === true,
+      strategyId: payload.strategyId,
+      setupType: payload.setupType,
+      strategyTags: payload.strategyTags,
+      stopPrice: payload.stopPrice,
+      origin: 'manual',
+      metadata: {
+        ...(payload.metadata || {}),
+        source: 'api_trade_execute'
+      }
     });
-    res.json({ order: result.order });
+    res.json(result);
   } catch (err) {
-    next(err);
+    const payload = req.body || {};
+    await paperBroker.recordRejectedOrder({
+      ...payload,
+      origin: 'manual',
+      metadata: {
+        ...(payload.metadata || {}),
+        source: 'api_trade_execute'
+      }
+    }, err.message).catch(() => {});
+    res.status(400).json({ error: err.message });
   }
 });
 

@@ -116,3 +116,34 @@ test('robotrader risk gate rejects sell orders that would open shorts when disab
   assert.equal(result.approved, false);
   assert.ok(result.rejectionReasons.includes('Short selling is not enabled for this user.'));
 });
+
+test('robotrader risk gate allows risk-reducing exits when exposure caps are already full', () => {
+  const result = evaluateRoboRisk({
+    settings: {
+      ...baseSettings,
+      maxTradeAmount: 100,
+      maxPositionSize: 100,
+      maxOpenPositions: 1
+    },
+    account: { buying_power: '50', status: 'ACTIVE' },
+    positions: [{ symbol: 'AAPL', qty: 10, market_value: 2000 }],
+    openOrders: [],
+    recentOrders: [],
+    tradesToday: 0,
+    dailyPnl: 0,
+    decision: { ...baseDecision, action: 'sell' },
+    orderInput: {
+      ...baseOrder,
+      side: 'sell',
+      orderClass: 'simple',
+      takeProfit: null,
+      stopLoss: null,
+      qty: 1,
+      estimatedNotional: 200
+    },
+    environment: 'paper'
+  });
+
+  assert.equal(result.approved, true);
+  assert.equal(result.rejectionReasons.length, 0);
+});

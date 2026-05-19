@@ -38,6 +38,18 @@ function hasNumericValue(value) {
   return Number.isFinite(numeric) && numeric > 0;
 }
 
+function isFractional(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 && !Number.isInteger(numeric);
+}
+
+function getNestedNumeric(input, objectKey, fieldKey) {
+  const camelKey = fieldKey.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+  const value = input[objectKey]?.[fieldKey] ?? input[objectKey]?.[camelKey];
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
 function validateAlpacaOrderRequest(input = {}) {
   const assetClass = normalizeAssetClass(input.assetClass) || 'stocks';
   const capability = ALPACA_CAPABILITY_MATRIX[assetClass];
@@ -78,8 +90,14 @@ function validateAlpacaOrderRequest(input = {}) {
   if (hasNotional && orderType !== 'market') {
     errors.push('Notional orders must use market order type.');
   }
+  if (hasNotional && assetClass === 'stocks' && timeInForce !== 'day') {
+    errors.push('Equity notional orders require day time_in_force.');
+  }
   if (hasNotional && orderClass !== 'simple') {
     errors.push('Notional orders require simple order_class.');
+  }
+  if (isFractional(input.qty) && assetClass === 'stocks' && !(orderType === 'market' && timeInForce === 'day')) {
+    errors.push('Fractional equity qty orders require market order type and day time_in_force.');
   }
 
   if ((orderType === 'limit' || orderType === 'stop_limit') && !hasNumericValue(input.limitPrice ?? input.limit_price)) {
@@ -104,6 +122,39 @@ function validateAlpacaOrderRequest(input = {}) {
   }
   if (assetClass === 'crypto' && ['bracket', 'oco', 'oto'].includes(orderClass)) {
     errors.push('Crypto orders do not support bracket, oco, or oto order classes.');
+  }
+  if (assetClass === 'stocks' && ['bracket', 'oco', 'oto'].includes(orderClass)) {
+    const takeProfitLimit = getNestedNumeric(input, input.take_profit ? 'take_profit' : 'takeProfit', 'limit_price');
+    const stopLossStop = getNestedNumeric(input, input.stop_loss ? 'stop_loss' : 'stopLoss', 'stop_price');
+    const stopLossLimit = getNestedNumeric(input, input.stop_loss ? 'stop_loss' : 'stopLoss', 'limit_price');
+    if (input.extendedHours || input.extended_hours) {
+      errors.push('Advanced equity order classes do not support extended_hours.');
+    }
+    if (!['day', 'gtc'].includes(timeInForce)) {
+      errors.push('Advanced equity order classes require day or gtc time_in_force.');
+    }
+    if (orderClass === 'oco' && orderType !== 'limit') {
+      errors.push('OCO equity orders require limit order type.');
+    }
+    if (orderClass === 'bracket' || orderClass === 'oco') {
+      if (!takeProfitLimit || !stopLossStop) {
+        errors.push(`${orderClass} equity orders require take_profit.limit_price and stop_loss.stop_price.`);
+      }
+    }
+    if (orderClass === 'oto' && !takeProfitLimit && !stopLossStop) {
+      errors.push('OTO equity orders require take_profit or stop_loss.');
+    }
+    if (takeProfitLimit && stopLossStop) {
+      if (side === 'buy' && takeProfitLimit <= stopLossStop) {
+        errors.push('Buy advanced orders require take_profit.limit_price above stop_loss.stop_price.');
+      }
+      if (side === 'sell' && takeProfitLimit >= stopLossStop) {
+        errors.push('Sell advanced orders require take_profit.limit_price below stop_loss.stop_price.');
+      }
+    }
+    if (stopLossLimit && !stopLossStop) {
+      errors.push('stop_loss.limit_price requires stop_loss.stop_price.');
+    }
   }
   if (assetClass === 'options') {
     const invalidOptionFields = [

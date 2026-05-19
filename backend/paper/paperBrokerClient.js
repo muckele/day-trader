@@ -57,7 +57,7 @@ function normalizeOrderInput({
   trailingStopPct,
   stopPrice,
   maxPricePerShare,
-  allowExtendedHours = true
+  allowExtendedHours = false
 }) {
   const rawSymbol = String(symbol || '').trim().toUpperCase();
   const normalizedSymbol = normalizeCompactSymbol(rawSymbol);
@@ -181,7 +181,7 @@ function normalizeOrderInput({
     parsedTrailingStopPct,
     parsedStopTriggerPrice,
     parsedMaxPricePerShare,
-    allowExtendedHours: allowExtendedHours !== false
+    allowExtendedHours: allowExtendedHours === true
   };
 }
 
@@ -523,7 +523,7 @@ async function placeOrder({
   stopLossPrice,
   trailingStopPct,
   maxPricePerShare,
-  allowExtendedHours = true,
+  allowExtendedHours = false,
   strategyId,
   setupType,
   strategyTags,
@@ -971,7 +971,7 @@ async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejecte
       stopLossPrice: Number.isFinite(stopLossValue) ? stopLossValue : null,
       trailingStopPct: Number.isFinite(trailingStopValue) ? trailingStopValue : null,
       maxPricePerShare: Number.isFinite(maxPriceValue) ? maxPriceValue : null,
-      allowExtendedHours: payload.allowExtendedHours !== false,
+      allowExtendedHours: payload.allowExtendedHours === true,
       status: 'rejected',
       estimatedPrice: Number.isFinite(estimatedPrice) ? estimatedPrice : null,
       notional: Number.isFinite(notional) ? notional : null,
@@ -998,7 +998,7 @@ async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejecte
         stopLossPrice: Number.isFinite(stopLossValue) ? stopLossValue : null,
         trailingStopPct: Number.isFinite(trailingStopValue) ? trailingStopValue : null,
         maxPricePerShare: Number.isFinite(maxPriceValue) ? maxPriceValue : null,
-        allowExtendedHours: payload.allowExtendedHours !== false,
+        allowExtendedHours: payload.allowExtendedHours === true,
         strategyId: payload.strategyId || null,
         setupType: payload.setupType || null,
         metadata: payload.metadata || {}

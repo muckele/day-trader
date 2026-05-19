@@ -276,6 +276,15 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
   const environment = modeOverride || settings.mode || 'paper';
   const runId = buildRunId(userId, now);
 
+  if (environment === 'live' && (settings.mode !== 'live' || !settings.liveTradingExplicitlyEnabled)) {
+    await writeAudit(userId, 'robotrader_live_blocked', {
+      reason: 'Live trading requires explicit user opt-in before broker access or order submission.',
+      runId,
+      at: now.toISOString()
+    }, deps);
+    return { ok: false, skipped: true, reason: 'LIVE_TRADING_NOT_ENABLED', runId };
+  }
+
   if (!settings.isEnabled && !runOnce) {
     await writeAudit(userId, 'robotrader_disabled', {
       reason: 'RoboTrader is disabled.',
@@ -411,11 +420,20 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
 }
 
 async function runWorkerTick(deps = defaultDeps) {
-  const enabledSettings = await deps.RoboSettings.find({
+  const query = deps.RoboSettings.find({
     $or: [{ isEnabled: true }, { enabled: true }]
-  }).lean();
+  });
+  const enabledSettings = typeof query?.sort === 'function'
+    ? await query.sort({ isEnabled: -1, enabled: -1, updatedAt: -1, createdAt: -1 }).lean()
+    : await query;
+  const settingsByUser = new Map();
+  for (const settings of (Array.isArray(enabledSettings) ? enabledSettings : [])) {
+    const userId = String(settings.userId || '');
+    if (!userId || settingsByUser.has(userId)) continue;
+    settingsByUser.set(userId, settings);
+  }
   const results = [];
-  for (const settings of enabledSettings) {
+  for (const settings of settingsByUser.values()) {
     try {
       results.push(await runRoboTraderForUser({ userId: settings.userId }, deps));
     } catch (err) {
@@ -425,7 +443,12 @@ async function runWorkerTick(deps = defaultDeps) {
       results.push({ ok: false, userId: String(settings.userId), error: err?.message || 'Unknown error' });
     }
   }
-  return { ok: true, usersChecked: enabledSettings.length, results };
+  return {
+    ok: true,
+    usersChecked: settingsByUser.size,
+    settingsMatched: Array.isArray(enabledSettings) ? enabledSettings.length : 0,
+    results
+  };
 }
 
 async function emergencyStop({ userId, cancelOpenOrders = false, environment = 'paper' } = {}, deps = defaultDeps) {

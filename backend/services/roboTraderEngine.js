@@ -335,7 +335,10 @@ async function writeAuditLog(userId, eventType, payload, deps = defaultDeps) {
 }
 
 async function getOrCreateSettings(userId, deps = defaultDeps) {
-  let settings = await deps.RoboSettings.findOne({ userId });
+  const query = deps.RoboSettings.findOne({ userId });
+  let settings = typeof query?.sort === 'function'
+    ? await query.sort({ enabled: -1, isEnabled: -1, updatedAt: -1, createdAt: -1 })
+    : await query;
   if (settings) return settings;
   settings = await deps.RoboSettings.create({
     userId,

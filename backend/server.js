@@ -11,6 +11,7 @@ const dns = require('dns');
 const mongoose = require('mongoose');
 const requireMongo = require('./middleware/requireMongo');
 const mongoState = require('./utils/mongoState');
+const { ensureTradingIndexes } = require('./services/tradingIndexService');
 const { buildMongoConnectionTargets } = require('./utils/mongoConnectionConfig');
 const {
   buildMongoConnectOptions,
@@ -141,6 +142,14 @@ async function connectMongo() {
         } else {
           console.log('✅ MongoDB connected');
         }
+        ensureTradingIndexes().then(results => {
+          const failed = results.filter(result => !result.ok);
+          if (failed.length) {
+            console.error(`⚠️ Trading index bootstrap completed with ${failed.length} failure(s).`);
+          }
+        }).catch(indexErr => {
+          console.error('⚠️ Trading index bootstrap failed:', indexErr?.message || indexErr);
+        });
         return;
       } catch (err) {
         lastErr = err;

@@ -1,8 +1,10 @@
 const router = require('express').Router();
+const auth = require('../middleware/auth');
 const requireMongo = require('../middleware/requireMongo');
 const paperBroker = require('../paper/paperBrokerClient');
 
 router.use(requireMongo);
+router.use(auth);
 
 router.post('/order', async (req, res) => {
   try {

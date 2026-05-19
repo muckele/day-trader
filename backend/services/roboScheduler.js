@@ -50,11 +50,7 @@ function isLegacySchedulerEnabled() {
   const legacyExplicitlyEnabled = isEnvTrue(process.env.ROBO_LEGACY_SCHEDULER_ENABLED);
   const dualAutomationAllowed = isEnvTrue(process.env.ROBO_ALLOW_DUAL_AUTOMATION);
 
-  if (legacyExplicitlyEnabled) {
-    return !phase1Enabled || dualAutomationAllowed;
-  }
-
-  return !phase1Enabled;
+  return legacyExplicitlyEnabled && (!phase1Enabled || dualAutomationAllowed);
 }
 
 function startRoboScheduler({

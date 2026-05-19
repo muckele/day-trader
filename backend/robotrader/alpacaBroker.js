@@ -79,6 +79,66 @@ function buildHeaders(config) {
   };
 }
 
+function toPositiveOrderString(value, fieldName) {
+  if (value === undefined || value === null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    const err = new Error(`${fieldName} must be a positive number.`);
+    err.status = 400;
+    throw err;
+  }
+  return numeric.toString();
+}
+
+function sanitizeReplacementPayload(payload = {}) {
+  const allowedTimeInForce = ['day', 'gtc', 'opg', 'cls', 'ioc', 'fok'];
+  const replacement = {};
+  const qty = toPositiveOrderString(payload.qty, 'qty');
+  const limitPrice = toPositiveOrderString(payload.limit_price ?? payload.limitPrice, 'limit_price');
+  const stopPrice = toPositiveOrderString(payload.stop_price ?? payload.stopPrice, 'stop_price');
+  const trailPrice = toPositiveOrderString(payload.trail_price ?? payload.trailPrice, 'trail_price');
+  const trailPercent = toPositiveOrderString(payload.trail_percent ?? payload.trailPercent, 'trail_percent');
+  const timeInForce = payload.time_in_force ?? payload.timeInForce;
+  const clientOrderId = payload.client_order_id ?? payload.clientOrderId;
+
+  if (qty) replacement.qty = qty;
+  if (limitPrice) replacement.limit_price = limitPrice;
+  if (stopPrice) replacement.stop_price = stopPrice;
+  if (trailPrice) replacement.trail_price = trailPrice;
+  if (trailPercent) replacement.trail_percent = trailPercent;
+  if (trailPrice && trailPercent) {
+    const err = new Error('Use either trail_price or trail_percent, not both.');
+    err.status = 400;
+    throw err;
+  }
+  if (timeInForce !== undefined && timeInForce !== null && timeInForce !== '') {
+    const normalizedTimeInForce = String(timeInForce).trim().toLowerCase();
+    if (!allowedTimeInForce.includes(normalizedTimeInForce)) {
+      const err = new Error('time_in_force must be day, gtc, opg, cls, ioc, or fok.');
+      err.status = 400;
+      throw err;
+    }
+    replacement.time_in_force = normalizedTimeInForce;
+  }
+  if (clientOrderId !== undefined && clientOrderId !== null && clientOrderId !== '') {
+    const normalizedClientOrderId = String(clientOrderId).trim();
+    if (!normalizedClientOrderId || normalizedClientOrderId.length > 128) {
+      const err = new Error('client_order_id must be 1 to 128 characters.');
+      err.status = 400;
+      throw err;
+    }
+    replacement.client_order_id = normalizedClientOrderId;
+  }
+
+  if (!Object.keys(replacement).length) {
+    const err = new Error('Replacement requires at least one supported field.');
+    err.status = 400;
+    throw err;
+  }
+
+  return replacement;
+}
+
 function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.env } = {}) {
   const config = getAlpacaConfigForMode(mode, env);
   const request = async (method, path, data, options = {}) => {
@@ -105,7 +165,7 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
     getOrder: orderId => request('get', `/v2/orders/${orderId}`),
     cancelOrder: orderId => request('delete', `/v2/orders/${orderId}`),
     cancelAllOrders: () => request('delete', '/v2/orders'),
-    replaceOrder: (orderId, payload) => request('patch', `/v2/orders/${orderId}`, payload),
+    replaceOrder: (orderId, payload) => request('patch', `/v2/orders/${orderId}`, sanitizeReplacementPayload(payload)),
     closePosition: (symbol, payload = {}) => request('delete', `/v2/positions/${encodeURIComponent(symbol)}`, payload),
     submitOrder: async input => {
       const built = buildRoboAlpacaOrderPayload(input);
@@ -122,5 +182,6 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
 module.exports = {
   DEFAULT_ALPACA_LIVE_BASE_URL,
   createAlpacaBroker,
-  getAlpacaConfigForMode
+  getAlpacaConfigForMode,
+  sanitizeReplacementPayload
 };

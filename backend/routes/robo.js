@@ -7,6 +7,26 @@ const { getSchedulerStatus } = require('../services/roboScheduler');
 
 router.use(requireMongo);
 
+const rateState = new Map();
+
+function sensitiveRateLimit({ windowMs = 60 * 1000, max = 12 } = {}) {
+  return function limiter(req, res, next) {
+    const key = `${req.user?.username || 'anonymous'}:${req.ip || req.socket?.remoteAddress || 'local'}`;
+    const now = Date.now();
+    const current = rateState.get(key) || { count: 0, resetAt: now + windowMs };
+    if (now > current.resetAt) {
+      current.count = 0;
+      current.resetAt = now + windowMs;
+    }
+    current.count += 1;
+    rateState.set(key, current);
+    if (current.count > max) {
+      return res.status(429).json({ message: 'Too many Robo requests. Try again shortly.' });
+    }
+    next();
+  };
+}
+
 function mapSettingsPayload(settings) {
   return {
     enabled: Boolean(settings?.enabled),
@@ -41,7 +61,7 @@ router.get('/settings', auth, async (req, res, next) => {
   }
 });
 
-router.put('/settings', auth, async (req, res, next) => {
+router.put('/settings', auth, sensitiveRateLimit(), async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
@@ -111,8 +131,8 @@ async function runOnceHandler(req, res, next) {
   }
 }
 
-router.post('/run-once', auth, runOnceHandler);
-router.post('/run_once', auth, runOnceHandler);
-router.post('/runOnce', auth, runOnceHandler);
+router.post('/run-once', auth, sensitiveRateLimit({ max: 6 }), runOnceHandler);
+router.post('/run_once', auth, sensitiveRateLimit({ max: 6 }), runOnceHandler);
+router.post('/runOnce', auth, sensitiveRateLimit({ max: 6 }), runOnceHandler);
 
 module.exports = router;

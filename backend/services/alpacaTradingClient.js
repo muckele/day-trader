@@ -1,6 +1,10 @@
 const axios = require('axios');
 
 const DEFAULT_ALPACA_PAPER_BASE_URL = 'https://paper-api.alpaca.markets';
+const EQUITY_ORDER_TYPES = ['market', 'limit', 'stop', 'stop_limit', 'trailing_stop'];
+const EQUITY_TIME_IN_FORCE = ['day', 'gtc', 'opg', 'cls', 'ioc', 'fok'];
+const CRYPTO_ORDER_TYPES = ['market', 'limit', 'stop_limit'];
+const CRYPTO_TIME_IN_FORCE = ['gtc', 'ioc'];
 
 function parseBoolean(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -50,6 +54,11 @@ function toOrderString(value) {
   return Number(value).toString();
 }
 
+function hasPositiveNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0;
+}
+
 function buildClientOrderId({ origin = 'manual', symbol = 'ORDER', now = new Date() } = {}) {
   const safeOrigin = String(origin || 'manual').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'manual';
   const safeSymbol = String(symbol || 'ORDER').replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 16) || 'ORDER';
@@ -96,20 +105,35 @@ function buildAlpacaOrderPayload({
   }
 
   if (normalizedAssetClass === 'crypto') {
-    if (!['market', 'limit', 'stop_limit'].includes(normalizedOrderType)) {
+    if (!CRYPTO_ORDER_TYPES.includes(normalizedOrderType)) {
       throw new Error('Alpaca crypto orders support market, limit, or stop_limit order types.');
     }
-    if (!['gtc', 'ioc'].includes(normalizedTimeInForce)) {
+    if (!CRYPTO_TIME_IN_FORCE.includes(normalizedTimeInForce)) {
       throw new Error('Alpaca crypto orders require gtc or ioc time-in-force.');
     }
-  } else if (normalizedTimeInForce === 'gtd') {
-    throw new Error('Alpaca equity orders from this app support day, gtc, or ioc time-in-force.');
+  } else {
+    if (!EQUITY_ORDER_TYPES.includes(normalizedOrderType)) {
+      throw new Error('Alpaca equity orders support market, limit, stop, stop_limit, or trailing_stop order types.');
+    }
+    if (!EQUITY_TIME_IN_FORCE.includes(normalizedTimeInForce)) {
+      throw new Error('Alpaca equity orders require day, gtc, opg, cls, ioc, or fok time-in-force.');
+    }
+  }
+
+  if ((normalizedOrderType === 'limit' || normalizedOrderType === 'stop_limit') && !hasPositiveNumber(limitPrice)) {
+    throw new Error(`${normalizedOrderType} orders require a positive limitPrice.`);
+  }
+  if ((normalizedOrderType === 'stop' || normalizedOrderType === 'stop_limit') && !hasPositiveNumber(stopPrice)) {
+    throw new Error(`${normalizedOrderType} orders require a positive stopPrice.`);
+  }
+  if (normalizedOrderType === 'trailing_stop' && !hasPositiveNumber(trailingStopPct)) {
+    throw new Error('trailing_stop orders require a positive trailingStopPct.');
   }
 
   if (normalizedOrderType === 'limit' || normalizedOrderType === 'stop_limit') {
     payload.limit_price = toOrderString(limitPrice);
   }
-  if (normalizedOrderType === 'stop_limit') {
+  if (normalizedOrderType === 'stop' || normalizedOrderType === 'stop_limit') {
     payload.stop_price = toOrderString(stopPrice);
   }
   if (normalizedOrderType === 'trailing_stop') {

@@ -178,7 +178,15 @@ function sanitizeSettingsUpdate(input = {}, current = {}) {
 }
 
 async function getOrCreateRoboTraderSettings(userId) {
-  let settings = await RoboSettings.findOne({ userId });
+  const query = RoboSettings.findOne({ userId });
+  let settings = typeof query?.sort === 'function'
+    ? await query.sort({
+      isEnabled: -1,
+      enabled: -1,
+      updatedAt: -1,
+      createdAt: -1
+    })
+    : await query;
   if (settings) return settings;
   settings = await RoboSettings.create({
     userId,

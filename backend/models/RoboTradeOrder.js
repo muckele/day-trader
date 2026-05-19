@@ -53,7 +53,13 @@ const roboTradeOrderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-roboTradeOrderSchema.index({ clientOrderId: 1 }, { unique: true, sparse: true });
+roboTradeOrderSchema.index(
+  { clientOrderId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { clientOrderId: { $type: 'string' } }
+  }
+);
 roboTradeOrderSchema.index({ userId: 1, symbol: 1, status: 1, submittedAt: -1 });
 
 module.exports = mongoose.model('RoboTradeOrder', roboTradeOrderSchema);

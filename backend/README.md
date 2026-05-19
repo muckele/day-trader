@@ -83,6 +83,7 @@ Robo Trader adds:
 - Usage buckets (`day`, `week`, `month`) tracked in UTC
 - Audit trail events (`trade_executed`, `trade_skipped_limit`, `robo_disabled`, `email_sent`, `email_failed`, etc.)
 - Signal idempotency (`userId + signalId`) to prevent duplicate order placement on retries
+- Startup index bootstrap creates the MongoDB unique indexes used by Robo settings, locks, signal idempotency, decisions, and broker client order IDs.
 
 Phase 1 RoboTrader adds a richer server-side automation layer without removing the older `/api/robo` routes:
 
@@ -157,7 +158,7 @@ Robo Trader:
 - `ROBO_SCHEDULER_DISABLED` (`true` to disable background loop)
 - `ROBO_SCHEDULER_REQUIRE_DB` (`true` by default; skips scheduler ticks when Mongo is disconnected)
 - `ROBO_SCHEDULER_SKIP_LOG_INTERVAL_MS` (default `60000`; throttle interval for DB-unavailable skip logs)
-- `ROBO_LEGACY_SCHEDULER_ENABLED` (`true` to allow the legacy Robo signal loop when the Phase 1 worker is disabled)
+- `ROBO_LEGACY_SCHEDULER_ENABLED` (`true` to explicitly allow the legacy Robo signal loop; default is disabled)
 - `ROBO_LEGACY_SCHEDULER_DISABLED` (`true` to force-disable the legacy Robo signal loop)
 - `ROBO_ALLOW_DUAL_AUTOMATION` (`true` to intentionally run both legacy Robo and the Phase 1 RoboTrader worker; default is never both)
 - `ROBO_EXECUTION_BACKEND` (`paper` default; set `alpaca` to send Robo orders to Alpaca `/v2/orders`)

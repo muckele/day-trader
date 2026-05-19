@@ -46,3 +46,27 @@ test('GET /robotrader/settings returns extended settings payload', async t => {
   assert.equal(res.body.settings.mode, 'paper');
   assert.ok(res.body.capabilities.stocks);
 });
+
+test('POST /robotrader/reconcile blocks requested live mode without explicit opt-in', async t => {
+  t.mock.method(User, 'findOne', async () => ({ _id: 'user-route-live-block' }));
+  t.mock.method(RoboSettings, 'findOne', () => ({
+    sort: () => ({
+      mode: 'paper',
+      liveTradingExplicitlyEnabled: false,
+      allowedAssetClasses: ['stocks']
+    })
+  }));
+
+  const handler = getRouteHandler('/reconcile', 'post');
+  const req = {
+    user: { username: 'matt' },
+    body: { mode: 'live' }
+  };
+  const res = createMockRes();
+  let nextErr = null;
+  await handler(req, res, err => { nextErr = err; });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 403);
+  assert.match(res.body.message, /explicit live trading opt-in/);
+});

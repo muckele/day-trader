@@ -8,9 +8,11 @@ test('startRoboScheduler runs scheduler tick and retention cleanup', async t => 
   const previousDisabled = process.env.ROBO_SCHEDULER_DISABLED;
   const previousRequireDb = process.env.ROBO_SCHEDULER_REQUIRE_DB;
   const previousWorkerDisabled = process.env.ROBOTRADER_WORKER_DISABLED;
+  const previousLegacyEnabled = process.env.ROBO_LEGACY_SCHEDULER_ENABLED;
   delete process.env.ROBO_SCHEDULER_DISABLED;
   process.env.ROBO_SCHEDULER_REQUIRE_DB = 'false';
   process.env.ROBOTRADER_WORKER_DISABLED = 'true';
+  process.env.ROBO_LEGACY_SCHEDULER_ENABLED = 'true';
 
   let tickCalls = 0;
   const cleanupCalls = [];
@@ -43,6 +45,8 @@ test('startRoboScheduler runs scheduler tick and retention cleanup', async t => 
     else process.env.ROBO_SCHEDULER_REQUIRE_DB = previousRequireDb;
     if (previousWorkerDisabled === undefined) delete process.env.ROBOTRADER_WORKER_DISABLED;
     else process.env.ROBOTRADER_WORKER_DISABLED = previousWorkerDisabled;
+    if (previousLegacyEnabled === undefined) delete process.env.ROBO_LEGACY_SCHEDULER_ENABLED;
+    else process.env.ROBO_LEGACY_SCHEDULER_ENABLED = previousLegacyEnabled;
   }
 });
 
