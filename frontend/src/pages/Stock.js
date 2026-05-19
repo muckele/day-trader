@@ -471,6 +471,12 @@ export default function Stock() {
       setConfirmOpen(false);
       const brokerOrderId = res.data.brokerOrder?.id || res.data.order?.externalOrderId || null;
       const orderStatus = String(res.data.order?.status || '').toLowerCase();
+      if (orderStatus === 'rejected') {
+        const message = res.data.order?.rejectedReason || 'Alpaca rejected the paper order.';
+        setTradeError(message);
+        emitToast({ type: 'error', title: 'Trade rejected', message });
+        return;
+      }
       const filled = orderStatus === 'filled';
       const fillPrice = formatOrderPrice(res.data.order?.fillPrice);
       emitToast({

@@ -43,4 +43,12 @@ const paperTradeSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+paperTradeSchema.index(
+  { orderId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { orderId: { $type: 'objectId' } }
+  }
+);
+
 module.exports = mongoose.model('PaperTrade', paperTradeSchema);

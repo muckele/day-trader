@@ -256,7 +256,7 @@ test('robotrader risk gate rejects stock orders when the market is closed and or
   assert.ok(result.rejectionReasons.includes('Market is closed and this order is not marked as a valid extended-hours order.'));
 });
 
-test('robotrader risk gate allows valid extended-hours limit orders with a risk stop marker', () => {
+test('robotrader risk gate blocks extended-hours entries that require broker stop protection', () => {
   const result = evaluateRoboRisk({
     settings: { ...baseSettings, allowExtendedHours: true },
     account: { buying_power: '5000', status: 'ACTIVE' },
@@ -274,7 +274,41 @@ test('robotrader risk gate allows valid extended-hours limit orders with a risk 
       takeProfit: null,
       stopLoss: null,
       extendedHours: true,
-      riskStopPrice: 190
+      riskStopPrice: 190,
+      requiresRegularSessionForProtection: true
+    },
+    environment: 'paper',
+    marketClock: { is_open: false }
+  });
+
+  assert.equal(result.approved, false);
+  assert.ok(result.rejectionReasons.includes(
+    'Extended-hours automated stock entries are blocked because broker-attached stop-loss/take-profit protection is unavailable outside regular market hours.'
+  ));
+});
+
+test('robotrader risk gate allows extended-hours risk-reducing exits even with protection marker', () => {
+  const result = evaluateRoboRisk({
+    settings: { ...baseSettings, allowExtendedHours: true },
+    account: { buying_power: '0', status: 'ACTIVE' },
+    positions: [{ symbol: 'AAPL', qty: 5, market_value: 1000 }],
+    openOrders: [],
+    recentOrders: [],
+    tradesToday: 0,
+    dailyPnl: 0,
+    decision: { ...baseDecision, action: 'sell' },
+    orderInput: {
+      ...baseOrder,
+      side: 'sell',
+      orderType: 'limit',
+      orderClass: 'simple',
+      limitPrice: 199,
+      takeProfit: null,
+      stopLoss: null,
+      extendedHours: true,
+      qty: 5,
+      estimatedNotional: 1000,
+      requiresRegularSessionForProtection: true
     },
     environment: 'paper',
     marketClock: { is_open: false }

@@ -181,6 +181,25 @@ function roundOrderPrice(value) {
   return Number(numeric.toFixed(numeric >= 1 ? 2 : 4));
 }
 
+function hasBrokerAttachedProtection(orderInput = {}) {
+  const orderClass = String(orderInput.orderClass || orderInput.order_class || '').toLowerCase();
+  return ['bracket', 'oco', 'oto'].includes(orderClass)
+    || Boolean(
+      orderInput.takeProfit
+      || orderInput.take_profit
+      || orderInput.stopLoss
+      || orderInput.stop_loss
+      || orderInput.stopPrice
+      || orderInput.stop_price
+      || orderInput.trailPrice
+      || orderInput.trail_price
+      || orderInput.trailPercent
+      || orderInput.trail_percent
+      || orderInput.riskStopPrice
+      || orderInput.risk_stop_price
+    );
+}
+
 function adaptOrderForMarketSession(orderInput = {}, {
   settings = {},
   marketClock = null,
@@ -205,6 +224,7 @@ function adaptOrderForMarketSession(orderInput = {}, {
   const timeInForce = ['day', 'gtc'].includes(String(orderInput.timeInForce || '').toLowerCase())
     ? String(orderInput.timeInForce).toLowerCase()
     : 'day';
+  const requiresRegularSessionForProtection = hasBrokerAttachedProtection(orderInput);
 
   return {
     ...orderInput,
@@ -215,7 +235,11 @@ function adaptOrderForMarketSession(orderInput = {}, {
     extendedHours: true,
     takeProfit: null,
     stopLoss: null,
-    riskStopPrice: extractRiskStopPrice(orderInput)
+    riskStopPrice: extractRiskStopPrice(orderInput),
+    requiresRegularSessionForProtection,
+    protectionBlockedReason: requiresRegularSessionForProtection
+      ? 'Extended-hours automated stock entries are blocked because broker-attached stop-loss/take-profit protection is unavailable outside regular market hours.'
+      : null
   };
 }
 

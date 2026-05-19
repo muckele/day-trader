@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const PaperTrade = require('../models/PaperTrade');
 const {
   normalizeOrderInput,
   enforceMarketHours,
@@ -185,5 +186,59 @@ test('reconcileAlpacaPaperOrder keeps accepted broker orders open locally', asyn
   assert.equal(result.trade, null);
   assert.equal(order.status, 'open');
   assert.equal(order.brokerOrderStatus, 'accepted');
+  assert.equal(saved.length, 1);
+});
+
+test('PaperTrade enforces one persisted trade per paper order', () => {
+  const hasUniqueOrderIndex = PaperTrade.schema.indexes().some(([fields, options]) => (
+    fields.orderId === 1
+    && options.unique === true
+    && options.partialFilterExpression?.orderId?.$type === 'objectId'
+  ));
+
+  assert.equal(hasUniqueOrderIndex, true);
+});
+
+test('reconcileAlpacaPaperOrder creates a local trade for partial fills', async () => {
+  const saved = [];
+  const createdTrades = [];
+  const order = {
+    _id: 'paper-order-partial',
+    externalOrderId: 'alpaca-order-partial',
+    clientOrderId: 'client-partial',
+    status: 'open',
+    save: async function save() {
+      saved.push({
+        status: this.status,
+        brokerOrderStatus: this.brokerOrderStatus,
+        fillPrice: this.fillPrice,
+        notional: this.notional
+      });
+      return this;
+    }
+  };
+
+  const result = await reconcileAlpacaPaperOrder(order, {
+    readOrder: async () => ({
+      id: 'alpaca-order-partial',
+      client_order_id: 'client-partial',
+      status: 'partially_filled',
+      filled_qty: '0.5',
+      filled_avg_price: '123.45'
+    }),
+    createTradeFromOrder: async (syncedOrder, brokerOrder) => {
+      createdTrades.push({ syncedOrder, brokerOrder });
+      return { _id: 'paper-trade-partial', qty: 0.5 };
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'open');
+  assert.equal(result.trade._id, 'paper-trade-partial');
+  assert.equal(createdTrades.length, 1);
+  assert.equal(order.status, 'open');
+  assert.equal(order.brokerOrderStatus, 'partially_filled');
+  assert.equal(order.fillPrice, 123.45);
+  assert.equal(order.notional, 61.73);
   assert.equal(saved.length, 1);
 });

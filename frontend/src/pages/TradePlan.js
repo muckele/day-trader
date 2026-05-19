@@ -226,6 +226,13 @@ export default function TradePlan() {
         setupType: selectedIdea.setupType || null
       });
       const status = String(res.data?.order?.status || '').toLowerCase();
+      if (status === 'rejected') {
+        emitToast({
+          type: 'error',
+          message: res.data?.order?.rejectedReason || 'Alpaca rejected the paper order.'
+        });
+        return;
+      }
       emitToast({
         type: 'success',
         message: status === 'filled' ? 'Paper trade filled.' : 'Paper order submitted.'

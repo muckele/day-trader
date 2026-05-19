@@ -69,3 +69,33 @@ test('trade execute route uses paper broker persistence pipeline', async t => {
   assert.equal(calls[0].metadata.source, 'api_trade_execute');
   assert.equal(res.body.order._id, 'paper-order-1');
 });
+
+test('paper order route does not duplicate already recorded rejected broker orders', async t => {
+  let rejectionRecords = 0;
+  t.mock.method(paperBroker, 'placeOrder', async () => {
+    const err = new Error('Alpaca rejected the paper order.');
+    err.paperOrderRecorded = true;
+    err.paperOrder = { _id: 'paper-order-rejected', status: 'rejected' };
+    throw err;
+  });
+  t.mock.method(paperBroker, 'recordRejectedOrder', async () => {
+    rejectionRecords += 1;
+  });
+
+  const handler = getRouteHandler(paperTradesRouter, '/order', 'post');
+  const req = {
+    body: {
+      symbol: 'AAPL',
+      side: 'buy',
+      qty: 1
+    }
+  };
+  const res = createMockRes();
+
+  await handler(req, res);
+
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.error, 'Alpaca rejected the paper order.');
+  assert.equal(res.body.order._id, 'paper-order-rejected');
+  assert.equal(rejectionRecords, 0);
+});

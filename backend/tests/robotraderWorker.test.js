@@ -256,4 +256,5 @@ test('robotrader worker converts stock orders to valid extended-hours limit orde
   assert.equal(order.stopLoss, null);
   assert.equal(order.takeProfit, null);
   assert.equal(order.riskStopPrice, 190);
+  assert.equal(order.requiresRegularSessionForProtection, true);
 });

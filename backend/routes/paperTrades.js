@@ -54,12 +54,18 @@ router.post('/order', async (req, res) => {
     res.json(result);
   } catch (err) {
     const payload = req.body || {};
-    await paperBroker.recordRejectedOrder({
-      ...payload,
-      origin: payload.origin || (payload.strategyId ? 'trade_plan' : 'manual'),
-      metadata: payload.metadata || {}
-    }, err.message).catch(() => {});
-    res.status(400).json({ error: err.message });
+    if (!err.paperOrderRecorded) {
+      await paperBroker.recordRejectedOrder({
+        ...payload,
+        origin: payload.origin || (payload.strategyId ? 'trade_plan' : 'manual'),
+        metadata: payload.metadata || {}
+      }, err.message).catch(() => {});
+    }
+    res.status(err.statusCode || 400).json({
+      error: err.message,
+      order: err.paperOrder || undefined,
+      brokerOrder: err.brokerOrder || undefined
+    });
   }
 });
 

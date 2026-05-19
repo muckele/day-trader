@@ -37,6 +37,7 @@ const {
 const ACCOUNT_ID = 'default';
 const MAX_EQUITY_QTY_DECIMALS = 6;
 const MAX_CRYPTO_QTY_DECIMALS = 8;
+let activeOpenOrderReconciliation = null;
 
 function getDecimalPlaces(value) {
   const text = String(value);
@@ -262,6 +263,18 @@ function isTerminalAlpacaStatus(status) {
   return ['filled', 'canceled', 'cancelled', 'expired', 'rejected'].includes(String(status || '').toLowerCase());
 }
 
+function isDuplicateKeyError(err) {
+  return err?.code === 11000 || err?.name === 'MongoServerError' && err?.code === 11000;
+}
+
+function getAlpacaPaperRejectionReason(order = {}) {
+  return order.reject_reason
+    || order.rejected_reason
+    || order.reason
+    || order.message
+    || 'Alpaca rejected the paper order.';
+}
+
 function getAlpacaFilledQty(order = {}, fallback = 0) {
   const filledQty = Number(order.filled_qty ?? order.filledQty);
   return Number.isFinite(filledQty) && filledQty > 0 ? filledQty : fallback;
@@ -316,9 +329,6 @@ async function updateSettings(updates) {
 async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
   now = new Date()
 } = {}) {
-  const existingTrade = await PaperTrade.findOne({ orderId: order._id });
-  if (existingTrade) return existingTrade;
-
   const filledQty = getAlpacaFilledQty(brokerOrder, order.qty);
   const fillPrice = getAlpacaFillPrice(brokerOrder, order.fillPrice || order.estimatedPrice);
   if (!Number.isFinite(filledQty) || filledQty <= 0 || !Number.isFinite(fillPrice) || fillPrice <= 0) {
@@ -326,11 +336,24 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
   }
 
   const filledAt = brokerOrder.filled_at ? new Date(brokerOrder.filled_at) : now;
+  const brokerOrderStatus = brokerOrder.status || order.brokerOrderStatus || null;
+  const existingTrade = await PaperTrade.findOne({ orderId: order._id });
+  if (existingTrade) {
+    const sameQty = Math.abs(Number(existingTrade.qty || 0) - filledQty) < 1e-9;
+    const samePrice = Math.abs(Number(existingTrade.price || 0) - fillPrice) < 1e-9;
+    const sameStatus = String(existingTrade.brokerOrderStatus || '') === String(brokerOrderStatus || '');
+    if (sameQty && samePrice && sameStatus) return existingTrade;
+  }
+
   const settings = await getSettings();
-  const trades = await PaperTrade.find({
+  const tradeQuery = {
     accountId: ACCOUNT_ID,
     filledAt: { $lte: filledAt }
-  }).sort({ filledAt: 1 }).lean();
+  };
+  if (existingTrade?._id) {
+    tradeQuery._id = { $ne: existingTrade._id };
+  }
+  const trades = await PaperTrade.find(tradeQuery).sort({ filledAt: 1 }).lean();
   const { positions } = buildPositions(trades);
   const currentPosition = positions[order.symbol] || { qty: 0, avgCost: 0 };
   const shortOpenQty = calculateShortOpenQty(currentPosition.qty, order.side, filledQty);
@@ -359,12 +382,12 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
   const regimeAtTrade = await getRegimeAtTrade(filledAt);
   const notional = Number((filledQty * fillPrice).toFixed(2));
 
-  const trade = await PaperTrade.create({
+  const tradePayload = {
     accountId: ACCOUNT_ID,
     broker: 'alpaca',
     externalOrderId: brokerOrder.id || order.externalOrderId || null,
     clientOrderId: brokerOrder.client_order_id || order.clientOrderId || null,
-    brokerOrderStatus: brokerOrder.status || order.brokerOrderStatus || null,
+    brokerOrderStatus,
     symbol: order.symbol,
     assetClass: order.assetClass,
     side: order.side,
@@ -400,7 +423,24 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
     realizedPnl: tradeRealized,
     orderId: order._id,
     filledAt
-  });
+  };
+
+  let trade = existingTrade;
+  let createdTrade = false;
+  if (trade) {
+    Object.assign(trade, tradePayload);
+    await trade.save();
+  } else {
+    try {
+      trade = await PaperTrade.create(tradePayload);
+      createdTrade = true;
+    } catch (err) {
+      if (isDuplicateKeyError(err)) {
+        return PaperTrade.findOne({ orderId: order._id });
+      }
+      throw err;
+    }
+  }
 
   const hasAttachedOrders = await PaperOrder.exists({ parentOrderId: order._id });
   if (!hasAttachedOrders) {
@@ -422,24 +462,31 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
       stopLossPrice: Number.isFinite(Number(order.stopLossPrice)) ? Number(order.stopLossPrice) : null,
       trailingStopPct: Number.isFinite(Number(order.trailingStopPct)) ? Number(order.trailingStopPct) : null
     });
+  } else {
+    await PaperOrder.updateMany(
+      { parentOrderId: order._id, status: 'open' },
+      { $set: { qty: filledQty } }
+    );
   }
 
-  const tradePlanId = await linkTradeToPlan(trade, ACCOUNT_ID);
+  const tradePlanId = trade.tradePlanId ? null : await linkTradeToPlan(trade, ACCOUNT_ID);
   if (tradePlanId) {
     trade.tradePlanId = tradePlanId;
     await trade.save();
   }
 
-  const { consecutiveLosses, cooldownUntil } = updateCooldownState(
-    settings,
-    tradeRealized,
-    filledAt
-  );
-  settings.consecutiveLosses = consecutiveLosses;
-  settings.cooldownUntil = cooldownUntil;
-  await settings.save();
+  if (createdTrade) {
+    const { consecutiveLosses, cooldownUntil } = updateCooldownState(
+      settings,
+      tradeRealized,
+      filledAt
+    );
+    settings.consecutiveLosses = consecutiveLosses;
+    settings.cooldownUntil = cooldownUntil;
+    await settings.save();
+  }
 
-  const updatedAccount = await getAccount();
+  const updatedAccount = await getAccount({ reconcile: false });
   await PaperEquity.create({
     accountId: ACCOUNT_ID,
     timestamp: filledAt,
@@ -450,52 +497,53 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
     totalPnl: updatedAccount.totalPnl
   });
 
-  await recordFilledExecution({
-    broker: 'alpaca',
-    origin: order.origin || order.setupType || 'manual',
-    request: {
-      accountId: ACCOUNT_ID,
-      origin: order.origin || 'manual',
-      broker: 'paper',
-      symbol: order.symbol,
-      assetClass: order.assetClass,
-      side: order.side,
-      qty: filledQty,
-      orderType: order.orderType,
-      timeInForce: order.timeInForce,
-      limitPrice: order.limitPrice,
-      stopPrice: order.stopPrice,
-      takeProfitPrice: order.takeProfitPrice,
-      stopLossPrice: order.stopLossPrice,
-      trailingStopPct: order.trailingStopPct,
-      maxPricePerShare: order.maxPricePerShare,
-      allowExtendedHours: order.allowExtendedHours,
-      strategyId: order.strategyId || null,
-      setupType: order.setupType || null,
-      metadata: { reconciledFromAlpacaPaperOrder: true }
-    },
-    order,
-    trade,
-    brokerOrder
-  });
+  if (createdTrade) {
+    await recordFilledExecution({
+      broker: 'alpaca',
+      origin: order.origin || order.setupType || 'manual',
+      request: {
+        accountId: ACCOUNT_ID,
+        origin: order.origin || 'manual',
+        broker: 'paper',
+        symbol: order.symbol,
+        assetClass: order.assetClass,
+        side: order.side,
+        qty: filledQty,
+        orderType: order.orderType,
+        timeInForce: order.timeInForce,
+        limitPrice: order.limitPrice,
+        stopPrice: order.stopPrice,
+        takeProfitPrice: order.takeProfitPrice,
+        stopLossPrice: order.stopLossPrice,
+        trailingStopPct: order.trailingStopPct,
+        maxPricePerShare: order.maxPricePerShare,
+        allowExtendedHours: order.allowExtendedHours,
+        strategyId: order.strategyId || null,
+        setupType: order.setupType || null,
+        metadata: { reconciledFromAlpacaPaperOrder: true }
+      },
+      order,
+      trade,
+      brokerOrder
+    });
+  }
 
   return trade;
 }
 
 async function reconcileAlpacaPaperOrder(order, {
   now = new Date(),
-  readOrder = readAlpacaPaperOrder
+  readOrder = readAlpacaPaperOrder,
+  createTradeFromOrder = createFilledTradeFromSyncedOrder
 } = {}) {
   if (!order?.externalOrderId) return { ok: false, reason: 'MISSING_EXTERNAL_ORDER_ID' };
 
   const brokerOrder = await readOrder(order.externalOrderId);
-  const brokerStatus = String(brokerOrder.status || '').toLowerCase();
   const localStatus = mapAlpacaPaperOrderStatus(brokerOrder);
   const brokerFilledQty = getAlpacaFilledQty(brokerOrder, 0);
   const brokerFillPrice = getAlpacaFillPrice(brokerOrder, null);
   const hasFill = brokerFilledQty > 0 && Number.isFinite(brokerFillPrice) && brokerFillPrice > 0;
-  const shouldCreateTrade = brokerStatus === 'filled'
-    || (hasFill && isTerminalAlpacaStatus(brokerStatus));
+  const shouldCreateTrade = hasFill;
 
   order.externalOrderId = brokerOrder.id || order.externalOrderId;
   order.clientOrderId = brokerOrder.client_order_id || order.clientOrderId;
@@ -516,7 +564,7 @@ async function reconcileAlpacaPaperOrder(order, {
   await order.save();
 
   const trade = shouldCreateTrade
-    ? await createFilledTradeFromSyncedOrder(order, brokerOrder, { now })
+    ? await createTradeFromOrder(order, brokerOrder, { now })
     : null;
 
   return {
@@ -528,7 +576,7 @@ async function reconcileAlpacaPaperOrder(order, {
   };
 }
 
-async function reconcileOpenAlpacaPaperOrders({
+async function runOpenAlpacaPaperOrderReconciliation({
   limit = 50,
   now = new Date(),
   readOrder = readAlpacaPaperOrder
@@ -563,17 +611,32 @@ async function reconcileOpenAlpacaPaperOrders({
   };
 }
 
-async function getTrades() {
-  await reconcileOpenAlpacaPaperOrders().catch(() => null);
+async function reconcileOpenAlpacaPaperOrders(options = {}) {
+  if (activeOpenOrderReconciliation) return activeOpenOrderReconciliation;
+  activeOpenOrderReconciliation = runOpenAlpacaPaperOrderReconciliation(options)
+    .finally(() => {
+      activeOpenOrderReconciliation = null;
+    });
+  return activeOpenOrderReconciliation;
+}
+
+async function maybeReconcileOpenAlpacaPaperOrders(reconcile = true) {
+  if (!reconcile) return null;
+  return reconcileOpenAlpacaPaperOrders().catch(() => null);
+}
+
+async function getTrades({ reconcile = true } = {}) {
+  await maybeReconcileOpenAlpacaPaperOrders(reconcile);
   return PaperTrade.find({ accountId: ACCOUNT_ID }).sort({ filledAt: -1 }).lean();
 }
 
-async function getOrders() {
-  await reconcileOpenAlpacaPaperOrders().catch(() => null);
+async function getOrders({ reconcile = true } = {}) {
+  await maybeReconcileOpenAlpacaPaperOrders(reconcile);
   return PaperOrder.find({ accountId: ACCOUNT_ID }).sort({ updatedAt: -1, filledAt: -1 }).lean();
 }
 
-async function getPositions() {
+async function getPositions({ reconcile = true } = {}) {
+  await maybeReconcileOpenAlpacaPaperOrders(reconcile);
   const trades = await PaperTrade.find({ accountId: ACCOUNT_ID }).sort({ filledAt: 1 }).lean();
   const { positions } = buildPositions(trades);
   const symbolMeta = trades.reduce((acc, trade) => {
@@ -606,10 +669,11 @@ async function getPositions() {
   });
 }
 
-async function getAccount() {
+async function getAccount({ reconcile = true } = {}) {
+  await maybeReconcileOpenAlpacaPaperOrders(reconcile);
   const settings = await getSettings();
   const trades = await PaperTrade.find({ accountId: ACCOUNT_ID }).sort({ filledAt: 1 }).lean();
-  const positions = await getPositions();
+  const positions = await getPositions({ reconcile: false });
   const cash = calculateCash(trades, settings.startingCash);
   const positionsValue = positions.reduce((sum, pos) => sum + pos.marketValue, 0);
   const equity = cash + positionsValue;
@@ -1033,6 +1097,27 @@ async function placeOrder({
     slippageBps: settings.slippageBps || 0,
     notional: orderNotional
   };
+  const executionRequest = {
+    accountId: ACCOUNT_ID,
+    origin,
+    broker: 'paper',
+    symbol: normalizedSymbol,
+    assetClass: normalizedAssetClass,
+    side: normalizedSide,
+    qty: numericQty,
+    orderType: normalizedOrderType,
+    timeInForce: normalizedTimeInForce,
+    limitPrice: parsedLimitPrice,
+    stopPrice: stopTriggerValue !== null ? stopTriggerValue : stopValue,
+    takeProfitPrice: parsedTakeProfitPrice,
+    stopLossPrice: parsedStopLossPrice,
+    trailingStopPct: parsedTrailingStopPct,
+    maxPricePerShare: parsedMaxPricePerShare,
+    allowExtendedHours: normalized.allowExtendedHours,
+    strategyId: strategyId || null,
+    setupType: setupType || null,
+    metadata
+  };
   let alpacaPaperOrder = null;
   let order = null;
   const syncToAlpaca = shouldSyncPaperTradesToAlpaca();
@@ -1071,10 +1156,19 @@ async function placeOrder({
         pollStatusDelayMs: 300
       });
     } catch (err) {
+      const rejectedReason = err.message || 'Alpaca paper order submission failed.';
       order.status = 'rejected';
       order.brokerOrderStatus = 'rejected';
-      order.rejectedReason = err.message;
+      order.rejectedReason = rejectedReason;
       await order.save();
+      await recordRejectedExecution({
+        broker: 'alpaca',
+        origin,
+        rejectedReason,
+        request: executionRequest
+      });
+      err.paperOrderRecorded = true;
+      err.paperOrder = order;
       throw err;
     }
 
@@ -1093,7 +1187,26 @@ async function placeOrder({
     order.filledAt = localStatus === 'filled'
       ? (brokerOrder.filled_at ? new Date(brokerOrder.filled_at) : now)
       : null;
+    if (localStatus === 'rejected') {
+      order.rejectedReason = getAlpacaPaperRejectionReason(brokerOrder);
+    }
     await order.save();
+
+    if (localStatus === 'rejected') {
+      const rejectedReason = order.rejectedReason || 'Alpaca rejected the paper order.';
+      await recordRejectedExecution({
+        broker: 'alpaca',
+        origin,
+        rejectedReason,
+        request: executionRequest
+      });
+      const err = new Error(rejectedReason);
+      err.statusCode = 400;
+      err.paperOrderRecorded = true;
+      err.paperOrder = order;
+      err.brokerOrder = brokerOrder;
+      throw err;
+    }
 
     if (localStatus !== 'filled') {
       const updatedAccount = await getAccount();

@@ -187,6 +187,10 @@ function evaluateRoboRisk({
     ? Boolean(marketClock.is_open ?? marketClock.isOpen)
     : true;
   const extendedHoursRequested = Boolean(orderInput.extendedHours || orderInput.extended_hours);
+  const regularSessionProtectionRequired = Boolean(
+    orderInput.requiresRegularSessionForProtection
+    || orderInput.requires_regular_session_for_protection
+  );
 
   const runCheck = (name, passed, message, severity = 'warning', metadata = {}) => {
     addCheck(checks, name, passed, message, severity, metadata);
@@ -223,6 +227,12 @@ function evaluateRoboRisk({
     'extended_hours_allowed',
     !extendedHoursRequested || settings.allowExtendedHours === true,
     'Extended-hours trading is not enabled for this user.'
+  );
+  runCheck(
+    'extended_hours_protection',
+    riskReducingOnly || !regularSessionProtectionRequired,
+    orderInput.protectionBlockedReason
+      || 'Extended-hours automated stock entries are blocked because broker-attached stop-loss/take-profit protection is unavailable outside regular market hours.'
   );
   runCheck(
     'crypto_enabled',
