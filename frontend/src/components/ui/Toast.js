@@ -2,10 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { cn } from '../../utils/classNames';
 
 const typeStyles = {
-  success: 'border-[#1f6b34] bg-[#0f3018] text-[#64ff8d]',
-  error: 'border-[#5f2a38] bg-[#30111a] text-[#ff9db0]',
-  warning: 'border-[#4b3f1e] bg-[#2b2615] text-[#f9d281]',
-  info: 'border-emerald-900/60 bg-[#131c17] text-emerald-100/85'
+  success: 'border-[#22694a] bg-[#103827] text-[#77f0b2]',
+  error: 'border-[#6a2b3a] bg-[#30111a] text-[#ffb5c2]',
+  warning: 'border-[#6f531d] bg-[#332611] text-[#ffd77a]',
+  info: 'border-[#33474f] bg-[#172126] text-[#d9e5e4]'
 };
 
 export function ToastProvider({ children }) {
@@ -41,7 +41,7 @@ export function ToastProvider({ children }) {
           <div
             key={toast.id}
             className={cn(
-              'rounded-xl border p-4 shadow-lg backdrop-blur-sm',
+              'rounded-lg border p-4 shadow-lg backdrop-blur-sm',
               typeStyles[toast.type || 'info']
             )}
           >
@@ -53,7 +53,7 @@ export function ToastProvider({ children }) {
                 <p className="text-sm">{toast.message}</p>
               </div>
               <button
-                className="text-xs text-emerald-100/55 hover:text-emerald-200"
+                className="text-xs text-[#a9b8b8] hover:text-[#edf5f4]"
                 onClick={() => dismiss(toast.id)}
               >
                 Close
@@ -61,7 +61,7 @@ export function ToastProvider({ children }) {
             </div>
             {toast.action && (
               <button
-                className="mt-3 text-xs font-semibold text-emerald-200 underline underline-offset-2"
+                className="mt-3 text-xs font-semibold text-[#8cf5bd] underline underline-offset-2"
                 onClick={() => {
                   toast.action.onClick?.();
                   dismiss(toast.id);

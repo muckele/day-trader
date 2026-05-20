@@ -38,7 +38,7 @@ export default function Login() {
             placeholder="Username"
             value={username}
             onChange={e => setUsername(e.target.value)}
-            className="border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+            className="rt-field"
             required
           />
           <input
@@ -46,7 +46,7 @@ export default function Login() {
             placeholder="Password"
             value={password}
             onChange={e => setPassword(e.target.value)}
-            className="border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+            className="rt-field"
             required
           />
           <Button type="submit">Log In</Button>

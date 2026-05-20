@@ -2,10 +2,11 @@ import React from 'react';
 import { cn } from '../../utils/classNames';
 
 const variants = {
-  primary: 'rh-btn-primary bg-[#00c805] text-[#031107] hover:bg-[#0de843] shadow-[0_0_0_1px_rgba(0,200,5,0.28)]',
-  secondary: 'bg-[#17231c] text-emerald-50 hover:bg-[#1d2c23] border border-emerald-900/60',
-  ghost: 'bg-transparent text-emerald-100/80 hover:bg-[#1a261f] hover:text-emerald-200',
-  danger: 'bg-[#3a171f] text-[#ff9fb0] hover:bg-[#4b1d28] border border-[#5d2734]'
+  primary: 'bg-[#26d07c] text-[#06110d] hover:bg-[#35e08d] border border-[#52e8a1]/40 shadow-[0_10px_24px_rgba(38,208,124,0.16)]',
+  secondary: 'bg-[#172126] text-[#edf5f4] hover:bg-[#1d2a30] border border-[#33474f]',
+  ghost: 'bg-transparent text-[#b8c8c7] hover:bg-[#172126] hover:text-[#edf5f4] border border-transparent',
+  danger: 'bg-[#3a1620] text-[#ffb5c2] hover:bg-[#4a1d2a] border border-[#6a2b3a]',
+  warning: 'bg-[#332611] text-[#ffd77a] hover:bg-[#443315] border border-[#6f531d]'
 };
 
 const sizes = {
@@ -26,7 +27,7 @@ export default function Button({
     <button
       type={type}
       className={cn(
-        'rh-btn inline-flex items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00c805]/40 disabled:opacity-60 disabled:cursor-not-allowed',
+        'rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:opacity-60 disabled:cursor-not-allowed',
         variants[variant],
         sizes[size],
         className

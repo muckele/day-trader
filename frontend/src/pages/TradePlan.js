@@ -273,8 +273,8 @@ export default function TradePlan() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="text-xs uppercase tracking-wide text-slate-400">Trade Plan</p>
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">Daily Playbook</h1>
+          <p className="rt-eyebrow">Trade Plan</p>
+          <h1 className="rt-title">Daily Playbook</h1>
         </div>
         <div className="flex items-center gap-2">
           <Badge variant={status === 'OPEN' ? 'success' : 'neutral'}>
@@ -309,7 +309,7 @@ export default function TradePlan() {
         <>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <Card className="p-6">
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">Regime</p>
+              <p className="rt-section-title">Regime</p>
               <div className="mt-3 text-sm text-slate-600 dark:text-slate-300 space-y-1">
                 <p>Trend/Chop: {plan.regime?.trendChop || '--'}</p>
                 <p>Volatility: {plan.regime?.vol || '--'}</p>
@@ -321,7 +321,7 @@ export default function TradePlan() {
             </Card>
             <Card className="p-6 lg:col-span-2">
               <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-slate-900 dark:text-white">Ranked Strategies</p>
+                <p className="rt-section-title">Ranked Strategies</p>
                 <Badge variant="neutral">Top {plan.rankedStrategies?.length || 0}</Badge>
               </div>
               <div className="mt-4 space-y-2 text-sm">
@@ -361,7 +361,7 @@ export default function TradePlan() {
                 {plan.tradeIdeas.map(idea => (
                   <div
                     key={idea._id}
-                    className="border border-slate-100 dark:border-slate-800 rounded-lg p-4 text-sm"
+                    className="rt-panel p-4 text-sm"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
@@ -418,11 +418,11 @@ export default function TradePlan() {
       )}
 
       <Card className="p-6">
-        <p className="text-sm font-semibold text-slate-900 dark:text-white">Plan History (14 days)</p>
+        <p className="rt-section-title">Plan History (14 days)</p>
         {history.length ? (
           <div className="mt-4 space-y-3 text-sm">
             {history.map(item => (
-              <div key={item._id} className="border border-slate-100 dark:border-slate-800 rounded-lg p-3">
+              <div key={item._id} className="rt-panel p-3">
                 <div className="flex items-center justify-between">
                   <p className="font-semibold">{item.date}</p>
                   <span className="text-xs text-slate-500">{item.tradeIdeas?.length || 0} ideas</span>
@@ -527,7 +527,7 @@ export default function TradePlan() {
                     step={executionAssetClass === 'crypto' ? '0.00000001' : '0.000001'}
                     value={executionQty}
                     onChange={event => setExecutionQty(event.target.value)}
-                    className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                    className="rt-field mt-1"
                   />
                 </div>
                 <div>
@@ -535,7 +535,7 @@ export default function TradePlan() {
                   <select
                     value={executionAssetClass}
                     onChange={event => setExecutionAssetClass(event.target.value)}
-                    className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                    className="rt-field mt-1"
                   >
                     <option value="equity">Equity</option>
                     <option value="crypto">Crypto</option>
@@ -587,7 +587,7 @@ export default function TradePlan() {
                       step="0.01"
                       value={executionLimitPrice}
                       onChange={event => setExecutionLimitPrice(event.target.value)}
-                      className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                      className="rt-field mt-1"
                     />
                   </div>
                 )}
@@ -600,7 +600,7 @@ export default function TradePlan() {
                       step="0.01"
                       value={executionStopTriggerPrice}
                       onChange={event => setExecutionStopTriggerPrice(event.target.value)}
-                      className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                      className="rt-field mt-1"
                     />
                   </div>
                 )}
@@ -609,7 +609,7 @@ export default function TradePlan() {
                   <select
                     value={executionTimeInForce}
                     onChange={event => setExecutionTimeInForce(event.target.value)}
-                    className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                    className="rt-field mt-1"
                   >
                     <option value="day">DAY</option>
                     <option value="gtc">GTC</option>
@@ -624,7 +624,7 @@ export default function TradePlan() {
                       type="datetime-local"
                       value={executionGoodTilDate}
                       onChange={event => setExecutionGoodTilDate(event.target.value)}
-                      className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                      className="rt-field mt-1"
                     />
                   </div>
                 )}
@@ -637,7 +637,7 @@ export default function TradePlan() {
                     value={executionTakeProfitPrice}
                     onChange={event => setExecutionTakeProfitPrice(event.target.value)}
                     placeholder="Optional"
-                    className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                    className="rt-field mt-1"
                   />
                 </div>
                 <div>
@@ -649,7 +649,7 @@ export default function TradePlan() {
                     value={executionStopLossPrice}
                     onChange={event => setExecutionStopLossPrice(event.target.value)}
                     placeholder="Optional"
-                    className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                    className="rt-field mt-1"
                   />
                 </div>
                 <div>
@@ -661,7 +661,7 @@ export default function TradePlan() {
                     value={executionTrailingStopPct}
                     onChange={event => setExecutionTrailingStopPct(event.target.value)}
                     placeholder="Optional"
-                    className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                    className="rt-field mt-1"
                   />
                 </div>
                 {selectedIdea.bias !== 'SHORT' && (
@@ -674,7 +674,7 @@ export default function TradePlan() {
                       value={executionMaxPricePerShare}
                       onChange={event => setExecutionMaxPricePerShare(event.target.value)}
                       placeholder="Optional"
-                      className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                      className="rt-field mt-1"
                     />
                   </div>
                 )}

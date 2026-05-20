@@ -149,22 +149,22 @@ export default function Activity() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-xs uppercase tracking-wide text-slate-400">Activity</p>
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">Orders & Trades</h1>
+          <p className="rt-eyebrow">Activity</p>
+          <h1 className="rt-title">Orders & Trades</h1>
         </div>
         <Badge variant="solid">PAPER MODE</Badge>
       </div>
 
       <Card className="p-6">
-        <p className="text-sm font-semibold text-slate-900 dark:text-white mb-4">Recent Activity</p>
+        <p className="rt-section-title mb-4">Recent Activity</p>
         {activity.length ? (
           <div className="space-y-3">
             {activity.map(item => (
               <div
                 key={`${item.type}-${item._id}`}
-                className={`border border-slate-100 dark:border-slate-800 rounded-lg p-3 transition ${
+                className={`rt-panel p-3 transition ${
                   item.type === 'trade'
-                    ? 'hover:bg-slate-50/80 dark:hover:bg-slate-900/40 cursor-pointer'
+                    ? 'hover:bg-[#172126] cursor-pointer'
                     : ''
                 }`}
                 onClick={() => {
@@ -177,7 +177,7 @@ export default function Activity() {
                   <p className="font-semibold text-slate-900 dark:text-white">{item.symbol}</p>
                   <p className="text-xs text-slate-500">{formatTime(item.timestamp)}</p>
                 </div>
-                <p className="text-sm text-slate-600 dark:text-slate-300">
+                <p className="text-sm text-[#b8c8c7]">
                   {item.side.toUpperCase()} {item.qty}{' '}
                   {item.type === 'order'
                     ? (formatMoney(item.fillPrice)
@@ -186,7 +186,7 @@ export default function Activity() {
                     : `@ $${formatMoney(item.price) || '--'}`}
                 </p>
                 {item.type === 'order' && (
-                  <p className="text-xs text-slate-500">
+                  <p className="text-xs text-[#8ba09f]">
                     {String(item.orderType || 'market').toUpperCase()} · {String(item.status || '--').toUpperCase()}
                     {Number.isFinite(Number(item.effectiveSlippageBps))
                       ? ` · Slippage ${Number(item.effectiveSlippageBps).toFixed(2)} bps`
@@ -194,14 +194,14 @@ export default function Activity() {
                   </p>
                 )}
                 {item.strategyId && (
-                  <p className="text-xs text-slate-500">Strategy {item.strategyId}</p>
+                  <p className="text-xs text-[#8ba09f]">Strategy {item.strategyId}</p>
                 )}
                 {item.type === 'trade' && (
                   <p className={`text-xs ${item.realizedPnl >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
                     Realized P/L {item.realizedPnl.toFixed(2)}
                   </p>
                 )}
-                <p className="text-xs text-slate-400 uppercase mt-1">{item.type}</p>
+                <p className="text-xs text-[#657778] uppercase mt-1">{item.type}</p>
               </div>
             ))}
           </div>
@@ -235,42 +235,42 @@ export default function Activity() {
             ) : (
               <div className="mt-4 space-y-3 text-sm">
                 <div>
-                  <label className="text-xs text-slate-500">Thesis</label>
+                  <label className="rt-label">Thesis</label>
                   <input
                     value={journalEntry?.thesis || ''}
                     onChange={event => setJournalEntry(prev => ({ ...prev, thesis: event.target.value }))}
-                    className="mt-1 w-full rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2"
+                    className="rt-field mt-1"
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-slate-500">Plan</label>
+                  <label className="rt-label">Plan</label>
                   <textarea
                     value={journalEntry?.plan || ''}
                     onChange={event => setJournalEntry(prev => ({ ...prev, plan: event.target.value }))}
-                    className="mt-1 w-full rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2"
+                    className="rt-field mt-1"
                     rows={2}
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-slate-500">Emotions</label>
+                  <label className="rt-label">Emotions</label>
                   <input
                     value={journalEntry?.emotions || ''}
                     onChange={event => setJournalEntry(prev => ({ ...prev, emotions: event.target.value }))}
-                    className="mt-1 w-full rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2"
+                    className="rt-field mt-1"
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-slate-500">Post-trade notes</label>
+                  <label className="rt-label">Post-trade notes</label>
                   <textarea
                     value={journalEntry?.postTradeNotes || ''}
                     onChange={event => setJournalEntry(prev => ({ ...prev, postTradeNotes: event.target.value }))}
-                    className="mt-1 w-full rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2"
+                    className="rt-field mt-1"
                     rows={3}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-xs text-slate-500">Rating (1-5)</label>
+                    <label className="rt-label">Rating (1-5)</label>
                     <input
                       type="number"
                       min="1"
@@ -280,11 +280,11 @@ export default function Activity() {
                         ...prev,
                         rating: event.target.value ? Number(event.target.value) : null
                       }))}
-                      className="mt-1 w-full rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2"
+                      className="rt-field mt-1"
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-slate-500">Tags</label>
+                    <label className="rt-label">Tags</label>
                     <input
                       value={journalEntry?.tags?.join(', ') || ''}
                       onChange={event => setJournalEntry(prev => ({
@@ -294,7 +294,7 @@ export default function Activity() {
                           .map(tag => tag.trim())
                           .filter(Boolean)
                       }))}
-                      className="mt-1 w-full rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2"
+                      className="rt-field mt-1"
                     />
                   </div>
                 </div>

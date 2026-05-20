@@ -36,8 +36,8 @@ export default function SideNav() {
 
   return (
     <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 lg:gap-3 lg:sticky lg:top-24 lg:h-fit">
-      <div className="bg-[#101913]/88 border border-emerald-900/55 rounded-2xl p-4 shadow-[0_14px_34px_rgba(0,0,0,0.5)]">
-        <p className="text-xs uppercase tracking-[0.2em] text-emerald-100/42">Navigation</p>
+      <div className="bg-[#11181b]/92 border border-[#26363c] rounded-lg p-3 shadow-[0_18px_42px_rgba(0,0,0,0.28)]">
+        <p className="px-2 text-xs uppercase tracking-[0.16em] text-[#8ba09f]">Navigation</p>
         <nav className="mt-3 flex flex-col gap-2 text-sm">
           {links.map(link => (
             <NavLink
@@ -46,8 +46,8 @@ export default function SideNav() {
               className={({ isActive }) =>
                 `rounded-lg px-3 py-2 font-medium transition-all duration-200 ${
                   isActive
-                    ? 'bg-[linear-gradient(90deg,rgba(0,200,5,0.28)_0%,rgba(18,31,24,0.88)_100%)] text-[#8cffab] ring-1 ring-[#00c805]/45 shadow-[inset_0_0_0_1px_rgba(0,200,5,0.16)]'
-                    : 'text-emerald-100/78 hover:bg-[#1a261f] hover:text-emerald-200'
+                    ? 'bg-[#173426] text-[#8cf5bd] ring-1 ring-[#26d07c]/35'
+                    : 'text-[#b8c8c7] hover:bg-[#172126] hover:text-[#edf5f4]'
                 }`
               }
             >
@@ -57,7 +57,7 @@ export default function SideNav() {
         </nav>
       </div>
       {isAuthed && (
-        <Button variant="ghost" size="sm" onClick={handleSignOut} className="justify-start text-emerald-100/80">
+        <Button variant="ghost" size="sm" onClick={handleSignOut} className="justify-start">
           Sign Out
         </Button>
       )}

@@ -34,14 +34,14 @@ export default function Register() {
       <Card className="p-6">
         <h2 className="text-2xl font-semibold text-slate-900 dark:text-white mb-4">Sign Up</h2>
         {error && <p className="text-red-500 mb-2">{error}</p>}
-        {success && <p className="text-emerald-500 mb-2">{success}</p>}
+        {success && <p className="text-[#77f0b2] mb-2">{success}</p>}
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <input
             type="text"
             placeholder="Username"
             value={username}
             onChange={e => setUsername(e.target.value)}
-            className="border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+            className="rt-field"
             required
           />
           <input
@@ -49,7 +49,7 @@ export default function Register() {
             placeholder="Email"
             value={email}
             onChange={e => setEmail(e.target.value)}
-            className="border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+            className="rt-field"
             required
           />
           <input
@@ -57,7 +57,7 @@ export default function Register() {
             placeholder="Password"
             value={password}
             onChange={e => setPassword(e.target.value)}
-            className="border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+            className="rt-field"
             required
           />
           <Button type="submit">Create Account</Button>

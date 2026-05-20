@@ -315,9 +315,9 @@ export default function Stock() {
     if (!active || !payload?.length) return null;
     const point = payload[0].payload;
     return (
-      <div className="rounded-lg border border-emerald-900/70 bg-[#0f1713] px-3 py-2 text-xs shadow-sm">
-        <p className="text-emerald-100/55">{point.rawTime}</p>
-        <p className="font-semibold text-emerald-50">${point.close}</p>
+      <div className="rounded-lg border border-[#31444b] bg-[#11181b] px-3 py-2 text-xs shadow-sm">
+        <p className="text-[#8ba09f]">{point.rawTime}</p>
+        <p className="font-semibold text-[#edf5f4]">${point.close}</p>
       </div>
     );
   };
@@ -326,9 +326,9 @@ export default function Stock() {
     if (!active || !payload?.length) return null;
     const point = payload[0].payload;
     return (
-      <div className="rounded-lg border border-emerald-900/70 bg-[#0f1713] px-3 py-2 text-xs shadow-sm">
-        <p className="text-emerald-100/55">{point.rawTime}</p>
-        <p className="font-semibold text-emerald-50">RSI {point.rsi}</p>
+      <div className="rounded-lg border border-[#31444b] bg-[#11181b] px-3 py-2 text-xs shadow-sm">
+        <p className="text-[#8ba09f]">{point.rawTime}</p>
+        <p className="font-semibold text-[#edf5f4]">RSI {point.rsi}</p>
       </div>
     );
   };
@@ -577,7 +577,7 @@ export default function Stock() {
                   <XAxis dataKey="label" hide />
                   <YAxis domain={['auto', 'auto']} hide />
                   <Tooltip content={<ChartTooltip />} />
-                  <Line type="monotone" dataKey="close" stroke="#00c805" dot={false} strokeWidth={2} />
+                  <Line type="monotone" dataKey="close" stroke="#26d07c" dot={false} strokeWidth={2} />
                   {showSma20 && (
                     <Line type="monotone" dataKey="sma20" stroke="#6bff9c" dot={false} strokeWidth={1.5} />
                   )}
@@ -814,13 +814,13 @@ export default function Stock() {
               step={tradeAssetClass === 'crypto' ? '0.00000001' : '0.000001'}
               value={tradeQty}
               onChange={event => setTradeQty(event.target.value)}
-              className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+              className="rt-field mt-1"
             />
             <label className="text-xs text-slate-500 mt-3">Asset Class</label>
             <select
               value={tradeAssetClass}
               onChange={event => setTradeAssetClass(event.target.value)}
-              className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+              className="rt-field mt-1"
             >
               <option value="equity">Equity</option>
               <option value="crypto">Crypto</option>
@@ -869,7 +869,7 @@ export default function Stock() {
                   step="0.01"
                   value={tradeLimitPrice}
                   onChange={event => setTradeLimitPrice(event.target.value)}
-                  className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                  className="rt-field mt-1"
                 />
               </>
             )}
@@ -882,7 +882,7 @@ export default function Stock() {
                   step="0.01"
                   value={tradeStopTriggerPrice}
                   onChange={event => setTradeStopTriggerPrice(event.target.value)}
-                  className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                  className="rt-field mt-1"
                 />
               </>
             )}
@@ -890,7 +890,7 @@ export default function Stock() {
             <select
               value={tradeTimeInForce}
               onChange={event => setTradeTimeInForce(event.target.value)}
-              className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+              className="rt-field mt-1"
             >
               <option value="day">DAY</option>
               <option value="gtc">GTC</option>
@@ -904,7 +904,7 @@ export default function Stock() {
                   type="datetime-local"
                   value={tradeGoodTilDate}
                   onChange={event => setTradeGoodTilDate(event.target.value)}
-                  className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                  className="rt-field mt-1"
                 />
               </>
             )}
@@ -916,7 +916,7 @@ export default function Stock() {
               value={tradeTakeProfitPrice}
               onChange={event => setTradeTakeProfitPrice(event.target.value)}
               placeholder="Optional"
-              className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+              className="rt-field mt-1"
             />
             <label className="text-xs text-slate-500 mt-3">Stop-Loss Price ($)</label>
             <input
@@ -926,7 +926,7 @@ export default function Stock() {
               value={tradeStopLossPrice}
               onChange={event => setTradeStopLossPrice(event.target.value)}
               placeholder="Optional"
-              className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+              className="rt-field mt-1"
             />
             <label className="text-xs text-slate-500 mt-3">Trailing Stop (%)</label>
             <input
@@ -936,7 +936,7 @@ export default function Stock() {
               value={tradeTrailingStopPct}
               onChange={event => setTradeTrailingStopPct(event.target.value)}
               placeholder="Optional"
-              className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+              className="rt-field mt-1"
             />
             {tradeSide === 'buy' && (
               <>
@@ -948,7 +948,7 @@ export default function Stock() {
                   value={maxPricePerShare}
                   onChange={event => setMaxPricePerShare(event.target.value)}
                   placeholder="Optional"
-                  className="mt-1 w-full border border-emerald-900/70 rounded-lg px-3 py-2 text-sm bg-[#0f1913] text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+                  className="rt-field mt-1"
                 />
               </>
             )}
@@ -967,7 +967,7 @@ export default function Stock() {
               </p>
             )}
             {tradeAssetClass === 'crypto' && (
-              <p className="mt-2 text-xs text-emerald-500">
+              <p className="mt-2 text-xs text-[#77f0b2]">
                 Crypto trades are evaluated as 24/7 market.
               </p>
             )}
@@ -989,7 +989,7 @@ export default function Stock() {
                   ? ` @ $${formatOrderPrice(tradeResult.order?.fillPrice)}`
                   : ` · ${String(tradeResult.order?.status || 'open').toUpperCase()}`}
                 {tradeResult.brokerOrder?.id && (
-                  <span className="block text-emerald-600 dark:text-emerald-400">
+                  <span className="block text-[#77f0b2]">
                     Alpaca paper order {String(tradeResult.brokerOrder.id).slice(0, 8)}
                   </span>
                 )}

@@ -250,7 +250,7 @@ export default function Home() {
 
     if (!sortedSymbols.length) {
       return (
-        <div className="text-sm text-emerald-100/55 py-4">
+        <div className="text-sm text-[#8ba09f] py-4">
           No watchlist items yet. Add a symbol to get started.
         </div>
       );
@@ -272,11 +272,11 @@ export default function Home() {
         <div
           key={symbol}
           onClick={() => navigate(`/stock/${symbol}`)}
-          className="group grid grid-cols-[1fr_auto_auto] items-center gap-3 py-3 px-2 rounded-xl border border-transparent hover:border-emerald-900/50 hover:bg-[#16221b]/85 transition cursor-pointer"
+          className="group grid grid-cols-[1fr_auto_auto] items-center gap-3 py-3 px-2 rounded-lg border border-transparent hover:border-[#31444b] hover:bg-[#172126] transition cursor-pointer"
         >
           <div>
-            <p className="text-sm font-bold tracking-wide text-emerald-50">{item.symbol}</p>
-            <p className="text-xs text-emerald-100/55">{item.name}</p>
+            <p className="text-sm font-bold tracking-wide text-[#edf5f4]">{item.symbol}</p>
+            <p className="text-xs text-[#8ba09f]">{item.name}</p>
           </div>
           <div className="h-10 w-24">
             <ResponsiveContainer width="100%" height="100%">
@@ -284,7 +284,7 @@ export default function Home() {
                 <Line
                   type="monotone"
                   dataKey="price"
-                  stroke={isUp ? '#00c805' : '#ff5c79'}
+                  stroke={isUp ? '#26d07c' : '#ff647c'}
                   strokeWidth={2}
                   dot={false}
                 />
@@ -292,7 +292,7 @@ export default function Home() {
             </ResponsiveContainer>
           </div>
           <div className="text-right">
-            <p className="text-sm font-semibold text-emerald-50">
+            <p className="text-sm font-semibold text-[#edf5f4]">
               {displayPrice}
             </p>
             <p className={`text-xs font-medium ${isUp ? 'text-[#5dff90]' : 'text-[#ff8ea4]'}`}>
@@ -403,17 +403,17 @@ export default function Home() {
 
   return (
     <div className="space-y-7">
-      <Card className="p-5 sm:p-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between bg-[linear-gradient(120deg,rgba(10,24,15,0.95)_0%,rgba(14,33,21,0.88)_60%,rgba(0,200,5,0.12)_100%)]">
+      <Card className="p-5 sm:p-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-1">
-          <p className="text-[11px] uppercase tracking-[0.22em] text-emerald-100/45">Session Overview</p>
-          <p className="text-xl sm:text-2xl font-extrabold tracking-tight text-emerald-50">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-[#8ba09f]">Session Overview</p>
+          <p className="text-xl sm:text-2xl font-extrabold tracking-tight text-[#edf5f4]">
             {marketStatus === 'OPEN' ? 'US Market Open' : 'US Market Closed'}
           </p>
           {marketStatus === 'CLOSED' && countdown && (
-            <p className="text-sm text-emerald-100/65">Next open in {countdown}</p>
+            <p className="text-sm text-[#a9b8b8]">Next open in {countdown}</p>
           )}
           {marketStatus === 'OPEN' && nextClose && (
-            <p className="text-sm text-emerald-100/65">
+            <p className="text-sm text-[#a9b8b8]">
               Closes at {new Date(nextClose).toLocaleTimeString()}
             </p>
           )}
@@ -435,10 +435,10 @@ export default function Home() {
         <Card className="p-5 sm:p-6">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <p className="text-[11px] uppercase tracking-[0.2em] text-emerald-100/45">Watchlist</p>
-              <h2 className="text-xl font-extrabold tracking-tight text-emerald-50">Live Board</h2>
+              <p className="text-[11px] uppercase tracking-[0.2em] text-[#8ba09f]">Watchlist</p>
+              <h2 className="text-xl font-extrabold tracking-tight text-[#edf5f4]">Live Board</h2>
             </div>
-            <span className="text-xs text-emerald-100/50">{watchlistSymbols.length} symbols</span>
+            <span className="text-xs text-[#8ba09f]">{watchlistSymbols.length} symbols</span>
           </div>
 
           <div className="relative mb-4">
@@ -447,10 +447,10 @@ export default function Home() {
               value={searchTerm}
               onChange={event => setSearchTerm(event.target.value)}
               placeholder="Add symbol (AAPL, NVDA...)"
-              className="w-full rounded-xl border border-emerald-900/70 bg-[#0f1913] px-3.5 py-2.5 text-sm text-emerald-50 placeholder:text-emerald-100/35 focus:outline-none focus:ring-2 focus:ring-[#00c805]/35"
+              className="rt-field"
             />
             {suggestions.length > 0 && (
-              <div className="absolute z-10 mt-2 w-full rounded-xl border border-emerald-900/70 bg-[#0f1813] shadow-xl">
+              <div className="absolute z-10 mt-2 w-full rounded-lg border border-[#31444b] bg-[#11181b] shadow-xl">
                 {suggestions.map(item => (
                   <button
                     key={item.symbol}
@@ -458,10 +458,10 @@ export default function Home() {
                       setWatchlistSymbols(prev => [...prev, item.symbol]);
                       setSearchTerm('');
                     }}
-                    className="flex w-full items-center justify-between px-3 py-2 text-sm text-emerald-100/90 hover:bg-[#1a261f]"
+                    className="flex w-full items-center justify-between px-3 py-2 text-sm text-[#d9e5e4] hover:bg-[#172126]"
                   >
                     <span>{item.symbol}</span>
-                    <span className="text-xs text-emerald-100/50">{item.name}</span>
+                    <span className="text-xs text-[#8ba09f]">{item.name}</span>
                   </button>
                 ))}
               </div>
@@ -474,8 +474,8 @@ export default function Home() {
         <section className="lg:col-span-2 space-y-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-[11px] uppercase tracking-[0.2em] text-emerald-100/45">Setup Feed</p>
-              <h1 className="text-3xl font-extrabold tracking-tight text-emerald-50">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-[#8ba09f]">Setup Feed</p>
+              <h1 className="text-3xl font-extrabold tracking-tight text-[#edf5f4]">
                 Daily Recommendations
               </h1>
             </div>
@@ -504,7 +504,7 @@ export default function Home() {
                   onClick={() => navigate(`/stock/${rec.ticker}`)}
                 >
                   <div className="flex items-center justify-between">
-                    <h2 className="text-2xl font-extrabold tracking-tight text-emerald-50">{rec.ticker}</h2>
+                    <h2 className="text-2xl font-extrabold tracking-tight text-[#edf5f4]">{rec.ticker}</h2>
                     <div className="flex items-center gap-2">
                       <Badge variant={isBuy ? 'success' : 'danger'}>
                         {isBuy ? 'BUY' : 'SHORT'}
@@ -516,7 +516,7 @@ export default function Home() {
                       )}
                     </div>
                   </div>
-                  <p className="mt-2 text-emerald-100/75 leading-relaxed">
+                  <p className="mt-2 text-[#b8c8c7] leading-relaxed">
                     {rec.rationale?.[0] || (isBuy
                       ? 'Expect upward movement'
                       : 'Expect downward trend')}
@@ -527,21 +527,21 @@ export default function Home() {
                     </p>
                   )}
                   <div className="mt-4 grid grid-cols-3 gap-2 text-[11px]">
-                    <div className="rounded-lg bg-[#16231b] border border-emerald-900/50 px-2 py-1.5">
-                      <p className="text-emerald-100/45 uppercase tracking-wide">Entry</p>
-                      <p className="text-emerald-50 font-semibold">{formatLevel(rec.entry?.price)}</p>
+                    <div className="rounded-lg bg-[#172126] border border-[#31444b] px-2 py-1.5">
+                      <p className="text-[#8ba09f] uppercase tracking-wide">Entry</p>
+                      <p className="text-[#edf5f4] font-semibold">{formatLevel(rec.entry?.price)}</p>
                     </div>
-                    <div className="rounded-lg bg-[#16231b] border border-emerald-900/50 px-2 py-1.5">
-                      <p className="text-emerald-100/45 uppercase tracking-wide">Stop</p>
-                      <p className="text-emerald-50 font-semibold">{formatLevel(rec.risk?.stop)}</p>
+                    <div className="rounded-lg bg-[#172126] border border-[#31444b] px-2 py-1.5">
+                      <p className="text-[#8ba09f] uppercase tracking-wide">Stop</p>
+                      <p className="text-[#edf5f4] font-semibold">{formatLevel(rec.risk?.stop)}</p>
                     </div>
-                    <div className="rounded-lg bg-[#16231b] border border-emerald-900/50 px-2 py-1.5">
-                      <p className="text-emerald-100/45 uppercase tracking-wide">Take</p>
-                      <p className="text-emerald-50 font-semibold">{formatLevel(rec.risk?.takeProfit?.[0])}</p>
+                    <div className="rounded-lg bg-[#172126] border border-[#31444b] px-2 py-1.5">
+                      <p className="text-[#8ba09f] uppercase tracking-wide">Take</p>
+                      <p className="text-[#edf5f4] font-semibold">{formatLevel(rec.risk?.takeProfit?.[0])}</p>
                     </div>
                   </div>
                   {rec.strategy?.strategyId && (
-                    <div className="mt-3 text-xs text-emerald-100/50">
+                    <div className="mt-3 text-xs text-[#8ba09f]">
                       Strategy {rec.strategy.strategyId}
                     </div>
                   )}

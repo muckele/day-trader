@@ -94,8 +94,8 @@ export default function Analytics() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="text-xs uppercase tracking-wide text-slate-400">Analytics</p>
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">Performance Dashboard</h1>
+          <p className="rt-eyebrow">Analytics</p>
+          <h1 className="rt-title">Performance Dashboard</h1>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="secondary" size="sm" onClick={handleExport}>
@@ -107,11 +107,11 @@ export default function Analytics() {
       <Card className="p-4">
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
           <div>
-            <label className="text-xs text-slate-500">Range</label>
+            <label className="rt-label">Range</label>
             <select
               value={range}
               onChange={event => setRange(event.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2"
+              className="rt-field mt-1"
             >
               {ranges.map(item => (
                 <option key={item.value} value={item.value}>{item.label}</option>
@@ -119,29 +119,29 @@ export default function Analytics() {
             </select>
           </div>
           <div>
-            <label className="text-xs text-slate-500">Symbol</label>
+            <label className="rt-label">Symbol</label>
             <input
               value={symbol}
               onChange={event => setSymbol(event.target.value.toUpperCase())}
-              className="mt-1 w-full rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2"
+              className="rt-field mt-1"
               placeholder="AAPL"
             />
           </div>
           <div>
-            <label className="text-xs text-slate-500">Strategy</label>
+            <label className="rt-label">Strategy</label>
             <input
               value={strategyId}
               onChange={event => setStrategyId(event.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2"
+              className="rt-field mt-1"
               placeholder="SMA_CROSS"
             />
           </div>
           <div>
-            <label className="text-xs text-slate-500">Regime</label>
+            <label className="rt-label">Regime</label>
             <input
               value={regime}
               onChange={event => setRegime(event.target.value.toUpperCase())}
-              className="mt-1 w-full rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2"
+              className="rt-field mt-1"
               placeholder="TREND"
             />
           </div>
@@ -156,7 +156,7 @@ export default function Analytics() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card className="p-6">
           <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-semibold text-slate-900 dark:text-white">Equity Curve</p>
+            <p className="rt-section-title">Equity Curve</p>
             <Badge variant="neutral">Trades {summary.tradeCount}</Badge>
           </div>
           <div className="h-48">
@@ -165,14 +165,14 @@ export default function Analytics() {
                 <XAxis dataKey="timestamp" hide />
                 <YAxis hide domain={['auto', 'auto']} />
                 <Tooltip />
-                <Line type="monotone" dataKey="equity" stroke="#111827" dot={false} strokeWidth={2} />
+                <Line type="monotone" dataKey="equity" stroke="#26d07c" dot={false} strokeWidth={2} />
               </LineChart>
             </ResponsiveContainer>
           </div>
         </Card>
         <Card className="p-6">
           <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-semibold text-slate-900 dark:text-white">Drawdown</p>
+            <p className="rt-section-title">Drawdown</p>
             <Badge variant="warning">Max {summary.maxDrawdown}%</Badge>
           </div>
           <div className="h-48">
@@ -181,7 +181,7 @@ export default function Analytics() {
                 <XAxis dataKey="timestamp" hide />
                 <YAxis hide domain={[0, 100]} />
                 <Tooltip />
-                <Area type="monotone" dataKey="drawdown" stroke="#f97316" fill="#fed7aa" />
+                <Area type="monotone" dataKey="drawdown" stroke="#f4b942" fill="#3a2a12" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -247,7 +247,7 @@ export default function Analytics() {
       </div>
 
       <Card className="p-6">
-        <p className="text-sm font-semibold text-slate-900 dark:text-white mb-4">Exposure</p>
+        <p className="rt-section-title mb-4">Exposure</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-slate-600 dark:text-slate-300">
           <div>
             <p className="text-xs text-slate-500">Cash %</p>
@@ -270,7 +270,7 @@ export default function Analytics() {
 
       {executionQuality && (
         <Card className="p-6">
-          <p className="text-sm font-semibold text-slate-900 dark:text-white mb-4">Execution Quality</p>
+          <p className="rt-section-title mb-4">Execution Quality</p>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm text-slate-600 dark:text-slate-300">
             <div>
               <p className="text-xs text-slate-500">Reject Rate</p>
@@ -333,7 +333,7 @@ export default function Analytics() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card className="p-6">
-          <p className="text-sm font-semibold text-slate-900 dark:text-white mb-4">Strategy Attribution</p>
+          <p className="rt-section-title mb-4">Strategy Attribution</p>
           <div className="space-y-2 text-sm">
             {strategies.strategies?.map(item => (
               <div key={item.strategyId} className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
@@ -352,7 +352,7 @@ export default function Analytics() {
           </div>
         </Card>
         <Card className="p-6">
-          <p className="text-sm font-semibold text-slate-900 dark:text-white mb-4">Strategy Highlights</p>
+          <p className="rt-section-title mb-4">Strategy Highlights</p>
           <div className="space-y-4 text-sm">
             <div>
               <p className="text-xs uppercase text-slate-400 mb-2">Top 3 (Expectancy)</p>
@@ -377,7 +377,7 @@ export default function Analytics() {
       </div>
 
       <Card className="p-6">
-        <p className="text-sm font-semibold text-slate-900 dark:text-white mb-4">Regime Attribution</p>
+        <p className="rt-section-title mb-4">Regime Attribution</p>
         <div className="space-y-4 text-sm">
           {['trendChop', 'vol', 'risk'].map(group => (
             <div key={group}>
@@ -397,18 +397,18 @@ export default function Analytics() {
 
       <Card className="p-6">
         <div className="flex items-center justify-between mb-4">
-          <p className="text-sm font-semibold text-slate-900 dark:text-white">Journal</p>
+          <p className="rt-section-title">Journal</p>
           <input
             value={search}
             onChange={event => setSearch(event.target.value)}
             placeholder="Search entries..."
-            className="rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm"
+            className="rt-field max-w-xs"
           />
         </div>
         {journalFiltered.length ? (
           <div className="space-y-3">
             {journalFiltered.map(entry => (
-              <div key={entry._id} className="border border-slate-100 dark:border-slate-800 rounded-lg p-3 text-sm">
+              <div key={entry._id} className="rt-panel p-3 text-sm">
                 <div className="flex items-center justify-between">
                   <p className="font-semibold">{entry.trade?.symbol || 'Trade'}</p>
                   <span className="text-xs text-slate-500">

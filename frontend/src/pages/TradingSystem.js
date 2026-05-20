@@ -136,9 +136,9 @@ export default function TradingSystem() {
       <Card className="p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.2em] text-emerald-100/45">Admin Surface</p>
-            <h1 className="text-3xl font-extrabold tracking-tight text-emerald-50">Trading System</h1>
-            <p className="mt-2 max-w-3xl text-sm text-emerald-100/65">
+            <p className="rt-eyebrow">Admin Surface</p>
+            <h1 className="rt-title">Trading System</h1>
+            <p className="rt-subtitle mt-2 max-w-3xl">
               Central view for feature flags, risk defaults, strategy registry, run history, and execution telemetry.
             </p>
           </div>
@@ -170,9 +170,9 @@ export default function TradingSystem() {
 
         <div className="mt-6 grid gap-4 md:grid-cols-4">
           {summaryCards.map(card => (
-            <div key={card.label} className="rounded-2xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4">
-              <p className="text-xs uppercase tracking-[0.16em] text-emerald-100/40">{card.label}</p>
-              <p className="mt-3 text-xl font-semibold text-emerald-50">{card.value}</p>
+            <div key={card.label} className="rt-metric">
+              <p className="rt-label">{card.label}</p>
+              <p className="mt-3 text-xl font-semibold text-[#edf5f4]">{card.value}</p>
             </div>
           ))}
         </div>
@@ -182,8 +182,8 @@ export default function TradingSystem() {
         <Card className="p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-semibold text-emerald-50">Feature Flags</p>
-              <p className="text-xs text-emerald-100/45">Safe defaults stay in paper mode until explicitly overridden.</p>
+              <p className="rt-section-title">Feature Flags</p>
+              <p className="text-xs text-[#8ba09f]">Safe defaults stay in paper mode until explicitly overridden.</p>
             </div>
             <Badge variant={status?.warnings?.length ? 'warning' : 'success'}>
               {status?.warnings?.length ? `${status.warnings.length} Warnings` : 'Healthy'}
@@ -192,9 +192,9 @@ export default function TradingSystem() {
 
           <div className="mt-5 grid gap-3 md:grid-cols-2">
             {Object.entries(status?.featureFlags || {}).map(([key, value]) => (
-              <div key={key} className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-3">
+              <div key={key} className="rt-panel px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-emerald-100/78">{formatFlagLabel(key)}</p>
+                  <p className="text-sm text-[#b8c8c7]">{formatFlagLabel(key)}</p>
                   <Badge variant={value ? 'success' : 'neutral'}>{value ? 'On' : 'Off'}</Badge>
                 </div>
               </div>
@@ -213,13 +213,13 @@ export default function TradingSystem() {
         </Card>
 
         <Card className="p-6">
-          <p className="text-sm font-semibold text-emerald-50">Risk Defaults</p>
-          <p className="text-xs text-emerald-100/45">Global account-level guardrails loaded from config and persisted overrides.</p>
+          <p className="rt-section-title">Risk Defaults</p>
+          <p className="text-xs text-[#8ba09f]">Global account-level guardrails loaded from config and persisted overrides.</p>
           <div className="mt-5 grid gap-3 sm:grid-cols-2">
             {Object.entries(status?.riskLimits || {}).map(([key, value]) => (
-              <div key={key} className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-3">
-                <p className="text-xs uppercase tracking-[0.16em] text-emerald-100/38">{formatFlagLabel(key)}</p>
-                <p className="mt-2 text-base font-semibold text-emerald-50">{String(value)}</p>
+              <div key={key} className="rt-panel px-4 py-3">
+                <p className="text-xs uppercase tracking-[0.16em] text-[#8ba09f]">{formatFlagLabel(key)}</p>
+                <p className="mt-2 text-base font-semibold text-[#edf5f4]">{String(value)}</p>
               </div>
             ))}
           </div>
@@ -229,16 +229,16 @@ export default function TradingSystem() {
       <Card className="p-6">
         <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
           <div>
-            <p className="text-sm font-semibold text-emerald-50">Strategy Registry</p>
-            <p className="text-xs text-emerald-100/45">Compatibility, allocation ceilings, and enabled state per module.</p>
+            <p className="rt-section-title">Strategy Registry</p>
+            <p className="text-xs text-[#8ba09f]">Compatibility, allocation ceilings, and enabled state per module.</p>
           </div>
-          <p className="text-xs text-emerald-100/38">{status?.strategyCount || 0} configured strategies</p>
+          <p className="text-xs text-[#8ba09f]">{status?.strategyCount || 0} configured strategies</p>
         </div>
         <div className="mt-5 grid gap-4 lg:grid-cols-2">
           {(status?.strategies || []).map(strategy => (
-            <div key={strategy.strategyId} className="rounded-2xl border border-emerald-900/55 bg-[#0d1712] px-5 py-4">
+            <div key={strategy.strategyId} className="rt-panel px-5 py-4">
               <div className="flex flex-wrap items-center gap-2">
-                <p className="text-base font-semibold text-emerald-50">{strategy.name}</p>
+                <p className="text-base font-semibold text-[#edf5f4]">{strategy.name}</p>
                 <Badge variant={strategy.enabled ? 'success' : 'neutral'}>
                   {strategy.enabled ? 'Enabled' : 'Disabled'}
                 </Badge>
@@ -249,22 +249,22 @@ export default function TradingSystem() {
                   {strategy.liveEligible ? 'Live Ready' : 'Live Off'}
                 </Badge>
               </div>
-              <p className="mt-3 text-sm text-emerald-100/64">{strategy.description}</p>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 text-sm text-emerald-100/72">
+              <p className="mt-3 text-sm text-[#a9b8b8]">{strategy.description}</p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 text-sm text-[#b8c8c7]">
                 <div>
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Strategy ID</p>
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Strategy ID</p>
                   <p className="mt-1 font-mono text-xs">{strategy.strategyId}</p>
                 </div>
                 <div>
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Max Allocation</p>
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Max Allocation</p>
                   <p className="mt-1">{strategy.maxAllocationPct}%</p>
                 </div>
                 <div>
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Regimes</p>
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Regimes</p>
                   <p className="mt-1">{(strategy.compatibleRegimes || []).join(', ') || '--'}</p>
                 </div>
                 <div>
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Asset Classes</p>
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Asset Classes</p>
                   <p className="mt-1">{(strategy.assetClasses || []).join(', ') || '--'}</p>
                 </div>
               </div>
@@ -277,41 +277,41 @@ export default function TradingSystem() {
         <Card className="p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-semibold text-emerald-50">Recent Strategy Runs</p>
-              <p className="text-xs text-emerald-100/45">Backtests and robo cycles with parameter-version linkage.</p>
+              <p className="rt-section-title">Recent Strategy Runs</p>
+              <p className="text-xs text-[#8ba09f]">Backtests and robo cycles with parameter-version linkage.</p>
             </div>
             <Badge variant="neutral">{strategyRuns.length} records</Badge>
           </div>
           <div className="mt-5 space-y-3">
             {!strategyRuns.length && (
-              <div className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4 text-sm text-emerald-100/55">
+              <div className="rt-panel px-4 py-4 text-sm text-[#8ba09f]">
                 No persisted strategy runs yet.
               </div>
             )}
             {strategyRuns.map(run => (
-              <div key={run._id || `${run.strategyId}-${run.startedAt}`} className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4">
+              <div key={run._id || `${run.strategyId}-${run.startedAt}`} className="rt-panel px-4 py-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-sm font-semibold text-emerald-50">{run.strategyName || run.strategyId}</p>
+                  <p className="text-sm font-semibold text-[#edf5f4]">{run.strategyName || run.strategyId}</p>
                   <Badge variant={getStatusVariant(run.status)}>{run.status}</Badge>
                   <Badge variant="neutral">{run.runType}</Badge>
                   <Badge variant="solid">{run.mode}</Badge>
                 </div>
-                <div className="mt-3 grid gap-3 md:grid-cols-3 text-sm text-emerald-100/70">
+                <div className="mt-3 grid gap-3 md:grid-cols-3 text-sm text-[#b8c8c7]">
                   <div>
-                    <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Symbol</p>
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Symbol</p>
                     <p className="mt-1">{run.symbol || '--'}</p>
                   </div>
                   <div>
-                    <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Started</p>
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Started</p>
                     <p className="mt-1">{formatDateTime(run.startedAt)}</p>
                   </div>
                   <div>
-                    <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Parameter Version</p>
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Parameter Version</p>
                     <p className="mt-1">{run.parameterVersionId?.version || '--'}</p>
                   </div>
                 </div>
                 {(run.summary?.reason || run.error) && (
-                  <p className="mt-3 text-xs text-emerald-100/52">
+                  <p className="mt-3 text-xs text-[#8ba09f]">
                     {run.summary?.reason || run.error}
                   </p>
                 )}
@@ -323,26 +323,26 @@ export default function TradingSystem() {
         <Card className="p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-semibold text-emerald-50">Parameter Versions</p>
-              <p className="text-xs text-emerald-100/45">Stable hashed configs for reproducible backtests and robo runs.</p>
+              <p className="rt-section-title">Parameter Versions</p>
+              <p className="text-xs text-[#8ba09f]">Stable hashed configs for reproducible backtests and robo runs.</p>
             </div>
             <Badge variant="neutral">{parameterVersions.length} versions</Badge>
           </div>
           <div className="mt-5 space-y-3">
             {!parameterVersions.length && (
-              <div className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4 text-sm text-emerald-100/55">
+              <div className="rt-panel px-4 py-4 text-sm text-[#8ba09f]">
                 No persisted parameter versions yet.
               </div>
             )}
             {parameterVersions.map(item => (
-              <div key={item._id || `${item.strategyId}-${item.version}`} className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4">
+              <div key={item._id || `${item.strategyId}-${item.version}`} className="rt-panel px-4 py-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-sm font-semibold text-emerald-50">{item.strategyId}</p>
+                  <p className="text-sm font-semibold text-[#edf5f4]">{item.strategyId}</p>
                   <Badge variant="solid">v{item.version}</Badge>
                   <Badge variant="neutral">{item.source}</Badge>
                 </div>
-                <p className="mt-2 break-all font-mono text-[11px] text-emerald-100/44">{item.parameterHash}</p>
-                <p className="mt-2 text-xs text-emerald-100/55">Created {formatDateTime(item.createdAt)}</p>
+                <p className="mt-2 break-all font-mono text-[11px] text-[#8ba09f]">{item.parameterHash}</p>
+                <p className="mt-2 text-xs text-[#8ba09f]">Created {formatDateTime(item.createdAt)}</p>
               </div>
             ))}
           </div>
@@ -352,8 +352,8 @@ export default function TradingSystem() {
       <Card className="p-6">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <p className="text-sm font-semibold text-emerald-50">Execution Telemetry</p>
-            <p className="text-xs text-emerald-100/45">Order intents, broker outcomes, and fills captured independently from paper-trade inference.</p>
+            <p className="rt-section-title">Execution Telemetry</p>
+            <p className="text-xs text-[#8ba09f]">Order intents, broker outcomes, and fills captured independently from paper-trade inference.</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Badge variant="neutral">Attempts {execution.summary?.attemptedOrders || 0}</Badge>
@@ -363,21 +363,21 @@ export default function TradingSystem() {
         </div>
 
         <div className="mt-5 grid gap-4 md:grid-cols-4">
-          <div className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4">
-            <p className="text-xs uppercase tracking-[0.16em] text-emerald-100/38">Reject Rate</p>
-            <p className="mt-3 text-xl font-semibold text-emerald-50">{formatPercent(execution.summary?.rejectRate || 0)}</p>
+          <div className="rt-metric">
+            <p className="rt-label">Reject Rate</p>
+            <p className="mt-3 text-xl font-semibold text-[#edf5f4]">{formatPercent(execution.summary?.rejectRate || 0)}</p>
           </div>
-          <div className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4">
-            <p className="text-xs uppercase tracking-[0.16em] text-emerald-100/38">Broker Orders</p>
-            <p className="mt-3 text-xl font-semibold text-emerald-50">{execution.orders.length}</p>
+          <div className="rt-metric">
+            <p className="rt-label">Broker Orders</p>
+            <p className="mt-3 text-xl font-semibold text-[#edf5f4]">{execution.orders.length}</p>
           </div>
-          <div className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4">
-            <p className="text-xs uppercase tracking-[0.16em] text-emerald-100/38">Fills</p>
-            <p className="mt-3 text-xl font-semibold text-emerald-50">{execution.fills.length}</p>
+          <div className="rt-metric">
+            <p className="rt-label">Fills</p>
+            <p className="mt-3 text-xl font-semibold text-[#edf5f4]">{execution.fills.length}</p>
           </div>
-          <div className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4">
-            <p className="text-xs uppercase tracking-[0.16em] text-emerald-100/38">Latest Fill</p>
-            <p className="mt-3 text-sm font-semibold text-emerald-50">
+          <div className="rt-metric">
+            <p className="rt-label">Latest Fill</p>
+            <p className="mt-3 text-sm font-semibold text-[#edf5f4]">
               {execution.fills[0] ? `${execution.fills[0].symbol} @ ${formatNumber(execution.fills[0].price)}` : '--'}
             </p>
           </div>
@@ -385,32 +385,32 @@ export default function TradingSystem() {
 
         <div className="mt-6 grid gap-6 xl:grid-cols-2">
           <div>
-            <p className="text-sm font-semibold text-emerald-50">Recent Orders</p>
+            <p className="rt-section-title">Recent Orders</p>
             <div className="mt-4 space-y-3">
               {!execution.orders.length && (
-                <div className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4 text-sm text-emerald-100/55">
+                <div className="rt-panel px-4 py-4 text-sm text-[#8ba09f]">
                   No broker-order telemetry yet.
                 </div>
               )}
               {execution.orders.map(order => (
-                <div key={order._id || `${order.symbol}-${order.submittedAt}`} className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4">
+                <div key={order._id || `${order.symbol}-${order.submittedAt}`} className="rt-panel px-4 py-4">
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm font-semibold text-emerald-50">{order.symbol}</p>
+                    <p className="text-sm font-semibold text-[#edf5f4]">{order.symbol}</p>
                     <Badge variant={getStatusVariant(order.status)}>{order.status}</Badge>
                     <Badge variant="neutral">{order.broker}</Badge>
                     <Badge variant="solid">{order.origin}</Badge>
                   </div>
-                  <div className="mt-3 grid gap-3 md:grid-cols-3 text-sm text-emerald-100/70">
+                  <div className="mt-3 grid gap-3 md:grid-cols-3 text-sm text-[#b8c8c7]">
                     <div>
-                      <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Qty</p>
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Qty</p>
                       <p className="mt-1">{order.qty}</p>
                     </div>
                     <div>
-                      <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Fill Price</p>
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Fill Price</p>
                       <p className="mt-1">{formatNumber(order.fillPrice)}</p>
                     </div>
                     <div>
-                      <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Submitted</p>
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Submitted</p>
                       <p className="mt-1">{formatDateTime(order.submittedAt)}</p>
                     </div>
                   </div>
@@ -423,31 +423,31 @@ export default function TradingSystem() {
           </div>
 
           <div>
-            <p className="text-sm font-semibold text-emerald-50">Recent Fills</p>
+            <p className="rt-section-title">Recent Fills</p>
             <div className="mt-4 space-y-3">
               {!execution.fills.length && (
-                <div className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4 text-sm text-emerald-100/55">
+                <div className="rt-panel px-4 py-4 text-sm text-[#8ba09f]">
                   No fill telemetry yet.
                 </div>
               )}
               {execution.fills.map(fill => (
-                <div key={fill._id || `${fill.symbol}-${fill.filledAt}`} className="rounded-xl border border-emerald-900/55 bg-[#0d1712] px-4 py-4">
+                <div key={fill._id || `${fill.symbol}-${fill.filledAt}`} className="rt-panel px-4 py-4">
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm font-semibold text-emerald-50">{fill.symbol}</p>
+                    <p className="text-sm font-semibold text-[#edf5f4]">{fill.symbol}</p>
                     <Badge variant="success">{fill.side}</Badge>
                     <Badge variant="neutral">{fill.strategyId || 'UNASSIGNED'}</Badge>
                   </div>
-                  <div className="mt-3 grid gap-3 md:grid-cols-3 text-sm text-emerald-100/70">
+                  <div className="mt-3 grid gap-3 md:grid-cols-3 text-sm text-[#b8c8c7]">
                     <div>
-                      <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Qty</p>
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Qty</p>
                       <p className="mt-1">{fill.qty}</p>
                     </div>
                     <div>
-                      <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Price</p>
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Price</p>
                       <p className="mt-1">{formatNumber(fill.price)}</p>
                     </div>
                     <div>
-                      <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-100/36">Filled</p>
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-[#8ba09f]">Filled</p>
                       <p className="mt-1">{formatDateTime(fill.filledAt)}</p>
                     </div>
                   </div>
