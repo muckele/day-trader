@@ -29,6 +29,31 @@ async function writeAudit(userId, eventType, payload, deps) {
   return deps.RoboAuditLog.create({ userId, eventType, payload: payload || {} });
 }
 
+async function applyAlpacaOrder(localOrder, alpacaOrder, deps) {
+  const mapped = mapAlpacaOrder(alpacaOrder);
+  Object.assign(localOrder, mapped, {
+    reconciliationStatus: 'matched',
+    discrepancy: null,
+    lastReconciledAt: new Date()
+  });
+  await localOrder.save();
+  await writeAudit(localOrder.userId, 'robotrader_order_status_changed', {
+    orderId: localOrder.externalOrderId,
+    clientOrderId: localOrder.clientOrderId,
+    status: localOrder.status
+  }, deps);
+}
+
+async function loadAlpacaOrderForLocal(localOrder, broker) {
+  if (localOrder.externalOrderId) {
+    return broker.getOrder(localOrder.externalOrderId);
+  }
+  if (localOrder.clientOrderId && typeof broker.getOrderByClientOrderId === 'function') {
+    return broker.getOrderByClientOrderId(localOrder.clientOrderId);
+  }
+  return null;
+}
+
 async function reconcileRoboOrders({
   mode = 'paper',
   limit = 100,
@@ -50,7 +75,7 @@ async function reconcileRoboOrders({
   const discrepancies = [];
 
   for (const localOrder of localOrders) {
-    if (!localOrder.externalOrderId) {
+    if (!localOrder.externalOrderId && !localOrder.clientOrderId) {
       localOrder.reconciliationStatus = 'missing_alpaca_confirmation';
       localOrder.discrepancy = 'Local RoboTradeOrder does not have an Alpaca order id.';
       localOrder.lastReconciledAt = new Date();
@@ -64,20 +89,24 @@ async function reconcileRoboOrders({
     }
 
     try {
-      const alpacaOrder = await broker.getOrder(localOrder.externalOrderId);
-      const mapped = mapAlpacaOrder(alpacaOrder);
-      Object.assign(localOrder, mapped, {
-        reconciliationStatus: 'matched',
-        discrepancy: null,
-        lastReconciledAt: new Date()
-      });
-      await localOrder.save();
+      const alpacaOrder = await loadAlpacaOrderForLocal(localOrder, broker);
+      if (!alpacaOrder) {
+        localOrder.reconciliationStatus = 'missing_alpaca_confirmation';
+        localOrder.discrepancy = localOrder.clientOrderId
+          ? 'Local RoboTradeOrder has a client_order_id but could not be looked up by client_order_id.'
+          : 'Local RoboTradeOrder does not have an Alpaca order id.';
+        localOrder.lastReconciledAt = new Date();
+        await localOrder.save();
+        discrepancies.push({ type: 'missing_alpaca_confirmation', localOrderId: String(localOrder._id) });
+        await writeAudit(localOrder.userId, 'robotrader_reconciliation_discrepancy', {
+          type: 'missing_alpaca_confirmation',
+          localOrderId: String(localOrder._id),
+          clientOrderId: localOrder.clientOrderId || null
+        }, deps);
+        continue;
+      }
+      await applyAlpacaOrder(localOrder, alpacaOrder, deps);
       updated.push(String(localOrder._id));
-      await writeAudit(localOrder.userId, 'robotrader_order_status_changed', {
-        orderId: localOrder.externalOrderId,
-        clientOrderId: localOrder.clientOrderId,
-        status: localOrder.status
-      }, deps);
     } catch (err) {
       localOrder.reconciliationStatus = 'alpaca_lookup_failed';
       localOrder.discrepancy = err?.message || 'Alpaca order lookup failed.';

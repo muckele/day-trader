@@ -53,6 +53,59 @@ test('robotrader reconciliation updates local order status from Alpaca', async (
   assert.equal(auditEvents[0].eventType, 'robotrader_order_status_changed');
 });
 
+test('robotrader reconciliation can recover orders by client order id', async () => {
+  const saved = [];
+  const localOrder = {
+    _id: 'local-order-client-1',
+    userId: 'user-1',
+    environment: 'paper',
+    externalOrderId: null,
+    clientOrderId: 'daytrader-robotrader-AAPL-fixed',
+    status: 'pending_submit',
+    save: async function save() {
+      saved.push({
+        externalOrderId: this.externalOrderId,
+        status: this.status,
+        reconciliationStatus: this.reconciliationStatus
+      });
+      return this;
+    }
+  };
+  const deps = {
+    RoboTradeOrder: {
+      find: () => ({
+        sort: () => ({
+          limit: async () => [localOrder]
+        })
+      }),
+      findOne: async () => ({ _id: 'local-order-client-1' }),
+      create: async payload => payload
+    },
+    RoboAuditLog: {
+      create: async payload => payload
+    },
+    createAlpacaBroker: () => ({
+      getOrder: async () => {
+        throw new Error('should use client order lookup');
+      },
+      getOrderByClientOrderId: async clientOrderId => ({
+        id: 'alpaca-order-by-client-1',
+        client_order_id: clientOrderId,
+        status: 'accepted',
+        submitted_at: '2026-05-20T12:00:00.000Z'
+      }),
+      listOrders: async () => []
+    })
+  };
+
+  const result = await reconcileRoboOrders({ mode: 'paper' }, deps);
+
+  assert.equal(result.updatedCount, 1);
+  assert.equal(saved[0].externalOrderId, 'alpaca-order-by-client-1');
+  assert.equal(saved[0].status, 'accepted');
+  assert.equal(saved[0].reconciliationStatus, 'matched');
+});
+
 test('robotrader reconciliation scopes local orders by user and does not create unattributed orphans for user runs', async () => {
   let localOrderQuery = null;
   let orphanCreateAttempted = false;

@@ -163,6 +163,9 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
     getPositions: () => request('get', '/v2/positions'),
     listOrders: (params = {}) => request('get', '/v2/orders', null, { params }),
     getOrder: orderId => request('get', `/v2/orders/${orderId}`),
+    getOrderByClientOrderId: clientOrderId => request('get', '/v2/orders:by_client_order_id', null, {
+      params: { client_order_id: clientOrderId }
+    }),
     cancelOrder: orderId => request('delete', `/v2/orders/${orderId}`),
     cancelAllOrders: () => request('delete', '/v2/orders'),
     replaceOrder: (orderId, payload) => request('patch', `/v2/orders/${orderId}`, sanitizeReplacementPayload(payload)),

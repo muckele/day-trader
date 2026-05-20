@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { mapSettings } = require('../robotrader/settingsService');
 const {
   adaptOrderForMarketSession,
+  isAmbiguousSubmitError,
   previewRoboTraderForUser,
   resolveWorkerLockTtlMs,
   runRoboTraderForUser,
@@ -80,6 +81,8 @@ function createDeps({ approved = true } = {}) {
     }),
     mapSettings,
     updateRoboTraderSettings: async () => ({ isEnabled: false, enabled: false }),
+    buildClientOrderId: () => 'daytrader-robotrader-AAPL-fixed',
+    isAmbiguousSubmitError,
     buildResearchBatch: async () => [{
       symbol: 'AAPL',
       assetClass: 'stocks',
@@ -122,10 +125,10 @@ function createDeps({ approved = true } = {}) {
       submitOrder: async input => {
         brokerSubmissions.push(input);
         return {
-          payload: { client_order_id: 'robotrader-client-1' },
+          payload: { client_order_id: input.clientOrderId },
           order: {
             id: 'alpaca-order-1',
-            client_order_id: 'robotrader-client-1',
+            client_order_id: input.clientOrderId,
             status: 'accepted',
             submitted_at: '2026-05-19T00:00:00.000Z'
           }
@@ -144,7 +147,62 @@ test('robotrader worker saves approved decisions and submitted orders', async ()
   assert.equal(context.createdDecisions.length, 1);
   assert.equal(context.createdOrders.length, 1);
   assert.equal(context.createdOrders[0].externalOrderId, 'alpaca-order-1');
+  assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
   assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(context.brokerSubmissions[0].clientOrderId, context.createdOrders[0].clientOrderId);
+});
+
+test('robotrader worker keeps failed submissions reconcilable by client order id', async () => {
+  const context = createDeps({ approved: true });
+  context.deps.createAlpacaBroker = () => ({
+    getAccount: async () => ({ buying_power: '10000', equity: '10000', last_equity: '10000', status: 'ACTIVE' }),
+    getClock: async () => ({ is_open: true }),
+    getPositions: async () => [],
+    listOrders: async () => [],
+    submitOrder: async input => {
+      context.brokerSubmissions.push(input);
+      throw new Error('network timeout after submit');
+    }
+  });
+
+  const result = await runRoboTraderForUser({ userId: 'user-worker', modeOverride: 'paper', runOnce: true }, context.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(context.createdOrders.length, 1);
+  assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
+  assert.equal(context.createdOrders[0].status, 'pending_submit');
+  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_error_pending_reconciliation');
+  assert.equal(context.createdDecisions[0].status, 'error');
+  assert.equal(context.brokerSubmissions[0].clientOrderId, context.createdOrders[0].clientOrderId);
+  assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_order_submit_uncertain'), true);
+});
+
+test('robotrader worker marks explicit broker rejections terminal', async () => {
+  const context = createDeps({ approved: true });
+  const rejected = new Error('Alpaca order failed: insufficient buying power');
+  rejected.status = 422;
+  context.deps.createAlpacaBroker = () => ({
+    getAccount: async () => ({ buying_power: '10000', equity: '10000', last_equity: '10000', status: 'ACTIVE' }),
+    getClock: async () => ({ is_open: true }),
+    getPositions: async () => [],
+    listOrders: async () => [],
+    submitOrder: async input => {
+      context.brokerSubmissions.push(input);
+      throw rejected;
+    }
+  });
+
+  const result = await runRoboTraderForUser({ userId: 'user-worker', modeOverride: 'paper', runOnce: true }, context.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(context.createdOrders.length, 1);
+  assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
+  assert.equal(context.createdOrders[0].status, 'rejected');
+  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_rejected');
+  assert.ok(context.createdOrders[0].rejectedAt);
+  assert.equal(context.createdDecisions[0].status, 'rejected');
+  assert.equal(context.brokerSubmissions[0].clientOrderId, context.createdOrders[0].clientOrderId);
+  assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_order_rejected'), true);
 });
 
 test('robotrader paper preview evaluates without saving or submitting orders', async () => {

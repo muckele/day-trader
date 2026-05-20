@@ -5,6 +5,7 @@ const RoboAuditLog = require('../models/RoboAuditLog');
 const RoboLock = require('../models/RoboLock');
 const { getRecommendationUniverse } = require('../config/tradingConfig');
 const { isCryptoSymbol } = require('../services/marketData');
+const { buildClientOrderId } = require('../services/alpacaTradingClient');
 const {
   getOrCreateRoboTraderSettings,
   mapSettings,
@@ -50,6 +51,30 @@ function buildDecisionIdempotencyKey({ userId, symbol, strategyId, now }) {
     String(strategyId || 'NO_STRATEGY'),
     minuteBucket(now)
   ].join(':');
+}
+
+function getSubmitErrorStatus(err = {}) {
+  const status = Number(err.status ?? err.response?.status ?? err.response?.statusCode);
+  return Number.isFinite(status) ? status : null;
+}
+
+function isDuplicateClientOrderIdError(err = {}) {
+  const message = String(
+    err.response?.data?.message
+    || err.response?.data?.error
+    || err.message
+    || ''
+  ).toLowerCase();
+  return /client[_\s-]?order[_\s-]?id/.test(message)
+    && /(already|duplicate|exists|in use)/.test(message);
+}
+
+function isAmbiguousSubmitError(err = {}) {
+  if (isDuplicateClientOrderIdError(err)) return true;
+  const status = getSubmitErrorStatus(err);
+  if (status !== null) return status === 408 || status >= 500;
+  const code = String(err.code || '').toUpperCase();
+  return !code || ['ECONNABORTED', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE'].includes(code);
 }
 
 function normalizeAlpacaPosition(position = {}) {
@@ -401,6 +426,11 @@ async function submitApprovedOrder({
   now,
   deps
 }) {
+  const clientOrderId = orderInput.clientOrderId || orderInput.client_order_id || deps.buildClientOrderId({
+    origin: 'robotrader',
+    symbol: orderInput.symbol,
+    now
+  });
   const pendingOrder = await deps.RoboTradeOrder.create({
     userId,
     accountId: 'default',
@@ -420,6 +450,7 @@ async function submitApprovedOrder({
     trailPercent: orderInput.trailPercent,
     takeProfit: orderInput.takeProfit,
     stopLoss: orderInput.stopLoss,
+    clientOrderId,
     status: 'pending_submit',
     reasoningSummary: decisionDoc.reasoningSummary,
     strategyId: decisionDoc.strategyId,
@@ -429,11 +460,11 @@ async function submitApprovedOrder({
   try {
     const result = await broker.submitOrder({
       ...orderInput,
-      clientOrderId: pendingOrder.clientOrderId || undefined
+      clientOrderId: pendingOrder.clientOrderId
     });
     const order = result.order || {};
     pendingOrder.externalOrderId = order.id || null;
-    pendingOrder.clientOrderId = order.client_order_id || result.payload?.client_order_id || null;
+    pendingOrder.clientOrderId = order.client_order_id || result.payload?.client_order_id || pendingOrder.clientOrderId;
     pendingOrder.status = order.status || 'submitted';
     pendingOrder.rawPayload = result.payload || {};
     pendingOrder.alpacaResponse = order;
@@ -457,19 +488,26 @@ async function submitApprovedOrder({
     }, deps);
     return pendingOrder;
   } catch (err) {
-    pendingOrder.status = 'rejected';
-    pendingOrder.rejectedAt = now;
+    const ambiguousSubmit = deps.isAmbiguousSubmitError(err);
+    pendingOrder.status = ambiguousSubmit ? 'pending_submit' : 'rejected';
+    pendingOrder.reconciliationStatus = ambiguousSubmit
+      ? 'submit_error_pending_reconciliation'
+      : 'submit_rejected';
+    if (!ambiguousSubmit) pendingOrder.rejectedAt = now;
     pendingOrder.discrepancy = err?.message || 'Alpaca order submission failed.';
     await pendingOrder.save();
 
-    decisionDoc.status = 'error';
+    decisionDoc.status = ambiguousSubmit ? 'error' : 'rejected';
     decisionDoc.error = err?.message || 'Alpaca order submission failed.';
     await decisionDoc.save();
 
-    await writeAudit(userId, 'robotrader_order_rejected', {
+    await writeAudit(userId, ambiguousSubmit ? 'robotrader_order_submit_uncertain' : 'robotrader_order_rejected', {
       decisionId: String(decisionDoc._id),
+      clientOrderId: pendingOrder.clientOrderId,
       symbol: pendingOrder.symbol,
       reason: err?.message || 'Alpaca order submission failed.',
+      status: getSubmitErrorStatus(err),
+      ambiguousSubmit,
       environment
     }, deps);
     return pendingOrder;
@@ -893,9 +931,11 @@ const defaultDeps = {
   acquireWorkerLock,
   adaptOrderForMarketSession,
   buildResearchBatch,
+  buildClientOrderId,
   createAlpacaBroker,
   evaluateResearchBatch,
   evaluateRoboRisk,
+  isAmbiguousSubmitError,
   getOrCreateRoboTraderSettings,
   mapSettings,
   refreshWorkerLock,
@@ -908,6 +948,8 @@ module.exports = {
   buildDecisionIdempotencyKey,
   buildRunId,
   buildSymbolUniverse,
+  getSubmitErrorStatus,
+  isAmbiguousSubmitError,
   acquireWorkerLock,
   adaptOrderForMarketSession,
   emergencyStop,
