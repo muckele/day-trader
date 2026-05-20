@@ -1,7 +1,10 @@
 const roboEngine = require('./roboTraderEngine');
 const mongoose = require('mongoose');
 const roboTraderWorker = require('../robotrader/worker');
-const { reconcileRoboOrders } = require('../robotrader/reconciliation');
+const roboReconciliation = require('../robotrader/reconciliation');
+const RoboSettings = require('../models/RoboSettings');
+const { getAlpacaConfigForMode } = require('../robotrader/alpacaBroker');
+const { isPaperTradingEndpoint } = require('./alpacaTradingClient');
 
 const schedulerState = {
   enabled: true,
@@ -39,6 +42,19 @@ function isEnvTrue(value) {
   return String(value || '').trim().toLowerCase() === 'true';
 }
 
+function hasValue(value) {
+  return String(value || '').trim() !== '';
+}
+
+function hasLiveAlpacaConfig(env = process.env) {
+  const hasExplicitLiveKey = hasValue(env.APCA_LIVE_API_KEY_ID) || hasValue(env.ALPACA_LIVE_API_KEY);
+  const hasExplicitLiveSecret = hasValue(env.APCA_LIVE_API_SECRET_KEY) || hasValue(env.ALPACA_LIVE_API_SECRET);
+  if (!hasExplicitLiveKey || !hasExplicitLiveSecret) return false;
+
+  const config = getAlpacaConfigForMode('live', env);
+  return Boolean(config.apiKey && config.apiSecret && !isPaperTradingEndpoint(config.baseUrl));
+}
+
 function isPhase1WorkerEnabled() {
   return !isEnvTrue(process.env.ROBOTRADER_WORKER_DISABLED);
 }
@@ -51,6 +67,30 @@ function isLegacySchedulerEnabled() {
   const dualAutomationAllowed = isEnvTrue(process.env.ROBO_ALLOW_DUAL_AUTOMATION);
 
   return legacyExplicitlyEnabled && (!phase1Enabled || dualAutomationAllowed);
+}
+
+async function isLiveReconciliationEnabled({
+  env = process.env,
+  RoboSettingsModel = RoboSettings
+} = {}) {
+  if (isEnvTrue(env.ROBOTRADER_LIVE_RECONCILIATION_DISABLED)) return false;
+  if (!hasLiveAlpacaConfig(env)) return false;
+  if (isEnvTrue(env.ROBOTRADER_LIVE_RECONCILIATION_ENABLED)) return true;
+
+  const query = RoboSettingsModel.exists({
+    mode: 'live',
+    liveTradingExplicitlyEnabled: true
+  });
+  const result = typeof query?.lean === 'function'
+    ? await query.lean()
+    : await query;
+  return Boolean(result);
+}
+
+async function getScheduledReconciliationModes(options = {}) {
+  const modes = ['paper'];
+  if (await isLiveReconciliationEnabled(options)) modes.push('live');
+  return modes;
 }
 
 function startRoboScheduler({
@@ -138,7 +178,20 @@ function startRoboScheduler({
         lastReconciliationAt = nowMs;
         schedulerState.lastReconciliationAt = new Date(nowMs);
         try {
-          await reconcileRoboOrders({ mode: 'paper' });
+          let reconciliationModes = ['paper'];
+          try {
+            reconciliationModes = await getScheduledReconciliationModes();
+          } catch (err) {
+            console.error('RoboTrader live reconciliation gate failed:', err.message);
+          }
+
+          for (const mode of reconciliationModes) {
+            try {
+              await roboReconciliation.reconcileRoboOrders({ mode });
+            } catch (err) {
+              console.error(`RoboTrader ${mode} reconciliation failed:`, err.message);
+            }
+          }
         } catch (err) {
           console.error('RoboTrader reconciliation failed:', err.message);
         }
@@ -188,6 +241,9 @@ function getSchedulerStatus() {
 module.exports = {
   startRoboScheduler,
   getSchedulerStatus,
+  hasLiveAlpacaConfig,
   isLegacySchedulerEnabled,
-  isPhase1WorkerEnabled
+  isPhase1WorkerEnabled,
+  isLiveReconciliationEnabled,
+  getScheduledReconciliationModes
 };

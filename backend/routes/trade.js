@@ -4,12 +4,15 @@ const router = require('express').Router();
 const auth   = require('../middleware/auth'); // your JWT middleware
 const requireMongo = require('../middleware/requireMongo');
 const paperBroker = require('../paper/paperBrokerClient');
+const { getRequestAccountId } = require('../utils/accountScope');
 
 // POST /api/trade/execute
 router.post('/execute', auth, requireMongo, async (req, res, next) => {
+  const accountId = getRequestAccountId(req);
   try {
     const payload = req.body || {};
     const result = await paperBroker.placeOrder({
+      accountId,
       symbol: payload.symbol,
       side: payload.side,
       qty: payload.qty,
@@ -38,6 +41,7 @@ router.post('/execute', auth, requireMongo, async (req, res, next) => {
     const payload = req.body || {};
     await paperBroker.recordRejectedOrder({
       ...payload,
+      accountId,
       origin: 'manual',
       metadata: {
         ...(payload.metadata || {}),

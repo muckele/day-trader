@@ -292,7 +292,7 @@ app.post('/api/login', requireMongo, async (req, res, next) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
     const token = jwt.sign(
-      { username: user.username },
+      { sub: String(user._id), userId: String(user._id), username: user.username },
       process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );

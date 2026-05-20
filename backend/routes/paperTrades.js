@@ -2,11 +2,13 @@ const router = require('express').Router();
 const auth = require('../middleware/auth');
 const requireMongo = require('../middleware/requireMongo');
 const paperBroker = require('../paper/paperBrokerClient');
+const { getRequestAccountId } = require('../utils/accountScope');
 
 router.use(requireMongo);
 router.use(auth);
 
 router.post('/order', async (req, res) => {
+  const accountId = getRequestAccountId(req);
   try {
     const {
       symbol,
@@ -31,6 +33,7 @@ router.post('/order', async (req, res) => {
     } = req.body || {};
     const resolvedOrigin = origin || (strategyId ? 'trade_plan' : 'manual');
     const result = await paperBroker.placeOrder({
+      accountId,
       symbol,
       side,
       qty,
@@ -57,6 +60,7 @@ router.post('/order', async (req, res) => {
     if (!err.paperOrderRecorded) {
       await paperBroker.recordRejectedOrder({
         ...payload,
+        accountId,
         origin: payload.origin || (payload.strategyId ? 'trade_plan' : 'manual'),
         metadata: payload.metadata || {}
       }, err.message).catch(() => {});
@@ -71,7 +75,7 @@ router.post('/order', async (req, res) => {
 
 router.get('/account', async (req, res, next) => {
   try {
-    const account = await paperBroker.getAccount();
+    const account = await paperBroker.getAccount({ accountId: getRequestAccountId(req) });
     res.json(account);
   } catch (err) {
     next(err);
@@ -80,7 +84,7 @@ router.get('/account', async (req, res, next) => {
 
 router.get('/positions', async (req, res, next) => {
   try {
-    const positions = await paperBroker.getPositions();
+    const positions = await paperBroker.getPositions({ accountId: getRequestAccountId(req) });
     res.json(positions);
   } catch (err) {
     next(err);
@@ -89,7 +93,7 @@ router.get('/positions', async (req, res, next) => {
 
 router.get('/orders', async (req, res, next) => {
   try {
-    const orders = await paperBroker.getOrders();
+    const orders = await paperBroker.getOrders({ accountId: getRequestAccountId(req) });
     res.json(orders);
   } catch (err) {
     next(err);
@@ -98,7 +102,7 @@ router.get('/orders', async (req, res, next) => {
 
 router.get('/trades', async (req, res, next) => {
   try {
-    const trades = await paperBroker.getTrades();
+    const trades = await paperBroker.getTrades({ accountId: getRequestAccountId(req) });
     res.json(trades);
   } catch (err) {
     next(err);
@@ -107,7 +111,7 @@ router.get('/trades', async (req, res, next) => {
 
 router.get('/equity', async (req, res, next) => {
   try {
-    const equity = await paperBroker.getEquityCurve();
+    const equity = await paperBroker.getEquityCurve({ accountId: getRequestAccountId(req) });
     res.json(equity);
   } catch (err) {
     next(err);
@@ -116,7 +120,7 @@ router.get('/equity', async (req, res, next) => {
 
 router.get('/settings', async (req, res, next) => {
   try {
-    const settings = await paperBroker.getSettings();
+    const settings = await paperBroker.getSettings({ accountId: getRequestAccountId(req) });
     res.json(settings);
   } catch (err) {
     next(err);
@@ -125,7 +129,7 @@ router.get('/settings', async (req, res, next) => {
 
 router.put('/settings', async (req, res, next) => {
   try {
-    const settings = await paperBroker.updateSettings(req.body || {});
+    const settings = await paperBroker.updateSettings(req.body || {}, { accountId: getRequestAccountId(req) });
     res.json(settings);
   } catch (err) {
     next(err);

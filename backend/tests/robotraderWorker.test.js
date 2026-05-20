@@ -279,6 +279,55 @@ test('robotrader worker blocks live mode before broker access without explicit o
   assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_live_blocked'), true);
 });
 
+test('robotrader worker scopes recent orders to the active live environment', async () => {
+  const context = createDeps({ approved: true });
+  const findQueries = [];
+  context.deps.RoboTradeOrder.find = query => {
+    findQueries.push(query);
+    return chain([]);
+  };
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    mode: 'live',
+    liveTradingExplicitlyEnabled: true,
+    allowedAssetClasses: ['stocks'],
+    allowedSymbols: ['AAPL'],
+    blockedSymbols: [],
+    maxTradeAmount: 1000,
+    maxPositionSize: 5000,
+    maxDailyLoss: 500,
+    maxOpenPositions: 5,
+    maxTradesPerDay: 3,
+    allowFractionalShares: true,
+    riskLevel: 'balanced'
+  });
+
+  const result = await runRoboTraderForUser({ userId: 'user-worker', modeOverride: 'live', runOnce: true }, context.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(findQueries.length, 1);
+  assert.equal(findQueries[0].userId, 'user-worker');
+  assert.equal(findQueries[0].environment, 'live');
+});
+
+test('robotrader paper preview scopes recent orders to paper environment', async () => {
+  const context = createDeps({ approved: true });
+  const findQueries = [];
+  context.deps.RoboTradeOrder.find = query => {
+    findQueries.push(query);
+    return chain([]);
+  };
+
+  const result = await previewRoboTraderForUser({ userId: 'user-worker', modeOverride: 'paper' }, context.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(findQueries.length, 1);
+  assert.equal(findQueries[0].userId, 'user-worker');
+  assert.equal(findQueries[0].environment, 'paper');
+});
+
 test('robotrader emergency stop cancels only locally owned open orders', async () => {
   const context = createDeps({ approved: true });
   const findQueries = [];

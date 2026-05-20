@@ -1,12 +1,13 @@
 const router = require('express').Router();
+const auth = require('../middleware/auth');
 const requireMongo = require('../middleware/requireMongo');
 const PaperJournalEntry = require('../models/PaperJournalEntry');
 const PaperTrade = require('../models/PaperTrade');
 const { parseRange } = require('../analytics/analyticsUtils');
-
-const ACCOUNT_ID = 'default';
+const { getRequestAccountId } = require('../utils/accountScope');
 
 router.use(requireMongo);
+router.use(auth);
 
 function parseTags(tags) {
   if (Array.isArray(tags)) return tags;
@@ -21,8 +22,9 @@ function parseTags(tags) {
 
 router.get('/:tradeId', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const entry = await PaperJournalEntry.findOne({
-      accountId: ACCOUNT_ID,
+      accountId,
       tradeId: req.params.tradeId
     }).lean();
     res.json(entry || null);
@@ -33,6 +35,7 @@ router.get('/:tradeId', async (req, res, next) => {
 
 router.put('/:tradeId', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const payload = {
       thesis: req.body?.thesis || '',
       plan: req.body?.plan || '',
@@ -44,7 +47,7 @@ router.put('/:tradeId', async (req, res, next) => {
     };
 
     const entry = await PaperJournalEntry.findOneAndUpdate(
-      { accountId: ACCOUNT_ID, tradeId: req.params.tradeId },
+      { accountId, tradeId: req.params.tradeId },
       { $set: payload },
       { new: true, upsert: true }
     );
@@ -56,16 +59,17 @@ router.put('/:tradeId', async (req, res, next) => {
 
 router.get('/', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const { range = '30d', symbol = '', strategyId = '', tag = '', search = '' } = req.query;
     const startDate = parseRange(range);
-    const tradeQuery = { accountId: ACCOUNT_ID };
+    const tradeQuery = { accountId };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
     if (symbol) tradeQuery.symbol = symbol.toUpperCase();
     if (strategyId) tradeQuery.strategyId = strategyId;
 
     const trades = await PaperTrade.find(tradeQuery).sort({ filledAt: -1 }).lean();
     const tradeIds = trades.map(trade => trade._id);
-    const journalQuery = { accountId: ACCOUNT_ID, tradeId: { $in: tradeIds } };
+    const journalQuery = { accountId, tradeId: { $in: tradeIds } };
 
     if (tag) journalQuery.tags = tag;
     if (search) {

@@ -128,15 +128,16 @@ async function recordRejectedExecution({ request, rejectedReason = 'Order reject
   }
 }
 
-async function listRecentExecution({ limit = 25 } = {}) {
+async function listRecentExecution({ limit = 25, accountId = null } = {}) {
   if (!mongoState.isMongoReady()) {
     return { orders: [], fills: [] };
   }
   try {
     const cap = Math.min(Math.max(Number(limit) || 25, 1), 100);
+    const query = accountId ? { accountId } : {};
     const [orders, fills] = await Promise.all([
-      BrokerOrder.find({}).sort({ submittedAt: -1 }).limit(cap).lean(),
-      Fill.find({}).sort({ filledAt: -1 }).limit(cap).lean()
+      BrokerOrder.find(query).sort({ submittedAt: -1 }).limit(cap).lean(),
+      Fill.find(query).sort({ filledAt: -1 }).limit(cap).lean()
     ]);
     return { orders, fills };
   } catch (_err) {

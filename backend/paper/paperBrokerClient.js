@@ -37,7 +37,12 @@ const {
 const ACCOUNT_ID = 'default';
 const MAX_EQUITY_QTY_DECIMALS = 6;
 const MAX_CRYPTO_QTY_DECIMALS = 8;
-let activeOpenOrderReconciliation = null;
+const activeOpenOrderReconciliations = new Map();
+
+function normalizePaperAccountId(accountId = ACCOUNT_ID) {
+  const normalized = String(accountId || '').trim();
+  return normalized || ACCOUNT_ID;
+}
 
 function getDecimalPlaces(value) {
   const text = String(value);
@@ -285,13 +290,14 @@ function getAlpacaFillPrice(order = {}, fallback = null) {
   return Number.isFinite(filledAvgPrice) && filledAvgPrice > 0 ? filledAvgPrice : fallback;
 }
 
-async function getSettings() {
-  const existing = await PaperSettings.findOne({ accountId: ACCOUNT_ID });
+async function getSettings({ accountId = ACCOUNT_ID } = {}) {
+  const scopedAccountId = normalizePaperAccountId(accountId);
+  const existing = await PaperSettings.findOne({ accountId: scopedAccountId });
   if (existing) return existing;
-  return PaperSettings.create({ accountId: ACCOUNT_ID });
+  return PaperSettings.create({ accountId: scopedAccountId });
 }
 
-async function updateSettings(updates) {
+async function updateSettings(updates, { accountId = ACCOUNT_ID } = {}) {
   const allowed = [
     'startingCash',
     'slippageBps',
@@ -320,7 +326,7 @@ async function updateSettings(updates) {
     }
   });
 
-  const settings = await getSettings();
+  const settings = await getSettings({ accountId });
   Object.assign(settings, filtered);
   await settings.save();
   return settings;
@@ -329,6 +335,7 @@ async function updateSettings(updates) {
 async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
   now = new Date()
 } = {}) {
+  const accountId = normalizePaperAccountId(order.accountId);
   const filledQty = getAlpacaFilledQty(brokerOrder, order.qty);
   const fillPrice = getAlpacaFillPrice(brokerOrder, order.fillPrice || order.estimatedPrice);
   if (!Number.isFinite(filledQty) || filledQty <= 0 || !Number.isFinite(fillPrice) || fillPrice <= 0) {
@@ -337,7 +344,7 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
 
   const filledAt = brokerOrder.filled_at ? new Date(brokerOrder.filled_at) : now;
   const brokerOrderStatus = brokerOrder.status || order.brokerOrderStatus || null;
-  const existingTrade = await PaperTrade.findOne({ orderId: order._id });
+  const existingTrade = await PaperTrade.findOne({ accountId, orderId: order._id });
   if (existingTrade) {
     const sameQty = Math.abs(Number(existingTrade.qty || 0) - filledQty) < 1e-9;
     const samePrice = Math.abs(Number(existingTrade.price || 0) - fillPrice) < 1e-9;
@@ -345,9 +352,9 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
     if (sameQty && samePrice && sameStatus) return existingTrade;
   }
 
-  const settings = await getSettings();
+  const settings = await getSettings({ accountId });
   const tradeQuery = {
-    accountId: ACCOUNT_ID,
+    accountId,
     filledAt: { $lte: filledAt }
   };
   if (existingTrade?._id) {
@@ -383,7 +390,7 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
   const notional = Number((filledQty * fillPrice).toFixed(2));
 
   const tradePayload = {
-    accountId: ACCOUNT_ID,
+    accountId,
     broker: 'alpaca',
     externalOrderId: brokerOrder.id || order.externalOrderId || null,
     clientOrderId: brokerOrder.client_order_id || order.clientOrderId || null,
@@ -436,16 +443,17 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
       createdTrade = true;
     } catch (err) {
       if (isDuplicateKeyError(err)) {
-        return PaperTrade.findOne({ orderId: order._id });
+        return PaperTrade.findOne({ accountId, orderId: order._id });
       }
       throw err;
     }
   }
 
-  const hasAttachedOrders = await PaperOrder.exists({ parentOrderId: order._id });
+  const hasAttachedOrders = await PaperOrder.exists({ accountId, parentOrderId: order._id });
   if (!hasAttachedOrders) {
     await createAttachedExitOrders({
       parentOrder: order,
+      accountId,
       now: filledAt,
       side: order.side,
       qty: filledQty,
@@ -464,12 +472,12 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
     });
   } else {
     await PaperOrder.updateMany(
-      { parentOrderId: order._id, status: 'open' },
+      { accountId, parentOrderId: order._id, status: 'open' },
       { $set: { qty: filledQty } }
     );
   }
 
-  const tradePlanId = trade.tradePlanId ? null : await linkTradeToPlan(trade, ACCOUNT_ID);
+  const tradePlanId = trade.tradePlanId ? null : await linkTradeToPlan(trade, accountId);
   if (tradePlanId) {
     trade.tradePlanId = tradePlanId;
     await trade.save();
@@ -486,9 +494,9 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
     await settings.save();
   }
 
-  const updatedAccount = await getAccount({ reconcile: false });
+  const updatedAccount = await getAccount({ reconcile: false, accountId });
   await PaperEquity.create({
-    accountId: ACCOUNT_ID,
+    accountId,
     timestamp: filledAt,
     equity: updatedAccount.equity,
     cash: updatedAccount.cash,
@@ -502,7 +510,7 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
       broker: 'alpaca',
       origin: order.origin || order.setupType || 'manual',
       request: {
-        accountId: ACCOUNT_ID,
+        accountId,
         origin: order.origin || 'manual',
         broker: 'paper',
         symbol: order.symbol,
@@ -579,10 +587,12 @@ async function reconcileAlpacaPaperOrder(order, {
 async function runOpenAlpacaPaperOrderReconciliation({
   limit = 50,
   now = new Date(),
-  readOrder = readAlpacaPaperOrder
+  readOrder = readAlpacaPaperOrder,
+  accountId = ACCOUNT_ID
 } = {}) {
+  const scopedAccountId = normalizePaperAccountId(accountId);
   const orders = await PaperOrder.find({
-    accountId: ACCOUNT_ID,
+    accountId: scopedAccountId,
     broker: 'alpaca',
     status: 'open',
     externalOrderId: { $nin: [null, ''] }
@@ -612,32 +622,39 @@ async function runOpenAlpacaPaperOrderReconciliation({
 }
 
 async function reconcileOpenAlpacaPaperOrders(options = {}) {
-  if (activeOpenOrderReconciliation) return activeOpenOrderReconciliation;
-  activeOpenOrderReconciliation = runOpenAlpacaPaperOrderReconciliation(options)
+  const accountId = normalizePaperAccountId(options.accountId);
+  if (activeOpenOrderReconciliations.has(accountId)) {
+    return activeOpenOrderReconciliations.get(accountId);
+  }
+  const reconciliation = runOpenAlpacaPaperOrderReconciliation({ ...options, accountId })
     .finally(() => {
-      activeOpenOrderReconciliation = null;
+      activeOpenOrderReconciliations.delete(accountId);
     });
-  return activeOpenOrderReconciliation;
+  activeOpenOrderReconciliations.set(accountId, reconciliation);
+  return reconciliation;
 }
 
-async function maybeReconcileOpenAlpacaPaperOrders(reconcile = true) {
+async function maybeReconcileOpenAlpacaPaperOrders(reconcile = true, accountId = ACCOUNT_ID) {
   if (!reconcile) return null;
-  return reconcileOpenAlpacaPaperOrders().catch(() => null);
+  return reconcileOpenAlpacaPaperOrders({ accountId }).catch(() => null);
 }
 
-async function getTrades({ reconcile = true } = {}) {
-  await maybeReconcileOpenAlpacaPaperOrders(reconcile);
-  return PaperTrade.find({ accountId: ACCOUNT_ID }).sort({ filledAt: -1 }).lean();
+async function getTrades({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
+  const scopedAccountId = normalizePaperAccountId(accountId);
+  await maybeReconcileOpenAlpacaPaperOrders(reconcile, scopedAccountId);
+  return PaperTrade.find({ accountId: scopedAccountId }).sort({ filledAt: -1 }).lean();
 }
 
-async function getOrders({ reconcile = true } = {}) {
-  await maybeReconcileOpenAlpacaPaperOrders(reconcile);
-  return PaperOrder.find({ accountId: ACCOUNT_ID }).sort({ updatedAt: -1, filledAt: -1 }).lean();
+async function getOrders({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
+  const scopedAccountId = normalizePaperAccountId(accountId);
+  await maybeReconcileOpenAlpacaPaperOrders(reconcile, scopedAccountId);
+  return PaperOrder.find({ accountId: scopedAccountId }).sort({ updatedAt: -1, filledAt: -1 }).lean();
 }
 
-async function getPositions({ reconcile = true } = {}) {
-  await maybeReconcileOpenAlpacaPaperOrders(reconcile);
-  const trades = await PaperTrade.find({ accountId: ACCOUNT_ID }).sort({ filledAt: 1 }).lean();
+async function getPositions({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
+  const scopedAccountId = normalizePaperAccountId(accountId);
+  await maybeReconcileOpenAlpacaPaperOrders(reconcile, scopedAccountId);
+  const trades = await PaperTrade.find({ accountId: scopedAccountId }).sort({ filledAt: 1 }).lean();
   const { positions } = buildPositions(trades);
   const symbolMeta = trades.reduce((acc, trade) => {
     const key = normalizeCompactSymbol(trade.symbol);
@@ -669,11 +686,12 @@ async function getPositions({ reconcile = true } = {}) {
   });
 }
 
-async function getAccount({ reconcile = true } = {}) {
-  await maybeReconcileOpenAlpacaPaperOrders(reconcile);
-  const settings = await getSettings();
-  const trades = await PaperTrade.find({ accountId: ACCOUNT_ID }).sort({ filledAt: 1 }).lean();
-  const positions = await getPositions({ reconcile: false });
+async function getAccount({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
+  const scopedAccountId = normalizePaperAccountId(accountId);
+  await maybeReconcileOpenAlpacaPaperOrders(reconcile, scopedAccountId);
+  const settings = await getSettings({ accountId: scopedAccountId });
+  const trades = await PaperTrade.find({ accountId: scopedAccountId }).sort({ filledAt: 1 }).lean();
+  const positions = await getPositions({ reconcile: false, accountId: scopedAccountId });
   const cash = calculateCash(trades, settings.startingCash);
   const positionsValue = positions.reduce((sum, pos) => sum + pos.marketValue, 0);
   const equity = cash + positionsValue;
@@ -691,8 +709,8 @@ async function getAccount({ reconcile = true } = {}) {
   };
 }
 
-async function getEquityCurve() {
-  return PaperEquity.find({ accountId: ACCOUNT_ID }).sort({ timestamp: 1 }).lean();
+async function getEquityCurve({ accountId = ACCOUNT_ID } = {}) {
+  return PaperEquity.find({ accountId: normalizePaperAccountId(accountId) }).sort({ timestamp: 1 }).lean();
 }
 
 async function getRegimeAtTrade(now) {
@@ -746,6 +764,7 @@ function calculateShortOpenQty(currentQty, side, requestedQty) {
 
 async function createAttachedExitOrders({
   parentOrder,
+  accountId = parentOrder?.accountId || ACCOUNT_ID,
   now,
   side,
   qty,
@@ -762,6 +781,7 @@ async function createAttachedExitOrders({
   stopLossPrice,
   trailingStopPct
 }) {
+  const scopedAccountId = normalizePaperAccountId(accountId);
   const exitSide = side === 'buy' ? 'sell' : 'buy';
   const hasBracket = Number.isFinite(takeProfitPrice) || Number.isFinite(stopLossPrice);
   const ocoGroupId = hasBracket && Number.isFinite(takeProfitPrice) && Number.isFinite(stopLossPrice)
@@ -771,7 +791,7 @@ async function createAttachedExitOrders({
 
   if (Number.isFinite(takeProfitPrice)) {
     const order = await PaperOrder.create({
-      accountId: ACCOUNT_ID,
+      accountId: scopedAccountId,
       parentOrderId: parentOrder._id,
       ocoGroupId,
       symbol: parentOrder.symbol,
@@ -797,7 +817,7 @@ async function createAttachedExitOrders({
 
   if (Number.isFinite(stopLossPrice)) {
     const order = await PaperOrder.create({
-      accountId: ACCOUNT_ID,
+      accountId: scopedAccountId,
       parentOrderId: parentOrder._id,
       ocoGroupId,
       symbol: parentOrder.symbol,
@@ -823,7 +843,7 @@ async function createAttachedExitOrders({
 
   if (Number.isFinite(trailingStopPct)) {
     const order = await PaperOrder.create({
-      accountId: ACCOUNT_ID,
+      accountId: scopedAccountId,
       parentOrderId: parentOrder._id,
       ocoGroupId: ocoGroupId || `trail:${parentOrder._id}`,
       symbol: parentOrder.symbol,
@@ -850,6 +870,7 @@ async function createAttachedExitOrders({
 }
 
 async function placeOrder({
+  accountId = ACCOUNT_ID,
   symbol,
   side,
   qty,
@@ -870,9 +891,10 @@ async function placeOrder({
   origin = 'manual',
   metadata = {}
 }) {
+  const scopedAccountId = normalizePaperAccountId(accountId);
   const requestStartMs = Date.now();
   const now = new Date();
-  const settings = await getSettings();
+  const settings = await getSettings({ accountId: scopedAccountId });
   const normalized = normalizeOrderInput({
     symbol,
     side,
@@ -948,8 +970,8 @@ async function placeOrder({
     maxPricePerShare: parsedMaxPricePerShare
   });
 
-  const account = await getAccount();
-  const trades = await PaperTrade.find({ accountId: ACCOUNT_ID }).sort({ filledAt: 1 }).lean();
+  const account = await getAccount({ accountId: scopedAccountId });
+  const trades = await PaperTrade.find({ accountId: scopedAccountId }).sort({ filledAt: 1 }).lean();
   const { positions } = buildPositions(trades);
   const currentPosition = positions[normalizedSymbol] || { qty: 0, avgCost: 0 };
   const equityBase = account.equity > 0 ? account.equity : settings.startingCash;
@@ -973,7 +995,7 @@ async function placeOrder({
   });
   if (!unifiedRisk.ok) {
     await PaperGuardrailEvent.create({
-      accountId: ACCOUNT_ID,
+      accountId: scopedAccountId,
       symbol: normalizedSymbol,
       orderNotional,
       reason: unifiedRisk.reason
@@ -991,7 +1013,7 @@ async function placeOrder({
 
   if (!guardrail.ok) {
     await PaperGuardrailEvent.create({
-      accountId: ACCOUNT_ID,
+      accountId: scopedAccountId,
       symbol: normalizedSymbol,
       orderNotional,
       reason: guardrail.reason
@@ -1030,7 +1052,7 @@ async function placeOrder({
     if (shortForceBuyInDays > 0 && shortHoldDays >= shortForceBuyInDays && borrowProfile.hardToBorrow) {
       const reason = `Forced buy-in simulation triggered for ${normalizedSymbol} after ${shortHoldDays.toFixed(1)} days hard-to-borrow short exposure.`;
       await PaperGuardrailEvent.create({
-        accountId: ACCOUNT_ID,
+        accountId: scopedAccountId,
         symbol: normalizedSymbol,
         orderNotional,
         reason
@@ -1067,7 +1089,7 @@ async function placeOrder({
       : 'unavailable')
     : 'none';
   const baseOrderPayload = {
-    accountId: ACCOUNT_ID,
+    accountId: scopedAccountId,
     symbol: normalizedSymbol,
     assetClass: normalizedAssetClass,
     side: normalizedSide,
@@ -1098,7 +1120,7 @@ async function placeOrder({
     notional: orderNotional
   };
   const executionRequest = {
-    accountId: ACCOUNT_ID,
+    accountId: scopedAccountId,
     origin,
     broker: 'paper',
     symbol: normalizedSymbol,
@@ -1209,7 +1231,7 @@ async function placeOrder({
     }
 
     if (localStatus !== 'filled') {
-      const updatedAccount = await getAccount();
+      const updatedAccount = await getAccount({ accountId: scopedAccountId });
       return {
         order,
         trade: null,
@@ -1251,7 +1273,7 @@ async function placeOrder({
     : null;
 
   const trade = await PaperTrade.create({
-    accountId: ACCOUNT_ID,
+    accountId: scopedAccountId,
     broker: alpacaPaperOrder?.broker || 'paper',
     externalOrderId: alpacaPaperOrder?.order?.id || null,
     clientOrderId: alpacaPaperOrder?.order?.client_order_id || alpacaPaperOrder?.payload?.client_order_id || null,
@@ -1291,6 +1313,7 @@ async function placeOrder({
 
   const attachedOrders = await createAttachedExitOrders({
     parentOrder: order,
+    accountId: scopedAccountId,
     now,
     side: normalizedSide,
     qty: executedQty,
@@ -1308,7 +1331,7 @@ async function placeOrder({
     trailingStopPct: Number.isFinite(parsedTrailingStopPct) ? parsedTrailingStopPct : null
   });
 
-  const tradePlanId = await linkTradeToPlan(trade, ACCOUNT_ID);
+  const tradePlanId = await linkTradeToPlan(trade, scopedAccountId);
   if (tradePlanId) {
     trade.tradePlanId = tradePlanId;
   }
@@ -1322,9 +1345,9 @@ async function placeOrder({
   settings.cooldownUntil = cooldownUntil;
   await settings.save();
 
-  const updatedAccount = await getAccount();
+  const updatedAccount = await getAccount({ accountId: scopedAccountId });
   await PaperEquity.create({
-    accountId: ACCOUNT_ID,
+    accountId: scopedAccountId,
     timestamp: now,
     equity: updatedAccount.equity,
     cash: updatedAccount.cash,
@@ -1337,7 +1360,7 @@ async function placeOrder({
     broker: alpacaPaperOrder?.broker || 'paper',
     origin,
     request: {
-      accountId: ACCOUNT_ID,
+      accountId: scopedAccountId,
       origin,
       broker: 'paper',
       symbol: normalizedSymbol,
@@ -1374,6 +1397,7 @@ async function placeOrder({
 
 async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejected') {
   try {
+    const accountId = normalizePaperAccountId(payload.accountId);
     const now = new Date();
     let normalized = null;
     try {
@@ -1400,7 +1424,7 @@ async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejecte
     const notional = Number(payload.notional);
 
     const rejectedOrder = await PaperOrder.create({
-      accountId: ACCOUNT_ID,
+      accountId,
       broker: shouldSyncPaperTradesToAlpaca() ? 'alpaca' : 'paper',
       symbol,
       assetClass,
@@ -1427,7 +1451,7 @@ async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejecte
       origin: payload.origin || 'manual',
       rejectedReason,
       request: {
-        accountId: ACCOUNT_ID,
+        accountId,
         origin: payload.origin || 'manual',
         broker: 'paper',
         symbol,

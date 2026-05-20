@@ -187,10 +187,12 @@ Robo Trader:
 - `ROBOTRADER_WORKER_DISABLED` (`true` to disable the Phase 1 RoboTrader worker loop)
 - `ROBOTRADER_RECONCILIATION_DISABLED` (`true` to disable scheduled RoboTrader order reconciliation)
 - `ROBOTRADER_RECONCILIATION_INTERVAL_MS` (default `300000`)
+- `ROBOTRADER_LIVE_RECONCILIATION_ENABLED` (`true` to explicitly reconcile live RoboTrader orders on the scheduler even before a live-enabled settings record exists; requires explicit live Alpaca credentials)
+- `ROBOTRADER_LIVE_RECONCILIATION_DISABLED` (`true` to force scheduled live reconciliation off; paper reconciliation is still controlled by `ROBOTRADER_RECONCILIATION_DISABLED`)
 - `ROBOTRADER_SYMBOL_UNIVERSE` (optional comma-separated symbols for the Phase 1 worker)
 - `ROBOTRADER_MAX_SYMBOLS_PER_RUN` (default `5`)
 - `APCA_PAPER_BASE_URL`, `APCA_PAPER_API_KEY_ID`, `APCA_PAPER_API_SECRET_KEY` (optional paper-specific Alpaca credentials; falls back to existing `APCA_*`)
-- `APCA_LIVE_BASE_URL`, `APCA_LIVE_API_KEY_ID`, `APCA_LIVE_API_SECRET_KEY` (live credentials; live mode remains disabled unless user settings explicitly opt in)
+- `APCA_LIVE_BASE_URL`, `APCA_LIVE_API_KEY_ID`, `APCA_LIVE_API_SECRET_KEY` (explicit live credentials; scheduled live reconciliation will not run without them, and live mode remains disabled unless user settings explicitly opt in)
 
 Paper trading + risk:
 

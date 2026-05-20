@@ -371,10 +371,11 @@ function buildDecisionPreview({
   };
 }
 
-async function getRecentLocalOrders(userId, now, deps) {
+async function getRecentLocalOrders(userId, environment, now, deps) {
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   return deps.RoboTradeOrder.find({
     userId,
+    environment,
     createdAt: { $gte: since }
   }).sort({ createdAt: -1 }).lean();
 }
@@ -604,7 +605,7 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
     openOrders: normalizedOpenOrders
   });
   const decisions = deps.evaluateResearchBatch(researchItems, settings);
-  const recentOrders = await getRecentLocalOrders(userId, now, deps);
+  const recentOrders = await getRecentLocalOrders(userId, environment, now, deps);
   const tradesToday = recentOrders.filter(order => {
     const status = String(order.status || '').toLowerCase();
     return !TERMINAL_ORDER_STATUSES.includes(status) || status === 'filled';
@@ -772,7 +773,7 @@ async function previewRoboTraderForUser({
     openOrders: normalizedOpenOrders
   });
   const decisions = deps.evaluateResearchBatch(researchItems, settings);
-  const recentOrders = await getRecentLocalOrders(userId, now, deps);
+  const recentOrders = await getRecentLocalOrders(userId, environment, now, deps);
   const tradesToday = recentOrders.filter(order => {
     const status = String(order.status || '').toLowerCase();
     return !TERMINAL_ORDER_STATUSES.includes(status) || status === 'filled';

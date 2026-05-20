@@ -184,12 +184,28 @@ function normalizeStatus(value) {
   return String(value || '').toLowerCase();
 }
 
+function needsBrokerConfirmation(order = {}) {
+  const status = normalizeStatus(order.status);
+  const reconciliationStatus = normalizeStatus(order.reconciliationStatus);
+  return status === 'pending_submit'
+    || reconciliationStatus === 'submit_error_pending_reconciliation'
+    || reconciliationStatus === 'missing_alpaca_confirmation'
+    || reconciliationStatus === 'alpaca_lookup_failed';
+}
+
 function statusVariant(value) {
   const status = normalizeStatus(value);
   if (['approved', 'submitted', 'accepted', 'new', 'open'].includes(status)) return 'info';
   if (['filled', 'complete', 'enabled'].includes(status)) return 'success';
   if (['rejected', 'canceled', 'cancelled', 'failed', 'disabled'].includes(status)) return 'danger';
-  if (['pending', 'pending_manual_approval', 'pending_submit'].includes(status)) return 'warning';
+  if ([
+    'pending',
+    'pending_manual_approval',
+    'pending_submit',
+    'submit_error_pending_reconciliation',
+    'missing_alpaca_confirmation',
+    'alpaca_lookup_failed'
+  ].includes(status)) return 'warning';
   return 'neutral';
 }
 
@@ -328,6 +344,16 @@ export default function RoboTrader() {
 
   const submittedOrders = useMemo(
     () => orders.filter(item => !['pending_submit', 'rejected'].includes(normalizeStatus(item.status))),
+    [orders]
+  );
+
+  const pendingBrokerConfirmationOrders = useMemo(
+    () => orders.filter(needsBrokerConfirmation),
+    [orders]
+  );
+
+  const visibleOrders = useMemo(
+    () => orders.filter(item => normalizeStatus(item.status) !== 'rejected'),
     [orders]
   );
 
@@ -513,14 +539,19 @@ export default function RoboTrader() {
   };
 
   const handleEmergencyStop = async () => {
-    const shouldStop = window.confirm('Emergency stop will disable RoboTrader immediately.');
+    const environment = settings.mode === 'live' ? 'live' : 'paper';
+    const shouldStop = window.confirm(
+      environment === 'live'
+        ? 'Emergency stop will disable RoboTrader immediately. Live RoboTrader orders can be canceled if you confirm the next step.'
+        : 'Emergency stop will disable RoboTrader immediately.'
+    );
     if (!shouldStop) return;
-    const cancelOpenOrders = window.confirm('Cancel open RoboTrader-created Alpaca paper orders too?');
+    const cancelOpenOrders = window.confirm(`Cancel open RoboTrader-created Alpaca ${environment} orders too?`);
     setStopping(true);
     setError('');
     setSuccess('');
     try {
-      await axios.post('/api/robotrader/emergency-stop', { cancelOpenOrders, environment: 'paper' });
+      await axios.post('/api/robotrader/emergency-stop', { cancelOpenOrders, environment });
       await refreshAfterAction('Emergency stop completed.');
     } catch (err) {
       setError(getApiError(err));
@@ -564,7 +595,7 @@ export default function RoboTrader() {
             <p className="rt-subtitle">{RISK_DISCLOSURE}</p>
           </div>
 
-          <div className="grid min-w-full grid-cols-2 gap-3 sm:min-w-[28rem] sm:grid-cols-4 xl:min-w-[34rem]">
+          <div className="grid min-w-full grid-cols-2 gap-3 sm:min-w-[32rem] sm:grid-cols-3 xl:min-w-[42rem] xl:grid-cols-5">
             <div className="rt-metric">
               <p className="rt-label">Last Run</p>
               <p className="mt-2 text-sm font-semibold text-[#edf5f4]">
@@ -574,6 +605,10 @@ export default function RoboTrader() {
             <div className="rt-metric">
               <p className="rt-label">Active Orders</p>
               <p className="mt-2 text-2xl font-bold text-[#edf5f4]">{activeOrders.length}</p>
+            </div>
+            <div className="rt-metric">
+              <p className="rt-label">Pending Broker Confirmation</p>
+              <p className="mt-2 text-2xl font-bold text-[#ffd77a]">{pendingBrokerConfirmationOrders.length}</p>
             </div>
             <div className="rt-metric">
               <p className="rt-label">Approved</p>
@@ -1059,16 +1094,21 @@ export default function RoboTrader() {
         </Card>
 
         <Card className="p-5 md:p-6">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
               <p className="rt-eyebrow">Orders</p>
-              <h2 className="rt-section-title mt-1">Submitted RoboTrader orders</h2>
+              <h2 className="rt-section-title mt-1">RoboTrader orders</h2>
             </div>
-            <Badge variant="neutral">{submittedOrders.length} orders</Badge>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="neutral">{visibleOrders.length} orders</Badge>
+              <Badge variant={pendingBrokerConfirmationOrders.length ? 'warning' : 'neutral'}>
+                {pendingBrokerConfirmationOrders.length} pending broker confirmation
+              </Badge>
+            </div>
           </div>
 
           <div className="mt-5 overflow-x-auto">
-            {submittedOrders.length ? (
+            {visibleOrders.length ? (
               <table className="rt-table">
                 <thead>
                   <tr>
@@ -1079,13 +1119,20 @@ export default function RoboTrader() {
                   </tr>
                 </thead>
                 <tbody>
-                  {submittedOrders.slice(0, 8).map(order => (
+                  {visibleOrders.slice(0, 8).map(order => (
                     <tr key={order._id}>
                       <td>
                         <span className="font-bold text-[#edf5f4]">{order.side?.toUpperCase()} {order.symbol}</span>
                         <span className="mt-1 block text-xs text-[#8ba09f]">{order.assetClass || 'equity'}</span>
                       </td>
-                      <td><Badge variant={statusVariant(order.status)}>{order.status || '--'}</Badge></td>
+                      <td>
+                        <div className="flex flex-col items-start gap-1">
+                          <Badge variant={statusVariant(order.status)}>{order.status || '--'}</Badge>
+                          {needsBrokerConfirmation(order) && (
+                            <Badge variant="warning">Broker confirmation pending</Badge>
+                          )}
+                        </div>
+                      </td>
                       <td>{order.orderType || '--'} / {order.timeInForce || '--'}</td>
                       <td className="max-w-[14rem] truncate">{order.clientOrderId || order.externalOrderId || '--'}</td>
                     </tr>

@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const auth = require('../middleware/auth');
 const { getTradingConfig, summarizeConfigWarnings } = require('../config/tradingConfig');
 const { getFeatureFlagsSnapshot } = require('../services/featureFlagService');
 const { getRiskLimitsSnapshot } = require('../services/riskConfigService');
@@ -9,6 +10,9 @@ const {
   listRecentStrategyRuns
 } = require('../services/strategyRunService');
 const { getMongoServiceState, isMongoReady } = require('../utils/mongoState');
+const { getRequestAccountId } = require('../utils/accountScope');
+
+router.use(auth);
 
 function getDataWarning() {
   if (isMongoReady()) return null;
@@ -86,8 +90,9 @@ router.get('/strategy-parameters', async (req, res, next) => {
 
 router.get('/execution', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const { limit = 25 } = req.query;
-    const { orders, fills } = await listRecentExecution({ limit });
+    const { orders, fills } = await listRecentExecution({ limit, accountId });
     res.json({
       orders,
       fills,

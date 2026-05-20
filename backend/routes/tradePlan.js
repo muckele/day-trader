@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const auth = require('../middleware/auth');
 const requireMongo = require('../middleware/requireMongo');
 const TradePlan = require('../models/TradePlan');
 const TradePlanLog = require('../models/TradePlanLog');
@@ -12,16 +13,17 @@ const {
   computePlanStats,
   detectMissedWinners
 } = require('../tradePlanEngine');
-
-const ACCOUNT_ID = 'default';
+const { getRequestAccountId } = require('../utils/accountScope');
 
 router.use(requireMongo);
+router.use(auth);
 
 router.get('/today', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const status = getMarketStatus();
     const date = getPlanDate();
-    const plan = await TradePlan.findOne({ accountId: ACCOUNT_ID, date }).lean();
+    const plan = await TradePlan.findOne({ accountId, date }).lean();
     if (!plan) {
       return res.json({
         plan: null,
@@ -32,7 +34,7 @@ router.get('/today', async (req, res, next) => {
     }
 
     if (req.query.rescore === '1') {
-      const updated = await rescoreTradePlan(plan, ACCOUNT_ID);
+      const updated = await rescoreTradePlan(plan, accountId);
       return res.json({
         plan: updated,
         marketStatus: status.status,
@@ -53,13 +55,14 @@ router.get('/today', async (req, res, next) => {
 });
 
 router.post('/generate', async (req, res, next) => {
+  const accountId = getRequestAccountId(req);
   try {
     const status = getMarketStatus();
     const date = getPlanDate();
 
     if (status.status !== 'OPEN') {
       await TradePlanLog.create({
-        accountId: ACCOUNT_ID,
+        accountId,
         date,
         marketStatus: status.status,
         status: 'BLOCKED',
@@ -68,10 +71,10 @@ router.post('/generate', async (req, res, next) => {
       return res.status(400).json({ error: 'Market is closed. Plan generation is disabled.' });
     }
 
-    const existing = await TradePlan.findOne({ accountId: ACCOUNT_ID, date }).lean();
+    const existing = await TradePlan.findOne({ accountId, date }).lean();
     if (existing) {
       await TradePlanLog.create({
-        accountId: ACCOUNT_ID,
+        accountId,
         date,
         marketStatus: status.status,
         status: 'DUPLICATE',
@@ -81,9 +84,9 @@ router.post('/generate', async (req, res, next) => {
       return res.json({ plan: existing, alreadyExists: true });
     }
 
-    const plan = await generateTradePlan({ accountId: ACCOUNT_ID });
+    const plan = await generateTradePlan({ accountId });
     await TradePlanLog.create({
-      accountId: ACCOUNT_ID,
+      accountId,
       date,
       marketStatus: status.status,
       status: 'CREATED',
@@ -92,7 +95,7 @@ router.post('/generate', async (req, res, next) => {
     res.json({ plan });
   } catch (err) {
     await TradePlanLog.create({
-      accountId: ACCOUNT_ID,
+      accountId,
       date: getPlanDate(),
       marketStatus: getMarketStatus().status,
       status: 'FAILED',
@@ -104,17 +107,18 @@ router.post('/generate', async (req, res, next) => {
 
 router.get('/history', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const daysParam = Number(req.query.days || 14);
     const days = Number.isFinite(daysParam) ? daysParam : 14;
     const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const plans = await TradePlan.find({
-      accountId: ACCOUNT_ID,
+      accountId,
       date: { $gte: startDate }
     }).sort({ date: -1 }).lean();
 
     const planIds = plans.map(plan => plan._id);
     const trades = planIds.length
-      ? await PaperTrade.find({ tradePlanId: { $in: planIds } }).lean()
+      ? await PaperTrade.find({ accountId, tradePlanId: { $in: planIds } }).lean()
       : [];
     const tradesByPlan = trades.reduce((acc, trade) => {
       const key = trade.tradePlanId?.toString();
@@ -168,12 +172,13 @@ router.get('/history', async (req, res, next) => {
 
 router.put('/:planId/ideas/:ideaId', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const { status } = req.body || {};
     if (status !== 'SKIPPED') {
       return res.status(400).json({ error: 'Only SKIPPED status is supported.' });
     }
 
-    const plan = await TradePlan.findOne({ _id: req.params.planId, accountId: ACCOUNT_ID });
+    const plan = await TradePlan.findOne({ _id: req.params.planId, accountId });
     if (!plan) {
       return res.status(404).json({ error: 'Trade plan not found.' });
     }

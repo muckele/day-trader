@@ -1,23 +1,25 @@
 const router = require('express').Router();
+const auth = require('../middleware/auth');
 const requireMongo = require('../middleware/requireMongo');
 const TradePlan = require('../models/TradePlan');
 const PaperTrade = require('../models/PaperTrade');
 const ExecutionAuditLog = require('../models/ExecutionAuditLog');
 const paperBroker = require('../paper/paperBrokerClient');
 const { evaluateExecutionGate } = require('../executionGate');
-
-const ACCOUNT_ID = 'default';
+const { getRequestAccountId } = require('../utils/accountScope');
 
 router.use(requireMongo);
+router.use(auth);
 
 router.post('/check', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const { planId, ideaId } = req.body || {};
     if (!planId || !ideaId) {
       return res.status(400).json({ error: 'planId and ideaId are required.' });
     }
 
-    const plan = await TradePlan.findOne({ _id: planId, accountId: ACCOUNT_ID });
+    const plan = await TradePlan.findOne({ _id: planId, accountId });
     if (!plan) {
       return res.status(404).json({ error: 'Trade plan not found.' });
     }
@@ -28,12 +30,12 @@ router.post('/check', async (req, res, next) => {
     }
 
     const trades = await PaperTrade.find({
-      accountId: ACCOUNT_ID,
+      accountId,
       strategyId: idea.strategyId
     }).sort({ filledAt: 1 }).lean();
 
-    const account = await paperBroker.getAccount();
-    const settings = await paperBroker.getSettings();
+    const account = await paperBroker.getAccount({ accountId });
+    const settings = await paperBroker.getSettings({ accountId });
 
     const result = evaluateExecutionGate({
       idea,
@@ -43,7 +45,7 @@ router.post('/check', async (req, res, next) => {
     });
 
     await ExecutionAuditLog.create({
-      accountId: ACCOUNT_ID,
+      accountId,
       planId: plan._id,
       ideaId: idea._id,
       strategyId: idea.strategyId,

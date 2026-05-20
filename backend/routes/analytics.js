@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const auth = require('../middleware/auth');
 const requireMongo = require('../middleware/requireMongo');
 const PaperTrade = require('../models/PaperTrade');
 const PaperOrder = require('../models/PaperOrder');
@@ -18,10 +19,10 @@ const {
   computeHoldTimes
 } = require('../analytics/analyticsUtils');
 const { buildSnapshot } = require('../analytics/snapshot');
-
-const ACCOUNT_ID = 'default';
+const { getRequestAccountId } = require('../utils/accountScope');
 
 router.use(requireMongo);
+router.use(auth);
 
 function sum(values) {
   return values.reduce((acc, value) => acc + value, 0);
@@ -157,9 +158,10 @@ function buildExecutionQualityPayload({ range, orders, fills }) {
 
 router.get('/summary', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const { range = '30d', symbol = '', strategyId = '', regime = '' } = req.query;
     const startDate = parseRange(range);
-    const tradeQuery = { accountId: ACCOUNT_ID };
+    const tradeQuery = { accountId };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
     if (symbol) tradeQuery.symbol = symbol.toUpperCase();
     if (strategyId) tradeQuery.strategyId = strategyId;
@@ -183,22 +185,22 @@ router.get('/summary', async (req, res, next) => {
       ? Number(((expectancyValues.filter(val => val <= -1).length / expectancyValues.length) * 100).toFixed(2))
       : 0;
 
-    const equityQuery = { accountId: ACCOUNT_ID };
+    const equityQuery = { accountId };
     if (startDate) equityQuery.timestamp = { $gte: startDate };
     const equityPoints = await PaperEquity.find(equityQuery).sort({ timestamp: 1 }).lean();
     const { series: drawdownSeries, maxDrawdown } = computeDrawdownSeries(
       equityPoints.map(point => ({ timestamp: point.timestamp, equity: point.equity }))
     );
 
-    const account = await paperBroker.getAccount();
-    const settings = await PaperSettings.findOne({ accountId: ACCOUNT_ID }).lean();
+    const account = await paperBroker.getAccount({ accountId });
+    const settings = await PaperSettings.findOne({ accountId }).lean();
     const cashPct = account.equity ? (account.cash / account.equity) * 100 : 0;
     const positionsPct = account.equity ? (account.positionsValue / account.equity) * 100 : 0;
     const maxPositionUtilization = account.positions.length
       ? Math.max(...account.positions.map(pos => pos.marketValue)) / (account.equity || 1)
       : 0;
 
-    const guardrailQuery = { accountId: ACCOUNT_ID };
+    const guardrailQuery = { accountId };
     if (startDate) guardrailQuery.createdAt = { $gte: startDate };
     const guardrailBlocks = await PaperGuardrailEvent.countDocuments(guardrailQuery);
 
@@ -241,17 +243,18 @@ router.get('/summary', async (req, res, next) => {
 
 router.get('/snapshot', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const { range = '30d' } = req.query;
     const startDate = parseRange(range);
-    const tradeQuery = { accountId: ACCOUNT_ID };
+    const tradeQuery = { accountId };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
     const trades = await PaperTrade.find(tradeQuery).sort({ filledAt: 1 }).lean();
 
-    const equityQuery = { accountId: ACCOUNT_ID };
+    const equityQuery = { accountId };
     if (startDate) equityQuery.timestamp = { $gte: startDate };
     const equityPoints = await PaperEquity.find(equityQuery).sort({ timestamp: 1 }).lean();
 
-    const guardrailQuery = { accountId: ACCOUNT_ID };
+    const guardrailQuery = { accountId };
     if (startDate) guardrailQuery.createdAt = { $gte: startDate };
     const guardrailBlocks = await PaperGuardrailEvent.countDocuments(guardrailQuery);
 
@@ -268,9 +271,10 @@ router.get('/snapshot', async (req, res, next) => {
 
 router.get('/strategies', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const { range = '30d' } = req.query;
     const startDate = parseRange(range);
-    const tradeQuery = { accountId: ACCOUNT_ID };
+    const tradeQuery = { accountId };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
     const trades = await PaperTrade.find(tradeQuery).sort({ filledAt: 1 }).lean();
     const grouped = aggregateStrategies(trades);
@@ -288,9 +292,10 @@ router.get('/strategies', async (req, res, next) => {
 
 router.get('/regimes', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const { range = '30d' } = req.query;
     const startDate = parseRange(range);
-    const tradeQuery = { accountId: ACCOUNT_ID };
+    const tradeQuery = { accountId };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
     const trades = await PaperTrade.find(tradeQuery).sort({ filledAt: 1 }).lean();
     const regimes = aggregateRegimes(trades);
@@ -302,9 +307,10 @@ router.get('/regimes', async (req, res, next) => {
 
 router.get('/trades.csv', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const { range = '30d', symbol = '', strategyId = '', regime = '' } = req.query;
     const startDate = parseRange(range);
-    const tradeQuery = { accountId: ACCOUNT_ID };
+    const tradeQuery = { accountId };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
     if (symbol) tradeQuery.symbol = symbol.toUpperCase();
     if (strategyId) tradeQuery.strategyId = strategyId;
@@ -358,12 +364,13 @@ router.get('/trades.csv', async (req, res, next) => {
 
 router.get('/execution-quality', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const { range = '30d' } = req.query;
     const startDate = parseRange(range);
-    const brokerOrderQuery = { accountId: ACCOUNT_ID };
-    const fillQuery = { accountId: ACCOUNT_ID };
-    const paperOrderQuery = { accountId: ACCOUNT_ID };
-    const tradeQuery = { accountId: ACCOUNT_ID };
+    const brokerOrderQuery = { accountId };
+    const fillQuery = { accountId };
+    const paperOrderQuery = { accountId };
+    const tradeQuery = { accountId };
     if (startDate) {
       brokerOrderQuery.submittedAt = { $gte: startDate };
       fillQuery.filledAt = { $gte: startDate };
