@@ -101,6 +101,25 @@ function normalizeAlpacaOrder(order = {}) {
   };
 }
 
+function normalizeOrderIdentifier(value) {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+}
+
+function isRoboTraderClientOrderId(value) {
+  const clientOrderId = String(value || '').toLowerCase();
+  return clientOrderId.includes('robotrader') || clientOrderId.includes('robo');
+}
+
+function summarizeBrokerOrderForAudit(order = {}) {
+  return {
+    id: normalizeOrderIdentifier(order.id),
+    clientOrderId: normalizeOrderIdentifier(order.client_order_id),
+    symbol: normalizeSymbol(order.symbol),
+    status: String(order.status || '').toLowerCase() || null
+  };
+}
+
 function inferAssetClass(symbol, settings) {
   if (isCryptoSymbol(symbol)) return 'crypto';
   if ((settings.allowedAssetClasses || []).includes('stocks')) return 'stocks';
@@ -885,25 +904,98 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
     pausedReason: 'Emergency stop triggered.'
   });
   let canceled = [];
+  let cancelErrors = [];
+  let unownedBrokerOrders = [];
   let cancelError = null;
   if (cancelOpenOrders) {
     try {
       const broker = deps.createAlpacaBroker({ mode: environment });
-      const openOrders = await broker.listOrders({ status: 'open', limit: 100 });
-      for (const order of openOrders || []) {
-        const clientOrderId = String(order.client_order_id || '');
-        if (!clientOrderId.includes('robotrader') && !clientOrderId.includes('robo')) continue;
-        await broker.cancelOrder(order.id);
-        canceled.push(order.id);
+      let localOpenOrdersQuery = deps.RoboTradeOrder.find({
+        userId,
+        environment,
+        broker: 'alpaca',
+        status: { $nin: TERMINAL_ORDER_STATUSES },
+        $or: [
+          { externalOrderId: { $exists: true, $nin: [null, ''] } },
+          { clientOrderId: { $exists: true, $nin: [null, ''] } }
+        ]
+      });
+      if (typeof localOpenOrdersQuery?.sort === 'function') {
+        localOpenOrdersQuery = localOpenOrdersQuery.sort({ submittedAt: -1, createdAt: -1 });
       }
-      await deps.RoboTradeOrder.updateMany(
-        {
-          userId,
-          externalOrderId: { $in: canceled },
-          status: { $nin: TERMINAL_ORDER_STATUSES }
-        },
-        { $set: { status: 'canceled', canceledAt: new Date(), reconciliationStatus: 'emergency_stop' } }
-      );
+      if (typeof localOpenOrdersQuery?.lean === 'function') {
+        localOpenOrdersQuery = localOpenOrdersQuery.lean();
+      }
+      const localOpenOrders = await localOpenOrdersQuery;
+      const localOrdersByExternalId = new Map();
+      const localOrdersByClientOrderId = new Map();
+      for (const order of Array.isArray(localOpenOrders) ? localOpenOrders : []) {
+        const externalOrderId = normalizeOrderIdentifier(order.externalOrderId);
+        const clientOrderId = normalizeOrderIdentifier(order.clientOrderId);
+        if (externalOrderId) localOrdersByExternalId.set(externalOrderId, order);
+        if (clientOrderId) localOrdersByClientOrderId.set(clientOrderId, order);
+      }
+
+      const openOrders = await broker.listOrders({ status: 'open', limit: 500 });
+      const canceledExternalOrderIds = [];
+      const canceledClientOrderIds = [];
+      for (const order of openOrders || []) {
+        const externalOrderId = normalizeOrderIdentifier(order.id);
+        const clientOrderId = normalizeOrderIdentifier(order.client_order_id);
+        const localOrder = (externalOrderId && localOrdersByExternalId.get(externalOrderId))
+          || (clientOrderId && localOrdersByClientOrderId.get(clientOrderId));
+        if (!localOrder) {
+          if (isRoboTraderClientOrderId(clientOrderId)) {
+            unownedBrokerOrders.push(summarizeBrokerOrderForAudit(order));
+          }
+          continue;
+        }
+
+        const cancelTarget = externalOrderId || normalizeOrderIdentifier(localOrder.externalOrderId);
+        if (!cancelTarget) continue;
+        try {
+          await broker.cancelOrder(cancelTarget);
+          canceled.push(cancelTarget);
+          if (externalOrderId) canceledExternalOrderIds.push(externalOrderId);
+          if (clientOrderId) canceledClientOrderIds.push(clientOrderId);
+        } catch (err) {
+          cancelErrors.push({
+            id: cancelTarget,
+            clientOrderId,
+            message: err?.message || 'Could not cancel order.'
+          });
+        }
+      }
+
+      if (unownedBrokerOrders.length) {
+        await writeAudit(userId, 'robotrader_emergency_stop_unowned_broker_orders', {
+          environment,
+          orders: unownedBrokerOrders
+        }, deps);
+      }
+
+      const updateMatches = [];
+      if (canceledExternalOrderIds.length) {
+        updateMatches.push({ externalOrderId: { $in: canceledExternalOrderIds } });
+      }
+      if (canceledClientOrderIds.length) {
+        updateMatches.push({ clientOrderId: { $in: canceledClientOrderIds } });
+      }
+      if (updateMatches.length) {
+        await deps.RoboTradeOrder.updateMany(
+          {
+            userId,
+            environment,
+            broker: 'alpaca',
+            status: { $nin: TERMINAL_ORDER_STATUSES },
+            $or: updateMatches
+          },
+          { $set: { status: 'canceled', canceledAt: new Date(), reconciliationStatus: 'emergency_stop' } }
+        );
+      }
+      if (cancelErrors.length) {
+        cancelError = cancelErrors.map(item => item.message).join('; ');
+      }
     } catch (err) {
       cancelError = err?.message || 'Could not cancel open RoboTrader orders.';
     }
@@ -912,12 +1004,16 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
   await writeAudit(userId, 'robotrader_emergency_stop', {
     cancelOpenOrders,
     canceledOrderIds: canceled,
+    unownedBrokerOrders,
+    cancelErrors,
     cancelError
   }, deps);
 
   return {
     settings: deps.mapSettings(settings),
     canceledOrderIds: canceled,
+    unownedBrokerOrders,
+    cancelErrors,
     cancelError
   };
 }

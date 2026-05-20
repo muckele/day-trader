@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { mapSettings } = require('../robotrader/settingsService');
 const {
   adaptOrderForMarketSession,
+  emergencyStop,
   isAmbiguousSubmitError,
   previewRoboTraderForUser,
   resolveWorkerLockTtlMs,
@@ -276,6 +277,101 @@ test('robotrader worker blocks live mode before broker access without explicit o
   assert.equal(result.reason, 'LIVE_TRADING_NOT_ENABLED');
   assert.equal(brokerCreated, false);
   assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_live_blocked'), true);
+});
+
+test('robotrader emergency stop cancels only locally owned open orders', async () => {
+  const context = createDeps({ approved: true });
+  const findQueries = [];
+  const updateCalls = [];
+  const canceledBrokerOrderIds = [];
+  context.deps.RoboTradeOrder.find = query => {
+    findQueries.push(query);
+    return chain([
+      {
+        _id: 'local-order-by-id',
+        userId: 'user-worker',
+        environment: 'paper',
+        broker: 'alpaca',
+        externalOrderId: 'alpaca-owned-1',
+        clientOrderId: 'daytrader-robotrader-owned-1',
+        status: 'accepted'
+      },
+      {
+        _id: 'local-order-by-client-id',
+        userId: 'user-worker',
+        environment: 'paper',
+        broker: 'alpaca',
+        externalOrderId: null,
+        clientOrderId: 'daytrader-robotrader-owned-2',
+        status: 'pending_submit'
+      }
+    ]);
+  };
+  context.deps.RoboTradeOrder.updateMany = async (query, update) => {
+    updateCalls.push({ query, update });
+    return { modifiedCount: 2 };
+  };
+  context.deps.createAlpacaBroker = ({ mode }) => {
+    assert.equal(mode, 'paper');
+    return {
+      listOrders: async ({ status, limit }) => {
+        assert.equal(status, 'open');
+        assert.equal(limit, 500);
+        return [
+          {
+            id: 'alpaca-owned-1',
+            client_order_id: 'daytrader-robotrader-owned-1',
+            symbol: 'AAPL',
+            status: 'accepted'
+          },
+          {
+            id: 'alpaca-owned-2',
+            client_order_id: 'daytrader-robotrader-owned-2',
+            symbol: 'MSFT',
+            status: 'new'
+          },
+          {
+            id: 'alpaca-other-user',
+            client_order_id: 'daytrader-robotrader-other-user',
+            symbol: 'TSLA',
+            status: 'accepted'
+          },
+          {
+            id: 'manual-order',
+            client_order_id: 'manual-order',
+            symbol: 'GOOG',
+            status: 'accepted'
+          }
+        ];
+      },
+      cancelOrder: async id => {
+        canceledBrokerOrderIds.push(id);
+        return { id };
+      }
+    };
+  };
+
+  const result = await emergencyStop({
+    userId: 'user-worker',
+    cancelOpenOrders: true,
+    environment: 'paper'
+  }, context.deps);
+
+  assert.deepEqual(canceledBrokerOrderIds, ['alpaca-owned-1', 'alpaca-owned-2']);
+  assert.deepEqual(result.canceledOrderIds, ['alpaca-owned-1', 'alpaca-owned-2']);
+  assert.equal(result.unownedBrokerOrders.length, 1);
+  assert.equal(result.unownedBrokerOrders[0].id, 'alpaca-other-user');
+  assert.equal(findQueries[0].userId, 'user-worker');
+  assert.equal(findQueries[0].environment, 'paper');
+  assert.equal(updateCalls.length, 1);
+  assert.equal(updateCalls[0].query.userId, 'user-worker');
+  assert.equal(updateCalls[0].query.environment, 'paper');
+  assert.deepEqual(updateCalls[0].query.status, { $nin: ['filled', 'canceled', 'cancelled', 'expired', 'rejected'] });
+  assert.equal(updateCalls[0].update.$set.status, 'canceled');
+  assert.equal(
+    context.auditEvents.some(event => event.eventType === 'robotrader_emergency_stop_unowned_broker_orders'),
+    true
+  );
 });
 
 test('robotrader worker skips when a per-user lock is already held', async () => {
