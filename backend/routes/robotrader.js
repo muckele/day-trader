@@ -9,18 +9,24 @@ const RoboAuditLog = require('../models/RoboAuditLog');
 const { ALPACA_CAPABILITY_MATRIX } = require('../robotrader/alpacaCapabilities');
 const { createAlpacaBroker } = require('../robotrader/alpacaBroker');
 const { reconcileRoboOrders } = require('../robotrader/reconciliation');
+const { getSchedulerStatus, isLegacySchedulerEnabled, isPhase1WorkerEnabled } = require('../services/roboScheduler');
 const {
   LIVE_CONFIRMATION_TEXT,
   getOrCreateRoboTraderSettings,
   mapSettings,
+  sanitizeSettingsUpdate,
   updateRoboTraderSettings
 } = require('../robotrader/settingsService');
 const {
   emergencyStop,
+  previewRoboTraderForUser,
   runRoboTraderForUser
 } = require('../robotrader/worker');
 
-router.use(requireMongo);
+router.use((req, res, next) => {
+  if (req.path === '/health') return next();
+  return requireMongo(req, res, next);
+});
 router.use(auth);
 
 const rateState = new Map();
@@ -78,6 +84,59 @@ function ensureLiveTradingAllowed(settings, action = 'Live trading') {
   throw err;
 }
 
+function resolveRequestedEnvironment(req, settings) {
+  if (req.query?.environment === 'live') return 'live';
+  if (req.query?.environment === 'paper') return 'paper';
+  return settings?.mode === 'live' ? 'live' : 'paper';
+}
+
+function mapMongoReadyState(state) {
+  switch (state) {
+    case 0: return 'disconnected';
+    case 1: return 'connected';
+    case 2: return 'connecting';
+    case 3: return 'disconnecting';
+    default: return 'unknown';
+  }
+}
+
+function toFiniteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function summarizeReconciliationOrders(orders = []) {
+  const summary = {
+    total: orders.length,
+    pending: 0,
+    matched: 0,
+    discrepancies: 0,
+    missingAlpacaConfirmation: 0,
+    orphanAlpacaOrders: 0,
+    lastReconciledAt: null
+  };
+
+  for (const order of orders) {
+    const status = String(order.reconciliationStatus || 'pending').toLowerCase();
+    if (!order.lastReconciledAt || status === 'pending') summary.pending += 1;
+    if (['matched', 'synced', 'updated', 'cancel_requested', 'replace_requested', 'emergency_stop'].includes(status)) {
+      summary.matched += 1;
+    }
+    if (status === 'missing_alpaca_confirmation') summary.missingAlpacaConfirmation += 1;
+    if (status === 'orphan_alpaca_order') summary.orphanAlpacaOrders += 1;
+    if (order.discrepancy) {
+      summary.discrepancies += 1;
+    }
+    if (order.lastReconciledAt) {
+      const current = new Date(order.lastReconciledAt).getTime();
+      const latest = summary.lastReconciledAt ? new Date(summary.lastReconciledAt).getTime() : 0;
+      if (Number.isFinite(current) && current > latest) summary.lastReconciledAt = order.lastReconciledAt;
+    }
+  }
+
+  return summary;
+}
+
 router.get('/settings', async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
@@ -87,6 +146,99 @@ router.get('/settings', async (req, res, next) => {
       settings: mapSettings(settings),
       capabilities: ALPACA_CAPABILITY_MATRIX,
       liveConfirmationText: LIVE_CONFIRMATION_TEXT
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/health', async (req, res, next) => {
+  try {
+    const mongoConnected = mongoose.connection.readyState === 1;
+    let settings = mapSettings({});
+    let latestReconciledOrder = null;
+    let latestError = null;
+
+    if (mongoConnected) {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: 'User not found.' });
+
+      [settings, latestReconciledOrder, latestError] = await Promise.all([
+        getMappedSettingsForUser(user._id),
+        RoboTradeOrder.findOne({ userId: user._id, lastReconciledAt: { $ne: null } })
+          .sort({ lastReconciledAt: -1 })
+          .lean(),
+        RoboAuditLog.findOne({
+          userId: user._id,
+          eventType: /robotrader_.*(error|blocked|discrepancy)/
+        }).sort({ createdAt: -1 }).lean()
+      ]);
+    }
+
+    let alpacaPaper = {
+      connected: false,
+      checkedAt: new Date().toISOString(),
+      accountStatus: null,
+      tradingBlocked: null,
+      buyingPower: null,
+      error: null
+    };
+    try {
+      const account = await createAlpacaBroker({ mode: 'paper' }).getAccount();
+      alpacaPaper = {
+        ...alpacaPaper,
+        connected: true,
+        accountStatus: account?.status || null,
+        tradingBlocked: Boolean(account?.trading_blocked || account?.account_blocked),
+        buyingPower: toFiniteNumber(account?.buying_power ?? account?.buyingPower, null),
+        error: null
+      };
+    } catch (err) {
+      alpacaPaper.error = err?.message || 'Could not reach Alpaca paper account.';
+    }
+
+    const scheduler = getSchedulerStatus();
+    res.json({
+      mongo: {
+        connected: mongoConnected,
+        readyState: mongoose.connection.readyState,
+        status: mapMongoReadyState(mongoose.connection.readyState),
+        host: mongoose.connection.host || null,
+        name: mongoose.connection.name || null
+      },
+      alpaca: {
+        paper: alpacaPaper,
+        live: {
+          enabled: Boolean(settings.liveTradingExplicitlyEnabled && settings.mode === 'live'),
+          checked: false,
+          reason: 'Live account health is not checked unless live trading is explicitly enabled.'
+        }
+      },
+      robotrader: {
+        isEnabled: settings.isEnabled,
+        mode: settings.mode,
+        riskLevel: settings.riskLevel,
+        lastRunAt: settings.lastRunAt,
+        pausedReason: settings.pausedReason
+      },
+      scheduler: {
+        ...scheduler,
+        legacySchedulerEnabled: scheduler.legacySchedulerEnabled ?? isLegacySchedulerEnabled(),
+        phase1WorkerEnabled: scheduler.phase1WorkerEnabled ?? isPhase1WorkerEnabled()
+      },
+      reconciliation: {
+        lastReconciledAt: latestReconciledOrder?.lastReconciledAt || scheduler.lastReconciliationAt || null,
+        latestStatus: latestReconciledOrder?.reconciliationStatus || null,
+        latestDiscrepancy: latestReconciledOrder?.discrepancy || null
+      },
+      latestError: latestError
+        ? {
+            eventType: latestError.eventType,
+            message: latestError.payload?.reason || latestError.payload?.error || latestError.payload?.message || null,
+            createdAt: latestError.createdAt,
+            payload: latestError.payload || {}
+          }
+        : null
     });
   } catch (err) {
     next(err);
@@ -172,10 +324,37 @@ router.get('/decisions', async (req, res, next) => {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
     const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 250);
-    const query = { userId: user._id };
+    const settings = await getMappedSettingsForUser(user._id);
+    const environment = resolveRequestedEnvironment(req, settings);
+    if (environment === 'live' && !settings.liveTradingExplicitlyEnabled) {
+      return res.status(403).json({ message: 'Live decisions require explicit live trading opt-in.' });
+    }
+    const query = { userId: user._id, environment };
     if (req.query.status) query.status = req.query.status;
     const decisions = await RoboTradeDecision.find(query).sort({ decidedAt: -1 }).limit(limit).lean();
     res.json({ decisions });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/decisions/:decisionId', async (req, res, next) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: 'User not found.' });
+    if (!mongoose.Types.ObjectId.isValid(req.params.decisionId)) {
+      return res.status(400).json({ message: 'Invalid RoboTrader decision id.' });
+    }
+    const decision = await RoboTradeDecision.findOne({
+      _id: req.params.decisionId,
+      userId: user._id
+    }).lean();
+    if (!decision) return res.status(404).json({ message: 'RoboTrader decision not found.' });
+    const orders = await RoboTradeOrder.find({
+      userId: user._id,
+      decisionId: decision._id
+    }).sort({ createdAt: -1 }).lean();
+    res.json({ decision, orders });
   } catch (err) {
     next(err);
   }
@@ -186,10 +365,87 @@ router.get('/orders', async (req, res, next) => {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
     const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 250);
-    const query = { userId: user._id };
+    const settings = await getMappedSettingsForUser(user._id);
+    const environment = resolveRequestedEnvironment(req, settings);
+    if (environment === 'live' && !settings.liveTradingExplicitlyEnabled) {
+      return res.status(403).json({ message: 'Live orders require explicit live trading opt-in.' });
+    }
+    const query = { userId: user._id, environment };
     if (req.query.status) query.status = req.query.status;
     const orders = await RoboTradeOrder.find(query).sort({ createdAt: -1 }).limit(limit).lean();
     res.json({ orders });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/reconciliation-status', async (req, res, next) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: 'User not found.' });
+    const settings = await getMappedSettingsForUser(user._id);
+    const environment = resolveRequestedEnvironment(req, settings);
+    if (environment === 'live' && !settings.liveTradingExplicitlyEnabled) {
+      return res.status(403).json({ message: 'Live reconciliation status requires explicit live trading opt-in.' });
+    }
+    const [orders, orphanOrders] = await Promise.all([
+      RoboTradeOrder.find({ userId: user._id, environment })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .limit(250)
+        .lean(),
+      RoboTradeOrder.find({
+        userId: null,
+        environment,
+        reconciliationStatus: 'orphan_alpaca_order'
+      })
+        .sort({ lastReconciledAt: -1, createdAt: -1 })
+        .limit(25)
+        .lean()
+    ]);
+    const summary = summarizeReconciliationOrders(orders);
+    const orphanSummary = summarizeReconciliationOrders(orphanOrders);
+    summary.orphanAlpacaOrders = orphanSummary.orphanAlpacaOrders;
+    summary.discrepancies += orphanSummary.discrepancies;
+    if (!summary.lastReconciledAt && orphanSummary.lastReconciledAt) {
+      summary.lastReconciledAt = orphanSummary.lastReconciledAt;
+    }
+    const latestDiscrepancies = orders
+      .filter(order => order.discrepancy)
+      .slice(0, 10)
+      .map(order => ({
+        _id: order._id,
+        symbol: order.symbol,
+        status: order.status,
+        reconciliationStatus: order.reconciliationStatus,
+        discrepancy: order.discrepancy,
+        lastReconciledAt: order.lastReconciledAt,
+        clientOrderId: order.clientOrderId,
+        externalOrderId: order.externalOrderId
+      }));
+    res.json({
+      summary,
+      orphanSummary: {
+        count: orphanOrders.length,
+        lastReconciledAt: orphanSummary.lastReconciledAt
+      },
+      latestDiscrepancies,
+      orders: orders.slice(0, 50).map(order => ({
+        _id: order._id,
+        symbol: order.symbol,
+        side: order.side,
+        status: order.status,
+        filledQty: order.filledQty,
+        filledAvgPrice: order.filledAvgPrice,
+        reconciliationStatus: order.reconciliationStatus,
+        discrepancy: order.discrepancy,
+        lastReconciledAt: order.lastReconciledAt,
+        clientOrderId: order.clientOrderId,
+        externalOrderId: order.externalOrderId,
+        environment: order.environment,
+        updatedAt: order.updatedAt,
+        createdAt: order.createdAt
+      }))
+    });
   } catch (err) {
     next(err);
   }
@@ -308,13 +564,13 @@ router.get('/performance', async (req, res, next) => {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
     const settings = await getMappedSettingsForUser(user._id);
-    const environment = req.query.environment === 'live' ? 'live' : settings.mode;
+    const environment = resolveRequestedEnvironment(req, settings);
     if (environment === 'live' && !settings.liveTradingExplicitlyEnabled) {
       return res.status(403).json({ message: 'Live performance data requires explicit live trading opt-in.' });
     }
     const [decisions, orders] = await Promise.all([
-      RoboTradeDecision.find({ userId: user._id }).sort({ decidedAt: -1 }).limit(250).lean(),
-      RoboTradeOrder.find({ userId: user._id }).sort({ createdAt: -1 }).limit(250).lean()
+      RoboTradeDecision.find({ userId: user._id, environment }).sort({ decidedAt: -1 }).limit(250).lean(),
+      RoboTradeOrder.find({ userId: user._id, environment }).sort({ createdAt: -1 }).limit(250).lean()
     ]);
     let account = null;
     let positions = [];
@@ -345,10 +601,44 @@ router.get('/performance', async (req, res, next) => {
   }
 });
 
+router.post('/preview-paper', sensitiveRateLimit({ max: 12 }), async (req, res, next) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: 'User not found.' });
+    const currentSettings = await getMappedSettingsForUser(user._id);
+    const sanitizedPreviewSettings = sanitizeSettingsUpdate({
+      ...(req.body?.settings || {}),
+      mode: 'paper',
+      liveTradingExplicitlyEnabled: false
+    }, currentSettings);
+    const settingsOverride = mapSettings({
+      ...currentSettings,
+      ...sanitizedPreviewSettings,
+      mode: 'paper',
+      liveTradingExplicitlyEnabled: false
+    });
+    const preview = await previewRoboTraderForUser({
+      userId: user._id,
+      settingsOverride,
+      modeOverride: 'paper'
+    });
+    res.json({ preview });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/run-once-paper', sensitiveRateLimit({ max: 8 }), async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    const settings = await getMappedSettingsForUser(user._id);
+    if (!settings.isEnabled) {
+      return res.status(400).json({ message: 'Enable RoboTrader before running a paper test.' });
+    }
+    if (settings.mode !== 'paper') {
+      return res.status(400).json({ message: 'Run Once Paper is only available while RoboTrader is in paper mode.' });
+    }
     const result = await runRoboTraderForUser({
       userId: user._id,
       modeOverride: 'paper',
@@ -370,7 +660,17 @@ router.post('/reconcile', sensitiveRateLimit({ max: 8 }), async (req, res, next)
       return res.status(403).json({ message: 'Live reconciliation requires explicit live trading opt-in.' });
     }
     const result = await reconcileRoboOrders({
-      mode: requestedMode
+      mode: requestedMode,
+      userId: user._id
+    });
+    await RoboAuditLog.create({
+      userId: user._id,
+      eventType: 'robotrader_manual_reconciliation',
+      payload: {
+        environment: requestedMode,
+        updatedCount: result.updatedCount || 0,
+        discrepancyCount: result.discrepancyCount || 0
+      }
     });
     res.json({ result });
   } catch (err) {

@@ -266,6 +266,67 @@ function buildOrderInputFromDecision(decision, settings) {
   };
 }
 
+function resolveDecisionStatus(riskResult = {}) {
+  const rejectionReasons = riskResult.rejectionReasons || [];
+  if (riskResult.approved) return 'approved';
+  return rejectionReasons.includes('Trade requires manual approval above configured dollar amount.')
+    ? 'pending_manual_approval'
+    : 'rejected';
+}
+
+function summarizeResearchSnapshot(research = {}) {
+  const indicators = research.indicators || {};
+  return {
+    symbol: research.symbol || null,
+    assetClass: research.assetClass || null,
+    price: research.price ?? research.quote?.price ?? null,
+    volume: indicators.recentVolume ?? null,
+    averageVolume20: indicators.avgVolume20 ?? null,
+    volumeRatio: indicators.volumeRatio ?? null,
+    volatility20: indicators.volatility20 ?? null,
+    rsi14: indicators.rsi14 ?? null,
+    sma20: indicators.sma20 ?? null,
+    sma50: indicators.sma50 ?? null,
+    sma200: indicators.sma200 ?? null,
+    atrPct: indicators.atrPct ?? null,
+    fiveDayChangePct: indicators.fiveDayChangePct ?? null,
+    twentyDayChangePct: indicators.twentyDayChangePct ?? null,
+    gap: indicators.gap || null,
+    newsSentiment: research.news?.sentiment || null,
+    newsItems: Array.isArray(research.news?.items)
+      ? research.news.items.slice(0, 3)
+      : [],
+    portfolioExposure: research.marketContext?.portfolioExposure || null,
+    dataQuality: research.dataQuality || null,
+    asOf: research.asOf || null
+  };
+}
+
+function buildDecisionPreview({
+  decision,
+  riskResult,
+  orderInput,
+  research,
+  wouldSubmit = false
+}) {
+  return {
+    symbol: decision.symbol,
+    assetClass: normalizeAssetClass(decision.assetClass) || normalizeAssetClass(orderInput.assetClass) || 'stocks',
+    action: decision.action || 'hold',
+    status: resolveDecisionStatus(riskResult),
+    wouldSubmit: Boolean(wouldSubmit),
+    confidenceScore: decision.confidenceScore || 0,
+    rewardRiskRatio: decision.rewardRiskRatio || null,
+    strategyId: decision.strategyId || null,
+    strategyName: decision.strategyName || null,
+    reasoningSummary: decision.reasoningSummary || null,
+    recommendedOrder: orderInput || {},
+    riskChecks: riskResult.checks || [],
+    rejectionReasons: riskResult.rejectionReasons || [],
+    researchSummary: summarizeResearchSnapshot(research)
+  };
+}
+
 async function getRecentLocalOrders(userId, now, deps) {
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   return deps.RoboTradeOrder.find({
@@ -292,11 +353,7 @@ async function saveDecision({
     strategyId: decision.strategyId,
     now
   });
-  const status = riskResult.approved
-    ? 'approved'
-    : (riskResult.rejectionReasons.includes('Trade requires manual approval above configured dollar amount.')
-      ? 'pending_manual_approval'
-      : 'rejected');
+  const status = resolveDecisionStatus(riskResult);
 
   try {
     return await deps.RoboTradeDecision.create({
@@ -607,6 +664,150 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
   }
 }
 
+async function previewRoboTraderForUser({
+  userId,
+  settingsOverride = null,
+  modeOverride = 'paper',
+  now = new Date()
+} = {}, deps = defaultDeps) {
+  const settingsDoc = settingsOverride || await deps.getOrCreateRoboTraderSettings(userId);
+  const settings = deps.mapSettings(settingsDoc);
+  const environment = modeOverride === 'live' ? 'live' : 'paper';
+  const runId = buildRunId(userId, now);
+
+  if (environment === 'live') {
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'PREVIEW_PAPER_ONLY',
+      runId,
+      environment
+    };
+  }
+
+  const broker = deps.createAlpacaBroker({ mode: environment });
+  let account = {};
+  let positions = [];
+  let openOrders = [];
+  let marketClock = null;
+  try {
+    [account, positions, openOrders, marketClock] = await Promise.all([
+      broker.getAccount(),
+      broker.getPositions(),
+      broker.listOrders({ status: 'open', limit: 100, nested: true }),
+      typeof broker.getClock === 'function' ? broker.getClock() : Promise.resolve(null)
+    ]);
+  } catch (err) {
+    await writeAudit(userId, 'robotrader_preview_broker_error', {
+      runId,
+      environment,
+      reason: err?.message || 'Could not load Alpaca account context.'
+    }, deps);
+    throw err;
+  }
+
+  const normalizedPositions = (positions || []).map(normalizeAlpacaPosition);
+  const normalizedOpenOrders = (openOrders || []).map(normalizeAlpacaOrder);
+  const symbols = buildSymbolUniverse(settings);
+  const researchItems = await deps.buildResearchBatch(symbols, {
+    account,
+    positions: normalizedPositions,
+    openOrders: normalizedOpenOrders
+  });
+  const decisions = deps.evaluateResearchBatch(researchItems, settings);
+  const recentOrders = await getRecentLocalOrders(userId, now, deps);
+  const tradesToday = recentOrders.filter(order => {
+    const status = String(order.status || '').toLowerCase();
+    return !TERMINAL_ORDER_STATUSES.includes(status) || status === 'filled';
+  }).length;
+  const dailyPnl = toFiniteNumber(account.equity, 0) - toFiniteNumber(account.last_equity, toFiniteNumber(account.equity, 0));
+
+  const previews = [];
+  let firstSubmittableDecisionSeen = false;
+  for (const decision of decisions) {
+    const research = researchItems.find(item => item.symbol === decision.symbol) || {};
+    const baseOrderInput = decision.recommendedOrder
+      ? buildOrderInputFromDecision(decision, settings)
+      : {
+          symbol: decision.symbol,
+          assetClass: decision.assetClass,
+          side: 'buy',
+          orderType: 'market',
+          timeInForce: decision.assetClass === 'crypto' ? 'gtc' : 'day',
+          qty: 1,
+          estimatedNotional: 0
+        };
+    const orderInput = adaptOrderForMarketSession(baseOrderInput, {
+      settings,
+      marketClock,
+      research
+    });
+    const riskResult = deps.evaluateRoboRisk({
+      settings,
+      account,
+      positions: normalizedPositions,
+      openOrders: normalizedOpenOrders,
+      recentOrders,
+      tradesToday,
+      dailyPnl,
+      decision,
+      orderInput,
+      environment,
+      marketClock,
+      now
+    });
+    const wouldSubmit = Boolean(riskResult.approved && decision.recommendedOrder && !firstSubmittableDecisionSeen);
+    if (wouldSubmit) firstSubmittableDecisionSeen = true;
+    previews.push(buildDecisionPreview({
+      decision,
+      riskResult,
+      orderInput,
+      research,
+      wouldSubmit
+    }));
+  }
+
+  await writeAudit(userId, 'robotrader_preview_run', {
+    runId,
+    environment,
+    symbolsEvaluated: researchItems.length,
+    approvedCandidates: previews.filter(item => item.status === 'approved').length,
+    wouldSubmitCount: previews.filter(item => item.wouldSubmit).length,
+    at: now.toISOString()
+  }, deps);
+
+  return {
+    ok: true,
+    runId,
+    environment,
+    generatedAt: now.toISOString(),
+    settingsSnapshot: {
+      isEnabled: settings.isEnabled,
+      mode: settings.mode,
+      riskLevel: settings.riskLevel,
+      allowedAssetClasses: settings.allowedAssetClasses,
+      allowedSymbols: settings.allowedSymbols,
+      blockedSymbols: settings.blockedSymbols,
+      maxTradeAmount: settings.maxTradeAmount,
+      maxPositionSize: settings.maxPositionSize,
+      maxDailyLoss: settings.maxDailyLoss,
+      maxOpenPositions: settings.maxOpenPositions,
+      maxTradesPerDay: settings.maxTradesPerDay
+    },
+    accountSummary: {
+      status: account.status || null,
+      buyingPower: account.buying_power ?? account.buyingPower ?? null,
+      equity: account.equity ?? null,
+      tradingBlocked: Boolean(account.trading_blocked || account.account_blocked)
+    },
+    marketClock,
+    symbolsEvaluated: researchItems.length,
+    openOrderCount: normalizedOpenOrders.length,
+    positionCount: normalizedPositions.length,
+    decisions: previews
+  };
+}
+
 async function runWorkerTick(deps = defaultDeps) {
   const query = deps.RoboSettings.find({
     $or: [{ isEnabled: true }, { enabled: true }]
@@ -714,6 +915,7 @@ module.exports = {
   releaseWorkerLock,
   resolveWorkerLockTtlMs,
   startWorkerLockHeartbeat,
+  previewRoboTraderForUser,
   runRoboTraderForUser,
   runWorkerTick
 };

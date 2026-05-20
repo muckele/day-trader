@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { mapSettings } = require('../robotrader/settingsService');
 const {
   adaptOrderForMarketSession,
+  previewRoboTraderForUser,
   resolveWorkerLockTtlMs,
   runRoboTraderForUser,
   runWorkerTick
@@ -144,6 +145,20 @@ test('robotrader worker saves approved decisions and submitted orders', async ()
   assert.equal(context.createdOrders.length, 1);
   assert.equal(context.createdOrders[0].externalOrderId, 'alpaca-order-1');
   assert.equal(context.brokerSubmissions.length, 1);
+});
+
+test('robotrader paper preview evaluates without saving or submitting orders', async () => {
+  const context = createDeps({ approved: true });
+  const result = await previewRoboTraderForUser({ userId: 'user-worker', modeOverride: 'paper' }, context.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.environment, 'paper');
+  assert.equal(result.decisions.length, 1);
+  assert.equal(result.decisions[0].wouldSubmit, true);
+  assert.equal(context.createdDecisions.length, 0);
+  assert.equal(context.createdOrders.length, 0);
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_preview_run'), true);
 });
 
 test('robotrader worker saves rejected decisions without submitting orders', async () => {

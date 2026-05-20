@@ -178,24 +178,35 @@ function sanitizeSettingsUpdate(input = {}, current = {}) {
 }
 
 async function getOrCreateRoboTraderSettings(userId) {
-  const query = RoboSettings.findOne({ userId });
-  let settings = typeof query?.sort === 'function'
-    ? await query.sort({
-      isEnabled: -1,
-      enabled: -1,
-      updatedAt: -1,
-      createdAt: -1
-    })
-    : await query;
+  const findLatest = async () => {
+    const query = RoboSettings.findOne({ userId });
+    return typeof query?.sort === 'function'
+      ? query.sort({
+        isEnabled: -1,
+        enabled: -1,
+        updatedAt: -1,
+        createdAt: -1
+      })
+      : query;
+  };
+
+  let settings = await findLatest();
   if (settings) return settings;
-  settings = await RoboSettings.create({
-    userId,
-    ...DEFAULT_ROBOTRADER_SETTINGS,
-    dailyLimit: 0,
-    weeklyLimit: 0,
-    monthlyLimit: 0
-  });
-  return settings;
+  try {
+    settings = await RoboSettings.create({
+      userId,
+      ...DEFAULT_ROBOTRADER_SETTINGS,
+      dailyLimit: 0,
+      weeklyLimit: 0,
+      monthlyLimit: 0
+    });
+    return settings;
+  } catch (err) {
+    if (err?.code !== 11000) throw err;
+    settings = await findLatest();
+    if (settings) return settings;
+    throw err;
+  }
 }
 
 async function updateRoboTraderSettings(userId, input = {}) {

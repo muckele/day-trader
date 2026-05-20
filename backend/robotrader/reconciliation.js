@@ -29,12 +29,23 @@ async function writeAudit(userId, eventType, payload, deps) {
   return deps.RoboAuditLog.create({ userId, eventType, payload: payload || {} });
 }
 
-async function reconcileRoboOrders({ mode = 'paper', limit = 100 } = {}, deps = defaultDeps) {
+async function reconcileRoboOrders({
+  mode = 'paper',
+  limit = 100,
+  userId = null,
+  accountId = null
+} = {}, deps = defaultDeps) {
   const broker = deps.createAlpacaBroker({ mode });
-  const localOrders = await deps.RoboTradeOrder.find({
+  const localOrderQuery = {
     environment: mode,
     status: { $in: OPEN_STATUSES }
-  }).sort({ submittedAt: -1 }).limit(Math.min(Math.max(Number(limit) || 100, 1), 500));
+  };
+  if (userId) localOrderQuery.userId = userId;
+  if (accountId) localOrderQuery.accountId = accountId;
+
+  const localOrders = await deps.RoboTradeOrder.find(localOrderQuery)
+    .sort({ submittedAt: -1 })
+    .limit(Math.min(Math.max(Number(limit) || 100, 1), 500));
   const updated = [];
   const discrepancies = [];
 
@@ -95,6 +106,13 @@ async function reconcileRoboOrders({ mode = 'paper', limit = 100 } = {}, deps = 
       ]
     }).lean();
     if (!exists) {
+      if (userId) {
+        discrepancies.push({
+          type: 'unattributed_alpaca_order',
+          reason: 'A RoboTrader Alpaca order exists without a local record, but it cannot be safely attributed to the requesting user.'
+        });
+        continue;
+      }
       discrepancies.push({
         type: 'alpaca_order_missing_local_record',
         externalOrderId: order.id,
