@@ -1,8 +1,11 @@
 const RoboTradeOrder = require('../models/RoboTradeOrder');
 const RoboAuditLog = require('../models/RoboAuditLog');
 const { createAlpacaBroker } = require('./alpacaBroker');
+const { buildClientOrderId } = require('../services/alpacaTradingClient');
+const { normalizeSymbol } = require('./settingsService');
 
 const OPEN_STATUSES = ['pending_submit', 'accepted', 'new', 'pending_new', 'partially_filled', 'submitted'];
+const PROTECTIVE_STOP_RETRY_STATUSES = ['canceled', 'cancelled', 'expired'];
 
 function toFiniteNumber(value, fallback = null) {
   const numeric = Number(value);
@@ -24,6 +27,78 @@ function mapAlpacaOrder(order = {}) {
   };
 }
 
+function getSubmitErrorStatus(err = {}) {
+  const status = Number(err.status ?? err.response?.status ?? err.response?.statusCode);
+  return Number.isFinite(status) ? status : null;
+}
+
+function getBrokerErrorPayload(err = {}) {
+  const data = err.response?.data;
+  if (data && typeof data === 'object') return data;
+  if (typeof data === 'string' && data.trim()) return { message: data.trim() };
+  return null;
+}
+
+function getBrokerErrorMessage(err = {}) {
+  const payload = getBrokerErrorPayload(err);
+  const message = payload?.message
+    || payload?.error
+    || payload?.error_message
+    || payload?.detail
+    || err.message
+    || 'Alpaca order submission failed.';
+  const status = getSubmitErrorStatus(err);
+  return status && !String(message).includes(String(status))
+    ? `Alpaca ${status}: ${message}`
+    : String(message);
+}
+
+function isPositiveNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0;
+}
+
+function isProtectiveStopCandidate(order = {}) {
+  return String(order.assetClass || '').toLowerCase() === 'stocks'
+    && String(order.side || '').toLowerCase() === 'buy'
+    && String(order.orderClass || 'simple').toLowerCase() === 'simple'
+    && String(order.status || '').toLowerCase() === 'filled'
+    && !order.exitReason
+    && isPositiveNumber(order.riskStopPrice)
+    && isPositiveNumber(order.filledQty ?? order.qty);
+}
+
+function getPositionQty(symbol, positions = []) {
+  const normalized = normalizeSymbol(symbol);
+  const position = (positions || []).find(item => normalizeSymbol(item.symbol) === normalized);
+  return toFiniteNumber(position?.qty, 0) || 0;
+}
+
+function buildPositionAvailabilityBySymbol(positions = [], existingStops = []) {
+  const availability = new Map();
+  for (const position of positions || []) {
+    const symbol = normalizeSymbol(position.symbol);
+    if (!symbol) continue;
+    availability.set(symbol, Math.max(0, toFiniteNumber(position.qty, 0) || 0));
+  }
+  for (const stop of existingStops || []) {
+    if (String(stop.exitReason || '') !== 'stop_loss') continue;
+    if (String(stop.side || '').toLowerCase() !== 'sell') continue;
+    const symbol = normalizeSymbol(stop.symbol);
+    if (!symbol) continue;
+    const remaining = Math.max(0, (availability.get(symbol) || 0) - (toFiniteNumber(stop.qty, 0) || 0));
+    availability.set(symbol, remaining);
+  }
+  return availability;
+}
+
+async function readMaybeLean(queryOrValue) {
+  if (queryOrValue && typeof queryOrValue.lean === 'function') {
+    return queryOrValue.lean();
+  }
+  return queryOrValue;
+}
+
 async function writeAudit(userId, eventType, payload, deps) {
   if (!userId) return null;
   return deps.RoboAuditLog.create({ userId, eventType, payload: payload || {} });
@@ -42,6 +117,214 @@ async function applyAlpacaOrder(localOrder, alpacaOrder, deps) {
     clientOrderId: localOrder.clientOrderId,
     status: localOrder.status
   }, deps);
+}
+
+function buildProtectiveStopParentQuery(parentOrder) {
+  const parentMatches = [];
+  if (parentOrder._id) parentMatches.push({ parentOrderId: parentOrder._id });
+  if (parentOrder.clientOrderId) parentMatches.push({ parentClientOrderId: parentOrder.clientOrderId });
+  if (!parentMatches.length) return null;
+  return {
+    environment: parentOrder.environment,
+    exitReason: 'stop_loss',
+    status: { $nin: PROTECTIVE_STOP_RETRY_STATUSES },
+    $or: parentMatches
+  };
+}
+
+async function findExistingProtectiveStop(parentOrder, deps) {
+  const query = buildProtectiveStopParentQuery(parentOrder);
+  if (!query) return null;
+  return readMaybeLean(deps.RoboTradeOrder.findOne(query));
+}
+
+async function hasExistingProtectiveStop(parentOrder, deps) {
+  const existing = await findExistingProtectiveStop(parentOrder, deps);
+  return Boolean(existing);
+}
+
+async function submitProtectiveStopForEntry(parentOrder, {
+  broker,
+  positions = [],
+  now = new Date()
+}, deps) {
+  if (!isProtectiveStopCandidate(parentOrder)) return null;
+  if (await hasExistingProtectiveStop(parentOrder, deps)) return null;
+
+  const currentPositionQty = getPositionQty(parentOrder.symbol, positions);
+  const filledQty = toFiniteNumber(parentOrder.filledQty ?? parentOrder.qty, 0) || 0;
+  const closeQty = Math.min(Math.max(0, currentPositionQty), filledQty);
+  if (!isPositiveNumber(closeQty)) {
+    await writeAudit(parentOrder.userId, 'robotrader_protective_stop_skipped', {
+      parentOrderId: String(parentOrder._id),
+      clientOrderId: parentOrder.clientOrderId,
+      symbol: parentOrder.symbol,
+      reason: 'No positive long position was available for a protective stop order.'
+    }, deps);
+    return null;
+  }
+
+  const clientOrderId = deps.buildClientOrderId({
+    origin: 'robotrader-stop',
+    symbol: parentOrder.symbol,
+    now
+  });
+  const stopInput = {
+    symbol: parentOrder.symbol,
+    assetClass: 'stocks',
+    side: 'sell',
+    orderType: 'stop',
+    orderClass: 'simple',
+    timeInForce: 'day',
+    qty: closeQty,
+    stopPrice: parentOrder.riskStopPrice,
+    clientOrderId
+  };
+  let stopOrder = null;
+  try {
+    stopOrder = await deps.RoboTradeOrder.create({
+      userId: parentOrder.userId,
+      accountId: parentOrder.accountId || 'default',
+      decisionId: parentOrder.decisionId || null,
+      environment: parentOrder.environment,
+      broker: 'alpaca',
+      parentOrderId: parentOrder._id,
+      parentClientOrderId: parentOrder.clientOrderId || null,
+      exitReason: 'stop_loss',
+      symbol: normalizeSymbol(parentOrder.symbol),
+      assetClass: 'stocks',
+      side: 'sell',
+      orderType: 'stop',
+      orderClass: 'simple',
+      timeInForce: 'day',
+      qty: closeQty,
+      stopPrice: parentOrder.riskStopPrice,
+      clientOrderId,
+      status: 'pending_submit',
+      reasoningSummary: 'Protective stop generated for a filled RoboTrader simple/fractional stock entry.',
+      strategyId: parentOrder.strategyId || null,
+      riskChecks: parentOrder.riskChecks || []
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      return findExistingProtectiveStop(parentOrder, deps);
+    }
+    throw err;
+  }
+
+  try {
+    const result = await broker.submitOrder(stopInput);
+    const alpacaOrder = result.order || {};
+    stopOrder.externalOrderId = alpacaOrder.id || null;
+    stopOrder.clientOrderId = alpacaOrder.client_order_id || result.payload?.client_order_id || stopOrder.clientOrderId;
+    stopOrder.status = alpacaOrder.status || 'submitted';
+    stopOrder.rawPayload = result.payload || {};
+    stopOrder.alpacaResponse = alpacaOrder;
+    stopOrder.submittedAt = alpacaOrder.submitted_at || now;
+    stopOrder.reconciliationStatus = 'matched';
+    stopOrder.discrepancy = null;
+    stopOrder.lastReconciledAt = now;
+    await stopOrder.save();
+
+    await writeAudit(parentOrder.userId, 'robotrader_protective_stop_submitted', {
+      parentOrderId: String(parentOrder._id),
+      parentClientOrderId: parentOrder.clientOrderId || null,
+      orderId: stopOrder.externalOrderId,
+      clientOrderId: stopOrder.clientOrderId,
+      symbol: stopOrder.symbol,
+      qty: stopOrder.qty,
+      stopPrice: stopOrder.stopPrice,
+      environment: stopOrder.environment
+    }, deps);
+    return stopOrder;
+  } catch (err) {
+    const reason = getBrokerErrorMessage(err);
+    stopOrder.status = 'rejected';
+    stopOrder.reconciliationStatus = 'submit_rejected';
+    stopOrder.rejectedAt = now;
+    stopOrder.discrepancy = reason;
+    stopOrder.rawPayload = err.alpacaPayload || {};
+    stopOrder.alpacaResponse = {
+      status: getSubmitErrorStatus(err),
+      data: getBrokerErrorPayload(err),
+      message: reason
+    };
+    await stopOrder.save();
+
+    await writeAudit(parentOrder.userId, 'robotrader_protective_stop_rejected', {
+      parentOrderId: String(parentOrder._id),
+      parentClientOrderId: parentOrder.clientOrderId || null,
+      clientOrderId: stopOrder.clientOrderId,
+      symbol: stopOrder.symbol,
+      reason,
+      environment: stopOrder.environment
+    }, deps);
+    return stopOrder;
+  }
+}
+
+async function submitMissingProtectiveStops({
+  mode,
+  userId,
+  accountId,
+  limit,
+  broker,
+  now = new Date()
+}, deps) {
+  const query = {
+    environment: mode,
+    assetClass: 'stocks',
+    side: 'buy',
+    orderClass: 'simple',
+    status: 'filled',
+    riskStopPrice: { $gt: 0 },
+    $or: [
+      { exitReason: null },
+      { exitReason: { $exists: false } }
+    ]
+  };
+  if (userId) query.userId = userId;
+  if (accountId) query.accountId = accountId;
+
+  const candidates = await deps.RoboTradeOrder.find(query)
+    .sort({ filledAt: -1, updatedAt: -1 })
+    .limit(Math.min(Math.max(Number(limit) || 100, 1), 500));
+  const eligible = (candidates || []).filter(isProtectiveStopCandidate);
+  if (!eligible.length) return [];
+
+  const positions = typeof broker.getPositions === 'function'
+    ? await broker.getPositions()
+    : [];
+  const existingStopQuery = {
+    environment: mode,
+    assetClass: 'stocks',
+    side: 'sell',
+    exitReason: 'stop_loss',
+    status: { $in: OPEN_STATUSES }
+  };
+  if (userId) existingStopQuery.userId = userId;
+  if (accountId) existingStopQuery.accountId = accountId;
+  const existingStops = await deps.RoboTradeOrder.find(existingStopQuery)
+    .sort({ submittedAt: -1, createdAt: -1 })
+    .limit(500);
+  const availableQtyBySymbol = buildPositionAvailabilityBySymbol(positions, existingStops);
+  const submitted = [];
+  for (const order of eligible) {
+    const symbol = normalizeSymbol(order.symbol);
+    const availableQty = availableQtyBySymbol.get(symbol) || 0;
+    const protectiveStop = await submitProtectiveStopForEntry(order, {
+      broker,
+      positions: [{ symbol, qty: availableQty }],
+      now
+    }, deps);
+    if (protectiveStop) {
+      submitted.push(protectiveStop);
+      if (String(protectiveStop.status || '').toLowerCase() !== 'rejected') {
+        availableQtyBySymbol.set(symbol, Math.max(0, availableQty - (toFiniteNumber(protectiveStop.qty, 0) || 0)));
+      }
+    }
+  }
+  return submitted;
 }
 
 async function loadAlpacaOrderForLocal(localOrder, broker) {
@@ -120,6 +403,15 @@ async function reconcileRoboOrders({
     }
   }
 
+  const protectiveStops = await submitMissingProtectiveStops({
+    mode,
+    userId,
+    accountId,
+    limit,
+    broker,
+    now: new Date()
+  }, deps);
+
   const recentAlpacaOrders = await broker.listOrders({
     status: 'all',
     limit: Math.min(Math.max(Number(limit) || 100, 1), 500),
@@ -175,6 +467,7 @@ async function reconcileRoboOrders({
     environment: mode,
     updatedCount: updated.length,
     discrepancyCount: discrepancies.length,
+    protectiveStopsSubmitted: protectiveStops.length,
     updated,
     discrepancies
   };
@@ -183,9 +476,12 @@ async function reconcileRoboOrders({
 const defaultDeps = {
   RoboTradeOrder,
   RoboAuditLog,
-  createAlpacaBroker
+  createAlpacaBroker,
+  buildClientOrderId
 };
 
 module.exports = {
-  reconcileRoboOrders
+  reconcileRoboOrders,
+  submitProtectiveStopForEntry,
+  submitMissingProtectiveStops
 };

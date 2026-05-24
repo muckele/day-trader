@@ -145,6 +145,13 @@ test('GET /robotrader/reconciliation-status summarizes local order matching stat
                 status: 'pending_submit',
                 reconciliationStatus: 'missing_alpaca_confirmation',
                 discrepancy: 'Local RoboTradeOrder does not have an Alpaca order id.'
+              },
+              {
+                _id: 'order-reconcile-3',
+                symbol: 'AMZN',
+                status: 'rejected',
+                reconciliationStatus: 'submit_rejected',
+                discrepancy: 'Alpaca 422: qty must be whole shares for advanced order class.'
               }
             ]
         })
@@ -162,11 +169,12 @@ test('GET /robotrader/reconciliation-status summarizes local order matching stat
 
   assert.equal(nextErr, null);
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.summary.total, 2);
-  assert.equal(res.body.summary.discrepancies, 2);
+  assert.equal(res.body.summary.total, 3);
+  assert.equal(res.body.summary.pending, 1);
+  assert.equal(res.body.summary.discrepancies, 3);
   assert.equal(res.body.summary.missingAlpacaConfirmation, 1);
   assert.equal(res.body.summary.orphanAlpacaOrders, 1);
-  assert.equal(res.body.latestDiscrepancies.length, 1);
+  assert.equal(res.body.latestDiscrepancies.length, 2);
   assert.equal(findQueries[0].environment, 'paper');
   assert.equal(findQueries[0].userId, '507f1f77bcf86cd799439013');
   assert.equal(findQueries[1].environment, 'paper');

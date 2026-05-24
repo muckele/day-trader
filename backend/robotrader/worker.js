@@ -17,6 +17,7 @@ const { buildResearchBatch } = require('./researchService');
 const { evaluateResearchBatch } = require('./strategyEngine');
 const { evaluateRoboRisk } = require('./riskGate');
 const { createAlpacaBroker } = require('./alpacaBroker');
+const { submitProtectiveStopForEntry } = require('./reconciliation');
 
 const TERMINAL_ORDER_STATUSES = ['filled', 'canceled', 'cancelled', 'expired', 'rejected'];
 
@@ -56,6 +57,36 @@ function buildDecisionIdempotencyKey({ userId, symbol, strategyId, now }) {
 function getSubmitErrorStatus(err = {}) {
   const status = Number(err.status ?? err.response?.status ?? err.response?.statusCode);
   return Number.isFinite(status) ? status : null;
+}
+
+function getBrokerErrorPayload(err = {}) {
+  const data = err.response?.data;
+  if (data && typeof data === 'object') return data;
+  if (typeof data === 'string' && data.trim()) return { message: data.trim() };
+  return null;
+}
+
+function getBrokerErrorMessage(err = {}) {
+  const payload = getBrokerErrorPayload(err);
+  const message = payload?.message
+    || payload?.error
+    || payload?.error_message
+    || payload?.detail
+    || err.message
+    || 'Alpaca order submission failed.';
+  const status = getSubmitErrorStatus(err);
+  return status && !String(message).includes(String(status))
+    ? `Alpaca ${status}: ${message}`
+    : String(message);
+}
+
+function buildBrokerErrorSnapshot(err = {}) {
+  return {
+    status: getSubmitErrorStatus(err),
+    code: err.code || err.response?.data?.code || null,
+    message: getBrokerErrorMessage(err),
+    data: getBrokerErrorPayload(err)
+  };
 }
 
 function isDuplicateClientOrderIdError(err = {}) {
@@ -99,6 +130,21 @@ function normalizeAlpacaOrder(order = {}) {
     createdAt: order.created_at || null,
     raw: order
   };
+}
+
+async function loadAssetMetadataForRisk(symbol, assetClass, broker) {
+  if (normalizeAssetClass(assetClass) !== 'stocks' || typeof broker.getAsset !== 'function') {
+    return { asset: null, assetLookupError: null };
+  }
+  try {
+    const asset = await broker.getAsset(normalizeSymbol(symbol));
+    return { asset: asset || null, assetLookupError: null };
+  } catch (err) {
+    return {
+      asset: null,
+      assetLookupError: getBrokerErrorMessage(err) || `Could not verify Alpaca asset metadata for ${normalizeSymbol(symbol)}.`
+    };
+  }
 }
 
 function normalizeOrderIdentifier(value) {
@@ -304,6 +350,8 @@ function buildOrderInputFromDecision(decision, settings) {
     trailPercent: order.trailPercent || null,
     takeProfit: order.takeProfit || null,
     stopLoss: order.stopLoss || null,
+    riskStopPrice: order.riskStopPrice || null,
+    riskTakeProfitPrice: order.riskTakeProfitPrice || null,
     extendedHours: Boolean(settings.allowExtendedHours && order.extendedHours),
     estimatedNotional: order.estimatedNotional || order.notional || null,
     strategyId: decision.strategyId || order.strategyId || null
@@ -470,6 +518,8 @@ async function submitApprovedOrder({
     trailPercent: orderInput.trailPercent,
     takeProfit: orderInput.takeProfit,
     stopLoss: orderInput.stopLoss,
+    riskStopPrice: orderInput.riskStopPrice,
+    riskTakeProfitPrice: orderInput.riskTakeProfitPrice,
     clientOrderId,
     status: 'pending_submit',
     reasoningSummary: decisionDoc.reasoningSummary,
@@ -493,6 +543,23 @@ async function submitApprovedOrder({
     pendingOrder.filledAvgPrice = toFiniteNumber(order.filled_avg_price, null);
     pendingOrder.filledAt = order.filled_at || null;
     await pendingOrder.save();
+    if (String(pendingOrder.status || '').toLowerCase() === 'filled' && typeof deps.submitProtectiveStopForEntry === 'function') {
+      try {
+        const positions = typeof broker.getPositions === 'function'
+          ? await broker.getPositions()
+          : [];
+        await deps.submitProtectiveStopForEntry(pendingOrder, { broker, positions, now }, deps);
+      } catch (err) {
+        await writeAudit(userId, 'robotrader_protective_stop_error', {
+          decisionId: String(decisionDoc._id),
+          parentOrderId: String(pendingOrder._id),
+          clientOrderId: pendingOrder.clientOrderId,
+          symbol: pendingOrder.symbol,
+          reason: err?.message || 'Could not create protective stop after immediate fill.',
+          environment
+        }, deps);
+      }
+    }
 
     decisionDoc.status = 'submitted';
     decisionDoc.alpacaResponse = order;
@@ -509,24 +576,30 @@ async function submitApprovedOrder({
     return pendingOrder;
   } catch (err) {
     const ambiguousSubmit = deps.isAmbiguousSubmitError(err);
+    const brokerError = buildBrokerErrorSnapshot(err);
+    const brokerErrorMessage = brokerError.message || 'Alpaca order submission failed.';
     pendingOrder.status = ambiguousSubmit ? 'pending_submit' : 'rejected';
     pendingOrder.reconciliationStatus = ambiguousSubmit
       ? 'submit_error_pending_reconciliation'
       : 'submit_rejected';
     if (!ambiguousSubmit) pendingOrder.rejectedAt = now;
-    pendingOrder.discrepancy = err?.message || 'Alpaca order submission failed.';
+    pendingOrder.discrepancy = brokerErrorMessage;
+    pendingOrder.rawPayload = err.alpacaPayload || {};
+    pendingOrder.alpacaResponse = brokerError;
     await pendingOrder.save();
 
     decisionDoc.status = ambiguousSubmit ? 'error' : 'rejected';
-    decisionDoc.error = err?.message || 'Alpaca order submission failed.';
+    decisionDoc.error = brokerErrorMessage;
+    decisionDoc.alpacaResponse = brokerError;
     await decisionDoc.save();
 
     await writeAudit(userId, ambiguousSubmit ? 'robotrader_order_submit_uncertain' : 'robotrader_order_rejected', {
       decisionId: String(decisionDoc._id),
       clientOrderId: pendingOrder.clientOrderId,
       symbol: pendingOrder.symbol,
-      reason: err?.message || 'Alpaca order submission failed.',
-      status: getSubmitErrorStatus(err),
+      reason: brokerErrorMessage,
+      status: brokerError.status,
+      brokerError,
       ambiguousSubmit,
       environment
     }, deps);
@@ -632,6 +705,11 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
       marketClock,
       research
     });
+    const assetContext = await loadAssetMetadataForRisk(
+      orderInput.symbol || decision.symbol,
+      orderInput.assetClass || decision.assetClass,
+      broker
+    );
 
     const riskResult = deps.evaluateRoboRisk({
       settings,
@@ -643,6 +721,8 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
       dailyPnl,
       decision,
       orderInput,
+      asset: assetContext.asset,
+      assetLookupError: assetContext.assetLookupError,
       environment,
       marketClock,
       now
@@ -800,6 +880,11 @@ async function previewRoboTraderForUser({
       marketClock,
       research
     });
+    const assetContext = await loadAssetMetadataForRisk(
+      orderInput.symbol || decision.symbol,
+      orderInput.assetClass || decision.assetClass,
+      broker
+    );
     const riskResult = deps.evaluateRoboRisk({
       settings,
       account,
@@ -810,6 +895,8 @@ async function previewRoboTraderForUser({
       dailyPnl,
       decision,
       orderInput,
+      asset: assetContext.asset,
+      assetLookupError: assetContext.assetLookupError,
       environment,
       marketClock,
       now
@@ -1033,6 +1120,7 @@ const defaultDeps = {
   evaluateResearchBatch,
   evaluateRoboRisk,
   isAmbiguousSubmitError,
+  submitProtectiveStopForEntry,
   getOrCreateRoboTraderSettings,
   mapSettings,
   refreshWorkerLock,

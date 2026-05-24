@@ -160,6 +160,7 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
     isConfigured: Boolean(config.apiKey && config.apiSecret),
     getAccount: () => request('get', '/v2/account'),
     getClock: () => request('get', '/v2/clock'),
+    getAsset: symbol => request('get', `/v2/assets/${encodeURIComponent(symbol)}`),
     getPositions: () => request('get', '/v2/positions'),
     listOrders: (params = {}) => request('get', '/v2/orders', null, { params }),
     getOrder: orderId => request('get', `/v2/orders/${orderId}`),
@@ -172,7 +173,13 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
     closePosition: (symbol, payload = {}) => request('delete', `/v2/positions/${encodeURIComponent(symbol)}`, payload),
     submitOrder: async input => {
       const built = buildRoboAlpacaOrderPayload(input);
-      const order = await request('post', '/v2/orders', built.payload);
+      let order = null;
+      try {
+        order = await request('post', '/v2/orders', built.payload);
+      } catch (err) {
+        err.alpacaPayload = built.payload;
+        throw err;
+      }
       return {
         order,
         payload: built.payload,

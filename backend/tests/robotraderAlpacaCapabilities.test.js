@@ -64,6 +64,24 @@ test('robotrader alpaca order builder emits valid bracket equity payload', () =>
   assert.equal(built.payload.client_order_id, 'robotrader-test-1');
 });
 
+test('robotrader alpaca order builder emits valid fractional simple equity payload', () => {
+  const built = buildRoboAlpacaOrderPayload({
+    symbol: 'aapl',
+    assetClass: 'stocks',
+    side: 'buy',
+    qty: 1.25,
+    orderType: 'market',
+    orderClass: 'simple',
+    timeInForce: 'day',
+    clientOrderId: 'robotrader-fractional-test-1'
+  });
+
+  assert.equal(built.payload.symbol, 'AAPL');
+  assert.equal(built.payload.qty, '1.25');
+  assert.equal(built.payload.order_class, undefined);
+  assert.equal(built.payload.client_order_id, 'robotrader-fractional-test-1');
+});
+
 test('alpaca capability matrix rejects notional bracket orders', () => {
   const result = validateAlpacaOrderRequest({
     symbol: 'AAPL',
@@ -129,7 +147,7 @@ test('alpaca capability matrix validates advanced equity order legs', () => {
   assert.match(invertedLegs.errors.join(' '), /take_profit\.limit_price above stop_loss\.stop_price/);
 });
 
-test('alpaca capability matrix rejects fractional equity non-market orders', () => {
+test('alpaca capability matrix allows fractional simple equity limit day orders', () => {
   const result = validateAlpacaOrderRequest({
     symbol: 'AAPL',
     assetClass: 'stocks',
@@ -141,6 +159,69 @@ test('alpaca capability matrix rejects fractional equity non-market orders', () 
     limitPrice: 200
   });
 
+  assert.equal(result.ok, true);
+});
+
+test('alpaca capability matrix allows equity notional limit day orders', () => {
+  const result = validateAlpacaOrderRequest({
+    symbol: 'AAPL',
+    assetClass: 'stocks',
+    side: 'buy',
+    notional: 250,
+    orderType: 'limit',
+    orderClass: 'simple',
+    timeInForce: 'day',
+    limitPrice: 200
+  });
+
+  assert.equal(result.ok, true);
+});
+
+test('alpaca capability matrix rejects unsupported equity notional order types', () => {
+  const result = validateAlpacaOrderRequest({
+    symbol: 'AAPL',
+    assetClass: 'stocks',
+    side: 'buy',
+    notional: 250,
+    orderType: 'trailing_stop',
+    orderClass: 'simple',
+    timeInForce: 'day',
+    trailPercent: 1
+  });
+
   assert.equal(result.ok, false);
-  assert.match(result.errors.join(' '), /Fractional equity qty orders require market order type and day time_in_force/);
+  assert.match(result.errors.join(' '), /Equity notional orders require market, limit, stop, or stop_limit/);
+});
+
+test('alpaca capability matrix rejects fractional equity advanced order classes', () => {
+  const result = validateAlpacaOrderRequest({
+    symbol: 'AAPL',
+    assetClass: 'stocks',
+    side: 'buy',
+    qty: 0.5,
+    orderType: 'market',
+    orderClass: 'bracket',
+    timeInForce: 'day',
+    takeProfit: { limit_price: 210 },
+    stopLoss: { stop_price: 190 }
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(' '), /Fractional equity qty orders require simple order_class/);
+});
+
+test('alpaca capability matrix rejects fractional equity non-day orders', () => {
+  const result = validateAlpacaOrderRequest({
+    symbol: 'AAPL',
+    assetClass: 'stocks',
+    side: 'buy',
+    qty: 0.5,
+    orderType: 'limit',
+    orderClass: 'simple',
+    timeInForce: 'gtc',
+    limitPrice: 200
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(' '), /Fractional equity qty orders require market, limit, stop, or stop_limit order type with day time_in_force/);
 });

@@ -62,6 +62,95 @@ test('robotrader risk gate approves a valid paper stock trade', () => {
   assert.equal(result.rejectionReasons.length, 0);
 });
 
+test('robotrader risk gate approves simple fractional stock entries with internal risk stop', () => {
+  const result = evaluateRoboRisk({
+    settings: baseSettings,
+    account: { buying_power: '5000', status: 'ACTIVE' },
+    positions: [],
+    openOrders: [],
+    recentOrders: [],
+    tradesToday: 0,
+    dailyPnl: 0,
+    decision: baseDecision,
+    orderInput: {
+      ...baseOrder,
+      orderClass: 'simple',
+      qty: 1.25,
+      stopLoss: null,
+      takeProfit: null,
+      riskStopPrice: 190
+    },
+    environment: 'paper'
+  });
+
+  assert.equal(result.approved, true);
+  assert.equal(result.rejectionReasons.length, 0);
+});
+
+test('robotrader risk gate rejects fractionals when Alpaca asset is not fractionable', () => {
+  const result = evaluateRoboRisk({
+    settings: baseSettings,
+    account: { buying_power: '5000', status: 'ACTIVE' },
+    positions: [],
+    openOrders: [],
+    recentOrders: [],
+    tradesToday: 0,
+    dailyPnl: 0,
+    decision: baseDecision,
+    orderInput: {
+      ...baseOrder,
+      orderClass: 'simple',
+      qty: 1.25,
+      stopLoss: null,
+      takeProfit: null,
+      riskStopPrice: 190
+    },
+    asset: { symbol: 'AAPL', status: 'active', tradable: true, fractionable: false },
+    environment: 'paper'
+  });
+
+  assert.equal(result.approved, false);
+  assert.ok(result.rejectionReasons.includes('AAPL is not marked fractionable by Alpaca.'));
+});
+
+test('robotrader risk gate rejects when Alpaca asset lookup fails', () => {
+  const result = evaluateRoboRisk({
+    settings: baseSettings,
+    account: { buying_power: '5000', status: 'ACTIVE' },
+    positions: [],
+    openOrders: [],
+    recentOrders: [],
+    tradesToday: 0,
+    dailyPnl: 0,
+    decision: baseDecision,
+    orderInput: baseOrder,
+    assetLookupError: 'Alpaca 404: asset not found',
+    environment: 'paper'
+  });
+
+  assert.equal(result.approved, false);
+  assert.ok(result.rejectionReasons.includes('Alpaca 404: asset not found'));
+});
+
+test('robotrader risk gate rejects when Alpaca asset is not tradable', () => {
+  const result = evaluateRoboRisk({
+    settings: baseSettings,
+    account: { buying_power: '5000', status: 'ACTIVE' },
+    positions: [],
+    openOrders: [],
+    recentOrders: [],
+    tradesToday: 0,
+    dailyPnl: 0,
+    decision: baseDecision,
+    orderInput: baseOrder,
+    asset: { symbol: 'AAPL', status: 'inactive', tradable: false, fractionable: true },
+    environment: 'paper'
+  });
+
+  assert.equal(result.approved, false);
+  assert.ok(result.rejectionReasons.includes('AAPL is not currently tradable on Alpaca.'));
+});
+
 test('robotrader risk gate rejects disabled and duplicate trades', () => {
   const result = evaluateRoboRisk({
     settings: { ...baseSettings, isEnabled: false },
@@ -115,6 +204,32 @@ test('robotrader risk gate rejects sell orders that would open shorts when disab
 
   assert.equal(result.approved, false);
   assert.ok(result.rejectionReasons.includes('Short selling is not enabled for this user.'));
+});
+
+test('robotrader risk gate rejects fractional short-opening stock orders', () => {
+  const result = evaluateRoboRisk({
+    settings: { ...baseSettings, allowShortSelling: true },
+    account: { buying_power: '5000', status: 'ACTIVE' },
+    positions: [],
+    openOrders: [],
+    recentOrders: [],
+    tradesToday: 0,
+    dailyPnl: 0,
+    decision: { ...baseDecision, action: 'sell' },
+    orderInput: {
+      ...baseOrder,
+      side: 'sell',
+      orderClass: 'simple',
+      qty: 1.25,
+      stopLoss: null,
+      takeProfit: null,
+      riskStopPrice: 210
+    },
+    environment: 'paper'
+  });
+
+  assert.equal(result.approved, false);
+  assert.ok(result.rejectionReasons.includes('Alpaca does not support opening fractional short equity positions.'));
 });
 
 test('robotrader risk gate allows risk-reducing exits when exposure caps are already full', () => {

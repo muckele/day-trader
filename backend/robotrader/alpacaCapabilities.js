@@ -87,8 +87,14 @@ function validateAlpacaOrderRequest(input = {}) {
   if (hasNotional && !capability?.supportsNotional) {
     errors.push(`${assetClass} orders do not support notional orders.`);
   }
-  if (hasNotional && orderType !== 'market') {
-    errors.push('Notional orders must use market order type.');
+  if (hasNotional && assetClass === 'stocks' && !['market', 'limit', 'stop', 'stop_limit'].includes(orderType)) {
+    errors.push('Equity notional orders require market, limit, stop, or stop_limit order type.');
+  }
+  if (hasNotional && assetClass === 'crypto' && !['market', 'limit', 'stop_limit'].includes(orderType)) {
+    errors.push('Crypto notional orders require market, limit, or stop_limit order type.');
+  }
+  if (hasNotional && !['stocks', 'crypto'].includes(assetClass) && orderType !== 'market') {
+    errors.push('Notional orders must use market order type for this asset class.');
   }
   if (hasNotional && assetClass === 'stocks' && timeInForce !== 'day') {
     errors.push('Equity notional orders require day time_in_force.');
@@ -96,8 +102,13 @@ function validateAlpacaOrderRequest(input = {}) {
   if (hasNotional && orderClass !== 'simple') {
     errors.push('Notional orders require simple order_class.');
   }
-  if (isFractional(input.qty) && assetClass === 'stocks' && !(orderType === 'market' && timeInForce === 'day')) {
-    errors.push('Fractional equity qty orders require market order type and day time_in_force.');
+  if (isFractional(input.qty) && assetClass === 'stocks') {
+    if (orderClass !== 'simple') {
+      errors.push('Fractional equity qty orders require simple order_class.');
+    }
+    if (!['market', 'limit', 'stop', 'stop_limit'].includes(orderType) || timeInForce !== 'day') {
+      errors.push('Fractional equity qty orders require market, limit, stop, or stop_limit order type with day time_in_force.');
+    }
   }
 
   if ((orderType === 'limit' || orderType === 'stop_limit') && !hasNumericValue(input.limitPrice ?? input.limit_price)) {

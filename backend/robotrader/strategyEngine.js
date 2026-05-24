@@ -8,6 +8,11 @@ function round(value, digits = 2) {
   return Number(numeric.toFixed(digits));
 }
 
+function isFractionalQty(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 && !Number.isInteger(numeric);
+}
+
 function riskLevelMultiplier(riskLevel) {
   if (riskLevel === 'conservative') return 0.5;
   if (riskLevel === 'aggressive') return 1;
@@ -30,18 +35,21 @@ function buildOrder({ research, settings, side, confidenceScore, rewardRiskRatio
       ? Math.floor(targetNotional / price)
       : Number((targetNotional / price).toFixed(6)))
     : null;
+  const useBrokerBracket = isStockOrder && computedQty > 0 && !isFractionalQty(computedQty);
   const order = {
     symbol: research.symbol,
     assetClass: research.assetClass,
     side,
     orderType: 'market',
-    orderClass: research.assetClass === 'stocks' ? 'bracket' : 'simple',
+    orderClass: useBrokerBracket ? 'bracket' : 'simple',
     timeInForce: research.assetClass === 'crypto' ? 'gtc' : 'day',
     notional: isStockOrder ? null : (targetNotional > 0 ? round(targetNotional, 2) : null),
     qty: isStockOrder && computedQty > 0 ? computedQty : null,
     estimatedNotional: targetNotional > 0 ? round(targetNotional, 2) : null,
     stopLoss: null,
     takeProfit: null,
+    riskStopPrice: null,
+    riskTakeProfitPrice: null,
     extendedHours: false,
     strategyId,
     confidenceScore,
@@ -50,12 +58,21 @@ function buildOrder({ research, settings, side, confidenceScore, rewardRiskRatio
   };
 
   if (price > 0 && research.assetClass === 'stocks') {
+    let stopPrice = null;
+    let takeProfitPrice = null;
     if (side === 'buy') {
-      order.stopLoss = { stop_price: round(price * (1 - stopDistancePct / 100), 2) };
-      order.takeProfit = { limit_price: round(price * (1 + targetDistancePct / 100), 2) };
+      stopPrice = round(price * (1 - stopDistancePct / 100), 2);
+      takeProfitPrice = round(price * (1 + targetDistancePct / 100), 2);
     } else {
-      order.stopLoss = { stop_price: round(price * (1 + stopDistancePct / 100), 2) };
-      order.takeProfit = { limit_price: round(price * (1 - targetDistancePct / 100), 2) };
+      stopPrice = round(price * (1 + stopDistancePct / 100), 2);
+      takeProfitPrice = round(price * (1 - targetDistancePct / 100), 2);
+    }
+    if (useBrokerBracket) {
+      order.stopLoss = { stop_price: stopPrice };
+      order.takeProfit = { limit_price: takeProfitPrice };
+    } else {
+      order.riskStopPrice = stopPrice;
+      order.riskTakeProfitPrice = takeProfitPrice;
     }
   }
 

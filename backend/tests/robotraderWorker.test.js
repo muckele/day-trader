@@ -180,8 +180,19 @@ test('robotrader worker keeps failed submissions reconcilable by client order id
 
 test('robotrader worker marks explicit broker rejections terminal', async () => {
   const context = createDeps({ approved: true });
-  const rejected = new Error('Alpaca order failed: insufficient buying power');
-  rejected.status = 422;
+  const rejected = new Error('Request failed with status code 422');
+  rejected.response = {
+    status: 422,
+    data: {
+      code: 42210000,
+      message: 'qty must be whole shares for advanced order class'
+    }
+  };
+  rejected.alpacaPayload = {
+    symbol: 'AAPL',
+    qty: '1.25',
+    order_class: 'bracket'
+  };
   context.deps.createAlpacaBroker = () => ({
     getAccount: async () => ({ buying_power: '10000', equity: '10000', last_equity: '10000', status: 'ACTIVE' }),
     getClock: async () => ({ is_open: true }),
@@ -200,8 +211,19 @@ test('robotrader worker marks explicit broker rejections terminal', async () => 
   assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
   assert.equal(context.createdOrders[0].status, 'rejected');
   assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_rejected');
+  assert.equal(context.createdOrders[0].discrepancy, 'Alpaca 422: qty must be whole shares for advanced order class');
+  assert.deepEqual(context.createdOrders[0].rawPayload, {
+    symbol: 'AAPL',
+    qty: '1.25',
+    order_class: 'bracket'
+  });
+  assert.deepEqual(context.createdOrders[0].alpacaResponse.data, {
+    code: 42210000,
+    message: 'qty must be whole shares for advanced order class'
+  });
   assert.ok(context.createdOrders[0].rejectedAt);
   assert.equal(context.createdDecisions[0].status, 'rejected');
+  assert.equal(context.createdDecisions[0].error, 'Alpaca 422: qty must be whole shares for advanced order class');
   assert.equal(context.brokerSubmissions[0].clientOrderId, context.createdOrders[0].clientOrderId);
   assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_order_rejected'), true);
 });

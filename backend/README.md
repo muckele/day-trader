@@ -94,6 +94,7 @@ Phase 1 RoboTrader adds a richer server-side automation layer without removing t
 - Decisions are persisted in `RoboTradeDecision`; submitted/reconciled broker orders are persisted in `RoboTradeOrder`.
 - Emergency stop disables RoboTrader immediately and can cancel open RoboTrader-created Alpaca orders.
 - Reconciliation checks local RoboTrader orders against Alpaca and records status changes/discrepancies.
+- Fractional stock RoboTrader entries are submitted as simple day orders after Alpaca asset eligibility checks. Whole-share stock entries can use Alpaca bracket orders with broker-attached take-profit/stop-loss legs; filled simple/fractional stock entries create a follow-up Alpaca stop order during reconciliation so stored risk stops become broker-side protection.
 
 API endpoints:
 

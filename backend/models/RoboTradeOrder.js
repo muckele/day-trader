@@ -20,6 +20,9 @@ const roboTradeOrderSchema = new mongoose.Schema(
     broker: { type: String, enum: ['alpaca'], default: 'alpaca', index: true },
     externalOrderId: { type: String, default: null, index: true },
     clientOrderId: { type: String, default: null },
+    parentOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'RoboTradeOrder', default: null, index: true },
+    parentClientOrderId: { type: String, default: null, index: true },
+    exitReason: { type: String, enum: ['stop_loss', 'take_profit', 'manual', null], default: null, index: true },
     symbol: { type: String, required: true, index: true },
     assetClass: { type: String, enum: ['stocks', 'crypto', 'options'], default: 'stocks', index: true },
     side: { type: String, enum: ['buy', 'sell'], required: true },
@@ -34,6 +37,8 @@ const roboTradeOrderSchema = new mongoose.Schema(
     trailPercent: { type: Number, default: null },
     takeProfit: { type: mongoose.Schema.Types.Mixed, default: null },
     stopLoss: { type: mongoose.Schema.Types.Mixed, default: null },
+    riskStopPrice: { type: Number, default: null },
+    riskTakeProfitPrice: { type: Number, default: null },
     status: { type: String, default: 'pending_submit', index: true },
     filledQty: { type: Number, default: null },
     filledAvgPrice: { type: Number, default: null },
@@ -58,6 +63,16 @@ roboTradeOrderSchema.index(
   {
     unique: true,
     partialFilterExpression: { clientOrderId: { $type: 'string' } }
+  }
+);
+roboTradeOrderSchema.index(
+  { parentOrderId: 1, exitReason: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      parentOrderId: { $type: 'objectId' },
+      exitReason: { $type: 'string' }
+    }
   }
 );
 roboTradeOrderSchema.index({ userId: 1, symbol: 1, status: 1, submittedAt: -1 });

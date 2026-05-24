@@ -18,6 +18,20 @@ function toFiniteNumber(value, fallback = 0) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
+function isFractionalQty(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 && !Number.isInteger(numeric);
+}
+
+function isAssetStatusActive(asset = {}) {
+  const status = String(asset.status || '').trim().toLowerCase();
+  return !status || status === 'active';
+}
+
+function hasExplicitFalse(value) {
+  return value === false || String(value).trim().toLowerCase() === 'false';
+}
+
 function addCheck(checks, name, passed, message, severity = 'warning', metadata = {}) {
   checks.push({ name, passed: Boolean(passed), message: message || null, severity, metadata });
 }
@@ -146,6 +160,8 @@ function evaluateRoboRisk({
   dailyPnl = 0,
   decision = {},
   orderInput = {},
+  asset = null,
+  assetLookupError = null,
   environment = 'paper',
   marketClock = null,
   now = new Date()
@@ -160,6 +176,7 @@ function evaluateRoboRisk({
   const notional = toFiniteNumber(orderInput.notional, 0);
   const qty = toFiniteNumber(orderInput.qty, 0);
   const estimatedNotional = notional || toFiniteNumber(orderInput.estimatedNotional, 0);
+  const requiresFractionableAsset = assetClass === 'stocks' && (isFractionalQty(qty) || notional > 0);
   const currentPositionQty = getPositionQty(symbol, positions);
   const currentPositionValue = getPositionValue(symbol, positions);
   const riskReducingOnly = isRiskReducingOnly({
@@ -202,6 +219,34 @@ function evaluateRoboRisk({
   runCheck('mode_match', environment === 'paper' || settings.mode === environment, 'User is in paper/live mode mismatch.');
   runCheck('account_allowed', !isAccountRestricted(account), 'Alpaca account is restricted.');
   runCheck('symbol_present', Boolean(symbol), 'Symbol is required.');
+  runCheck(
+    'asset_lookup',
+    !assetLookupError,
+    assetLookupError || 'Alpaca asset metadata verified.',
+    'warning',
+    { symbol, assetClass }
+  );
+  runCheck(
+    'asset_tradable',
+    assetClass !== 'stocks' || !asset || (!hasExplicitFalse(asset.tradable) && isAssetStatusActive(asset)),
+    `${symbol} is not currently tradable on Alpaca.`,
+    'warning',
+    { tradable: asset?.tradable, status: asset?.status }
+  );
+  runCheck(
+    'asset_fractionable',
+    !requiresFractionableAsset || !asset || !hasExplicitFalse(asset.fractionable),
+    `${symbol} is not marked fractionable by Alpaca.`,
+    'warning',
+    { fractionable: asset?.fractionable }
+  );
+  runCheck(
+    'asset_shortable',
+    !requiresShortSelling || !asset || !hasExplicitFalse(asset.shortable),
+    `${symbol} is not marked shortable by Alpaca.`,
+    'warning',
+    { shortable: asset?.shortable, easyToBorrow: asset?.easy_to_borrow ?? asset?.easyToBorrow }
+  );
   runCheck('symbol_not_blocked', !(settings.blockedSymbols || []).includes(symbol), `${symbol} is blocked by user settings.`);
   runCheck(
     'symbol_allowed',
@@ -248,6 +293,11 @@ function evaluateRoboRisk({
     'short_allowed',
     !requiresShortSelling || settings.allowShortSelling === true,
     'Short selling is not enabled for this user.'
+  );
+  runCheck(
+    'fractional_short_allowed',
+    !(assetClass === 'stocks' && requiresShortSelling && isFractionalQty(qty)),
+    'Alpaca does not support opening fractional short equity positions.'
   );
 
   const capability = validateAlpacaOrderRequest(orderInput);

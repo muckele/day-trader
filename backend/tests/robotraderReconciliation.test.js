@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { reconcileRoboOrders } = require('../robotrader/reconciliation');
+const {
+  reconcileRoboOrders,
+  submitProtectiveStopForEntry
+} = require('../robotrader/reconciliation');
 
 test('robotrader reconciliation updates local order status from Alpaca', async () => {
   const saved = [];
@@ -150,4 +153,163 @@ test('robotrader reconciliation scopes local orders by user and does not create 
   assert.equal(result.discrepancyCount, 1);
   assert.equal(result.discrepancies[0].type, 'unattributed_alpaca_order');
   assert.equal(orphanCreateAttempted, false);
+});
+
+test('robotrader reconciliation submits protective stop for filled simple fractional entries', async () => {
+  const filledEntry = {
+    _id: 'parent-order-1',
+    userId: 'user-1',
+    accountId: 'default',
+    decisionId: 'decision-1',
+    environment: 'paper',
+    broker: 'alpaca',
+    externalOrderId: 'alpaca-parent-1',
+    clientOrderId: 'daytrader-robotrader-AAPL-parent',
+    symbol: 'AAPL',
+    assetClass: 'stocks',
+    side: 'buy',
+    orderType: 'market',
+    orderClass: 'simple',
+    timeInForce: 'day',
+    qty: 1.25,
+    filledQty: 1.25,
+    status: 'filled',
+    riskStopPrice: 190,
+    riskTakeProfitPrice: 215,
+    strategyId: 'TEST_STRATEGY',
+    riskChecks: []
+  };
+  const createdOrders = [];
+  const auditEvents = [];
+  const deps = {
+    RoboTradeOrder: {
+      find: query => ({
+        sort: () => ({
+          limit: async () => {
+            if (query.status === 'filled') return [filledEntry];
+            return [];
+          }
+        })
+      }),
+      findOne: () => ({
+        lean: async () => null
+      }),
+      create: async payload => {
+        const doc = {
+          _id: `protective-${createdOrders.length + 1}`,
+          ...payload,
+          save: async function save() {
+            createdOrders[createdOrders.length - 1] = this;
+            return this;
+          }
+        };
+        createdOrders.push(doc);
+        return doc;
+      }
+    },
+    RoboAuditLog: {
+      create: async payload => {
+        auditEvents.push(payload);
+        return payload;
+      }
+    },
+    buildClientOrderId: () => 'daytrader-robotrader-stop-AAPL-fixed',
+    createAlpacaBroker: () => ({
+      getPositions: async () => [{ symbol: 'AAPL', qty: '1.25' }],
+      submitOrder: async input => {
+        assert.equal(input.symbol, 'AAPL');
+        assert.equal(input.side, 'sell');
+        assert.equal(input.orderType, 'stop');
+        assert.equal(input.orderClass, 'simple');
+        assert.equal(input.timeInForce, 'day');
+        assert.equal(input.qty, 1.25);
+        assert.equal(input.stopPrice, 190);
+        return {
+          payload: {
+            symbol: 'AAPL',
+            side: 'sell',
+            type: 'stop',
+            qty: '1.25',
+            stop_price: '190',
+            client_order_id: input.clientOrderId
+          },
+          order: {
+            id: 'alpaca-stop-1',
+            client_order_id: input.clientOrderId,
+            status: 'accepted',
+            submitted_at: '2026-05-24T17:00:00.000Z'
+          }
+        };
+      },
+      listOrders: async () => []
+    })
+  };
+
+  const result = await reconcileRoboOrders({ mode: 'paper', userId: 'user-1' }, deps);
+
+  assert.equal(result.protectiveStopsSubmitted, 1);
+  assert.equal(createdOrders.length, 1);
+  assert.equal(createdOrders[0].parentOrderId, 'parent-order-1');
+  assert.equal(createdOrders[0].parentClientOrderId, 'daytrader-robotrader-AAPL-parent');
+  assert.equal(createdOrders[0].exitReason, 'stop_loss');
+  assert.equal(createdOrders[0].externalOrderId, 'alpaca-stop-1');
+  assert.equal(createdOrders[0].status, 'accepted');
+  assert.equal(createdOrders[0].reconciliationStatus, 'matched');
+  assert.equal(auditEvents.some(event => event.eventType === 'robotrader_protective_stop_submitted'), true);
+});
+
+test('robotrader protective stop creation handles duplicate parent exit races', async () => {
+  let findOneCalls = 0;
+  let submitAttempted = false;
+  const existingStop = {
+    _id: 'existing-stop-1',
+    parentOrderId: 'parent-order-1',
+    exitReason: 'stop_loss',
+    status: 'accepted'
+  };
+  const deps = {
+    RoboTradeOrder: {
+      findOne: () => ({
+        lean: async () => {
+          findOneCalls += 1;
+          return findOneCalls === 1 ? null : existingStop;
+        }
+      }),
+      create: async () => {
+        const err = new Error('duplicate key');
+        err.code = 11000;
+        throw err;
+      }
+    },
+    RoboAuditLog: {
+      create: async payload => payload
+    },
+    buildClientOrderId: () => 'daytrader-robotrader-stop-AAPL-fixed'
+  };
+
+  const result = await submitProtectiveStopForEntry({
+    _id: 'parent-order-1',
+    userId: 'user-1',
+    accountId: 'default',
+    environment: 'paper',
+    clientOrderId: 'daytrader-robotrader-AAPL-parent',
+    symbol: 'AAPL',
+    assetClass: 'stocks',
+    side: 'buy',
+    orderClass: 'simple',
+    status: 'filled',
+    qty: 1.25,
+    filledQty: 1.25,
+    riskStopPrice: 190
+  }, {
+    positions: [{ symbol: 'AAPL', qty: '1.25' }],
+    broker: {
+      submitOrder: async () => {
+        submitAttempted = true;
+      }
+    }
+  }, deps);
+
+  assert.equal(result, existingStop);
+  assert.equal(submitAttempted, false);
 });

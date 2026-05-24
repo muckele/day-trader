@@ -118,7 +118,22 @@ function summarizeReconciliationOrders(orders = []) {
 
   for (const order of orders) {
     const status = String(order.reconciliationStatus || 'pending').toLowerCase();
-    if (!order.lastReconciledAt || status === 'pending') summary.pending += 1;
+    const terminalLocalStatus = ['rejected', 'canceled', 'cancelled', 'filled'].includes(
+      String(order.status || '').toLowerCase()
+    );
+    const terminalReconciliationStatus = [
+      'matched',
+      'synced',
+      'updated',
+      'cancel_requested',
+      'replace_requested',
+      'emergency_stop',
+      'submit_rejected',
+      'orphan_alpaca_order'
+    ].includes(status);
+    if ((!order.lastReconciledAt || status === 'pending') && !terminalLocalStatus && !terminalReconciliationStatus) {
+      summary.pending += 1;
+    }
     if (['matched', 'synced', 'updated', 'cancel_requested', 'replace_requested', 'emergency_stop'].includes(status)) {
       summary.matched += 1;
     }
