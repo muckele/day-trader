@@ -231,6 +231,14 @@ Robo email provider:
 - `SMTP_PASS`
 - `SMTP_FROM`
 
+Research data quality:
+
+- `FINNHUB_API_KEY` enables normalized corporate events for earnings, analyst ratings, SEC filings, dividends, splits, and insider activity.
+- `RESEARCH_STOCK_CACHE_TTL_MS` controls Mongo-backed stock research snapshot TTL (default 5 minutes).
+- `RESEARCH_DASHBOARD_CACHE_TTL_MS` controls Mongo-backed research dashboard snapshot TTL (default 2 minutes).
+- `RESEARCH_COMPARE_CACHE_TTL_MS` controls Mongo-backed comparison snapshot TTL (default 2 minutes).
+- `RESEARCH_NEWS_STALE_MINUTES`, `RESEARCH_DAILY_STALE_MINUTES`, and `RESEARCH_INTRADAY_STALE_MINUTES` tune stale-data warnings.
+
 ## Fly Deploy Notes
 
 Recommended `fly secrets` include:
@@ -242,6 +250,7 @@ Recommended `fly secrets` include:
 - `APCA_BASE_URL=https://paper-api.alpaca.markets`
 - `APCA_DATA_URL`
 - `APCA_DATA_FEED=iex`
+- `FINNHUB_API_KEY` if using corporate event ingestion
 - `APP_PAPER_TRADES_SYNC_TO_ALPACA=true`
 - Any SMTP variables if using real email notifications
 

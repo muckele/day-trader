@@ -5,6 +5,7 @@ import Button from '../ui/Button';
 
 const links = [
   { to: '/watchlist', label: 'Watchlist' },
+  { to: '/research', label: 'Research' },
   { to: '/robo', label: 'Robo Trader' },
   { to: '/plan', label: 'Trade Plan' },
   { to: '/portfolio', label: 'Portfolio' },

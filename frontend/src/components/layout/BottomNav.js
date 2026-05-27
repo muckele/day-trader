@@ -10,6 +10,7 @@ const primaryLinks = [
 
 const secondaryLinks = [
   { to: '/watchlist', label: 'Watchlist' },
+  { to: '/research', label: 'Research' },
   { to: '/activity', label: 'Activity' },
   { to: '/analytics', label: 'Analytics' },
   { to: '/trading-system', label: 'System' },

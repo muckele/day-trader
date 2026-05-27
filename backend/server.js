@@ -256,6 +256,7 @@ app.use('/api/debug', debugRoutes);
 app.use('/api/robo', require('./routes/robo'));
 app.use('/api/robotrader', require('./routes/robotrader'));
 app.use('/api/trading-system', require('./routes/tradingSystem'));
+app.use('/api/research', require('./routes/research'));
 // Trade Recomendations 
 app.use('/api/recommendations', require('./routes/recommend'));
 

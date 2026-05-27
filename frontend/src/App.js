@@ -14,6 +14,7 @@ import Analytics from './pages/Analytics';
 import TradePlan from './pages/TradePlan';
 import RoboTrader from './pages/RoboTrader';
 import TradingSystem from './pages/TradingSystem';
+import Research from './pages/Research';
 
 export default function App() {
   return (
@@ -51,6 +52,22 @@ export default function App() {
             element={
               <PrivateRoute>
                 <Stock />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/research"
+            element={
+              <PrivateRoute>
+                <Research />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/research/:symbol"
+            element={
+              <PrivateRoute>
+                <Research />
               </PrivateRoute>
             }
           />
