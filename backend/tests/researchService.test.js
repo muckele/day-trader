@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   buildStockThesis,
   buildStaleWarnings,
+  buildChartTimeframes,
   compareSymbols,
   computeTechnicals,
   normalizeNewsItem,
@@ -25,6 +26,21 @@ function makeBars(count = 220) {
   });
 }
 
+function makeIntradayBars(count = 160) {
+  let price = 120;
+  return Array.from({ length: count }).map((_, index) => {
+    price += Math.sin(index / 8) * 0.2 + 0.05;
+    return {
+      time: new Date(Date.UTC(2026, 4, 20, 13, index * 5)).toISOString(),
+      open: price - 0.15,
+      high: price + 0.4,
+      low: price - 0.4,
+      close: price,
+      volume: 100000 + index * 100
+    };
+  });
+}
+
 test('research service computes stock technical summary fields', () => {
   const technicals = computeTechnicals(makeBars());
 
@@ -34,6 +50,71 @@ test('research service computes stock technical summary fields', () => {
   assert.ok(technicals.support20 > 0);
   assert.ok(technicals.resistance20 > technicals.support20);
   assert.ok(technicals.volumeRatio > 0);
+});
+
+test('research service builds pro chart timeframes with indicators and markers', () => {
+  const dailyBars = makeBars(320).map(bar => ({
+    time: bar.t,
+    open: bar.o,
+    high: bar.h,
+    low: bar.l,
+    close: bar.c,
+    volume: bar.v
+  }));
+  const timeframes = buildChartTimeframes({
+    dailyBars,
+    intradayBars: makeIntradayBars(),
+    news: [{
+      externalId: 'news-chart-1',
+      headline: 'AAPL product catalyst',
+      sentiment: 'positive',
+      category: 'catalyst',
+      publishedAt: dailyBars[dailyBars.length - 4].time
+    }],
+    events: [{
+      externalId: 'event-chart-1',
+      type: 'earnings',
+      title: 'AAPL earnings',
+      sentiment: 'neutral',
+      eventDate: dailyBars[dailyBars.length - 2].time
+    }]
+  });
+
+  assert.deepEqual(Object.keys(timeframes), ['1D', '5D', '1M', '3M', '6M', 'YTD', '1Y', '5Y']);
+  assert.ok(timeframes['1Y'].bars.length > 0);
+  assert.ok(Object.hasOwn(timeframes['1Y'].bars.at(-1), 'macd'));
+  assert.ok(timeframes['1Y'].volumeProfile.length > 0);
+  assert.ok(timeframes['1Y'].support > 0);
+  assert.ok(timeframes['1Y'].markers.length > 0);
+});
+
+test('research service excludes chart markers outside the visible bar range', () => {
+  const dailyBars = makeBars(80).map(bar => ({
+    time: bar.t,
+    open: bar.o,
+    high: bar.h,
+    low: bar.l,
+    close: bar.c,
+    volume: bar.v
+  }));
+  const timeframes = buildChartTimeframes({
+    dailyBars,
+    news: [{
+      externalId: 'old-news',
+      headline: 'AAPL old headline',
+      sentiment: 'neutral',
+      publishedAt: '2020-01-01T00:00:00.000Z'
+    }],
+    events: [{
+      externalId: 'future-event',
+      type: 'earnings',
+      title: 'AAPL future earnings',
+      eventDate: '2030-01-01T00:00:00.000Z'
+    }]
+  });
+
+  assert.equal(timeframes['1M'].markers.length, 0);
+  assert.equal(timeframes['1Y'].markers.length, 0);
 });
 
 test('research service normalizes news with sentiment and category', () => {

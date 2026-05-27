@@ -45,6 +45,16 @@ const NEGATIVE_TERMS = [
   'investigation', 'recall', 'warning', 'loss', 'bearish', 'weak', 'decline',
   'slump', 'halts', 'delay'
 ];
+const CHART_TIMEFRAMES = [
+  { id: '1D', label: '1D', source: 'intraday', fallbackPoints: 120, lookbackDays: 1 },
+  { id: '5D', label: '5D', source: 'intraday', fallbackPoints: 390, lookbackDays: 7 },
+  { id: '1M', label: '1M', source: 'daily', fallbackPoints: 23, lookbackDays: 35 },
+  { id: '3M', label: '3M', source: 'daily', fallbackPoints: 66, lookbackDays: 100 },
+  { id: '6M', label: '6M', source: 'daily', fallbackPoints: 132, lookbackDays: 200 },
+  { id: 'YTD', label: 'YTD', source: 'daily', fallbackPoints: 260, ytd: true },
+  { id: '1Y', label: '1Y', source: 'daily', fallbackPoints: 252, lookbackDays: 370 },
+  { id: '5Y', label: '5Y', source: 'daily', fallbackPoints: 1260, lookbackDays: 365 * 5 + 30 }
+];
 
 function normalizeSymbol(symbol) {
   return String(symbol || '').trim().toUpperCase().replace(/[^A-Z0-9./-]/g, '');
@@ -79,6 +89,22 @@ function normalizeBar(bar = {}) {
     close: toFiniteNumber(bar.c ?? bar.close ?? bar.price, 0),
     volume: toFiniteNumber(bar.v ?? bar.volume, 0)
   };
+}
+
+function barTimeMs(bar) {
+  const date = toDate(bar?.time || bar?.t || bar?.timestamp || bar?.date);
+  return date ? date.getTime() : NaN;
+}
+
+function sortBarsChronologically(bars = []) {
+  return [...bars].sort((a, b) => {
+    const aMs = barTimeMs(a);
+    const bMs = barTimeMs(b);
+    if (!Number.isFinite(aMs) && !Number.isFinite(bMs)) return 0;
+    if (!Number.isFinite(aMs)) return -1;
+    if (!Number.isFinite(bMs)) return 1;
+    return aMs - bMs;
+  });
 }
 
 function toIndicatorBar(bar = {}) {
@@ -322,6 +348,265 @@ function computeVwap(bars = []) {
     return acc;
   }, { dollars: 0, volume: 0 });
   return totals.volume > 0 ? totals.dollars / totals.volume : null;
+}
+
+function smaAt(values, index, period) {
+  if (index + 1 < period) return null;
+  const slice = values.slice(index + 1 - period, index + 1);
+  return average(slice);
+}
+
+function vwapAt(bars, index, period = 20) {
+  const slice = bars.slice(Math.max(0, index + 1 - period), index + 1);
+  return computeVwap(slice);
+}
+
+function emaSeries(values = [], period) {
+  const multiplier = 2 / (period + 1);
+  const result = [];
+  let ema = null;
+  let warmup = [];
+  values.forEach(value => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      result.push(null);
+      return;
+    }
+    if (ema === null) {
+      warmup.push(numeric);
+      if (warmup.length < period) {
+        result.push(null);
+        return;
+      }
+      ema = average(warmup);
+      result.push(ema);
+      return;
+    }
+    ema = (numeric - ema) * multiplier + ema;
+    result.push(ema);
+  });
+  return result;
+}
+
+function nullableEmaSeries(values = [], period) {
+  const multiplier = 2 / (period + 1);
+  const result = [];
+  let ema = null;
+  let warmup = [];
+  values.forEach(value => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      result.push(null);
+      return;
+    }
+    if (ema === null) {
+      warmup.push(numeric);
+      if (warmup.length < period) {
+        result.push(null);
+        return;
+      }
+      ema = average(warmup);
+      result.push(ema);
+      return;
+    }
+    ema = (numeric - ema) * multiplier + ema;
+    result.push(ema);
+  });
+  return result;
+}
+
+function macdSeries(closes = []) {
+  const ema12 = emaSeries(closes, 12);
+  const ema26 = emaSeries(closes, 26);
+  const macdLine = closes.map((_value, index) => (
+    Number.isFinite(ema12[index]) && Number.isFinite(ema26[index])
+      ? ema12[index] - ema26[index]
+      : null
+  ));
+  const signalLine = nullableEmaSeries(macdLine, 9);
+  return macdLine.map((value, index) => ({
+    macd: Number.isFinite(value) ? value : null,
+    signal: Number.isFinite(signalLine[index]) ? signalLine[index] : null,
+    histogram: Number.isFinite(value) && Number.isFinite(signalLine[index])
+      ? value - signalLine[index]
+      : null
+  }));
+}
+
+function decorateChartBars(rawBars = []) {
+  const bars = sortBarsChronologically(rawBars)
+    .map(normalizeBar)
+    .filter(bar => Number.isFinite(bar.close) && bar.close > 0 && bar.time);
+  const closes = bars.map(bar => bar.close);
+  const macd = macdSeries(closes);
+  return bars.map((bar, index) => {
+    const indicatorBars = bars.slice(0, index + 1).map(toIndicatorBar);
+    const closeSlice = closes.slice(0, index + 1);
+    return {
+      ...bar,
+      sma20: round(smaAt(closes, index, 20), 2),
+      sma50: round(smaAt(closes, index, 50), 2),
+      sma200: round(smaAt(closes, index, 200), 2),
+      vwap20: round(vwapAt(bars, index, 20), 2),
+      rsi14: round(rsi(closeSlice, 14), 2),
+      atr14: round(atr(indicatorBars, 14), 2),
+      macd: round(macd[index]?.macd, 4),
+      macdSignal: round(macd[index]?.signal, 4),
+      macdHistogram: round(macd[index]?.histogram, 4)
+    };
+  });
+}
+
+function buildVolumeProfile(bars = [], bucketCount = 14) {
+  if (!bars.length) return [];
+  const lows = bars.map(bar => bar.low).filter(Number.isFinite);
+  const highs = bars.map(bar => bar.high).filter(Number.isFinite);
+  const min = Math.min(...lows);
+  const max = Math.max(...highs);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) return [];
+  const step = (max - min) / bucketCount;
+  const buckets = Array.from({ length: bucketCount }).map((_, index) => ({
+    low: min + index * step,
+    high: min + (index + 1) * step,
+    volume: 0
+  }));
+  bars.forEach(bar => {
+    const typical = (bar.high + bar.low + bar.close) / 3;
+    const bucketIndex = Math.max(0, Math.min(bucketCount - 1, Math.floor((typical - min) / step)));
+    buckets[bucketIndex].volume += Number(bar.volume || 0);
+  });
+  const maxVolume = Math.max(...buckets.map(bucket => bucket.volume), 1);
+  return buckets.map(bucket => ({
+    low: round(bucket.low, 2),
+    high: round(bucket.high, 2),
+    mid: round((bucket.low + bucket.high) / 2, 2),
+    volume: Math.round(bucket.volume),
+    share: round(bucket.volume / maxVolume, 4)
+  }));
+}
+
+function buildSupportResistance(bars = []) {
+  if (!bars.length) return { support: null, resistance: null };
+  const recent = bars.slice(-Math.min(40, bars.length));
+  return {
+    support: round(Math.min(...recent.map(bar => bar.low)), 2),
+    resistance: round(Math.max(...recent.map(bar => bar.high)), 2)
+  };
+}
+
+function inferMarkerMaxDistanceMs(bars = []) {
+  const times = bars
+    .map(barTimeMs)
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+  if (times.length < 2) return 24 * 60 * 60 * 1000;
+  const gaps = [];
+  for (let index = 1; index < times.length; index += 1) {
+    const gap = times[index] - times[index - 1];
+    if (gap > 0) gaps.push(gap);
+  }
+  if (!gaps.length) return 24 * 60 * 60 * 1000;
+  gaps.sort((a, b) => a - b);
+  const medianGap = gaps[Math.floor(gaps.length / 2)];
+  return Math.max(medianGap * 3, 24 * 60 * 60 * 1000);
+}
+
+function nearestBarIndex(bars, dateValue, maxDistanceMs = Infinity) {
+  const target = toDate(dateValue)?.getTime();
+  if (!Number.isFinite(target) || !bars.length) return -1;
+  let bestIndex = -1;
+  let bestDistance = Infinity;
+  bars.forEach((bar, index) => {
+    const distance = Math.abs(barTimeMs(bar) - target);
+    if (Number.isFinite(distance) && distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+  return bestDistance <= maxDistanceMs ? bestIndex : -1;
+}
+
+function buildChartMarkers(bars = [], { news = [], events = [] } = {}) {
+  const markers = [];
+  const markerMaxDistanceMs = inferMarkerMaxDistanceMs(bars);
+  news.slice(0, 20).forEach(item => {
+    const index = nearestBarIndex(bars, item.publishedAt || item.createdAt, markerMaxDistanceMs);
+    if (index >= 0) {
+      markers.push({
+        id: `news-${item.externalId || stableId(item)}`,
+        type: 'news',
+        category: item.category || 'news',
+        sentiment: item.sentiment || 'neutral',
+        index,
+        time: bars[index].time,
+        label: 'N',
+        title: item.headline,
+        summary: item.whyItMatters || item.summary || ''
+      });
+    }
+  });
+  events.slice(0, 40).forEach(item => {
+    const index = nearestBarIndex(bars, item.eventDate || item.createdAt, markerMaxDistanceMs);
+    if (index >= 0) {
+      markers.push({
+        id: `event-${item.externalId || stableId(item)}`,
+        type: item.type || 'event',
+        category: item.type || 'event',
+        sentiment: item.sentiment || 'neutral',
+        index,
+        time: bars[index].time,
+        label: item.type === 'earnings' ? 'E' : 'C',
+        title: item.title,
+        summary: item.summary || ''
+      });
+    }
+  });
+  return markers
+    .sort((a, b) => a.index - b.index)
+    .slice(-60);
+}
+
+function filterBarsForTimeframe({ dailyBars = [], intradayBars = [] }, config) {
+  const sourceBars = config.source === 'intraday' && intradayBars.length ? intradayBars : dailyBars;
+  const bars = sortBarsChronologically(sourceBars).map(normalizeBar).filter(bar => bar.time);
+  if (!bars.length) return [];
+  const latest = toDate(bars[bars.length - 1].time);
+  if (!latest) return bars.slice(-config.fallbackPoints);
+  let filtered = [];
+  if (config.ytd) {
+    const start = new Date(Date.UTC(latest.getUTCFullYear(), 0, 1));
+    filtered = bars.filter(bar => {
+      const date = toDate(bar.time);
+      return date && date >= start;
+    });
+  } else {
+    const cutoff = addDays(latest, -config.lookbackDays);
+    filtered = bars.filter(bar => {
+      const date = toDate(bar.time);
+      return date && date >= cutoff;
+    });
+  }
+  return filtered.length ? filtered : bars.slice(-config.fallbackPoints);
+}
+
+function buildChartTimeframes({ dailyBars = [], intradayBars = [], news = [], events = [] } = {}) {
+  return CHART_TIMEFRAMES.reduce((acc, config) => {
+    const filtered = filterBarsForTimeframe({ dailyBars, intradayBars }, config);
+    const bars = decorateChartBars(filtered).slice(-config.fallbackPoints);
+    const levels = buildSupportResistance(bars);
+    acc[config.id] = {
+      id: config.id,
+      label: config.label,
+      source: config.source,
+      bars,
+      volumeProfile: buildVolumeProfile(bars),
+      support: levels.support,
+      resistance: levels.resistance,
+      markers: buildChartMarkers(bars, { news, events }),
+      dataPoints: bars.length
+    };
+    return acc;
+  }, {});
 }
 
 function classifyCategory(text) {
@@ -628,6 +913,46 @@ async function fetchCompany(symbol) {
       shortable: null
     };
   }
+}
+
+function extractBarsPayload(data, symbol) {
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== 'object') return null;
+  if (Array.isArray(data.bars)) return data.bars;
+  if (Array.isArray(data[symbol])) return data[symbol];
+  if (Array.isArray(data[symbol?.toUpperCase?.()])) return data[symbol.toUpperCase()];
+  if (Array.isArray(data[symbol?.toLowerCase?.()])) return data[symbol.toLowerCase()];
+  return null;
+}
+
+async function fetchHistoricalDaily(symbol) {
+  const normalized = normalizeSymbol(symbol);
+  if (!API_KEY || !API_SECRET) {
+    throw new Error('Missing Alpaca market data credentials.');
+  }
+  const end = new Date();
+  const start = addDays(end, -365 * 6);
+  const response = await axios.get(`${DATA_URL}/v2/stocks/${normalized}/bars`, {
+    headers: {
+      'APCA-API-KEY-ID': API_KEY,
+      'APCA-API-SECRET-KEY': API_SECRET
+    },
+    params: {
+      timeframe: '1Day',
+      limit: 1500,
+      adjustment: 'raw',
+      sort: 'asc',
+      feed: process.env.APCA_DATA_FEED || 'iex',
+      start: start.toISOString(),
+      end: end.toISOString()
+    },
+    timeout: 15000
+  });
+  const bars = extractBarsPayload(response.data, normalized);
+  if (!Array.isArray(bars) || !bars.length) {
+    throw new Error(`No historical daily bars returned for ${normalized}.`);
+  }
+  return sortBarsChronologically(bars);
 }
 
 async function getPersistedNewsForSymbols(symbols, ResearchNews, { limit = 20 } = {}) {
@@ -992,7 +1317,7 @@ async function getStockResearch(symbol, {
       provider: 'alpaca_daily_bars',
       category: 'marketData',
       rank: 1,
-      fn: () => fetchDaily(normalized),
+      fn: async () => fetchHistoricalDaily(normalized).catch(() => fetchDaily(normalized)),
       fallbackValue: []
     }),
     captureProviderResult({
@@ -1063,6 +1388,12 @@ async function getStockResearch(symbol, {
     quotes: quoteItems,
     providerHealth: providerHealthRecords
   });
+  const timeframes = buildChartTimeframes({
+    dailyBars: technicals.bars,
+    intradayBars: intraday,
+    news,
+    events
+  });
 
   const payload = {
     symbol: normalized,
@@ -1071,7 +1402,8 @@ async function getStockResearch(symbol, {
     technicals,
     chart: {
       daily: technicals.bars.slice(-252),
-      intraday: intraday.slice(-120)
+      intraday: intraday.slice(-120),
+      timeframes
     },
     news,
     events,
@@ -1193,6 +1525,7 @@ async function compareSymbols(symbols, { ResearchNews, ResearchSnapshot, forceRe
       volumeRatio: technicals.volumeRatio,
       support20: technicals.support20,
       resistance20: technicals.resistance20,
+      chart: decorateChartBars(bars).slice(-1260),
       positiveNews: news.filter(item => item.sentiment === 'positive').length,
       negativeNews: news.filter(item => item.sentiment === 'negative').length
     };
@@ -1218,6 +1551,7 @@ module.exports = {
   buildStockThesis,
   buildDataQuality,
   buildStaleWarnings,
+  buildChartTimeframes,
   compareSymbols,
   computeTechnicals,
   getResearchProviderHealth,

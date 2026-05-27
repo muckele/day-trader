@@ -1,20 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { useNavigate, useParams } from 'react-router-dom';
-import {
-  Bar,
-  CartesianGrid,
-  ComposedChart,
-  Line,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis
-} from 'recharts';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
 import Button from '../components/ui/Button';
 import Skeleton from '../components/ui/Skeleton';
+import ResearchChart from '../components/ResearchChart';
 import { getApiError } from '../utils/api';
 import { getCache, setCache } from '../utils/cache';
 import { emitToast } from '../utils/toast';
@@ -35,14 +26,6 @@ function formatPercent(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 'N/A';
   return `${numeric > 0 ? '+' : ''}${numeric.toFixed(2)}%`;
-}
-
-function formatNumber(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return 'N/A';
-  if (Math.abs(numeric) >= 1000000) return `${(numeric / 1000000).toFixed(1)}M`;
-  if (Math.abs(numeric) >= 1000) return `${(numeric / 1000).toFixed(1)}K`;
-  return numeric.toLocaleString();
 }
 
 function getSentimentVariant(sentiment) {
@@ -73,50 +56,11 @@ function uniqueWarnings(...groups) {
   return [...new Set(groups.flatMap(group => Array.isArray(group) ? group : []).filter(Boolean))];
 }
 
-function computeSeries(data) {
-  const rows = Array.isArray(data) ? data : [];
-  return rows.map((point, index) => {
-    const sma = period => {
-      if (index + 1 < period) return null;
-      const slice = rows.slice(index + 1 - period, index + 1);
-      return Number((slice.reduce((sum, item) => sum + Number(item.close || 0), 0) / period).toFixed(2));
-    };
-    const vwapSlice = rows.slice(Math.max(0, index - 19), index + 1);
-    const vwapVolume = vwapSlice.reduce((sum, item) => sum + Number(item.volume || 0), 0);
-    const vwapDollars = vwapSlice.reduce((sum, item) => {
-      const typical = (Number(item.high || item.close || 0) + Number(item.low || item.close || 0) + Number(item.close || 0)) / 3;
-      return sum + typical * Number(item.volume || 0);
-    }, 0);
-    return {
-      ...point,
-      label: String(point.time || '').slice(5, 10),
-      sma20: sma(20),
-      sma50: sma(50),
-      vwap20: vwapVolume ? Number((vwapDollars / vwapVolume).toFixed(2)) : null
-    };
-  });
-}
-
 function Metric({ label, value, accent = false }) {
   return (
     <div className="rt-metric">
       <p className="rt-label">{label}</p>
       <p className={`mt-2 text-xl font-bold ${accent ? 'text-[#8cf5bd]' : 'text-[#edf5f4]'}`}>{value}</p>
-    </div>
-  );
-}
-
-function ChartTooltip({ active, payload, label }) {
-  if (!active || !payload?.length) return null;
-  const point = payload[0]?.payload || {};
-  return (
-    <div className="rounded-lg border border-[#31444b] bg-[#11181b] px-3 py-2 text-xs shadow-sm">
-      <p className="font-semibold text-[#edf5f4]">{label}</p>
-      <p className="text-[#8ba09f]">Close {formatCurrency(point.close)}</p>
-      {point.sma20 && <p className="text-[#8cf5bd]">SMA 20 {formatCurrency(point.sma20)}</p>}
-      {point.sma50 && <p className="text-[#a9ceff]">SMA 50 {formatCurrency(point.sma50)}</p>}
-      {point.vwap20 && <p className="text-[#ffd77a]">VWAP {formatCurrency(point.vwap20)}</p>}
-      {point.volume && <p className="text-[#8ba09f]">Volume {formatNumber(point.volume)}</p>}
     </div>
   );
 }
@@ -142,12 +86,6 @@ export default function Research() {
   const [alertType, setAlertType] = useState('price_above');
   const [alertThreshold, setAlertThreshold] = useState('');
   const [alertKeyword, setAlertKeyword] = useState('');
-  const [chartLayers, setChartLayers] = useState({
-    sma20: true,
-    sma50: true,
-    vwap20: false,
-    volume: true
-  });
 
   useEffect(() => {
     const next = normalizeSymbol(routeSymbol) || 'AAPL';
@@ -230,7 +168,6 @@ export default function Research() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSymbol]);
 
-  const chartData = useMemo(() => computeSeries(stock?.chart?.daily || []).slice(-180), [stock]);
   const latestNews = stock?.news || [];
   const events = stock?.events || [];
   const watchlist = dashboard?.watchlist || [];
@@ -455,34 +392,11 @@ export default function Research() {
 
                 {activeTab === 'chart' && (
                   <div className="mt-5">
-                    <div className="mb-3 flex flex-wrap gap-3 text-xs text-[#b8c8c7]">
-                      {Object.keys(chartLayers).map(layer => (
-                        <label key={layer} className="inline-flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={chartLayers[layer]}
-                            onChange={() => setChartLayers(prev => ({ ...prev, [layer]: !prev[layer] }))}
-                          />
-                          {layer.toUpperCase()}
-                        </label>
-                      ))}
-                    </div>
-                    <div className="h-[26rem]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <ComposedChart data={chartData}>
-                          <CartesianGrid stroke="#203035" strokeDasharray="3 3" />
-                          <XAxis dataKey="label" stroke="#8ba09f" minTickGap={28} />
-                          <YAxis yAxisId="price" stroke="#8ba09f" domain={['auto', 'auto']} width={64} />
-                          <YAxis yAxisId="volume" orientation="right" hide />
-                          <Tooltip content={<ChartTooltip />} />
-                          {chartLayers.volume && <Bar yAxisId="volume" dataKey="volume" fill="#28414a" opacity={0.45} />}
-                          <Line yAxisId="price" type="monotone" dataKey="close" stroke="#edf5f4" strokeWidth={2} dot={false} />
-                          {chartLayers.sma20 && <Line yAxisId="price" type="monotone" dataKey="sma20" stroke="#26d07c" strokeWidth={1.6} dot={false} />}
-                          {chartLayers.sma50 && <Line yAxisId="price" type="monotone" dataKey="sma50" stroke="#66a6ff" strokeWidth={1.6} dot={false} />}
-                          {chartLayers.vwap20 && <Line yAxisId="price" type="monotone" dataKey="vwap20" stroke="#f4b942" strokeWidth={1.4} dot={false} />}
-                        </ComposedChart>
-                      </ResponsiveContainer>
-                    </div>
+                    <ResearchChart
+                      symbol={stock?.symbol}
+                      chart={stock?.chart}
+                      compare={compare}
+                    />
                   </div>
                 )}
 
