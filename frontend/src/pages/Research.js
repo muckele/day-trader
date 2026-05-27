@@ -11,6 +11,18 @@ import { getCache, setCache } from '../utils/cache';
 import { emitToast } from '../utils/toast';
 
 const DEFAULT_SYMBOLS = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOG', 'META', 'TSLA', 'AMD'];
+const DEFAULT_SCREENER_FILTERS = {
+  symbols: DEFAULT_SYMBOLS.join(', '),
+  minMomentum: '',
+  maxVolatility: '',
+  minVolumeRatio: '',
+  newsSentiment: 'any',
+  earningsWithinDays: '',
+  sector: '',
+  trend: 'any'
+};
+const SECTOR_OPTIONS = ['', 'TECHNOLOGY', 'COMMUNICATION', 'CONSUMER', 'FINANCIALS', 'INDEX', 'OTHER'];
+const TREND_OPTIONS = ['any', 'uptrend', 'mixed', 'downtrend', 'insufficient_data'];
 
 function normalizeSymbol(value) {
   return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9./-]/g, '');
@@ -26,6 +38,12 @@ function formatPercent(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 'N/A';
   return `${numeric > 0 ? '+' : ''}${numeric.toFixed(2)}%`;
+}
+
+function formatNumber(value, suffix = '') {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 'N/A';
+  return `${numeric.toLocaleString(undefined, { maximumFractionDigits: 2 })}${suffix}`;
 }
 
 function getSentimentVariant(sentiment) {
@@ -61,6 +79,10 @@ function formatCitationTimestamp(value) {
   return formatted === 'N/A' ? 'No timestamp' : formatted;
 }
 
+function alertNeedsThreshold(type) {
+  return !['news_keyword', 'thesis_change'].includes(type);
+}
+
 function Metric({ label, value, accent = false }) {
   return (
     <div className="rt-metric">
@@ -91,6 +113,19 @@ export default function Research() {
   const [alertType, setAlertType] = useState('price_above');
   const [alertThreshold, setAlertThreshold] = useState('');
   const [alertKeyword, setAlertKeyword] = useState('');
+  const [screenerFilters, setScreenerFilters] = useState(DEFAULT_SCREENER_FILTERS);
+  const [screener, setScreener] = useState(null);
+  const [loadingScreener, setLoadingScreener] = useState(false);
+  const [savedWatchlists, setSavedWatchlists] = useState([]);
+  const [selectedWatchlistId, setSelectedWatchlistId] = useState('');
+  const [watchlistForm, setWatchlistForm] = useState({
+    name: '',
+    description: '',
+    symbols: DEFAULT_SYMBOLS.join(', '),
+    pinnedSymbols: ''
+  });
+  const [watchlistSummary, setWatchlistSummary] = useState(null);
+  const [loadingWatchlistSummary, setLoadingWatchlistSummary] = useState(false);
 
   useEffect(() => {
     const next = normalizeSymbol(routeSymbol) || 'AAPL';
@@ -167,11 +202,100 @@ export default function Research() {
     }
   };
 
+  const fetchScreener = async (filters = screenerFilters) => {
+    setLoadingScreener(true);
+    try {
+      const res = await axios.get('/api/research/screener', {
+        params: filters
+      });
+      setScreener(res.data);
+    } catch (err) {
+      emitToast({ type: 'error', message: getApiError(err) });
+    } finally {
+      setLoadingScreener(false);
+    }
+  };
+
+  const selectWatchlist = watchlist => {
+    if (!watchlist) return;
+    setSelectedWatchlistId(watchlist._id);
+    setWatchlistSummary(watchlist.summarySnapshot || null);
+    setWatchlistForm({
+      name: watchlist.name || '',
+      description: watchlist.description || '',
+      symbols: (watchlist.symbols || []).join(', '),
+      pinnedSymbols: (watchlist.pinnedSymbols || []).join(', ')
+    });
+  };
+
+  const fetchWatchlists = async (preferredWatchlistId = '') => {
+    try {
+      const res = await axios.get('/api/research/watchlists');
+      const lists = res.data || [];
+      setSavedWatchlists(lists);
+      const preferred = preferredWatchlistId
+        ? lists.find(item => item._id === preferredWatchlistId)
+        : null;
+      if (preferred) {
+        selectWatchlist(preferred);
+      } else if (!selectedWatchlistId && lists[0]) {
+        selectWatchlist(lists[0]);
+      }
+    } catch (err) {
+      emitToast({ type: 'error', message: getApiError(err) });
+    }
+  };
+
+  const fetchWatchlistSummary = async (watchlistId = selectedWatchlistId) => {
+    if (!watchlistId) return;
+    setLoadingWatchlistSummary(true);
+    try {
+      const res = await axios.get(`/api/research/watchlists/${watchlistId}/summary`);
+      setWatchlistSummary(res.data);
+    } catch (err) {
+      emitToast({ type: 'error', message: getApiError(err) });
+    } finally {
+      setLoadingWatchlistSummary(false);
+    }
+  };
+
+  const saveWatchlist = async event => {
+    event.preventDefault();
+    const payload = {
+      name: watchlistForm.name,
+      description: watchlistForm.description,
+      symbols: watchlistForm.symbols,
+      pinnedSymbols: watchlistForm.pinnedSymbols
+    };
+    try {
+      const res = selectedWatchlistId
+        ? await axios.patch(`/api/research/watchlists/${selectedWatchlistId}`, payload)
+        : await axios.post('/api/research/watchlists', payload);
+      emitToast({ type: 'success', message: selectedWatchlistId ? 'Watchlist updated.' : 'Watchlist created.' });
+      setSelectedWatchlistId(res.data._id);
+      await fetchWatchlists(res.data._id);
+      await fetchWatchlistSummary(res.data._id);
+    } catch (err) {
+      emitToast({ type: 'error', message: getApiError(err) });
+    }
+  };
+
   useEffect(() => {
     fetchStock(selectedSymbol);
     fetchCompare(compareInput);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSymbol]);
+
+  useEffect(() => {
+    fetchScreener(DEFAULT_SCREENER_FILTERS);
+    fetchWatchlists();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (selectedWatchlistId) fetchWatchlistSummary(selectedWatchlistId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedWatchlistId]);
 
   const latestNews = stock?.news || [];
   const stockNewsClusters = stock?.newsClusters || stock?.intelligence?.newsClusters || [];
@@ -189,6 +313,7 @@ export default function Research() {
     ...(dashboard?.dataQuality?.providerHealth || [])
   ].slice(0, 12);
   const cacheStatus = stock?.dataQuality?.cache?.status || dashboard?.dataQuality?.cache?.status || 'miss';
+  const selectedWatchlist = savedWatchlists.find(item => item._id === selectedWatchlistId);
 
   const submitSymbol = event => {
     event.preventDefault();
@@ -219,7 +344,7 @@ export default function Research() {
     try {
       await axios.post(`/api/research/alerts/${selectedSymbol}`, {
         type: alertType,
-        threshold: alertThreshold,
+        threshold: alertNeedsThreshold(alertType) ? alertThreshold : '',
         keyword: alertKeyword
       });
       setAlertThreshold('');
@@ -396,7 +521,9 @@ export default function Research() {
                     ['chart', 'Chart'],
                     ['news', 'News'],
                     ['intelligence', 'Intelligence'],
-                    ['compare', 'Compare']
+                    ['compare', 'Compare'],
+                    ['screener', 'Screener'],
+                    ['watchlists', 'Watchlists']
                   ].map(([tab, label]) => (
                     <button
                       key={tab}
@@ -606,6 +733,289 @@ export default function Research() {
                     </div>
                   </div>
                 )}
+
+                {activeTab === 'screener' && (
+                  <div className="mt-5 space-y-4">
+                    <form
+                      onSubmit={event => {
+                        event.preventDefault();
+                        fetchScreener(screenerFilters);
+                      }}
+                      className="rt-panel p-4"
+                    >
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        <label className="space-y-1">
+                          <span className="rt-label">Symbols</span>
+                          <input
+                            value={screenerFilters.symbols}
+                            onChange={event => setScreenerFilters(prev => ({ ...prev, symbols: event.target.value.toUpperCase() }))}
+                            className="rt-field"
+                            placeholder="AAPL, MSFT, NVDA"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="rt-label">Momentum min %</span>
+                          <input
+                            value={screenerFilters.minMomentum}
+                            onChange={event => setScreenerFilters(prev => ({ ...prev, minMomentum: event.target.value }))}
+                            className="rt-field"
+                            type="number"
+                            step="0.1"
+                            placeholder="0"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="rt-label">Volatility max %</span>
+                          <input
+                            value={screenerFilters.maxVolatility}
+                            onChange={event => setScreenerFilters(prev => ({ ...prev, maxVolatility: event.target.value }))}
+                            className="rt-field"
+                            type="number"
+                            step="0.1"
+                            placeholder="8"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="rt-label">Volume ratio min</span>
+                          <input
+                            value={screenerFilters.minVolumeRatio}
+                            onChange={event => setScreenerFilters(prev => ({ ...prev, minVolumeRatio: event.target.value }))}
+                            className="rt-field"
+                            type="number"
+                            step="0.1"
+                            placeholder="1"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="rt-label">News sentiment</span>
+                          <select
+                            value={screenerFilters.newsSentiment}
+                            onChange={event => setScreenerFilters(prev => ({ ...prev, newsSentiment: event.target.value }))}
+                            className="rt-field"
+                          >
+                            <option value="any">Any</option>
+                            <option value="positive">Positive</option>
+                            <option value="neutral">Neutral</option>
+                            <option value="negative">Negative</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="rt-label">Earnings within</span>
+                          <input
+                            value={screenerFilters.earningsWithinDays}
+                            onChange={event => setScreenerFilters(prev => ({ ...prev, earningsWithinDays: event.target.value }))}
+                            className="rt-field"
+                            type="number"
+                            step="1"
+                            placeholder="30 days"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="rt-label">Sector</span>
+                          <select
+                            value={screenerFilters.sector}
+                            onChange={event => setScreenerFilters(prev => ({ ...prev, sector: event.target.value }))}
+                            className="rt-field"
+                          >
+                            {SECTOR_OPTIONS.map(option => (
+                              <option key={option || 'any'} value={option}>{option || 'Any'}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="rt-label">Trend</span>
+                          <select
+                            value={screenerFilters.trend}
+                            onChange={event => setScreenerFilters(prev => ({ ...prev, trend: event.target.value }))}
+                            className="rt-field"
+                          >
+                            {TREND_OPTIONS.map(option => (
+                              <option key={option} value={option}>{option.replace('_', ' ')}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <Button type="submit" disabled={loadingScreener}>
+                          {loadingScreener ? 'Screening...' : 'Run screener'}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => {
+                            setScreenerFilters(DEFAULT_SCREENER_FILTERS);
+                            fetchScreener(DEFAULT_SCREENER_FILTERS);
+                          }}
+                        >
+                          Reset
+                        </Button>
+                      </div>
+                    </form>
+
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                      <Metric label="Candidates" value={screener?.totalCandidates ?? 0} />
+                      <Metric label="Matches" value={screener?.matchedCount ?? 0} accent />
+                      <Metric label="Top score" value={screener?.rows?.[0]?.score ?? 'N/A'} />
+                      <Metric label="Cache" value={screener?.dataQuality?.cache?.status?.replace('_', ' ') || 'miss'} />
+                    </div>
+
+                    <div className="overflow-x-auto rounded-lg border border-[#26363c]">
+                      <table className="rt-table">
+                        <thead>
+                          <tr>
+                            <th>Symbol</th>
+                            <th>Score</th>
+                            <th>Momentum</th>
+                            <th>Volatility</th>
+                            <th>Volume</th>
+                            <th>Sentiment</th>
+                            <th>Earnings</th>
+                            <th>Trend</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(screener?.rows || []).map(row => (
+                            <tr key={row.symbol} className="cursor-pointer" onClick={() => navigate(`/research/${row.symbol}`)}>
+                              <td className="font-bold">{row.symbol}</td>
+                              <td>{formatNumber(row.score)}</td>
+                              <td>{formatPercent(row.momentumPercent)}</td>
+                              <td>{formatPercent(row.volatilityPercent)}</td>
+                              <td>{row.volumeRatio ? `${row.volumeRatio}x` : 'N/A'}</td>
+                              <td>
+                                <Badge variant={getSentimentVariant(row.newsSentiment)}>{row.newsSentiment}</Badge>
+                              </td>
+                              <td>{row.earnings ? `${row.earnings.daysUntil}d` : 'N/A'}</td>
+                              <td>{row.technicalTrend?.replace('_', ' ') || 'N/A'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'watchlists' && (
+                  <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-[16rem_minmax(0,1fr)]">
+                    <div className="space-y-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="w-full"
+                        onClick={() => {
+                          setSelectedWatchlistId('');
+                          setWatchlistSummary(null);
+                          setWatchlistForm({
+                            name: 'New Research List',
+                            description: '',
+                            symbols: selectedSymbol,
+                            pinnedSymbols: selectedSymbol
+                          });
+                        }}
+                      >
+                        New watchlist
+                      </Button>
+                      {savedWatchlists.map(item => (
+                        <button
+                          key={item._id}
+                          type="button"
+                          onClick={() => selectWatchlist(item)}
+                          className={`rt-panel-muted w-full p-3 text-left ${item._id === selectedWatchlistId ? 'border-[#26d07c]/60 bg-[#10251c]' : ''}`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-sm font-bold text-[#edf5f4]">{item.name}</p>
+                            {item.isDefault && <Badge variant="info">default</Badge>}
+                          </div>
+                          <p className="mt-1 text-xs text-[#8ba09f]">{(item.symbols || []).slice(0, 6).join(', ')}</p>
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="space-y-4">
+                      <form onSubmit={saveWatchlist} className="rt-panel p-4">
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                          <input
+                            value={watchlistForm.name}
+                            onChange={event => setWatchlistForm(prev => ({ ...prev, name: event.target.value }))}
+                            className="rt-field"
+                            placeholder="Watchlist name"
+                          />
+                          <input
+                            value={watchlistForm.description}
+                            onChange={event => setWatchlistForm(prev => ({ ...prev, description: event.target.value }))}
+                            className="rt-field"
+                            placeholder="Description"
+                          />
+                          <textarea
+                            value={watchlistForm.symbols}
+                            onChange={event => setWatchlistForm(prev => ({ ...prev, symbols: event.target.value.toUpperCase() }))}
+                            className="rt-field min-h-[6rem] md:col-span-2"
+                            placeholder="AAPL, MSFT, NVDA"
+                          />
+                          <input
+                            value={watchlistForm.pinnedSymbols}
+                            onChange={event => setWatchlistForm(prev => ({ ...prev, pinnedSymbols: event.target.value.toUpperCase() }))}
+                            className="rt-field md:col-span-2"
+                            placeholder="Pinned symbols"
+                          />
+                        </div>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <Button type="submit">{selectedWatchlistId ? 'Save watchlist' : 'Create watchlist'}</Button>
+                          {selectedWatchlistId && (
+                            <Button type="button" variant="secondary" onClick={() => fetchWatchlistSummary(selectedWatchlistId)}>
+                              Refresh summary
+                            </Button>
+                          )}
+                        </div>
+                      </form>
+
+                      <div className="rt-panel p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="rt-label">Watchlist Research</p>
+                            <h3 className="mt-1 text-lg font-bold text-[#edf5f4]">{selectedWatchlist?.name || watchlistForm.name || 'Research list'}</h3>
+                          </div>
+                          <Badge variant={loadingWatchlistSummary ? 'warning' : 'success'}>
+                            {loadingWatchlistSummary ? 'refreshing' : 'summary'}
+                          </Badge>
+                        </div>
+                        <p className="mt-3 text-sm leading-6 text-[#d9e5e4]">
+                          {watchlistSummary?.summary || 'Save or select a watchlist to generate a research summary.'}
+                        </p>
+                        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+                          <Metric label="Symbols" value={watchlistSummary?.metrics?.symbolCount ?? 0} />
+                          <Metric label="Avg momentum" value={formatPercent(watchlistSummary?.metrics?.avgMomentum)} accent />
+                          <Metric label="Avg volatility" value={formatPercent(watchlistSummary?.metrics?.avgVolatility)} />
+                          <Metric label="Top score" value={watchlistSummary?.metrics?.topScore ?? 'N/A'} />
+                        </div>
+                        <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
+                          <div className="rt-panel-muted p-3">
+                            <p className="rt-label">Top Momentum</p>
+                            <div className="mt-2 space-y-2">
+                              {(watchlistSummary?.topMomentum || []).slice(0, 4).map(row => (
+                                <button key={row.symbol} type="button" onClick={() => navigate(`/research/${row.symbol}`)} className="flex w-full items-center justify-between text-left text-sm">
+                                  <span className="font-bold text-[#edf5f4]">{row.symbol}</span>
+                                  <span className="text-[#8cf5bd]">{formatPercent(row.momentumPercent)}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="rt-panel-muted p-3">
+                            <p className="rt-label">Watch Items</p>
+                            <ul className="mt-2 space-y-2 text-sm text-[#d9e5e4]">
+                              {(watchlistSummary?.watchItems || []).map(item => <li key={item}>{item}</li>)}
+                            </ul>
+                          </div>
+                          <div className="rt-panel-muted p-3">
+                            <p className="rt-label">Risk Flags</p>
+                            <ul className="mt-2 space-y-2 text-sm text-[#ffd77a]">
+                              {(watchlistSummary?.riskFlags || []).map(item => <li key={item}>{item}</li>)}
+                            </ul>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </Card>
@@ -736,9 +1146,12 @@ export default function Research() {
                 <option value="rsi_above">RSI above</option>
                 <option value="rsi_below">RSI below</option>
                 <option value="news_keyword">News keyword</option>
+                <option value="thesis_change">Thesis change</option>
               </select>
               {alertType === 'news_keyword' ? (
                 <input value={alertKeyword} onChange={event => setAlertKeyword(event.target.value)} className="rt-field" placeholder="Keyword" />
+              ) : alertType === 'thesis_change' ? (
+                <input value={alertKeyword} onChange={event => setAlertKeyword(event.target.value)} className="rt-field" placeholder="Optional thesis keyword" />
               ) : (
                 <input value={alertThreshold} onChange={event => setAlertThreshold(event.target.value)} className="rt-field" placeholder="Threshold" type="number" step="0.01" />
               )}
@@ -757,7 +1170,7 @@ export default function Research() {
                     <Badge variant={alert.isActive ? 'success' : 'neutral'}>{alert.isActive ? 'active' : 'paused'}</Badge>
                   </div>
                   <p className="mt-1 text-xs text-[#8ba09f]">
-                    {alert.type === 'news_keyword' ? alert.keyword : alert.threshold}
+                    {['news_keyword', 'thesis_change'].includes(alert.type) ? (alert.keyword || 'Any change') : alert.threshold}
                   </p>
                 </button>
               ))}

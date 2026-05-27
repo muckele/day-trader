@@ -237,6 +237,8 @@ Research data quality:
 - `RESEARCH_STOCK_CACHE_TTL_MS` controls Mongo-backed stock research snapshot TTL (default 5 minutes).
 - `RESEARCH_DASHBOARD_CACHE_TTL_MS` controls Mongo-backed research dashboard snapshot TTL (default 2 minutes).
 - `RESEARCH_COMPARE_CACHE_TTL_MS` controls Mongo-backed comparison snapshot TTL (default 2 minutes).
+- `RESEARCH_SCREENER_CACHE_TTL_MS` controls stock screener snapshot TTL (default 3 minutes).
+- `RESEARCH_WATCHLIST_SUMMARY_CACHE_TTL_MS` controls saved-watchlist research summary TTL (default 3 minutes).
 - `RESEARCH_NEWS_STALE_MINUTES`, `RESEARCH_DAILY_STALE_MINUTES`, and `RESEARCH_INTRADAY_STALE_MINUTES` tune stale-data warnings.
 - `OPENAI_API_KEY` or `RESEARCH_AI_API_KEY` enables AI-generated Research Intelligence summaries.
 - `RESEARCH_AI_MODEL` controls the model used for Research Intelligence (default `gpt-4o-mini`).
@@ -247,6 +249,9 @@ Research Intelligence:
 - Clusters similar headlines before they reach the dashboard so duplicate news does not dominate the view.
 - Generates or falls back to a structured summary with bull case, bear case, key risks, what changed today, watch items, confidence labels, citations, and timestamps.
 - Uses confidence labels only and does not promise profit, ROI, certainty, or risk-free outcomes.
+- Adds `/api/research/screener` filters for momentum, volatility, relative volume, news sentiment, earnings proximity, sector, and technical trend.
+- Adds Mongo-backed saved watchlists under `/api/research/watchlists` with watchlist-level research summaries.
+- Research alerts support price, RSI, volume, news keyword, and thesis-change rule types.
 
 ## Fly Deploy Notes
 

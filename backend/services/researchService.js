@@ -10,6 +10,7 @@ const {
   sma
 } = require('../signal/indicators');
 const { createAlpacaBroker } = require('../robotrader/alpacaBroker');
+const { mapSymbolSector } = require('../paper/marketMeta');
 const {
   buildFallbackResearchIntelligence,
   buildResearchIntelligence,
@@ -34,6 +35,8 @@ const FINNHUB_BASE_URL = (process.env.FINNHUB_BASE_URL || 'https://finnhub.io').
 const STOCK_SNAPSHOT_TTL_MS = positiveNumber(process.env.RESEARCH_STOCK_CACHE_TTL_MS, 5 * 60 * 1000);
 const DASHBOARD_SNAPSHOT_TTL_MS = positiveNumber(process.env.RESEARCH_DASHBOARD_CACHE_TTL_MS, 2 * 60 * 1000);
 const COMPARE_SNAPSHOT_TTL_MS = positiveNumber(process.env.RESEARCH_COMPARE_CACHE_TTL_MS, 2 * 60 * 1000);
+const SCREENER_SNAPSHOT_TTL_MS = positiveNumber(process.env.RESEARCH_SCREENER_CACHE_TTL_MS, 3 * 60 * 1000);
+const WATCHLIST_SUMMARY_TTL_MS = positiveNumber(process.env.RESEARCH_WATCHLIST_SUMMARY_CACHE_TTL_MS, 3 * 60 * 1000);
 const NEWS_STALE_MINUTES = positiveNumber(process.env.RESEARCH_NEWS_STALE_MINUTES, 24 * 60);
 const DAILY_BARS_STALE_MINUTES = positiveNumber(process.env.RESEARCH_DAILY_STALE_MINUTES, 5 * 24 * 60);
 const INTRADAY_STALE_MINUTES = positiveNumber(process.env.RESEARCH_INTRADAY_STALE_MINUTES, 8 * 60);
@@ -83,6 +86,12 @@ function round(value, digits = 2) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return null;
   return Number(numeric.toFixed(digits));
+}
+
+function clamp(value, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return min;
+  return Math.max(min, Math.min(max, numeric));
 }
 
 function normalizeBar(bar = {}) {
@@ -1182,6 +1191,14 @@ async function getPersistedEvents(symbol, ResearchEvent, { limit = 50 } = {}) {
     .lean();
 }
 
+async function getPersistedEventsForSymbols(symbols, ResearchEvent, { limit = 100 } = {}) {
+  if (!ResearchEvent) return [];
+  return ResearchEvent.find({ symbol: { $in: uniqueSymbols(symbols) } })
+    .sort({ eventDate: 1, updatedAt: -1 })
+    .limit(limit)
+    .lean();
+}
+
 async function refreshResearchEvents(symbol, ResearchEvent, options = {}) {
   const result = await fetchFinnhubEventsForSymbol(symbol);
   await persistResearchEvents(result.events, ResearchEvent);
@@ -1540,9 +1557,402 @@ async function compareSymbols(symbols, { ResearchNews, ResearchSnapshot, forceRe
   });
 }
 
+function parseScreenerFilters(raw = {}) {
+  const newsSentiment = ['positive', 'neutral', 'negative'].includes(raw.newsSentiment)
+    ? raw.newsSentiment
+    : 'any';
+  const trend = ['uptrend', 'downtrend', 'mixed', 'insufficient_data'].includes(raw.trend)
+    ? raw.trend
+    : 'any';
+  return {
+    minMomentum: toOptionalFilterNumber(raw.minMomentum),
+    maxVolatility: toOptionalFilterNumber(raw.maxVolatility),
+    minVolumeRatio: toOptionalFilterNumber(raw.minVolumeRatio),
+    newsSentiment,
+    earningsWithinDays: toOptionalFilterNumber(raw.earningsWithinDays),
+    sector: String(raw.sector || '').trim().toUpperCase(),
+    trend
+  };
+}
+
+function toOptionalFilterNumber(value) {
+  if (value === undefined || value === null || value === '') return null;
+  return toFiniteNumber(value);
+}
+
+function compactSymbolKey(symbol) {
+  return normalizeSymbol(symbol).replace(/[^A-Z0-9]/g, '');
+}
+
+function groupBySymbol(items = [], getSymbols) {
+  return items.reduce((acc, item) => {
+    uniqueSymbols(getSymbols(item)).forEach(symbol => {
+      if (!acc[symbol]) acc[symbol] = [];
+      acc[symbol].push(item);
+    });
+    return acc;
+  }, {});
+}
+
+function dominantSentiment(news = []) {
+  const counts = news.reduce((acc, item) => {
+    const sentiment = item.sentiment || 'neutral';
+    acc[sentiment] = (acc[sentiment] || 0) + 1;
+    return acc;
+  }, { positive: 0, neutral: 0, negative: 0 });
+  if (counts.positive > counts.negative && counts.positive >= counts.neutral) return 'positive';
+  if (counts.negative > counts.positive && counts.negative >= counts.neutral) return 'negative';
+  return 'neutral';
+}
+
+function daysUntil(value, fromDate = new Date()) {
+  const date = toDate(value);
+  if (!date) return null;
+  return Math.ceil((date.getTime() - fromDate.getTime()) / (24 * 60 * 60 * 1000));
+}
+
+function getUpcomingEarnings(events = []) {
+  const now = new Date();
+  return events
+    .filter(item => item.type === 'earnings')
+    .map(item => ({
+      title: item.title,
+      date: toIsoDate(item.eventDate),
+      daysUntil: daysUntil(item.eventDate, now),
+      sentiment: item.sentiment || 'neutral'
+    }))
+    .filter(item => item.daysUntil !== null && item.daysUntil >= 0)
+    .sort((a, b) => a.daysUntil - b.daysUntil)[0] || null;
+}
+
+function scoreScreenerRow({ technicals = {}, news = [], earnings = null }) {
+  const momentum = toFiniteNumber(technicals.twentyDayChangePercent ?? technicals.fiveDayChangePercent ?? technicals.changePercent, 0) || 0;
+  const volumeRatio = toFiniteNumber(technicals.volumeRatio, 1) || 1;
+  const sentimentScore = average(news.map(item => item.sentimentScore));
+  const volatility = toFiniteNumber(technicals.atrPercent ?? technicals.volatility20, 0) || 0;
+  const trendBonus = technicals.trend === 'uptrend' ? 12 : (technicals.trend === 'downtrend' ? -12 : 0);
+  const earningsBonus = earnings?.daysUntil !== null && earnings?.daysUntil <= 14 ? 4 : 0;
+  const score = 50 +
+    clamp(momentum, -25, 25) * 0.9 +
+    clamp((volumeRatio - 1) * 10, -8, 18) +
+    clamp((sentimentScore || 0) * 18, -18, 18) +
+    trendBonus +
+    earningsBonus -
+    clamp(Math.max(0, volatility - 6), 0, 14);
+  return round(clamp(score, 0, 100), 1);
+}
+
+function buildScreenerRow({ symbol, bars = [], quote = null, news = [], events = [] }) {
+  const technicals = computeTechnicals(bars);
+  const earnings = getUpcomingEarnings(events);
+  const latestPrice = quote?.price || technicals.latestPrice;
+  const momentumPercent = technicals.twentyDayChangePercent ?? technicals.fiveDayChangePercent ?? technicals.changePercent;
+  const volatilityPercent = technicals.atrPercent ?? technicals.volatility20;
+  const sector = mapSymbolSector(symbol, quote?.assetClass || 'equity');
+  return {
+    symbol,
+    sector,
+    assetClass: quote?.assetClass || 'equity',
+    price: latestPrice,
+    changePercent: quote?.changePercent ?? technicals.changePercent,
+    momentumPercent: round(momentumPercent, 2),
+    volatilityPercent: round(volatilityPercent, 2),
+    volumeRatio: technicals.volumeRatio,
+    technicalTrend: technicals.trend,
+    rsi14: technicals.rsi14,
+    support20: technicals.support20,
+    resistance20: technicals.resistance20,
+    newsSentiment: dominantSentiment(news),
+    positiveNews: news.filter(item => item.sentiment === 'positive').length,
+    negativeNews: news.filter(item => item.sentiment === 'negative').length,
+    latestNews: news
+      .slice()
+      .sort((a, b) => new Date(b.publishedAt || b.createdAt || 0) - new Date(a.publishedAt || a.createdAt || 0))
+      .slice(0, 3)
+      .map(item => ({
+        headline: item.headline,
+        sentiment: item.sentiment,
+        source: item.source,
+        publishedAt: toIsoDate(item.publishedAt || item.createdAt)
+      })),
+    earnings,
+    score: scoreScreenerRow({ technicals, news, earnings }),
+    dataPoints: technicals.dataPoints
+  };
+}
+
+function matchesScreenerFilters(row, filters = {}) {
+  if (filters.minMomentum !== null && !(Number.isFinite(row.momentumPercent) && row.momentumPercent >= filters.minMomentum)) {
+    return false;
+  }
+  if (filters.maxVolatility !== null && !(Number.isFinite(row.volatilityPercent) && row.volatilityPercent <= filters.maxVolatility)) {
+    return false;
+  }
+  if (filters.minVolumeRatio !== null && !(Number.isFinite(row.volumeRatio) && row.volumeRatio >= filters.minVolumeRatio)) {
+    return false;
+  }
+  if (filters.newsSentiment !== 'any' && row.newsSentiment !== filters.newsSentiment) {
+    return false;
+  }
+  if (filters.earningsWithinDays !== null) {
+    const days = row.earnings?.daysUntil;
+    if (!(Number.isFinite(days) && days >= 0 && days <= filters.earningsWithinDays)) return false;
+  }
+  if (filters.sector && row.sector !== filters.sector) {
+    return false;
+  }
+  if (filters.trend !== 'any' && row.technicalTrend !== filters.trend) {
+    return false;
+  }
+  return true;
+}
+
+async function screenStocks({
+  symbols = DEFAULT_WATCHLIST.map(item => item.symbol),
+  filters = {},
+  ResearchNews,
+  ResearchEvent,
+  ResearchSnapshot,
+  forceRefresh = false,
+  fetchDailyFn = fetchDaily,
+  fetchQuotesFn = fetchQuotes,
+  newsItems = null,
+  eventItems = null
+} = {}) {
+  const normalized = uniqueSymbols(symbols).slice(0, 40);
+  const parsedFilters = parseScreenerFilters(filters);
+  const cacheKey = `${researchCacheKey('screener', normalized)}:${stableId(parsedFilters)}:v1`;
+  if (!forceRefresh) {
+    const cached = await readResearchSnapshot(ResearchSnapshot, cacheKey);
+    if (cached) return cached;
+  }
+
+  const providerHealthRecords = [];
+  const quoteResult = await captureProviderResult({
+    provider: 'alpaca_screener_quotes',
+    category: 'marketData',
+    rank: 1,
+    fn: () => fetchQuotesFn(normalized, { assetClass: 'equity' }),
+    fallbackValue: []
+  });
+  providerHealthRecords.push(quoteResult.health);
+
+  let news = Array.isArray(newsItems) ? newsItems : null;
+  if (!news) {
+    news = await getPersistedNewsForSymbols(normalized, ResearchNews, { limit: 120 });
+    providerHealthRecords.push(providerHealth({
+      provider: 'mongo_research_news',
+      category: 'news',
+      rank: 2,
+      configured: Boolean(ResearchNews),
+      fallback: true,
+      status: ResearchNews ? 'ok' : 'disabled',
+      itemCount: news.length,
+      message: news.length ? 'Using persisted normalized research news.' : 'No persisted research news was available for the screener.'
+    }));
+    if (!news.length && ResearchNews) {
+      const refreshed = await refreshNewsDetailed(normalized, ResearchNews, { limit: 60 });
+      news = refreshed.news || [];
+      providerHealthRecords.push(...(refreshed.providerHealth || []));
+    }
+  }
+
+  const events = Array.isArray(eventItems)
+    ? eventItems
+    : await getPersistedEventsForSymbols(normalized, ResearchEvent, { limit: 160 });
+  providerHealthRecords.push(providerHealth({
+    provider: 'mongo_research_events',
+    category: 'events',
+    rank: 2,
+    configured: Boolean(ResearchEvent),
+    fallback: true,
+    status: ResearchEvent ? 'ok' : 'disabled',
+    itemCount: events.length,
+    message: events.length ? 'Using persisted normalized corporate events.' : 'No persisted corporate events were available for the screener.'
+  }));
+
+  const startedAt = Date.now();
+  let dailyErrors = 0;
+  const barsBySymbol = {};
+  await Promise.all(normalized.map(async symbol => {
+    try {
+      barsBySymbol[symbol] = await fetchDailyFn(symbol);
+    } catch (_err) {
+      dailyErrors += 1;
+      barsBySymbol[symbol] = [];
+    }
+  }));
+  providerHealthRecords.push(providerHealth({
+    provider: 'alpaca_screener_daily_bars',
+    category: 'marketData',
+    rank: 2,
+    status: normalized.length > 0 && dailyErrors === normalized.length ? 'error' : 'ok',
+    latencyMs: Date.now() - startedAt,
+    itemCount: normalized.length - dailyErrors,
+    message: dailyErrors ? `${dailyErrors} symbol${dailyErrors === 1 ? '' : 's'} returned no daily bar data.` : ''
+  }));
+
+  const quotesBySymbol = (quoteResult.data || []).reduce((acc, item) => {
+    acc[compactSymbolKey(item.symbol)] = item;
+    return acc;
+  }, {});
+  const newsBySymbol = groupBySymbol(news, item => item.symbols || []);
+  const eventsBySymbol = groupBySymbol(events, item => [item.symbol]);
+
+  const allRows = normalized.map(symbol => buildScreenerRow({
+    symbol,
+    bars: barsBySymbol[symbol] || [],
+    quote: quotesBySymbol[compactSymbolKey(symbol)] || null,
+    news: newsBySymbol[symbol] || [],
+    events: eventsBySymbol[symbol] || []
+  }));
+  const rows = allRows
+    .filter(row => matchesScreenerFilters(row, parsedFilters))
+    .sort((a, b) => b.score - a.score);
+  const staleWarnings = buildStaleWarnings({
+    news,
+    events,
+    quotes: quoteResult.data || [],
+    providerHealth: providerHealthRecords
+  });
+  if (allRows.some(row => row.dataPoints < 30)) {
+    staleWarnings.push('Some screener symbols have limited daily bar history; technical filters may be less reliable.');
+  }
+
+  const payload = {
+    symbols: normalized,
+    filters: parsedFilters,
+    rows,
+    totalCandidates: allRows.length,
+    matchedCount: rows.length,
+    updatedAt: new Date().toISOString(),
+    dataQuality: buildDataQuality({
+      providerHealth: providerHealthRecords,
+      staleWarnings,
+      cache: { status: 'miss', key: cacheKey }
+    })
+  };
+  return writeResearchSnapshot(ResearchSnapshot, {
+    key: cacheKey,
+    scope: 'screener',
+    symbols: normalized,
+    payload,
+    ttlMs: SCREENER_SNAPSHOT_TTL_MS
+  });
+}
+
+function summarizeCounts(items, key) {
+  return items.reduce((acc, item) => {
+    const value = item[key] || 'unknown';
+    acc[value] = (acc[value] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+async function buildWatchlistResearchSummary({
+  watchlist = {},
+  ResearchNews,
+  ResearchEvent,
+  ResearchSnapshot,
+  forceRefresh = false,
+  fetchDailyFn = fetchDaily,
+  fetchQuotesFn = fetchQuotes,
+  newsItems = null,
+  eventItems = null
+} = {}) {
+  const symbols = uniqueSymbols(watchlist.symbols).slice(0, 40);
+  const watchlistId = String(watchlist._id || stableId({ name: watchlist.name, symbols }));
+  const cacheKey = `watchlist-summary:${watchlistId}:${stableId({ name: watchlist.name || '', symbols })}:v1`;
+  if (!forceRefresh) {
+    const cached = await readResearchSnapshot(ResearchSnapshot, cacheKey);
+    if (cached) return cached;
+  }
+
+  const screener = await screenStocks({
+    symbols,
+    filters: {},
+    ResearchNews,
+    ResearchEvent,
+    ResearchSnapshot: null,
+    forceRefresh: true,
+    fetchDailyFn,
+    fetchQuotesFn,
+    newsItems,
+    eventItems
+  });
+  const rows = screener.rows || [];
+  const topMomentum = rows
+    .slice()
+    .sort((a, b) => (b.momentumPercent ?? -Infinity) - (a.momentumPercent ?? -Infinity))
+    .slice(0, 5);
+  const highVolume = rows
+    .slice()
+    .sort((a, b) => (b.volumeRatio ?? -Infinity) - (a.volumeRatio ?? -Infinity))
+    .slice(0, 5);
+  const upcomingEarnings = rows
+    .filter(row => row.earnings?.daysUntil !== null && row.earnings?.daysUntil <= 21)
+    .sort((a, b) => a.earnings.daysUntil - b.earnings.daysUntil)
+    .slice(0, 6);
+  const avgMomentum = round(average(rows.map(row => row.momentumPercent)), 2);
+  const avgVolatility = round(average(rows.map(row => row.volatilityPercent)), 2);
+  const sentimentCounts = summarizeCounts(rows, 'newsSentiment');
+  const trendCounts = summarizeCounts(rows, 'technicalTrend');
+  const sectorBreakdown = summarizeCounts(rows, 'sector');
+  const riskFlags = [];
+  if ((sentimentCounts.negative || 0) > (sentimentCounts.positive || 0)) {
+    riskFlags.push('Negative news sentiment is heavier than positive sentiment across this watchlist.');
+  }
+  if (Number.isFinite(avgVolatility) && avgVolatility > 6) {
+    riskFlags.push('Average ATR volatility is elevated, so position sizing and alert thresholds may need more room.');
+  }
+  if (upcomingEarnings.length) {
+    riskFlags.push(`${upcomingEarnings.length} symbol${upcomingEarnings.length === 1 ? '' : 's'} have earnings within 21 days.`);
+  }
+  const watchItems = [
+    topMomentum[0] ? `${topMomentum[0].symbol} has the strongest current momentum score in this watchlist.` : null,
+    highVolume[0] ? `${highVolume[0].symbol} has the highest relative volume.` : null,
+    upcomingEarnings[0] ? `${upcomingEarnings[0].symbol} reports earnings in ${upcomingEarnings[0].earnings.daysUntil} day${upcomingEarnings[0].earnings.daysUntil === 1 ? '' : 's'}.` : null
+  ].filter(Boolean);
+  const summaryText = rows.length
+    ? `${watchlist.name || 'Watchlist'} tracks ${rows.length} symbol${rows.length === 1 ? '' : 's'} with average 20-day momentum of ${avgMomentum ?? 'N/A'}% and average ATR volatility of ${avgVolatility ?? 'N/A'}%.`
+    : `${watchlist.name || 'Watchlist'} does not have enough symbol data for a research summary yet.`;
+
+  const payload = {
+    watchlistId,
+    name: watchlist.name || 'Watchlist',
+    symbols,
+    summary: summaryText,
+    metrics: {
+      symbolCount: rows.length,
+      avgMomentum,
+      avgVolatility,
+      topScore: rows[0]?.score ?? null
+    },
+    topMomentum,
+    highVolume,
+    upcomingEarnings,
+    sentimentCounts,
+    trendCounts,
+    sectorBreakdown,
+    watchItems,
+    riskFlags,
+    rows: rows.slice(0, 20),
+    updatedAt: new Date().toISOString(),
+    dataQuality: screener.dataQuality
+  };
+  return writeResearchSnapshot(ResearchSnapshot, {
+    key: cacheKey,
+    scope: 'watchlist_summary',
+    symbols,
+    payload,
+    ttlMs: WATCHLIST_SUMMARY_TTL_MS
+  });
+}
+
 module.exports = {
   buildStockThesis,
   buildResearchIntelligence,
+  buildWatchlistResearchSummary,
   buildDataQuality,
   buildStaleWarnings,
   buildChartTimeframes,
@@ -1557,5 +1967,6 @@ module.exports = {
   normalizeSymbol,
   refreshResearchEvents,
   refreshNews,
+  screenStocks,
   scoreSentiment
 };

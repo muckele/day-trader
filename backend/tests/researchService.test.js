@@ -4,11 +4,13 @@ const {
   buildStockThesis,
   buildStaleWarnings,
   buildChartTimeframes,
+  buildWatchlistResearchSummary,
   compareSymbols,
   computeTechnicals,
   normalizeNewsItem,
   normalizeResearchEvent,
-  scoreSentiment
+  scoreSentiment,
+  screenStocks
 } = require('../services/researchService');
 const {
   buildResearchIntelligence,
@@ -26,6 +28,21 @@ function makeBars(count = 220) {
       l: price - 1,
       c: price,
       v: 1000000 + index * 1000
+    };
+  });
+}
+
+function makeDowntrendBars(count = 220) {
+  let price = 180;
+  return Array.from({ length: count }).map((_, index) => {
+    price -= 0.35;
+    return {
+      t: new Date(Date.UTC(2025, 0, index + 1)).toISOString(),
+      o: price + 0.5,
+      h: price + 1,
+      l: price - 1,
+      c: price,
+      v: 900000 + index * 500
     };
   });
 }
@@ -90,6 +107,114 @@ test('research service builds pro chart timeframes with indicators and markers',
   assert.ok(timeframes['1Y'].volumeProfile.length > 0);
   assert.ok(timeframes['1Y'].support > 0);
   assert.ok(timeframes['1Y'].markers.length > 0);
+});
+
+test('research screener filters momentum, sentiment, volume, sector, and trend', async () => {
+  const result = await screenStocks({
+    symbols: ['AAPL', 'JPM'],
+    filters: {
+      minMomentum: 3,
+      minVolumeRatio: 0.8,
+      newsSentiment: 'positive',
+      sector: 'TECHNOLOGY',
+      trend: 'uptrend'
+    },
+    fetchDailyFn: async symbol => (symbol === 'AAPL' ? makeBars(240) : makeDowntrendBars(240)),
+    fetchQuotesFn: async symbols => symbols.map(symbol => ({
+      symbol,
+      assetClass: 'equity',
+      price: symbol === 'AAPL' ? 195 : 120,
+      changePercent: symbol === 'AAPL' ? 1.2 : -0.8
+    })),
+    newsItems: [
+      normalizeNewsItem({
+        id: 'aapl-positive',
+        symbols: ['AAPL'],
+        headline: 'AAPL beats guidance as analysts upgrade shares',
+        created_at: '2026-05-27T12:00:00.000Z'
+      }, ['AAPL']),
+      normalizeNewsItem({
+        id: 'jpm-negative',
+        symbols: ['JPM'],
+        headline: 'JPM downgraded after weak outlook',
+        created_at: '2026-05-27T12:00:00.000Z'
+      }, ['JPM'])
+    ],
+    eventItems: []
+  });
+
+  assert.equal(result.matchedCount, 1);
+  assert.equal(result.rows[0].symbol, 'AAPL');
+  assert.equal(result.rows[0].newsSentiment, 'positive');
+  assert.equal(result.rows[0].sector, 'TECHNOLOGY');
+  assert.equal(result.rows[0].technicalTrend, 'uptrend');
+});
+
+test('research screener treats empty numeric filters as disabled filters', async () => {
+  const result = await screenStocks({
+    symbols: ['AAPL'],
+    filters: {
+      minMomentum: '',
+      maxVolatility: '',
+      minVolumeRatio: '',
+      earningsWithinDays: '',
+      newsSentiment: 'any',
+      trend: 'any'
+    },
+    fetchDailyFn: async () => makeBars(240),
+    fetchQuotesFn: async symbols => symbols.map(symbol => ({
+      symbol,
+      assetClass: 'equity',
+      price: 195,
+      changePercent: 1.2
+    })),
+    newsItems: [],
+    eventItems: []
+  });
+
+  assert.equal(result.totalCandidates, 1);
+  assert.equal(result.matchedCount, 1);
+  assert.equal(result.filters.minMomentum, null);
+  assert.equal(result.filters.maxVolatility, null);
+});
+
+test('research watchlist summary aggregates screener rows and event risks', async () => {
+  const result = await buildWatchlistResearchSummary({
+    watchlist: {
+      _id: 'watchlist-test',
+      name: 'AI Leaders',
+      symbols: ['AAPL', 'MSFT']
+    },
+    fetchDailyFn: async () => makeBars(240),
+    fetchQuotesFn: async symbols => symbols.map(symbol => ({
+      symbol,
+      assetClass: 'equity',
+      price: 210,
+      changePercent: 1
+    })),
+    newsItems: [
+      normalizeNewsItem({
+        id: 'watchlist-news',
+        symbols: ['AAPL', 'MSFT'],
+        headline: 'AAPL and MSFT shares rise after product catalyst',
+        created_at: '2026-05-27T12:00:00.000Z'
+      }, ['AAPL', 'MSFT'])
+    ],
+    eventItems: [
+      normalizeResearchEvent('earnings', {
+        symbol: 'AAPL',
+        date: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(),
+        epsActual: 2.1,
+        epsEstimate: 2
+      }, 'AAPL')
+    ]
+  });
+
+  assert.match(result.summary, /AI Leaders/);
+  assert.equal(result.metrics.symbolCount, 2);
+  assert.ok(result.topMomentum.length > 0);
+  assert.ok(result.watchItems.length > 0);
+  assert.ok(result.riskFlags.some(item => /earnings/i.test(item)));
 });
 
 test('research service excludes chart markers outside the visible bar range', () => {

@@ -5,7 +5,7 @@ const researchSnapshotSchema = new mongoose.Schema(
     key: { type: String, required: true, unique: true, index: true },
     scope: {
       type: String,
-      enum: ['dashboard', 'stock', 'compare'],
+      enum: ['dashboard', 'stock', 'compare', 'screener', 'watchlist_summary'],
       required: true,
       index: true
     },

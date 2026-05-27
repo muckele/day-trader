@@ -7,16 +7,20 @@ const ResearchNote = require('../models/ResearchNote');
 const ResearchAlert = require('../models/ResearchAlert');
 const ResearchEvent = require('../models/ResearchEvent');
 const ResearchSnapshot = require('../models/ResearchSnapshot');
+const ResearchWatchlist = require('../models/ResearchWatchlist');
+const { DEFAULT_WATCHLIST } = require('../data/defaultWatchlist');
 const analysisEngine = require('../analysisEngine');
 const { getRequestAccountId } = require('../utils/accountScope');
 const {
+  buildWatchlistResearchSummary,
   compareSymbols,
   getResearchProviderHealth,
   getResearchDashboard,
   getStockResearch,
   normalizeSymbol,
   refreshResearchEvents,
-  refreshNews
+  refreshNews,
+  screenStocks
 } = require('../services/researchService');
 
 router.use(requireMongo);
@@ -47,6 +51,41 @@ function getSymbolParam(req, res) {
 
 function isValidMongoId(value) {
   return mongoose.Types.ObjectId.isValid(String(value || ''));
+}
+
+function parseWatchlistSymbols(value, fallback = []) {
+  return parseSymbols(value, fallback).slice(0, 60);
+}
+
+function sanitizeWatchlistPayload(body = {}) {
+  const update = {};
+  if (body.name !== undefined) update.name = String(body.name || '').trim().slice(0, 80);
+  if (body.description !== undefined) update.description = String(body.description || '').trim().slice(0, 400);
+  if (body.symbols !== undefined) update.symbols = parseWatchlistSymbols(body.symbols);
+  if (body.pinnedSymbols !== undefined) update.pinnedSymbols = parseWatchlistSymbols(body.pinnedSymbols);
+  return update;
+}
+
+async function ensureDefaultResearchWatchlist(accountId, username = null) {
+  const defaults = {
+    accountId,
+    username,
+    name: 'Core Research',
+    description: 'Default research watchlist seeded from the app watchlist.',
+    symbols: DEFAULT_WATCHLIST.map(item => item.symbol),
+    pinnedSymbols: DEFAULT_WATCHLIST.slice(0, 4).map(item => item.symbol),
+    isDefault: true
+  };
+  try {
+    return await ResearchWatchlist.findOneAndUpdate(
+      { accountId, isDefault: true },
+      { $setOnInsert: defaults },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    ).lean();
+  } catch (err) {
+    if (err?.code !== 11000) throw err;
+    return ResearchWatchlist.findOne({ accountId, isDefault: true }).lean();
+  }
 }
 
 router.get('/dashboard', async (req, res, next) => {
@@ -128,6 +167,131 @@ router.get('/compare', async (req, res, next) => {
       ResearchSnapshot,
       forceRefresh: req.query.refresh === 'true'
     }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/screener', async (req, res, next) => {
+  try {
+    const symbols = parseSymbols(req.query.symbols);
+    const result = await screenStocks({
+      symbols: symbols.length ? symbols : undefined,
+      filters: req.query,
+      ResearchNews,
+      ResearchEvent,
+      ResearchSnapshot,
+      forceRefresh: req.query.refresh === 'true'
+    });
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/watchlists', async (req, res, next) => {
+  try {
+    const accountId = getRequestAccountId(req);
+    await ensureDefaultResearchWatchlist(accountId, req.user?.username || null);
+    const watchlists = await ResearchWatchlist.find({ accountId })
+      .sort({ isDefault: -1, updatedAt: -1 })
+      .lean();
+    res.json(watchlists);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/watchlists', async (req, res, next) => {
+  try {
+    const accountId = getRequestAccountId(req);
+    const payload = sanitizeWatchlistPayload(req.body || {});
+    const symbols = payload.symbols || [];
+    const name = payload.name || 'Research Watchlist';
+    const watchlist = await ResearchWatchlist.create({
+      accountId,
+      username: req.user?.username || null,
+      name,
+      description: payload.description || '',
+      symbols,
+      pinnedSymbols: payload.pinnedSymbols || [],
+      isDefault: false
+    });
+    res.status(201).json(watchlist);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/watchlists/:watchlistId/summary', async (req, res, next) => {
+  try {
+    if (!isValidMongoId(req.params.watchlistId)) {
+      return res.status(400).json({ message: 'Invalid research watchlist id.' });
+    }
+    const accountId = getRequestAccountId(req);
+    const watchlist = await ResearchWatchlist.findOne({ _id: req.params.watchlistId, accountId }).lean();
+    if (!watchlist) return res.status(404).json({ message: 'Research watchlist not found.' });
+    const summary = await buildWatchlistResearchSummary({
+      watchlist,
+      ResearchNews,
+      ResearchEvent,
+      ResearchSnapshot,
+      forceRefresh: req.query.refresh === 'true'
+    });
+    await ResearchWatchlist.updateOne(
+      { _id: watchlist._id, accountId },
+      { $set: { summarySnapshot: summary, summaryGeneratedAt: new Date(summary.updatedAt || Date.now()) } }
+    );
+    res.json(summary);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/watchlists/:watchlistId', async (req, res, next) => {
+  try {
+    if (!isValidMongoId(req.params.watchlistId)) {
+      return res.status(400).json({ message: 'Invalid research watchlist id.' });
+    }
+    const accountId = getRequestAccountId(req);
+    const watchlist = await ResearchWatchlist.findOne({ _id: req.params.watchlistId, accountId }).lean();
+    if (!watchlist) return res.status(404).json({ message: 'Research watchlist not found.' });
+    res.json(watchlist);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/watchlists/:watchlistId', async (req, res, next) => {
+  try {
+    if (!isValidMongoId(req.params.watchlistId)) {
+      return res.status(400).json({ message: 'Invalid research watchlist id.' });
+    }
+    const accountId = getRequestAccountId(req);
+    const update = sanitizeWatchlistPayload(req.body || {});
+    if (update.name !== undefined && !update.name) {
+      return res.status(400).json({ message: 'Watchlist name is required.' });
+    }
+    const watchlist = await ResearchWatchlist.findOneAndUpdate(
+      { _id: req.params.watchlistId, accountId },
+      { $set: update },
+      { new: true }
+    );
+    if (!watchlist) return res.status(404).json({ message: 'Research watchlist not found.' });
+    res.json(watchlist);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/watchlists/:watchlistId', async (req, res, next) => {
+  try {
+    if (!isValidMongoId(req.params.watchlistId)) {
+      return res.status(400).json({ message: 'Invalid research watchlist id.' });
+    }
+    const accountId = getRequestAccountId(req);
+    const result = await ResearchWatchlist.deleteOne({ _id: req.params.watchlistId, accountId });
+    res.json({ deleted: result.deletedCount === 1 });
   } catch (err) {
     next(err);
   }
@@ -230,12 +394,12 @@ router.post('/alerts/:symbol', async (req, res, next) => {
     const symbol = getSymbolParam(req, res);
     if (!symbol) return;
     const type = String(req.body?.type || '').trim();
-    const allowed = ['price_above', 'price_below', 'volume_spike', 'rsi_above', 'rsi_below', 'news_keyword'];
+    const allowed = ['price_above', 'price_below', 'volume_spike', 'rsi_above', 'rsi_below', 'news_keyword', 'thesis_change'];
     if (!allowed.includes(type)) return res.status(400).json({ message: 'Invalid alert type.' });
     const threshold = req.body?.threshold === '' || req.body?.threshold === undefined
       ? null
       : Number(req.body.threshold);
-    if (type !== 'news_keyword' && (!Number.isFinite(threshold) || threshold <= 0)) {
+    if (!['news_keyword', 'thesis_change'].includes(type) && (!Number.isFinite(threshold) || threshold <= 0)) {
       return res.status(400).json({ message: 'Numeric threshold is required for this alert type.' });
     }
     const alert = await ResearchAlert.create({

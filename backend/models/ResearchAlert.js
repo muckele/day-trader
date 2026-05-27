@@ -7,7 +7,7 @@ const researchAlertSchema = new mongoose.Schema(
     symbol: { type: String, required: true, index: true },
     type: {
       type: String,
-      enum: ['price_above', 'price_below', 'volume_spike', 'rsi_above', 'rsi_below', 'news_keyword'],
+      enum: ['price_above', 'price_below', 'volume_spike', 'rsi_above', 'rsi_below', 'news_keyword', 'thesis_change'],
       required: true,
       index: true
     },
