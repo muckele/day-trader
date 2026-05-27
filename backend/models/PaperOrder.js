@@ -27,6 +27,8 @@ const paperOrderSchema = new mongoose.Schema(
     strategyId: { type: String, default: null },
     setupType: { type: String, default: null },
     strategyTags: { type: [String], default: [] },
+    metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+    researchSnapshot: { type: mongoose.Schema.Types.Mixed, default: null },
     estimatedPrice: { type: Number, default: null },
     stopPrice: { type: Number, default: null },
     status: { type: String, enum: ['open', 'filled', 'cancelled', 'rejected'], default: 'filled' },

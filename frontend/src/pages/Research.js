@@ -23,6 +23,14 @@ const DEFAULT_SCREENER_FILTERS = {
 };
 const SECTOR_OPTIONS = ['', 'TECHNOLOGY', 'COMMUNICATION', 'CONSUMER', 'FINANCIALS', 'INDEX', 'OTHER'];
 const TREND_OPTIONS = ['any', 'uptrend', 'mixed', 'downtrend', 'insufficient_data'];
+const DEFAULT_TRADE_TICKET = {
+  side: 'buy',
+  qty: '',
+  orderType: 'market',
+  limitPrice: '',
+  positionSizePct: '',
+  allowExtendedHours: true
+};
 
 function normalizeSymbol(value) {
   return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9./-]/g, '');
@@ -83,6 +91,10 @@ function alertNeedsThreshold(type) {
   return !['news_keyword', 'thesis_change'].includes(type);
 }
 
+function getTicketValue(value) {
+  return value === null || value === undefined || value === '' ? 'N/A' : value;
+}
+
 function Metric({ label, value, accent = false }) {
   return (
     <div className="rt-metric">
@@ -126,6 +138,11 @@ export default function Research() {
   });
   const [watchlistSummary, setWatchlistSummary] = useState(null);
   const [loadingWatchlistSummary, setLoadingWatchlistSummary] = useState(false);
+  const [tradeTicket, setTradeTicket] = useState(DEFAULT_TRADE_TICKET);
+  const [tradePreview, setTradePreview] = useState(null);
+  const [loadingTradePreview, setLoadingTradePreview] = useState(false);
+  const [creatingTradePlan, setCreatingTradePlan] = useState(false);
+  const [submittingPaperTrade, setSubmittingPaperTrade] = useState(false);
 
   useEffect(() => {
     const next = normalizeSymbol(routeSymbol) || 'AAPL';
@@ -259,6 +276,88 @@ export default function Research() {
     }
   };
 
+  const fetchTradePreview = async (overrides = tradeTicket) => {
+    setLoadingTradePreview(true);
+    try {
+      const res = await axios.post(`/api/research/trade-workflow/${selectedSymbol}/preview`, overrides);
+      setTradePreview(res.data);
+      setTradeTicket(prev => ({
+        ...prev,
+        side: res.data?.ticket?.side || prev.side,
+        qty: prev.qty || (res.data?.ticket?.qty ? String(res.data.ticket.qty) : ''),
+        positionSizePct: prev.positionSizePct || (res.data?.ticket?.positionSizePct ? String(res.data.ticket.positionSizePct) : ''),
+        limitPrice: prev.limitPrice || (res.data?.ticket?.limitPrice ? String(res.data.ticket.limitPrice) : '')
+      }));
+      return res.data;
+    } catch (err) {
+      emitToast({ type: 'error', message: getApiError(err) });
+      return null;
+    } finally {
+      setLoadingTradePreview(false);
+    }
+  };
+
+  const createTradePlanFromThesis = async () => {
+    setCreatingTradePlan(true);
+    try {
+      const res = await axios.post(`/api/research/trade-workflow/${selectedSymbol}/plan`, tradeTicket);
+      setTradePreview(res.data.preview);
+      emitToast({ type: 'success', message: res.data.updatedExistingIdea ? 'Research trade plan updated.' : 'Research trade plan created.' });
+    } catch (err) {
+      if (err.response?.data?.preview) setTradePreview(err.response.data.preview);
+      emitToast({ type: 'error', message: getApiError(err) });
+    } finally {
+      setCreatingTradePlan(false);
+    }
+  };
+
+  const submitPaperTradeFromResearch = async () => {
+    setSubmittingPaperTrade(true);
+    try {
+      const preview = await fetchTradePreview(tradeTicket);
+      if (!preview?.ticket) return;
+      if (!preview.risk?.eligible) {
+        emitToast({ type: 'error', message: 'Risk checks must pass before submitting a paper trade.' });
+        return;
+      }
+      const ticket = preview.ticket;
+      const res = await axios.post('/api/paper-trades/order', {
+        symbol: ticket.symbol,
+        assetClass: ticket.assetClass,
+        side: ticket.side,
+        qty: ticket.qty,
+        orderType: ticket.orderType,
+        timeInForce: ticket.timeInForce,
+        limitPrice: ticket.orderType === 'limit' ? ticket.limitPrice : null,
+        stopPrice: ticket.stopLossPrice,
+        stopLossPrice: ticket.stopLossPrice,
+        takeProfitPrice: ticket.takeProfitPrice,
+        maxPricePerShare: ticket.maxPricePerShare,
+        allowExtendedHours: ticket.allowExtendedHours,
+        strategyId: ticket.strategyId,
+        setupType: ticket.setupType,
+        strategyTags: ticket.strategyTags,
+        origin: 'research',
+        metadata: {
+          source: 'research_trade_workflow',
+          researchSnapshot: preview.researchSnapshot,
+          riskPreview: preview.risk
+        }
+      });
+      const status = String(res.data?.order?.status || '').toLowerCase();
+      emitToast({
+        type: status === 'rejected' ? 'error' : 'success',
+        message: status === 'rejected'
+          ? (res.data?.order?.rejectedReason || 'Paper order was rejected.')
+          : (status === 'filled' ? 'Research paper trade filled.' : 'Research paper order submitted.')
+      });
+    } catch (err) {
+      emitToast({ type: 'error', message: getApiError(err) });
+    } finally {
+      setSubmittingPaperTrade(false);
+    }
+  };
+
   const saveWatchlist = async event => {
     event.preventDefault();
     const payload = {
@@ -296,6 +395,18 @@ export default function Research() {
     if (selectedWatchlistId) fetchWatchlistSummary(selectedWatchlistId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedWatchlistId]);
+
+  useEffect(() => {
+    setTradeTicket(DEFAULT_TRADE_TICKET);
+    setTradePreview(null);
+  }, [selectedSymbol]);
+
+  useEffect(() => {
+    if (activeTab === 'trade') {
+      fetchTradePreview(DEFAULT_TRADE_TICKET);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, selectedSymbol]);
 
   const latestNews = stock?.news || [];
   const stockNewsClusters = stock?.newsClusters || stock?.intelligence?.newsClusters || [];
@@ -521,6 +632,7 @@ export default function Research() {
                     ['chart', 'Chart'],
                     ['news', 'News'],
                     ['intelligence', 'Intelligence'],
+                    ['trade', 'Trade'],
                     ['compare', 'Compare'],
                     ['screener', 'Screener'],
                     ['watchlists', 'Watchlists']
@@ -679,6 +791,204 @@ export default function Research() {
                             )}
                           </div>
                         ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'trade' && (
+                  <div className="mt-5 space-y-4">
+                    <div className="rt-panel p-4">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div>
+                          <p className="rt-label">Research Trade Workflow</p>
+                          <h3 className="mt-1 text-lg font-bold text-[#edf5f4]">Paper ticket preview</h3>
+                          <p className="mt-2 max-w-3xl text-xs leading-5 text-[#8ba09f]">
+                            RoboTrader uses automated trading rules and market data to identify potential opportunities. Trading involves risk, including possible loss of principal. Past performance does not guarantee future results.
+                          </p>
+                        </div>
+                        <Badge variant={tradePreview?.risk?.eligible ? 'success' : 'warning'}>
+                          {tradePreview?.risk?.eligible ? 'Risk passed' : 'Needs review'}
+                        </Badge>
+                      </div>
+
+                      <form
+                        onSubmit={event => {
+                          event.preventDefault();
+                          fetchTradePreview(tradeTicket);
+                        }}
+                        className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4"
+                      >
+                        <label className="space-y-1">
+                          <span className="rt-label">Side</span>
+                          <select
+                            value={tradeTicket.side}
+                            onChange={event => {
+                              setTradeTicket(prev => ({ ...prev, side: event.target.value }));
+                              setTradePreview(null);
+                            }}
+                            className="rt-field"
+                          >
+                            <option value="buy">Buy</option>
+                            <option value="sell">Sell</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="rt-label">Quantity</span>
+                          <input
+                            value={tradeTicket.qty}
+                            onChange={event => {
+                              setTradeTicket(prev => ({ ...prev, qty: event.target.value }));
+                              setTradePreview(null);
+                            }}
+                            className="rt-field"
+                            type="number"
+                            min="0.000001"
+                            step="0.000001"
+                            placeholder="Auto"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="rt-label">Position %</span>
+                          <input
+                            value={tradeTicket.positionSizePct}
+                            onChange={event => {
+                              setTradeTicket(prev => ({ ...prev, positionSizePct: event.target.value }));
+                              setTradePreview(null);
+                            }}
+                            className="rt-field"
+                            type="number"
+                            min="0.1"
+                            max="10"
+                            step="0.1"
+                            placeholder="Auto"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="rt-label">Order Type</span>
+                          <select
+                            value={tradeTicket.orderType}
+                            onChange={event => {
+                              setTradeTicket(prev => ({ ...prev, orderType: event.target.value }));
+                              setTradePreview(null);
+                            }}
+                            className="rt-field"
+                          >
+                            <option value="market">Market</option>
+                            <option value="limit">Limit</option>
+                          </select>
+                        </label>
+                        {tradeTicket.orderType === 'limit' && (
+                          <label className="space-y-1 md:col-span-2">
+                            <span className="rt-label">Limit Price</span>
+                            <input
+                              value={tradeTicket.limitPrice}
+                              onChange={event => {
+                                setTradeTicket(prev => ({ ...prev, limitPrice: event.target.value }));
+                                setTradePreview(null);
+                              }}
+                              className="rt-field"
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              placeholder="Latest price"
+                            />
+                          </label>
+                        )}
+                        <label className="flex items-center gap-3 rounded-lg border border-[#26363c] bg-[#0b1012] px-3 py-3 text-sm font-semibold text-[#d9e5e4]">
+                          <input
+                            type="checkbox"
+                            checked={tradeTicket.allowExtendedHours}
+                            onChange={event => {
+                              setTradeTicket(prev => ({ ...prev, allowExtendedHours: event.target.checked }));
+                              setTradePreview(null);
+                            }}
+                          />
+                          Extended hours
+                        </label>
+                        <div className="flex flex-wrap gap-2 md:col-span-2 xl:col-span-4">
+                          <Button type="submit" disabled={loadingTradePreview}>
+                            {loadingTradePreview ? 'Checking...' : 'Preview risk'}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={createTradePlanFromThesis}
+                            disabled={creatingTradePlan || loadingTradePreview}
+                          >
+                            {creatingTradePlan ? 'Creating...' : 'Create Trade Plan from Thesis'}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={submitPaperTradeFromResearch}
+                            disabled={submittingPaperTrade || loadingTradePreview}
+                          >
+                            {submittingPaperTrade ? 'Submitting...' : 'Submit Paper Trade'}
+                          </Button>
+                        </div>
+                      </form>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                      <Metric label="Entry" value={formatCurrency(tradePreview?.ticket?.entryPrice)} />
+                      <Metric label="Stop" value={formatCurrency(tradePreview?.ticket?.stopLossPrice)} />
+                      <Metric label="Target" value={formatCurrency(tradePreview?.ticket?.takeProfitPrice)} accent />
+                      <Metric label="Reward/Risk" value={getTicketValue(tradePreview?.ticket?.rewardRiskRatio)} />
+                      <Metric label="Quantity" value={getTicketValue(tradePreview?.ticket?.qty)} />
+                      <Metric label="Notional" value={formatCurrency(tradePreview?.ticket?.plannedNotional)} />
+                      <Metric label="Position %" value={tradePreview?.ticket?.positionSizePct ? `${tradePreview.ticket.positionSizePct}%` : 'N/A'} />
+                      <Metric label="Confidence" value={tradePreview?.risk?.confidenceScore ? `${tradePreview.risk.confidenceScore}/100` : 'N/A'} />
+                    </div>
+
+                    <div className="rt-panel p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="rt-label">Pre-Trade Checks</p>
+                          <h3 className="mt-1 text-base font-bold text-[#edf5f4]">
+                            {tradePreview?.risk?.eligible ? 'Eligible for paper execution' : 'Blocked until resolved'}
+                          </h3>
+                        </div>
+                        <Badge variant={tradePreview?.risk?.eligible ? 'success' : 'warning'}>
+                          {tradePreview?.risk?.eligible ? 'eligible' : 'blocked'}
+                        </Badge>
+                      </div>
+                      {(tradePreview?.risk?.reasonsBlocked || []).length > 0 ? (
+                        <ul className="mt-3 space-y-2 text-sm text-[#ffd77a]">
+                          {tradePreview.risk.reasonsBlocked.map(reason => (
+                            <li key={reason}>{reason}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-3 text-sm text-[#b8c8c7]">No blocking risk checks returned for the current preview.</p>
+                      )}
+                      {(tradePreview?.risk?.warnings || []).length > 0 && (
+                        <div className="mt-4 border-t border-[#26363c] pt-3">
+                          <p className="rt-label">Warnings</p>
+                          <ul className="mt-2 space-y-2 text-sm text-[#d9e5e4]">
+                            {tradePreview.risk.warnings.map(warning => (
+                              <li key={warning}>{warning}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="rt-panel p-4">
+                      <p className="rt-label">Research Snapshot Captured</p>
+                      <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+                        <div className="rt-panel-muted p-3">
+                          <p className="text-xs text-[#8ba09f]">Captured</p>
+                          <p className="mt-1 text-sm font-semibold text-[#edf5f4]">{formatDateTime(tradePreview?.researchSnapshot?.capturedAt)}</p>
+                        </div>
+                        <div className="rt-panel-muted p-3">
+                          <p className="text-xs text-[#8ba09f]">Thesis</p>
+                          <p className="mt-1 line-clamp-3 text-sm text-[#d9e5e4]">{tradePreview?.researchSnapshot?.intelligence?.summary || 'No thesis summary available.'}</p>
+                        </div>
+                        <div className="rt-panel-muted p-3">
+                          <p className="text-xs text-[#8ba09f]">Data warnings</p>
+                          <p className="mt-1 text-sm text-[#d9e5e4]">{tradePreview?.researchSnapshot?.dataQuality?.staleWarnings?.length || 0}</p>
+                        </div>
                       </div>
                     </div>
                   </div>

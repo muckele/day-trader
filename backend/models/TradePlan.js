@@ -13,6 +13,8 @@ const tradeIdeaSchema = new mongoose.Schema(
     confidenceScore: { type: Number, required: true },
     alignmentScore: { type: Number, required: true },
     reason: { type: String, default: '' },
+    source: { type: String, default: 'trade_plan' },
+    researchSnapshot: { type: mongoose.Schema.Types.Mixed, default: null },
     status: { type: String, enum: ['PENDING', 'EXECUTED', 'SKIPPED'], default: 'PENDING' },
     executedTradeId: { type: mongoose.Schema.Types.ObjectId, ref: 'PaperTrade', default: null },
     executedAt: { type: Date, default: null },

@@ -17,6 +17,8 @@ const paperTradeSchema = new mongoose.Schema(
     strategyId: { type: String, default: null },
     setupType: { type: String, default: null },
     strategyTags: { type: [String], default: [] },
+    metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+    researchSnapshot: { type: mongoose.Schema.Types.Mixed, default: null },
     estimatedPrice: { type: Number, default: null },
     effectiveSlippageBps: { type: Number, default: null },
     fillLatencyMs: { type: Number, default: null },

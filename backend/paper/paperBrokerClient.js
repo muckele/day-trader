@@ -50,6 +50,23 @@ function getDecimalPlaces(value) {
   return text.split('.')[1].length;
 }
 
+function hasPositiveOrderPrice(value) {
+  const numeric = Number(value);
+  return value !== null && value !== undefined && Number.isFinite(numeric) && numeric > 0;
+}
+
+function shouldSubmitAlpacaAttachedExits({
+  assetClass,
+  qty,
+  takeProfitPrice,
+  stopLossPrice
+} = {}) {
+  const hasAttachedExit = hasPositiveOrderPrice(takeProfitPrice) || hasPositiveOrderPrice(stopLossPrice);
+  if (!hasAttachedExit) return true;
+  if (assetClass !== 'equity') return true;
+  return Number.isInteger(Number(qty));
+}
+
 function normalizeOrderInput({
   symbol,
   side,
@@ -405,6 +422,8 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
     strategyId: order.strategyId || null,
     setupType: order.setupType || null,
     strategyTags: order.strategyTags || [],
+    metadata: order.metadata || {},
+    researchSnapshot: order.researchSnapshot || order.metadata?.researchSnapshot || null,
     estimatedPrice: order.estimatedPrice,
     effectiveSlippageBps: Number.isFinite(Number(order.estimatedPrice)) && Number(order.estimatedPrice) > 0
       ? Number((((order.side === 'buy'
@@ -461,6 +480,8 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
       strategyId: order.strategyId || null,
       setupType: order.setupType || null,
       strategyTags: order.strategyTags || [],
+      metadata: order.metadata || {},
+      researchSnapshot: order.researchSnapshot || order.metadata?.researchSnapshot || null,
       allowExtendedHours: order.allowExtendedHours,
       marketSession: order.marketSession,
       extendedHours: order.extendedHours,
@@ -772,6 +793,8 @@ async function createAttachedExitOrders({
   strategyId,
   setupType,
   strategyTags,
+  metadata = {},
+  researchSnapshot = null,
   allowExtendedHours,
   marketSession,
   extendedHours,
@@ -808,6 +831,8 @@ async function createAttachedExitOrders({
       strategyId: strategyId || null,
       setupType: setupType || null,
       strategyTags: strategyTags || [],
+      metadata,
+      researchSnapshot,
       status: 'open',
       notional: Number((qty * takeProfitPrice).toFixed(2)),
       filledAt: now
@@ -834,6 +859,8 @@ async function createAttachedExitOrders({
       strategyId: strategyId || null,
       setupType: setupType || null,
       strategyTags: strategyTags || [],
+      metadata,
+      researchSnapshot,
       status: 'open',
       notional: Number((qty * stopLossPrice).toFixed(2)),
       filledAt: now
@@ -860,6 +887,8 @@ async function createAttachedExitOrders({
       strategyId: strategyId || null,
       setupType: setupType || null,
       strategyTags: strategyTags || [],
+      metadata,
+      researchSnapshot,
       status: 'open',
       filledAt: now
     });
@@ -1088,6 +1117,8 @@ async function placeOrder({
       ? (borrowProfile.hardToBorrow ? 'hard_to_borrow' : 'borrowable')
       : 'unavailable')
     : 'none';
+  const orderMetadata = metadata && typeof metadata === 'object' ? metadata : {};
+  const researchSnapshot = orderMetadata.researchSnapshot || orderMetadata.research || null;
   const baseOrderPayload = {
     accountId: scopedAccountId,
     symbol: normalizedSymbol,
@@ -1108,6 +1139,8 @@ async function placeOrder({
     strategyId: strategyId || null,
     setupType: setupType || null,
     strategyTags: finalTags,
+    metadata: orderMetadata,
+    researchSnapshot,
     estimatedPrice,
     stopPrice: stopTriggerValue !== null ? stopTriggerValue : stopValue,
     fillLatencyMs,
@@ -1138,7 +1171,7 @@ async function placeOrder({
     allowExtendedHours: normalized.allowExtendedHours,
     strategyId: strategyId || null,
     setupType: setupType || null,
-    metadata
+    metadata: orderMetadata
   };
   let alpacaPaperOrder = null;
   let order = null;
@@ -1148,6 +1181,12 @@ async function placeOrder({
       origin,
       symbol: normalizedSymbol,
       now
+    });
+    const submitAttachedExitsToAlpaca = shouldSubmitAlpacaAttachedExits({
+      assetClass: normalizedAssetClass,
+      qty: numericQty,
+      takeProfitPrice: parsedTakeProfitPrice,
+      stopLossPrice: parsedStopLossPrice
     });
     order = await PaperOrder.create({
       ...baseOrderPayload,
@@ -1168,8 +1207,8 @@ async function placeOrder({
         timeInForce: normalizedTimeInForce,
         limitPrice: parsedLimitPrice,
         stopPrice: stopTriggerValue,
-        takeProfitPrice: parsedTakeProfitPrice,
-        stopLossPrice: parsedStopLossPrice,
+        takeProfitPrice: submitAttachedExitsToAlpaca ? parsedTakeProfitPrice : null,
+        stopLossPrice: submitAttachedExitsToAlpaca ? parsedStopLossPrice : null,
         trailingStopPct: parsedTrailingStopPct,
         allowExtendedHours: marketContext.extendedHours && normalized.allowExtendedHours,
         clientOrderId
@@ -1288,6 +1327,8 @@ async function placeOrder({
     strategyId: strategyId || null,
     setupType: setupType || null,
     strategyTags: finalTags,
+    metadata: orderMetadata,
+    researchSnapshot,
     estimatedPrice,
     effectiveSlippageBps,
     fillLatencyMs,
@@ -1321,6 +1362,8 @@ async function placeOrder({
     strategyId: strategyId || null,
     setupType: setupType || null,
     strategyTags: finalTags,
+    metadata: orderMetadata,
+    researchSnapshot,
     allowExtendedHours: normalized.allowExtendedHours,
     marketSession: marketContext.marketSession,
     extendedHours: marketContext.extendedHours,
@@ -1378,7 +1421,7 @@ async function placeOrder({
       allowExtendedHours: normalized.allowExtendedHours,
       strategyId: strategyId || null,
       setupType: setupType || null,
-      metadata
+      metadata: orderMetadata
     },
     order,
     trade,
@@ -1440,6 +1483,8 @@ async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejecte
       trailingStopPct: Number.isFinite(trailingStopValue) ? trailingStopValue : null,
       maxPricePerShare: Number.isFinite(maxPriceValue) ? maxPriceValue : null,
       allowExtendedHours: payload.allowExtendedHours === true,
+      metadata: payload.metadata || {},
+      researchSnapshot: payload.metadata?.researchSnapshot || payload.metadata?.research || null,
       status: 'rejected',
       estimatedPrice: Number.isFinite(estimatedPrice) ? estimatedPrice : null,
       notional: Number.isFinite(notional) ? notional : null,
@@ -1492,6 +1537,7 @@ module.exports = {
   normalizeOrderInput,
   enforceMarketHours,
   enforcePriceControls,
+  shouldSubmitAlpacaAttachedExits,
   getAlpacaFillPrice,
   getAlpacaFilledQty,
   isTerminalAlpacaStatus,

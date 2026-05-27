@@ -129,8 +129,8 @@ export default function TradePlan() {
       setExecutionStopTriggerPrice('');
       setExecutionTimeInForce('day');
       setExecutionGoodTilDate('');
-      setExecutionTakeProfitPrice('');
-      setExecutionStopLossPrice('');
+      setExecutionTakeProfitPrice(idea.target ? String(idea.target) : '');
+      setExecutionStopLossPrice(idea.stop ? String(idea.stop) : '');
       setExecutionTrailingStopPct('');
       setExecutionMaxPricePerShare('');
       setExecutionAllowExtendedHours(true);
@@ -223,7 +223,14 @@ export default function TradePlan() {
         maxPricePerShare: side === 'buy' && executionMaxPricePerShare !== '' ? parsedMaxPricePerShare : null,
         allowExtendedHours: executionAllowExtendedHours,
         strategyId: selectedIdea.strategyId,
-        setupType: selectedIdea.setupType || null
+        setupType: selectedIdea.setupType || null,
+        origin: selectedIdea.source === 'research_thesis' ? 'research' : 'trade_plan',
+        metadata: {
+          source: selectedIdea.source || 'trade_plan',
+          tradePlanId: plan?._id || null,
+          tradeIdeaId: selectedIdea._id || null,
+          researchSnapshot: selectedIdea.researchSnapshot || null
+        }
       });
       const status = String(res.data?.order?.status || '').toLowerCase();
       if (status === 'rejected') {

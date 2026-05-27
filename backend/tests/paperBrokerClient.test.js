@@ -8,7 +8,8 @@ const {
   getAlpacaFillPrice,
   getAlpacaFilledQty,
   mapAlpacaPaperOrderStatus,
-  reconcileAlpacaPaperOrder
+  reconcileAlpacaPaperOrder,
+  shouldSubmitAlpacaAttachedExits
 } = require('../paper/paperBrokerClient');
 
 test('normalizeOrderInput accepts fractional quantity and limit settings', () => {
@@ -157,6 +158,29 @@ test('Alpaca paper order status helpers preserve open broker states', () => {
   assert.equal(mapAlpacaPaperOrderStatus({ status: 'rejected' }), 'rejected');
   assert.equal(getAlpacaFilledQty({ filled_qty: '0.5' }, 1), 0.5);
   assert.equal(getAlpacaFillPrice({ filled_avg_price: '123.45' }, 100), 123.45);
+});
+
+test('fractional equity entries do not submit unsupported Alpaca attached exits', () => {
+  assert.equal(shouldSubmitAlpacaAttachedExits({
+    assetClass: 'equity',
+    qty: 0.5,
+    takeProfitPrice: 110,
+    stopLossPrice: 95
+  }), false);
+
+  assert.equal(shouldSubmitAlpacaAttachedExits({
+    assetClass: 'equity',
+    qty: 2,
+    takeProfitPrice: 110,
+    stopLossPrice: 95
+  }), true);
+
+  assert.equal(shouldSubmitAlpacaAttachedExits({
+    assetClass: 'equity',
+    qty: 0.5,
+    takeProfitPrice: null,
+    stopLossPrice: null
+  }), true);
 });
 
 test('reconcileAlpacaPaperOrder keeps accepted broker orders open locally', async () => {

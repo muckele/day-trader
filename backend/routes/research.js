@@ -8,8 +8,10 @@ const ResearchAlert = require('../models/ResearchAlert');
 const ResearchEvent = require('../models/ResearchEvent');
 const ResearchSnapshot = require('../models/ResearchSnapshot');
 const ResearchWatchlist = require('../models/ResearchWatchlist');
+const TradePlan = require('../models/TradePlan');
 const { DEFAULT_WATCHLIST } = require('../data/defaultWatchlist');
 const analysisEngine = require('../analysisEngine');
+const paperBroker = require('../paper/paperBrokerClient');
 const { getRequestAccountId } = require('../utils/accountScope');
 const {
   buildWatchlistResearchSummary,
@@ -22,6 +24,10 @@ const {
   refreshNews,
   screenStocks
 } = require('../services/researchService');
+const {
+  buildResearchTradePreview,
+  createTradePlanFromResearch
+} = require('../services/researchTradeWorkflowService');
 
 router.use(requireMongo);
 router.use(auth);
@@ -167,6 +173,75 @@ router.get('/compare', async (req, res, next) => {
       ResearchSnapshot,
       forceRefresh: req.query.refresh === 'true'
     }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/trade-workflow/:symbol/preview', async (req, res, next) => {
+  try {
+    const accountId = getRequestAccountId(req);
+    const symbol = getSymbolParam(req, res);
+    if (!symbol) return;
+    const [research, account, settings] = await Promise.all([
+      getStockResearch(symbol, {
+        ResearchNews,
+        ResearchEvent,
+        ResearchSnapshot,
+        analysisEngine,
+        forceRefresh: req.body?.refresh === true
+      }),
+      paperBroker.getAccount({ accountId }),
+      paperBroker.getSettings({ accountId })
+    ]);
+    res.json(buildResearchTradePreview({
+      research,
+      account,
+      settings,
+      body: req.body || {}
+    }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/trade-workflow/:symbol/plan', async (req, res, next) => {
+  try {
+    const accountId = getRequestAccountId(req);
+    const symbol = getSymbolParam(req, res);
+    if (!symbol) return;
+    const [research, account, settings] = await Promise.all([
+      getStockResearch(symbol, {
+        ResearchNews,
+        ResearchEvent,
+        ResearchSnapshot,
+        analysisEngine,
+        forceRefresh: req.body?.refresh === true
+      }),
+      paperBroker.getAccount({ accountId }),
+      paperBroker.getSettings({ accountId })
+    ]);
+    const preview = buildResearchTradePreview({
+      research,
+      account,
+      settings,
+      body: req.body || {}
+    });
+    if (!preview.risk?.eligible) {
+      return res.status(400).json({
+        message: 'Research trade risk checks must pass before creating a trade plan.',
+        preview
+      });
+    }
+    const result = await createTradePlanFromResearch({
+      accountId,
+      preview,
+      TradePlan
+    });
+    res.status(result.created ? 201 : 200).json({
+      ...result,
+      preview
+    });
   } catch (err) {
     next(err);
   }
