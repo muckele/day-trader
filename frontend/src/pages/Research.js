@@ -56,6 +56,11 @@ function uniqueWarnings(...groups) {
   return [...new Set(groups.flatMap(group => Array.isArray(group) ? group : []).filter(Boolean))];
 }
 
+function formatCitationTimestamp(value) {
+  const formatted = formatDateTime(value);
+  return formatted === 'N/A' ? 'No timestamp' : formatted;
+}
+
 function Metric({ label, value, accent = false }) {
   return (
     <div className="rt-metric">
@@ -169,6 +174,9 @@ export default function Research() {
   }, [selectedSymbol]);
 
   const latestNews = stock?.news || [];
+  const stockNewsClusters = stock?.newsClusters || stock?.intelligence?.newsClusters || [];
+  const dashboardNewsClusters = dashboard?.newsClusters || [];
+  const intelligence = stock?.intelligence || stock?.thesis || {};
   const events = stock?.events || [];
   const watchlist = dashboard?.watchlist || [];
   const benchmarks = dashboard?.benchmarks || [];
@@ -351,6 +359,14 @@ export default function Research() {
                         {stock?.company?.fractionable ? 'Fractional' : 'Equity'}
                       </Badge>
                       {stock?.company?.shortable && <Badge variant="info">Shortable</Badge>}
+                      {intelligence?.confidence?.label && (
+                        <Badge variant={intelligence.confidence.label === 'High' ? 'success' : (intelligence.confidence.label === 'Low' ? 'warning' : 'info')}>
+                          {intelligence.confidence.label} confidence
+                        </Badge>
+                      )}
+                      <Badge variant={intelligence?.aiGenerated ? 'success' : 'neutral'}>
+                        {intelligence?.aiGenerated ? 'AI summary' : 'Rule summary'}
+                      </Badge>
                     </div>
                     <p className="mt-1 text-sm text-[#8ba09f]">{stock?.company?.name || stock?.symbol}</p>
                     <p className="mt-1 text-xs text-[#6f8584]">
@@ -376,16 +392,21 @@ export default function Research() {
                 </div>
 
                 <div className="mt-5 flex flex-wrap items-center gap-2">
-                  {['chart', 'news', 'thesis', 'compare'].map(tab => (
+                  {[
+                    ['chart', 'Chart'],
+                    ['news', 'News'],
+                    ['intelligence', 'Intelligence'],
+                    ['compare', 'Compare']
+                  ].map(([tab, label]) => (
                     <button
                       key={tab}
                       type="button"
                       onClick={() => setActiveTab(tab)}
-                      className={`rounded-lg px-3 py-2 text-sm font-semibold capitalize ${
+                      className={`rounded-lg px-3 py-2 text-sm font-semibold ${
                         activeTab === tab ? 'bg-[#173426] text-[#8cf5bd]' : 'bg-[#10171a] text-[#b8c8c7] hover:bg-[#172126]'
                       }`}
                     >
-                      {tab}
+                      {label}
                     </button>
                   ))}
                 </div>
@@ -402,7 +423,36 @@ export default function Research() {
 
                 {activeTab === 'news' && (
                   <div className="mt-5 space-y-3">
-                    {latestNews.map(item => (
+                    {stockNewsClusters.length ? stockNewsClusters.map(cluster => (
+                      <article key={cluster.id} className="rt-panel p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant={getSentimentVariant(cluster.sentiment)}>{cluster.sentiment}</Badge>
+                          <Badge variant="neutral">{cluster.category}</Badge>
+                          <Badge variant={cluster.count > 1 ? 'info' : 'neutral'}>
+                            {cluster.count} source{cluster.count === 1 ? '' : 's'}
+                          </Badge>
+                          {cluster.sources?.slice(0, 3).map(source => (
+                            <Badge key={source} variant={source === 'research_fallback' ? 'warning' : 'neutral'}>{source}</Badge>
+                          ))}
+                          <span className="text-xs text-[#8ba09f]">
+                            {formatCitationTimestamp(cluster.latestPublishedAt)}
+                          </span>
+                        </div>
+                        <h3 className="mt-3 text-base font-bold text-[#edf5f4]">{cluster.primaryHeadline}</h3>
+                        {cluster.summary && <p className="mt-2 text-sm text-[#b8c8c7]">{cluster.summary}</p>}
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {cluster.citations?.slice(0, 4).map(citation => citation.url ? (
+                            <a key={citation.id} className="text-xs font-semibold text-[#8cf5bd]" href={citation.url} target="_blank" rel="noreferrer">
+                              {citation.source} · {formatCitationTimestamp(citation.timestamp)}
+                            </a>
+                          ) : (
+                            <span key={citation.id} className="text-xs text-[#8ba09f]">
+                              {citation.source} · {formatCitationTimestamp(citation.timestamp)}
+                            </span>
+                          ))}
+                        </div>
+                      </article>
+                    )) : latestNews.map(item => (
                       <article key={`${item.source}-${item.externalId}`} className="rt-panel p-4">
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge variant={getSentimentVariant(item.sentiment)}>{item.sentiment}</Badge>
@@ -425,30 +475,84 @@ export default function Research() {
                   </div>
                 )}
 
-                {activeTab === 'thesis' && (
+                {activeTab === 'intelligence' && (
                   <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-3">
                     <div className="rt-panel p-4 lg:col-span-3">
-                      <p className="rt-label">Research Summary</p>
-                      <p className="mt-2 text-sm leading-6 text-[#d9e5e4]">{stock?.thesis?.summary}</p>
-                      <p className="mt-3 text-xs text-[#8ba09f]">{stock?.thesis?.riskNote}</p>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="rt-label">Research Intelligence</p>
+                          <h3 className="mt-1 text-lg font-bold text-[#edf5f4]">
+                            {intelligence?.aiGenerated ? 'AI-generated summary' : 'Fallback rule summary'}
+                          </h3>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant={intelligence?.aiGenerated ? 'success' : 'neutral'}>{intelligence?.provider || 'research'}</Badge>
+                          {intelligence?.confidence?.label && (
+                            <Badge variant={intelligence.confidence.label === 'High' ? 'success' : (intelligence.confidence.label === 'Low' ? 'warning' : 'info')}>
+                              {intelligence.confidence.label} confidence
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-[#d9e5e4]">{intelligence?.summary}</p>
+                      {intelligence?.confidence?.rationale && (
+                        <p className="mt-3 text-xs text-[#ffd77a]">{intelligence.confidence.rationale}</p>
+                      )}
+                      <p className="mt-3 text-xs text-[#8ba09f]">
+                        Generated {formatDateTime(intelligence?.generatedAt)}{intelligence?.model ? ` · ${intelligence.model}` : ''}
+                      </p>
+                      <p className="mt-2 text-xs text-[#8ba09f]">{intelligence?.riskNote}</p>
                     </div>
                     <div className="rt-panel p-4">
                       <p className="rt-label">Bull Case</p>
                       <ul className="mt-3 space-y-2 text-sm text-[#d9e5e4]">
-                        {stock?.thesis?.bullCase?.map(item => <li key={item}>{item}</li>)}
+                        {intelligence?.bullCase?.map(item => <li key={item}>{item}</li>)}
                       </ul>
                     </div>
                     <div className="rt-panel p-4">
                       <p className="rt-label">Bear Case</p>
                       <ul className="mt-3 space-y-2 text-sm text-[#d9e5e4]">
-                        {stock?.thesis?.bearCase?.map(item => <li key={item}>{item}</li>)}
+                        {intelligence?.bearCase?.map(item => <li key={item}>{item}</li>)}
+                      </ul>
+                    </div>
+                    <div className="rt-panel p-4">
+                      <p className="rt-label">Key Risks</p>
+                      <ul className="mt-3 space-y-2 text-sm text-[#d9e5e4]">
+                        {intelligence?.keyRisks?.map(item => <li key={item}>{item}</li>)}
+                      </ul>
+                    </div>
+                    <div className="rt-panel p-4 lg:col-span-2">
+                      <p className="rt-label">What Changed Today</p>
+                      <ul className="mt-3 space-y-2 text-sm text-[#d9e5e4]">
+                        {intelligence?.whatChangedToday?.map(item => <li key={item}>{item}</li>)}
                       </ul>
                     </div>
                     <div className="rt-panel p-4">
                       <p className="rt-label">Watch Items</p>
                       <ul className="mt-3 space-y-2 text-sm text-[#d9e5e4]">
-                        {stock?.thesis?.watchItems?.map(item => <li key={item}>{item}</li>)}
+                        {intelligence?.watchItems?.map(item => <li key={item}>{item}</li>)}
                       </ul>
+                    </div>
+                    <div className="rt-panel p-4 lg:col-span-3">
+                      <p className="rt-label">Sources and Timestamps</p>
+                      <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                        {(intelligence?.citations || []).map(citation => (
+                          <div key={citation.id} className="rt-panel-muted p-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant="neutral">{citation.type}</Badge>
+                              <span className="text-xs text-[#8ba09f]">{formatCitationTimestamp(citation.timestamp)}</span>
+                            </div>
+                            <p className="mt-2 text-sm font-semibold text-[#d9e5e4]">{citation.title}</p>
+                            {citation.url ? (
+                              <a className="mt-2 inline-flex text-xs font-semibold text-[#8cf5bd]" href={citation.url} target="_blank" rel="noreferrer">
+                                {citation.source}
+                              </a>
+                            ) : (
+                              <p className="mt-2 text-xs text-[#8ba09f]">{citation.source}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -513,17 +617,38 @@ export default function Research() {
             <div className="mt-3 grid grid-cols-3 gap-2">
               <div className="rt-panel-muted p-3 text-center">
                 <p className="text-lg font-bold text-[#8cf5bd]">{dashboard?.sentiment?.positive || 0}</p>
-                <p className="text-[11px] text-[#8ba09f]">Positive</p>
+                <p className="text-[11px] text-[#8ba09f]">Positive clusters</p>
               </div>
               <div className="rt-panel-muted p-3 text-center">
                 <p className="text-lg font-bold text-[#d9e5e4]">{dashboard?.sentiment?.neutral || 0}</p>
-                <p className="text-[11px] text-[#8ba09f]">Neutral</p>
+                <p className="text-[11px] text-[#8ba09f]">Neutral clusters</p>
               </div>
               <div className="rt-panel-muted p-3 text-center">
                 <p className="text-lg font-bold text-[#ffb5c2]">{dashboard?.sentiment?.negative || 0}</p>
-                <p className="text-[11px] text-[#8ba09f]">Negative</p>
+                <p className="text-[11px] text-[#8ba09f]">Negative clusters</p>
               </div>
             </div>
+            {dashboardNewsClusters.length > 0 && (
+              <div className="mt-4 space-y-2">
+                {dashboardNewsClusters.slice(0, 4).map(cluster => (
+                  <button
+                    key={cluster.id}
+                    type="button"
+                    onClick={() => {
+                      const nextSymbol = cluster.symbols?.[0];
+                      if (nextSymbol) navigate(`/research/${nextSymbol}`);
+                    }}
+                    className="rt-panel-muted w-full p-3 text-left"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={getSentimentVariant(cluster.sentiment)}>{cluster.sentiment}</Badge>
+                      <span className="text-xs text-[#8ba09f]">{cluster.count} source{cluster.count === 1 ? '' : 's'}</span>
+                    </div>
+                    <p className="mt-2 line-clamp-2 text-xs font-semibold text-[#d9e5e4]">{cluster.primaryHeadline}</p>
+                  </button>
+                ))}
+              </div>
+            )}
           </Card>
 
           <Card className="p-4">

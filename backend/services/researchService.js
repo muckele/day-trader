@@ -10,6 +10,11 @@ const {
   sma
 } = require('../signal/indicators');
 const { createAlpacaBroker } = require('../robotrader/alpacaBroker');
+const {
+  buildFallbackResearchIntelligence,
+  buildResearchIntelligence,
+  clusterNewsItems
+} = require('./researchIntelligenceService');
 
 const RAW_DATA_URL =
   process.env.APCA_DATA_URL ||
@@ -847,46 +852,15 @@ function computeTechnicals(rawBars = []) {
   };
 }
 
-function buildStockThesis({ symbol, technicals, news = [], events = [], analysis = null }) {
-  const positiveNews = news.filter(item => item.sentiment === 'positive').length;
-  const negativeNews = news.filter(item => item.sentiment === 'negative').length;
-  const upcomingEvents = events
-    .filter(item => item.eventDate && new Date(item.eventDate).getTime() >= Date.now())
-    .slice(0, 3);
-  const trend = technicals.trend;
-  const bull = [];
-  const bear = [];
-
-  if (trend === 'uptrend') bull.push('Moving averages are stacked in an uptrend.');
-  if (trend === 'downtrend') bear.push('Moving averages are stacked in a downtrend.');
-  if (technicals.rsi14 !== null && technicals.rsi14 < 35) bull.push('RSI is near oversold territory, which can attract mean-reversion buyers.');
-  if (technicals.rsi14 !== null && technicals.rsi14 > 70) bear.push('RSI is elevated, so a pullback or consolidation risk is higher.');
-  if (technicals.volumeRatio && technicals.volumeRatio > 1.5) bull.push('Volume is running above the 20-day average, confirming active participation.');
-  if (positiveNews > negativeNews) bull.push('Recent headlines skew positive.');
-  if (negativeNews > positiveNews) bear.push('Recent headlines skew negative.');
-  if (technicals.atrPercent && technicals.atrPercent > 5) bear.push('ATR is elevated, requiring smaller position sizing and wider stops.');
-
-  return {
+function buildStockThesis({ symbol, company = {}, technicals, news = [], events = [], analysis = null }) {
+  return buildFallbackResearchIntelligence({
     symbol,
-    summary: [
-      `${symbol} is currently in a ${trend.replace('_', ' ')} technical regime.`,
-      technicals.changePercent !== null ? `Latest daily move is ${technicals.changePercent}%.` : null,
-      news.length ? `${news.length} recent news items were reviewed.` : 'No recent provider news was available.',
-      events.length ? `${events.length} normalized corporate events are available.` : 'Corporate event data is limited.',
-      analysis?.recommendation ? `Existing strategy signal: ${analysis.recommendation}.` : null
-    ].filter(Boolean).join(' '),
-    bullCase: bull.length ? bull : ['Wait for stronger trend, volume, or catalyst confirmation.'],
-    bearCase: bear.length ? bear : ['Primary risks are broad-market weakness, failed breakout attempts, and surprise news.'],
-    watchItems: [
-      technicals.support20 ? `Support near ${technicals.support20}` : null,
-      technicals.resistance20 ? `Resistance near ${technicals.resistance20}` : null,
-      technicals.rsi14 ? `RSI 14 at ${technicals.rsi14}` : null,
-      technicals.volumeRatio ? `Volume ratio ${technicals.volumeRatio}x` : null,
-      ...upcomingEvents.map(item => `${item.type.replace('_', ' ')} on ${toDateInput(item.eventDate)}`),
-      'Next earnings or material company event'
-    ].filter(Boolean),
-    riskNote: 'Research outputs are informational and should be paired with position sizing, stop discipline, and independent review.'
-  };
+    company,
+    technicals,
+    news,
+    events,
+    analysis
+  });
 }
 
 async function fetchCompany(symbol) {
@@ -1285,6 +1259,16 @@ function getResearchProviderHealth() {
         message: FINNHUB_API_KEY ? 'Finnhub corporate event credentials are present.' : 'Missing FINNHUB_API_KEY.'
       }),
       providerHealth({
+        provider: 'openai_research_intelligence',
+        category: 'ai',
+        rank: 1,
+        configured: Boolean(process.env.OPENAI_API_KEY || process.env.RESEARCH_AI_API_KEY),
+        status: process.env.OPENAI_API_KEY || process.env.RESEARCH_AI_API_KEY ? 'configured' : 'disabled',
+        message: process.env.OPENAI_API_KEY || process.env.RESEARCH_AI_API_KEY
+          ? 'Research AI credentials are present.'
+          : 'Missing OPENAI_API_KEY or RESEARCH_AI_API_KEY.'
+      }),
+      providerHealth({
         provider: 'research_fallback',
         category: 'news',
         rank: 3,
@@ -1373,13 +1357,18 @@ async function getStockResearch(symbol, {
   const analysis = analysisEngine?.analyzeDeterministic
     ? await analysisEngine.analyzeDeterministic({ symbol: normalized }).catch(() => null)
     : null;
-  const thesis = buildStockThesis({
+  const newsClusters = clusterNewsItems(news);
+  const intelligenceResult = await buildResearchIntelligence({
     symbol: normalized,
+    company,
     technicals,
     news,
     events,
-    analysis
+    analysis,
+    newsClusters
   });
+  if (intelligenceResult.providerHealth) providerHealthRecords.push(intelligenceResult.providerHealth);
+  const thesis = intelligenceResult.intelligence;
   const staleWarnings = buildStaleWarnings({
     dailyBars: technicals.bars,
     intradayBars: intraday,
@@ -1406,8 +1395,10 @@ async function getStockResearch(symbol, {
       timeframes
     },
     news,
+    newsClusters,
     events,
     thesis,
+    intelligence: thesis,
     analysis,
     updatedAt: new Date().toISOString(),
     dataQuality: buildDataQuality({
@@ -1459,12 +1450,13 @@ async function getResearchDashboard({
   const quotes = quoteResult.data || [];
   const benchmarks = benchmarkResult.data || [];
   const news = newsResult.news || [];
+  const newsClusters = clusterNewsItems(news);
   const providerHealthRecords = [
     quoteResult.health,
     benchmarkResult.health,
     ...(newsResult.providerHealth || [])
   ].filter(Boolean);
-  const sentimentCounts = news.reduce((acc, item) => {
+  const sentimentCounts = newsClusters.reduce((acc, item) => {
     acc[item.sentiment] = (acc[item.sentiment] || 0) + 1;
     return acc;
   }, {});
@@ -1479,6 +1471,7 @@ async function getResearchDashboard({
     watchlist: quotes,
     benchmarks,
     news,
+    newsClusters,
     sentiment: {
       positive: sentimentCounts.positive || 0,
       neutral: sentimentCounts.neutral || 0,
@@ -1549,9 +1542,11 @@ async function compareSymbols(symbols, { ResearchNews, ResearchSnapshot, forceRe
 
 module.exports = {
   buildStockThesis,
+  buildResearchIntelligence,
   buildDataQuality,
   buildStaleWarnings,
   buildChartTimeframes,
+  clusterNewsItems,
   compareSymbols,
   computeTechnicals,
   getResearchProviderHealth,

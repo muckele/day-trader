@@ -238,6 +238,15 @@ Research data quality:
 - `RESEARCH_DASHBOARD_CACHE_TTL_MS` controls Mongo-backed research dashboard snapshot TTL (default 2 minutes).
 - `RESEARCH_COMPARE_CACHE_TTL_MS` controls Mongo-backed comparison snapshot TTL (default 2 minutes).
 - `RESEARCH_NEWS_STALE_MINUTES`, `RESEARCH_DAILY_STALE_MINUTES`, and `RESEARCH_INTRADAY_STALE_MINUTES` tune stale-data warnings.
+- `OPENAI_API_KEY` or `RESEARCH_AI_API_KEY` enables AI-generated Research Intelligence summaries.
+- `RESEARCH_AI_MODEL` controls the model used for Research Intelligence (default `gpt-4o-mini`).
+- `RESEARCH_AI_ENABLED=false` forces the deterministic Research Intelligence fallback even when AI credentials are present.
+
+Research Intelligence:
+
+- Clusters similar headlines before they reach the dashboard so duplicate news does not dominate the view.
+- Generates or falls back to a structured summary with bull case, bear case, key risks, what changed today, watch items, confidence labels, citations, and timestamps.
+- Uses confidence labels only and does not promise profit, ROI, certainty, or risk-free outcomes.
 
 ## Fly Deploy Notes
 
@@ -251,6 +260,7 @@ Recommended `fly secrets` include:
 - `APCA_DATA_URL`
 - `APCA_DATA_FEED=iex`
 - `FINNHUB_API_KEY` if using corporate event ingestion
+- `OPENAI_API_KEY` if using AI-generated Research Intelligence
 - `APP_PAPER_TRADES_SYNC_TO_ALPACA=true`
 - Any SMTP variables if using real email notifications
 

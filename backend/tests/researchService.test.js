@@ -10,6 +10,10 @@ const {
   normalizeResearchEvent,
   scoreSentiment
 } = require('../services/researchService');
+const {
+  buildResearchIntelligence,
+  clusterNewsItems
+} = require('../services/researchIntelligenceService');
 
 function makeBars(count = 220) {
   let price = 100;
@@ -133,6 +137,48 @@ test('research service normalizes news with sentiment and category', () => {
   assert.match(item.whyItMatters, /earnings/i);
 });
 
+test('research intelligence clusters duplicate headlines and preserves citations', () => {
+  const clusters = clusterNewsItems([
+    {
+      externalId: 'aapl-1',
+      source: 'alpaca',
+      symbols: ['AAPL'],
+      headline: 'Apple shares rise after earnings beat',
+      summary: 'Investors reacted to stronger revenue.',
+      sentiment: 'positive',
+      category: 'earnings',
+      url: 'https://example.test/apple-earnings-1',
+      publishedAt: '2026-05-27T12:00:00.000Z'
+    },
+    {
+      externalId: 'aapl-2',
+      source: 'alpaca',
+      symbols: ['AAPL'],
+      headline: 'Apple shares rise after earnings beat, analyst says',
+      summary: 'A similar update from another source.',
+      sentiment: 'positive',
+      category: 'earnings',
+      url: 'https://example.test/apple-earnings-2',
+      publishedAt: '2026-05-27T12:05:00.000Z'
+    },
+    {
+      externalId: 'msft-1',
+      source: 'alpaca',
+      symbols: ['MSFT'],
+      headline: 'Microsoft announces new cloud contract',
+      sentiment: 'neutral',
+      category: 'catalyst',
+      publishedAt: '2026-05-27T13:00:00.000Z'
+    }
+  ]);
+
+  assert.equal(clusters.length, 2);
+  const appleCluster = clusters.find(item => item.symbols.includes('AAPL'));
+  assert.equal(appleCluster.count, 2);
+  assert.equal(appleCluster.citations.length, 2);
+  assert.equal(appleCluster.citations.every(item => item.timestamp), true);
+});
+
 test('research service builds a balanced stock thesis from technicals and news', () => {
   const technicals = computeTechnicals(makeBars());
   const news = [
@@ -155,6 +201,112 @@ test('research service builds a balanced stock thesis from technicals and news',
   assert.ok(thesis.bullCase.length > 0);
   assert.ok(thesis.bearCase.length > 0);
   assert.ok(thesis.watchItems.length > 0);
+  assert.ok(thesis.keyRisks.length > 0);
+  assert.ok(thesis.confidence.label);
+});
+
+test('research intelligence uses AI output when a client is configured and strips profit promises', async () => {
+  const technicals = computeTechnicals(makeBars());
+  const news = [{
+    externalId: 'news-ai-1',
+    source: 'alpaca',
+    symbols: ['AAPL'],
+    headline: 'AAPL raises guidance after services strength',
+    summary: 'Management commentary was stronger than expected.',
+    sentiment: 'positive',
+    category: 'earnings',
+    publishedAt: '2026-05-27T12:00:00.000Z'
+  }];
+  const aiClient = {
+    chat: {
+      completions: {
+        create: async request => {
+          assert.equal(request.response_format.type, 'json_object');
+          assert.equal(request.model, 'test-research-model');
+          return {
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  summary: 'AAPL has stronger services momentum, but this is not a guaranteed profit.',
+                  bullCase: ['Services growth and positive headlines support the bull case.'],
+                  bearCase: ['Valuation and elevated expectations can pressure the stock.'],
+                  keyRisks: ['Macro weakness can still override company-specific strength.'],
+                  whatChangedToday: ['Guidance-related news improved the near-term narrative.'],
+                  watchItems: ['Watch price reaction near resistance.'],
+                  confidence: {
+                    label: 'High',
+                    score: 82,
+                    rationale: 'Market data and news are both available.'
+                  }
+                })
+              }
+            }]
+          };
+        }
+      }
+    }
+  };
+
+  const result = await buildResearchIntelligence({
+    symbol: 'AAPL',
+    technicals,
+    news,
+    events: [],
+    analysis: { recommendation: 'LONG' }
+  }, {
+    aiClient,
+    model: 'test-research-model'
+  });
+
+  assert.equal(result.providerHealth.status, 'ok');
+  assert.equal(result.intelligence.aiGenerated, true);
+  assert.equal(result.intelligence.confidence.label, 'High');
+  assert.doesNotMatch(result.intelligence.summary, /guaranteed profit/i);
+  assert.equal(result.intelligence.citations.length > 0, true);
+});
+
+test('research intelligence reads AI model configuration at call time', async t => {
+  const originalModel = process.env.RESEARCH_AI_MODEL;
+  t.after(() => {
+    if (originalModel === undefined) delete process.env.RESEARCH_AI_MODEL;
+    else process.env.RESEARCH_AI_MODEL = originalModel;
+  });
+  process.env.RESEARCH_AI_MODEL = 'call-time-model';
+  const technicals = computeTechnicals(makeBars());
+  const aiClient = {
+    chat: {
+      completions: {
+        create: async request => {
+          assert.equal(request.model, 'call-time-model');
+          return {
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  summary: 'AAPL research context is available.',
+                  bullCase: ['Technical data is available.'],
+                  bearCase: ['News context may remain incomplete.'],
+                  keyRisks: ['Market volatility can change the setup.'],
+                  whatChangedToday: ['No major same-day update was detected.'],
+                  watchItems: ['Watch support and resistance.'],
+                  confidence: { label: 'Medium', score: 61, rationale: 'Some data is available.' }
+                })
+              }
+            }]
+          };
+        }
+      }
+    }
+  };
+
+  const result = await buildResearchIntelligence({
+    symbol: 'AAPL',
+    technicals,
+    news: [],
+    events: []
+  }, { aiClient });
+
+  assert.equal(result.providerHealth.model, 'call-time-model');
+  assert.equal(result.intelligence.model, 'call-time-model');
 });
 
 test('research sentiment scorer distinguishes negative headlines', () => {
