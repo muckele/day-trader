@@ -53,6 +53,9 @@ const roboTradeOrderSchema = new mongoose.Schema(
     rejectedAt: { type: Date, default: null },
     lastReconciledAt: { type: Date, default: null },
     reconciliationStatus: { type: String, default: 'pending' },
+    reconciliationArchivedAt: { type: Date, default: null, index: true },
+    reconciliationArchivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    reconciliationArchiveReason: { type: String, default: null },
     discrepancy: { type: String, default: null }
   },
   { timestamps: true }
@@ -76,5 +79,6 @@ roboTradeOrderSchema.index(
   }
 );
 roboTradeOrderSchema.index({ userId: 1, symbol: 1, status: 1, submittedAt: -1 });
+roboTradeOrderSchema.index({ userId: 1, environment: 1, reconciliationArchivedAt: 1, updatedAt: -1 });
 
 module.exports = mongoose.model('RoboTradeOrder', roboTradeOrderSchema);

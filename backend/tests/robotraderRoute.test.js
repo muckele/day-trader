@@ -4,6 +4,7 @@ const User = require('../models/User');
 const RoboSettings = require('../models/RoboSettings');
 const RoboTradeDecision = require('../models/RoboTradeDecision');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
+const RoboAuditLog = require('../models/RoboAuditLog');
 const robotraderRouter = require('../routes/robotrader');
 
 function getRouteHandler(path, method) {
@@ -158,6 +159,10 @@ test('GET /robotrader/reconciliation-status summarizes local order matching stat
       };
     }
   }));
+  t.mock.method(RoboTradeOrder, 'countDocuments', async query => {
+    assert.equal(query.reconciliationArchivedAt.$ne, null);
+    return query.userId === null ? 2 : 5;
+  });
 
   const handler = getRouteHandler('/reconciliation-status', 'get');
   const req = {
@@ -169,15 +174,67 @@ test('GET /robotrader/reconciliation-status summarizes local order matching stat
 
   assert.equal(nextErr, null);
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.summary.total, 3);
+  assert.equal(res.body.summary.total, 2);
   assert.equal(res.body.summary.pending, 1);
-  assert.equal(res.body.summary.discrepancies, 3);
+  assert.equal(res.body.summary.discrepancies, 1);
   assert.equal(res.body.summary.missingAlpacaConfirmation, 1);
-  assert.equal(res.body.summary.orphanAlpacaOrders, 1);
-  assert.equal(res.body.latestDiscrepancies.length, 2);
+  assert.equal(res.body.summary.orphanAlpacaOrders, 0);
+  assert.equal(res.body.historicalSummary.total, 2);
+  assert.equal(res.body.historicalSummary.discrepancies, 2);
+  assert.equal(res.body.historicalSummary.orphanAlpacaOrders, 1);
+  assert.equal(res.body.historicalSummary.submitRejected, 1);
+  assert.equal(res.body.historicalSummary.archived, 7);
+  assert.equal(res.body.latestDiscrepancies.length, 1);
+  assert.equal(res.body.historicalDiscrepancies.length, 2);
   assert.equal(findQueries[0].environment, 'paper');
   assert.equal(findQueries[0].userId, '507f1f77bcf86cd799439013');
+  assert.equal(findQueries[0].reconciliationArchivedAt, null);
   assert.equal(findQueries[1].environment, 'paper');
+  assert.equal(findQueries[1].reconciliationArchivedAt, null);
+});
+
+test('POST /robotrader/reconciliation/archive-history archives terminal historical records only', async t => {
+  t.mock.method(User, 'findOne', async () => ({ _id: '507f1f77bcf86cd799439016' }));
+  t.mock.method(RoboSettings, 'findOne', () => ({
+    sort: () => ({
+      mode: 'paper',
+      liveTradingExplicitlyEnabled: false,
+      allowedAssetClasses: ['stocks']
+    })
+  }));
+  const updateQueries = [];
+  t.mock.method(RoboTradeOrder, 'updateMany', async (query, update) => {
+    updateQueries.push({ query, update });
+    assert.ok(update.$set.reconciliationArchivedAt instanceof Date);
+    assert.equal(String(update.$set.reconciliationArchivedBy), '507f1f77bcf86cd799439016');
+    return { modifiedCount: query.userId === null ? 11 : 104 };
+  });
+  t.mock.method(RoboAuditLog, 'create', async payload => payload);
+
+  const handler = getRouteHandler('/reconciliation/archive-history', 'post');
+  const req = {
+    user: { username: 'matt' },
+    body: { environment: 'paper', reason: 'Reviewed historical records.' }
+  };
+  const res = createMockRes();
+  let nextErr = null;
+  await handler(req, res, err => { nextErr = err; });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.archivedUserOrders, 104);
+  assert.equal(res.body.archivedOrphanOrders, 11);
+  assert.equal(res.body.archivedCount, 115);
+  assert.equal(updateQueries.length, 2);
+  assert.equal(updateQueries[0].query.userId, '507f1f77bcf86cd799439016');
+  assert.equal(updateQueries[0].query.environment, 'paper');
+  assert.equal(updateQueries[0].query.reconciliationArchivedAt, null);
+  assert.deepEqual(updateQueries[0].query.discrepancy.$nin, [null, '']);
+  assert.equal(updateQueries[1].query.userId, null);
+  assert.ok(updateQueries[1].query.$or.some(item => (
+    Array.isArray(item.reconciliationStatus?.$in)
+    && item.reconciliationStatus.$in.includes('orphan_alpaca_order')
+  )));
 });
 
 test('GET /robotrader/decisions and orders scope list queries by environment', async t => {

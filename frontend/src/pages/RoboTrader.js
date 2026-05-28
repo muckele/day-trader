@@ -275,6 +275,7 @@ export default function RoboTrader() {
   const [preview, setPreview] = useState(null);
   const [previewing, setPreviewing] = useState(false);
   const [reconciling, setReconciling] = useState(false);
+  const [archivingHistory, setArchivingHistory] = useState(false);
   const [decisionDetail, setDecisionDetail] = useState(null);
   const [decisionDetailLoading, setDecisionDetailLoading] = useState(false);
 
@@ -521,6 +522,31 @@ export default function RoboTrader() {
       setError(getApiError(err));
     } finally {
       setReconciling(false);
+    }
+  };
+
+  const handleArchiveReconciliationHistory = async () => {
+    const historicalCount = reconciliation?.historicalSummary?.total || 0;
+    if (!historicalCount) return;
+    const confirmed = window.confirm(
+      `Archive ${historicalCount} terminal historical reconciliation item${historicalCount === 1 ? '' : 's'}? Current/open broker issues will remain visible.`
+    );
+    if (!confirmed) return;
+
+    setArchivingHistory(true);
+    setError('');
+    setSuccess('');
+    try {
+      const environment = settings.mode === 'live' ? 'live' : 'paper';
+      const res = await axios.post('/api/robotrader/reconciliation/archive-history', {
+        environment,
+        reason: 'Archived from RoboTrader dashboard after review.'
+      });
+      await refreshAfterAction(`Archived ${res.data?.archivedCount ?? 0} historical reconciliation item${res.data?.archivedCount === 1 ? '' : 's'}.`);
+    } catch (err) {
+      setError(getApiError(err));
+    } finally {
+      setArchivingHistory(false);
     }
   };
 
@@ -1003,22 +1029,32 @@ export default function RoboTrader() {
               <p className="rt-eyebrow">Reconciliation</p>
               <h2 className="rt-section-title mt-1">Broker/local order match</h2>
             </div>
-            <Button variant="secondary" size="sm" onClick={handleReconcilePaper} disabled={reconciling}>
-              {reconciling ? 'Reconciling...' : 'Reconcile Paper'}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" size="sm" onClick={handleReconcilePaper} disabled={reconciling}>
+                {reconciling ? 'Reconciling...' : 'Reconcile Paper'}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleArchiveReconciliationHistory}
+                disabled={archivingHistory || !(reconciliation?.historicalSummary?.total > 0)}
+              >
+                {archivingHistory ? 'Archiving...' : 'Archive History'}
+              </Button>
+            </div>
           </div>
 
           <div className="mt-5 grid grid-cols-2 gap-3">
             <div className="rt-metric">
-              <p className="rt-label">Tracked Orders</p>
+              <p className="rt-label">Current Tracked</p>
               <p className="mt-2 text-2xl font-bold text-[#edf5f4]">{reconciliation?.summary?.total ?? 0}</p>
             </div>
             <div className="rt-metric">
-              <p className="rt-label">Discrepancies</p>
+              <p className="rt-label">Current Issues</p>
               <p className="mt-2 text-2xl font-bold text-[#ffd77a]">{reconciliation?.summary?.discrepancies ?? 0}</p>
             </div>
             <div className="rt-metric">
-              <p className="rt-label">Pending</p>
+              <p className="rt-label">Pending Broker</p>
               <p className="mt-2 text-2xl font-bold text-[#edf5f4]">{reconciliation?.summary?.pending ?? 0}</p>
             </div>
             <div className="rt-metric">
@@ -1027,9 +1063,13 @@ export default function RoboTrader() {
             </div>
           </div>
 
-          {(reconciliation?.summary?.orphanAlpacaOrders ?? 0) > 0 && (
+          {(reconciliation?.summary?.discrepancies ?? 0) > 0 ? (
             <div className="mt-4 rounded-lg border border-[#6f531d] bg-[#221a0e] px-4 py-3 text-sm text-[#ffd77a]">
-              {reconciliation.summary.orphanAlpacaOrders} unattributed RoboTrader order{reconciliation.summary.orphanAlpacaOrders === 1 ? '' : 's'} found in Alpaca. Details are withheld until the order can be matched to this account.
+              Current broker/local discrepancies need review before they are archived.
+            </div>
+          ) : (
+            <div className="mt-4 rounded-lg border border-[#22694a] bg-[#10251c] px-4 py-3 text-sm text-[#8cf5bd]">
+              No current actionable reconciliation issues are visible.
             </div>
           )}
 
@@ -1049,8 +1089,52 @@ export default function RoboTrader() {
               </div>
             ))}
             {!(reconciliation?.orders || []).length && (
-              <EmptyState>No RoboTrader orders to reconcile yet.</EmptyState>
+              <EmptyState>No current RoboTrader orders need reconciliation.</EmptyState>
             )}
+          </div>
+
+          <div className="mt-5 rounded-lg border border-[#26363c] bg-[#0a1012] p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p className="rt-label">Historical Discrepancies</p>
+                <p className="mt-1 text-sm text-[#8ba09f]">
+                  Terminal rejected/orphaned records are kept for audit, but can be archived so they no longer look like live broker problems.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant={reconciliation?.historicalSummary?.total ? 'warning' : 'neutral'}>
+                  {reconciliation?.historicalSummary?.total ?? 0} unarchived
+                </Badge>
+                <Badge variant="neutral">
+                  {reconciliation?.historicalSummary?.archived ?? 0} archived
+                </Badge>
+              </div>
+            </div>
+
+            {(reconciliation?.historicalSummary?.orphanAlpacaOrders ?? 0) > 0 && (
+              <div className="mt-4 rounded-lg border border-[#6f531d] bg-[#221a0e] px-4 py-3 text-sm text-[#ffd77a]">
+                {reconciliation.historicalSummary.orphanAlpacaOrders} historical unattributed RoboTrader order{reconciliation.historicalSummary.orphanAlpacaOrders === 1 ? '' : 's'} found in Alpaca. Details remain withheld until matched to this account.
+              </div>
+            )}
+
+            <div className="mt-4 space-y-3">
+              {(reconciliation?.historicalDiscrepancies || []).slice(0, 4).map(order => (
+                <div key={order._id} className="rt-panel px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-bold text-[#edf5f4]">{order.symbol || '--'}</p>
+                      <p className="text-xs text-[#8ba09f]">{order.clientOrderId || order.externalOrderId || 'No broker id'}</p>
+                    </div>
+                    <Badge variant="warning">{order.reconciliationStatus || order.status || 'historical'}</Badge>
+                  </div>
+                  {order.discrepancy && <p className="mt-2 text-xs text-[#ffd77a]">{order.discrepancy}</p>}
+                  <p className="mt-2 text-[11px] text-[#6f8180]">Created {formatDateTime(order.createdAt)}</p>
+                </div>
+              ))}
+              {!(reconciliation?.historicalDiscrepancies || []).length && (
+                <EmptyState>No unarchived historical reconciliation discrepancies.</EmptyState>
+              )}
+            </div>
           </div>
         </Card>
       </div>

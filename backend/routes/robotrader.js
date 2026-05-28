@@ -105,6 +105,62 @@ function toFiniteNumber(value, fallback = 0) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
+const TERMINAL_LOCAL_STATUSES = ['rejected', 'canceled', 'cancelled', 'filled', 'expired'];
+const MATCHED_RECONCILIATION_STATUSES = [
+  'matched',
+  'synced',
+  'updated',
+  'cancel_requested',
+  'replace_requested',
+  'emergency_stop'
+];
+const TERMINAL_RECONCILIATION_STATUSES = [
+  ...MATCHED_RECONCILIATION_STATUSES,
+  'submit_rejected',
+  'orphan_alpaca_order'
+];
+
+function hasDiscrepancy(order = {}) {
+  return Boolean(String(order.discrepancy || '').trim());
+}
+
+function isArchivedReconciliation(order = {}) {
+  return Boolean(order.reconciliationArchivedAt);
+}
+
+function isHistoricalReconciliationRecord(order = {}) {
+  if (isArchivedReconciliation(order) || !hasDiscrepancy(order)) return false;
+  const localStatus = String(order.status || '').toLowerCase();
+  const reconciliationStatus = String(order.reconciliationStatus || 'pending').toLowerCase();
+  return TERMINAL_LOCAL_STATUSES.includes(localStatus)
+    || TERMINAL_RECONCILIATION_STATUSES.includes(reconciliationStatus);
+}
+
+function isCurrentReconciliationRecord(order = {}) {
+  return !isArchivedReconciliation(order) && !isHistoricalReconciliationRecord(order);
+}
+
+function buildUnarchivedReconciliationQuery(query = {}) {
+  return {
+    ...query,
+    reconciliationArchivedAt: null
+  };
+}
+
+function buildHistoricalArchiveQuery({ userId, environment, cutoff, includeOrphans = false }) {
+  const ownership = includeOrphans ? { userId: null } : { userId };
+  return buildUnarchivedReconciliationQuery({
+    ...ownership,
+    environment,
+    discrepancy: { $nin: [null, ''] },
+    createdAt: { $lte: cutoff },
+    $or: [
+      { status: { $in: TERMINAL_LOCAL_STATUSES } },
+      { reconciliationStatus: { $in: TERMINAL_RECONCILIATION_STATUSES } }
+    ]
+  });
+}
+
 function summarizeReconciliationOrders(orders = []) {
   const summary = {
     total: orders.length,
@@ -122,19 +178,12 @@ function summarizeReconciliationOrders(orders = []) {
       String(order.status || '').toLowerCase()
     );
     const terminalReconciliationStatus = [
-      'matched',
-      'synced',
-      'updated',
-      'cancel_requested',
-      'replace_requested',
-      'emergency_stop',
-      'submit_rejected',
-      'orphan_alpaca_order'
+      ...TERMINAL_RECONCILIATION_STATUSES
     ].includes(status);
     if ((!order.lastReconciledAt || status === 'pending') && !terminalLocalStatus && !terminalReconciliationStatus) {
       summary.pending += 1;
     }
-    if (['matched', 'synced', 'updated', 'cancel_requested', 'replace_requested', 'emergency_stop'].includes(status)) {
+    if (MATCHED_RECONCILIATION_STATUSES.includes(status)) {
       summary.matched += 1;
     }
     if (status === 'missing_alpaca_confirmation') summary.missingAlpacaConfirmation += 1;
@@ -150,6 +199,35 @@ function summarizeReconciliationOrders(orders = []) {
   }
 
   return summary;
+}
+
+function summarizeHistoricalReconciliationOrders(orders = [], archivedCount = 0) {
+  return orders.reduce((summary, order) => {
+    summary.total += 1;
+    if (hasDiscrepancy(order)) summary.discrepancies += 1;
+    if (String(order.reconciliationStatus || '').toLowerCase() === 'orphan_alpaca_order') {
+      summary.orphanAlpacaOrders += 1;
+    }
+    if (String(order.reconciliationStatus || '').toLowerCase() === 'submit_rejected') {
+      summary.submitRejected += 1;
+    }
+    if (order.createdAt) {
+      const createdAt = new Date(order.createdAt).getTime();
+      const latest = summary.latestCreatedAt ? new Date(summary.latestCreatedAt).getTime() : 0;
+      const oldest = summary.oldestCreatedAt ? new Date(summary.oldestCreatedAt).getTime() : Infinity;
+      if (Number.isFinite(createdAt) && createdAt > latest) summary.latestCreatedAt = order.createdAt;
+      if (Number.isFinite(createdAt) && createdAt < oldest) summary.oldestCreatedAt = order.createdAt;
+    }
+    return summary;
+  }, {
+    total: 0,
+    discrepancies: 0,
+    orphanAlpacaOrders: 0,
+    submitRejected: 0,
+    archived: archivedCount,
+    oldestCreatedAt: null,
+    latestCreatedAt: null
+  });
 }
 
 router.get('/settings', async (req, res, next) => {
@@ -403,28 +481,48 @@ router.get('/reconciliation-status', async (req, res, next) => {
     if (environment === 'live' && !settings.liveTradingExplicitlyEnabled) {
       return res.status(403).json({ message: 'Live reconciliation status requires explicit live trading opt-in.' });
     }
-    const [orders, orphanOrders] = await Promise.all([
-      RoboTradeOrder.find({ userId: user._id, environment })
+    const [orders, orphanOrders, archivedUserCount, archivedOrphanCount] = await Promise.all([
+      RoboTradeOrder.find(buildUnarchivedReconciliationQuery({ userId: user._id, environment }))
         .sort({ updatedAt: -1, createdAt: -1 })
         .limit(250)
         .lean(),
-      RoboTradeOrder.find({
+      RoboTradeOrder.find(buildUnarchivedReconciliationQuery({
         userId: null,
         environment,
         reconciliationStatus: 'orphan_alpaca_order'
-      })
+      }))
         .sort({ lastReconciledAt: -1, createdAt: -1 })
         .limit(25)
-        .lean()
+        .lean(),
+      RoboTradeOrder.countDocuments({
+        userId: user._id,
+        environment,
+        reconciliationArchivedAt: { $ne: null }
+      }),
+      RoboTradeOrder.countDocuments({
+        userId: null,
+        environment,
+        reconciliationStatus: 'orphan_alpaca_order',
+        reconciliationArchivedAt: { $ne: null }
+      })
     ]);
-    const summary = summarizeReconciliationOrders(orders);
-    const orphanSummary = summarizeReconciliationOrders(orphanOrders);
+    const currentOrders = orders.filter(isCurrentReconciliationRecord);
+    const historicalOrders = [
+      ...orders.filter(isHistoricalReconciliationRecord),
+      ...orphanOrders.filter(isHistoricalReconciliationRecord)
+    ];
+    const summary = summarizeReconciliationOrders(currentOrders);
+    const orphanSummary = summarizeReconciliationOrders(orphanOrders.filter(isCurrentReconciliationRecord));
+    const historicalSummary = summarizeHistoricalReconciliationOrders(
+      historicalOrders,
+      archivedUserCount + archivedOrphanCount
+    );
     summary.orphanAlpacaOrders = orphanSummary.orphanAlpacaOrders;
     summary.discrepancies += orphanSummary.discrepancies;
     if (!summary.lastReconciledAt && orphanSummary.lastReconciledAt) {
       summary.lastReconciledAt = orphanSummary.lastReconciledAt;
     }
-    const latestDiscrepancies = orders
+    const latestDiscrepancies = currentOrders
       .filter(order => order.discrepancy)
       .slice(0, 10)
       .map(order => ({
@@ -437,14 +535,29 @@ router.get('/reconciliation-status', async (req, res, next) => {
         clientOrderId: order.clientOrderId,
         externalOrderId: order.externalOrderId
       }));
+    const historicalDiscrepancies = historicalOrders
+      .slice(0, 10)
+      .map(order => ({
+        _id: order._id,
+        symbol: order.symbol,
+        status: order.status,
+        reconciliationStatus: order.reconciliationStatus,
+        discrepancy: order.discrepancy,
+        lastReconciledAt: order.lastReconciledAt,
+        clientOrderId: order.clientOrderId,
+        externalOrderId: order.externalOrderId,
+        createdAt: order.createdAt
+      }));
     res.json({
       summary,
       orphanSummary: {
-        count: orphanOrders.length,
+        count: orphanOrders.filter(isCurrentReconciliationRecord).length,
         lastReconciledAt: orphanSummary.lastReconciledAt
       },
+      historicalSummary,
       latestDiscrepancies,
-      orders: orders.slice(0, 50).map(order => ({
+      historicalDiscrepancies,
+      orders: currentOrders.slice(0, 50).map(order => ({
         _id: order._id,
         symbol: order.symbol,
         side: order.side,
@@ -460,6 +573,67 @@ router.get('/reconciliation-status', async (req, res, next) => {
         updatedAt: order.updatedAt,
         createdAt: order.createdAt
       }))
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/reconciliation/archive-history', sensitiveRateLimit({ max: 6 }), async (req, res, next) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: 'User not found.' });
+    const settings = await getMappedSettingsForUser(user._id);
+    const environment = req.body?.environment === 'live' ? 'live' : 'paper';
+    if (environment === 'live' && !settings.liveTradingExplicitlyEnabled) {
+      return res.status(403).json({ message: 'Live reconciliation cleanup requires explicit live trading opt-in.' });
+    }
+    const olderThanDays = Math.min(Math.max(Number(req.body?.olderThanDays || 0), 0), 3650);
+    const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const archiveReason = String(req.body?.reason || 'Archived terminal historical reconciliation discrepancies.').slice(0, 240);
+    const archiveUpdate = {
+      $set: {
+        reconciliationArchivedAt: now,
+        reconciliationArchivedBy: user._id,
+        reconciliationArchiveReason: archiveReason
+      }
+    };
+
+    const [userResult, orphanResult] = await Promise.all([
+      RoboTradeOrder.updateMany(
+        buildHistoricalArchiveQuery({ userId: user._id, environment, cutoff }),
+        archiveUpdate
+      ),
+      RoboTradeOrder.updateMany(
+        buildHistoricalArchiveQuery({ userId: user._id, environment, cutoff, includeOrphans: true }),
+        archiveUpdate
+      )
+    ]);
+    const archivedUserOrders = userResult.modifiedCount ?? userResult.nModified ?? 0;
+    const archivedOrphanOrders = orphanResult.modifiedCount ?? orphanResult.nModified ?? 0;
+    const archivedCount = archivedUserOrders + archivedOrphanOrders;
+
+    await RoboAuditLog.create({
+      userId: user._id,
+      eventType: 'robotrader_reconciliation_history_archived',
+      payload: {
+        environment,
+        olderThanDays,
+        cutoff: cutoff.toISOString(),
+        archivedUserOrders,
+        archivedOrphanOrders,
+        archivedCount,
+        reason: archiveReason
+      }
+    });
+
+    res.json({
+      archivedCount,
+      archivedUserOrders,
+      archivedOrphanOrders,
+      cutoff,
+      environment
     });
   } catch (err) {
     next(err);
