@@ -27,7 +27,7 @@ export default function Button({
     <button
       type={type}
       className={cn(
-        'rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:opacity-60 disabled:cursor-not-allowed',
+        'rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126]',
         variants[variant],
         sizes[size],
         className

@@ -1,23 +1,17 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 
 export default function Navbar() {
   const navigate = useNavigate();
-  const [isAuthed, setIsAuthed] = useState(false);
-
-  useEffect(() => {
-    setIsAuthed(!!localStorage.getItem('token'));
-  }, []);
+  const { isAuthenticated, signOut } = useAuth();
 
   const handleSignOut = async () => {
     try {
-      await axios.post('/api/logout');
+      await signOut();
     } catch (err) {
       console.error('Logout log failed:', err);
     } finally {
-      localStorage.removeItem('token');
-      setIsAuthed(false);
       navigate('/login');
     }
   };
@@ -37,7 +31,7 @@ export default function Navbar() {
           <Link to="/" className="hover:text-gray-900">Watchlist</Link>
           <Link to="/portfolio" className="hover:text-gray-900">Portfolio</Link>
           <Link to="/activity" className="hover:text-gray-900">Activity</Link>
-          {isAuthed ? (
+          {isAuthenticated ? (
             <button
               onClick={handleSignOut}
               className="text-sm font-medium text-gray-700 hover:text-gray-900"

@@ -203,12 +203,15 @@ const { ensureSlowBufferCompat } = require('./utils/nodeCompat');
 ensureSlowBufferCompat();
 const jwt       = require('jsonwebtoken');
 const bcrypt    = require('bcryptjs');
+const { createRateLimit } = require('./middleware/rateLimit');
+const { clearSessionCookie, setSessionCookie } = require('./utils/sessionCookie');
 
 // 4. Import your models, trade logic & auth middleware
 const User                = require('./models/User');
 const Log                 = require('./models/Log');
 const { getRecommendations, fetchIntraday } = require('./tradeLogic');
 const auth                = require('./middleware/auth');      // ← imported
+const { getJwtSecret }    = require('./middleware/auth');
 const debugRoutes         = require('./routes/debug');
 const { startRoboScheduler } = require('./services/roboScheduler');
 
@@ -218,6 +221,12 @@ const app = express();
 // 6. Global middleware
 app.use(express.json());
 const isProduction = process.env.NODE_ENV === 'production';
+if (isProduction && !process.env.JWT_SECRET) {
+  throw new Error('JWT_SECRET is required in production.');
+}
+if (isProduction) {
+  app.set('trust proxy', 1);
+}
 const configuredOrigins = (process.env.FRONTEND_ORIGIN || '')
   .split(',')
   .map(origin => origin.trim())
@@ -229,6 +238,7 @@ const allowedOrigins = new Set(
     : [...configuredOrigins, ...defaultDevOrigins]
 );
 app.use(cors({
+  credentials: true,
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
     if (!isProduction && configuredOrigins.length === 0) return callback(null, true);
@@ -237,17 +247,58 @@ app.use(cors({
   }
 }));
 
+const publicDataRateLimit = createRateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.PUBLIC_DATA_RATE_LIMIT_PER_MINUTE || 120),
+  keyPrefix: 'public-data',
+  message: 'Too many market data requests. Try again shortly.'
+});
+const authRateLimit = createRateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.AUTH_RATE_LIMIT_PER_WINDOW || 20),
+  keyPrefix: 'auth',
+  message: 'Too many authentication attempts. Try again shortly.'
+});
+
+function normalizeUsername(value) {
+  return String(value || '').trim();
+}
+
+function validateCredentials({ username, password, email, requireEmail = false }) {
+  const errors = [];
+  const normalizedUsername = normalizeUsername(username);
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const passwordValue = typeof password === 'string' ? password : '';
+
+  if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(normalizedUsername)) {
+    errors.push('Username must be 3-32 characters using letters, numbers, underscores, periods, or dashes.');
+  }
+  if (requireEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    errors.push('A valid email is required.');
+  }
+  if (passwordValue.length < 10 || !/[A-Za-z]/.test(passwordValue) || !/[0-9]/.test(passwordValue)) {
+    errors.push('Password must be at least 10 characters and include a letter and a number.');
+  }
+
+  return {
+    errors,
+    normalizedUsername,
+    normalizedEmail,
+    passwordValue
+  };
+}
+
 // 7. Mount the Alpaca trade routes
 //    All routes defined in routes/trade.js are now under /api/trade
 app.use('/api/trade', require('./routes/trade'));
-app.use('/api/market',  require('./routes/market'));
-app.use('/api/analyze', require('./routes/analyze'));
-app.use('/api/company', require('./routes/company'));
-app.use('/api/watchlist', require('./routes/watchlist'));
+app.use('/api/market', publicDataRateLimit, require('./routes/market'));
+app.use('/api/analyze', publicDataRateLimit, require('./routes/analyze'));
+app.use('/api/company', publicDataRateLimit, require('./routes/company'));
+app.use('/api/watchlist', publicDataRateLimit, require('./routes/watchlist'));
 app.use('/api/paper-trades', require('./routes/paperTrades'));
-app.use('/api/regime', require('./routes/regime'));
-app.use('/api/backtest', require('./routes/backtest'));
-app.use('/api/strategies', require('./routes/strategies'));
+app.use('/api/regime', publicDataRateLimit, require('./routes/regime'));
+app.use('/api/backtest', publicDataRateLimit, require('./routes/backtest'));
+app.use('/api/strategies', publicDataRateLimit, require('./routes/strategies'));
 app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/journal', require('./routes/journal'));
 app.use('/api/trade-plan', require('./routes/tradePlan'));
@@ -258,19 +309,23 @@ app.use('/api/robotrader', require('./routes/robotrader'));
 app.use('/api/trading-system', require('./routes/tradingSystem'));
 app.use('/api/research', require('./routes/research'));
 // Trade Recomendations 
-app.use('/api/recommendations', require('./routes/recommend'));
+app.use('/api/recommendations', publicDataRateLimit, require('./routes/recommend'));
 
 
 // ─── 8. REGISTER ────────────────────────────────────────────────────────────────
-app.post('/api/register', requireMongo, async (req, res, next) => {
+app.post('/api/register', authRateLimit, requireMongo, async (req, res, next) => {
   try {
     const { username, password, email } = req.body;
-    const normalizedEmail = String(email || '').trim().toLowerCase();
-    if (!normalizedEmail) {
-      return res.status(400).json({ message: 'Email is required' });
+    const validation = validateCredentials({ username, password, email, requireEmail: true });
+    if (validation.errors.length) {
+      return res.status(400).json({ message: validation.errors[0], errors: validation.errors });
     }
-    const hash = await bcrypt.hash(password, 10);
-    await User.create({ username, email: normalizedEmail, hash });
+    const hash = await bcrypt.hash(validation.passwordValue, 10);
+    await User.create({
+      username: validation.normalizedUsername,
+      email: validation.normalizedEmail,
+      hash
+    });
     res.json({ message: 'User registered successfully' });
   } catch (err) {
     if (err.code === 11000) {
@@ -281,10 +336,14 @@ app.post('/api/register', requireMongo, async (req, res, next) => {
 });
 
 // ─── 9. LOGIN ──────────────────────────────────────────────────────────────────
-app.post('/api/login', requireMongo, async (req, res, next) => {
+app.post('/api/login', authRateLimit, requireMongo, async (req, res, next) => {
   try {
     const { username, password } = req.body;
-    const user = await User.findOne({ username });
+    const normalizedUsername = normalizeUsername(username);
+    if (!normalizedUsername || typeof password !== 'string' || !password) {
+      return res.status(400).json({ message: 'Username and password are required.' });
+    }
+    const user = await User.findOne({ username: normalizedUsername });
     if (!user) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
@@ -294,19 +353,42 @@ app.post('/api/login', requireMongo, async (req, res, next) => {
     }
     const token = jwt.sign(
       { sub: String(user._id), userId: String(user._id), username: user.username },
-      process.env.JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: '1h' }
     );
-    res.json({ token });
+    setSessionCookie(res, token);
+    const payload = {
+      user: {
+        id: String(user._id),
+        username: user.username,
+        email: user.email || null
+      }
+    };
+    if (!isProduction) payload.token = token;
+    res.json(payload);
   } catch (err) {
     next(err);
   }
 });
 
+app.get('/api/me', auth, async (req, res) => {
+  res.json({
+    user: {
+      id: String(req.currentUser?._id || req.user.userId),
+      username: req.currentUser?.username || req.user.username,
+      email: req.currentUser?.email || null
+    },
+    databaseAvailable: mongoose.connection.readyState === 1
+  });
+});
+
 // ─── 10. LOGOUT ────────────────────────────────────────────────────────────────
-app.post('/api/logout', auth, requireMongo, async (req, res, next) => {
+app.post('/api/logout', auth, async (req, res, next) => {
   try {
-    await Log.create({ username: req.user.username, action: 'logout' });
+    clearSessionCookie(res);
+    if (mongoose.connection.readyState === 1) {
+      await Log.create({ username: req.user.username, action: 'logout' });
+    }
     res.json({ message: 'Logged out successfully' });
   } catch (err) {
     next(err);
@@ -328,7 +410,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.get('/api/recommend/:symbol', async (req, res, next) => {
+app.get('/api/recommend/:symbol', publicDataRateLimit, async (req, res, next) => {
   try {
     const recs = await getRecommendations(req.params.symbol.toUpperCase());
     res.json(recs);
@@ -337,7 +419,7 @@ app.get('/api/recommend/:symbol', async (req, res, next) => {
   }
 });
 
-app.get('/api/intraday/:symbol', async (req, res, next) => {
+app.get('/api/intraday/:symbol', publicDataRateLimit, async (req, res, next) => {
   try {
     const data = await fetchIntraday(req.params.symbol.toUpperCase());
     res.json(data);

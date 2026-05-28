@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import axios from 'axios';
 import Button from '../ui/Button';
+import { useAuth } from '../../context/AuthContext';
 
 const links = [
   { to: '/watchlist', label: 'Watchlist' },
@@ -17,20 +17,14 @@ const links = [
 
 export default function SideNav() {
   const navigate = useNavigate();
-  const [isAuthed, setIsAuthed] = useState(false);
-
-  useEffect(() => {
-    setIsAuthed(!!localStorage.getItem('token'));
-  }, []);
+  const { isAuthenticated, signOut } = useAuth();
 
   const handleSignOut = async () => {
     try {
-      await axios.post('/api/logout');
+      await signOut();
     } catch (err) {
       console.error('Logout log failed:', err);
     } finally {
-      localStorage.removeItem('token');
-      setIsAuthed(false);
       navigate('/login');
     }
   };
@@ -57,7 +51,7 @@ export default function SideNav() {
           ))}
         </nav>
       </div>
-      {isAuthed && (
+      {isAuthenticated && (
         <Button variant="ghost" size="sm" onClick={handleSignOut} className="justify-start">
           Sign Out
         </Button>

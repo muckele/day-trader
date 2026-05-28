@@ -5,21 +5,22 @@ import { useNavigate, Link } from 'react-router-dom';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import { getApiError } from '../utils/api';
+import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const navigate = useNavigate();
+  const { refreshAuth } = useAuth();
 
   const handleSubmit = async e => {
     e.preventDefault();
     setError('');
     try {
       // 1. POST credentials
-      const res = await axios.post('/api/login', { username, password });
-      // 2. Store token
-      localStorage.setItem('token', res.data.token);
+      await axios.post('/api/login', { username, password });
+      await refreshAuth();
       // 3. Redirect to home
       navigate('/');
     } catch (err) {

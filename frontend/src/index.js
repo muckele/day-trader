@@ -17,22 +17,21 @@ const apiBaseUrl = getApiBaseUrl();
 if (apiBaseUrl) {
   axios.defaults.baseURL = apiBaseUrl;
 }
+axios.defaults.withCredentials = true;
 
 // ─── 3. CONFIGURE AXIOS INTERCEPTORS ────────────────────────────────────────
-// Attach JWT token (if present) to every request
-axios.interceptors.request.use(config => {
-  const token = localStorage.getItem('token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
+localStorage.removeItem('token');
 
 // Redirect to /login on any 401 Unauthorized response
 axios.interceptors.response.use(
   response => response,
   error => {
-    if (error.response?.status === 401) {
+    const requestUrl = String(error.config?.url || '');
+    if (
+      error.response?.status === 401
+      && !requestUrl.includes('/api/me')
+      && window.location.pathname !== '/login'
+    ) {
       window.location.href = '/login';
     }
     return Promise.reject(error);

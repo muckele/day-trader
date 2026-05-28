@@ -3,7 +3,9 @@ const RoboTradeDecision = require('../models/RoboTradeDecision');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
 const RoboAuditLog = require('../models/RoboAuditLog');
 const RoboLock = require('../models/RoboLock');
+const User = require('../models/User');
 const { getRecommendationUniverse } = require('../config/tradingConfig');
+const { getAccountIdForUser } = require('../utils/accountScope');
 const { isCryptoSymbol } = require('../services/marketData');
 const { buildClientOrderId } = require('../services/alpacaTradingClient');
 const {
@@ -428,9 +430,21 @@ async function getRecentLocalOrders(userId, environment, now, deps) {
   }).sort({ createdAt: -1 }).lean();
 }
 
+async function resolveAccountIdForUserId(userId, deps = defaultDeps) {
+  if (typeof deps.resolveAccountIdForUserId === 'function') {
+    return deps.resolveAccountIdForUserId(userId);
+  }
+  if (deps.User) {
+    const query = deps.User.findById(userId);
+    const user = typeof query?.lean === 'function' ? await query.lean() : await query;
+    return user ? getAccountIdForUser(user) : null;
+  }
+  return getAccountIdForUser({ userId });
+}
+
 async function saveDecision({
   userId,
-  accountId = 'default',
+  accountId,
   environment,
   runId,
   research,
@@ -486,6 +500,7 @@ async function saveDecision({
 
 async function submitApprovedOrder({
   userId,
+  accountId,
   environment,
   decisionDoc,
   orderInput,
@@ -501,7 +516,7 @@ async function submitApprovedOrder({
   });
   const pendingOrder = await deps.RoboTradeOrder.create({
     userId,
-    accountId: 'default',
+    accountId,
     decisionId: decisionDoc._id,
     environment,
     symbol: normalizeSymbol(orderInput.symbol),
@@ -612,6 +627,16 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
   const settings = deps.mapSettings(settingsDoc);
   const environment = modeOverride || settings.mode || 'paper';
   const runId = buildRunId(userId, now);
+  const accountId = await resolveAccountIdForUserId(userId, deps);
+
+  if (!accountId) {
+    await writeAudit(userId, 'robotrader_user_not_found', {
+      reason: 'RoboTrader settings exist but the owning user could not be found.',
+      runId,
+      at: now.toISOString()
+    }, deps);
+    return { ok: false, skipped: true, reason: 'USER_NOT_FOUND', runId };
+  }
 
   if (environment === 'live' && (settings.mode !== 'live' || !settings.liveTradingExplicitlyEnabled)) {
     await writeAudit(userId, 'robotrader_live_blocked', {
@@ -730,6 +755,7 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
 
     const decisionDoc = await saveDecision({
       userId,
+      accountId,
       environment,
       runId,
       research,
@@ -756,6 +782,7 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
 
     submittedOrder = await submitApprovedOrder({
       userId,
+      accountId,
       environment,
       decisionDoc,
       orderInput,
@@ -1112,6 +1139,7 @@ const defaultDeps = {
   RoboTradeOrder,
   RoboAuditLog,
   RoboLock,
+  User,
   acquireWorkerLock,
   adaptOrderForMarketSession,
   buildResearchBatch,

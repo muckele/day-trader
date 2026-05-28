@@ -147,6 +147,8 @@ test('robotrader worker saves approved decisions and submitted orders', async ()
   assert.equal(result.ok, true);
   assert.equal(context.createdDecisions.length, 1);
   assert.equal(context.createdOrders.length, 1);
+  assert.equal(context.createdDecisions[0].accountId, 'user:user-worker');
+  assert.equal(context.createdOrders[0].accountId, 'user:user-worker');
   assert.equal(context.createdOrders[0].externalOrderId, 'alpaca-order-1');
   assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
   assert.equal(context.brokerSubmissions.length, 1);

@@ -15,6 +15,7 @@ import TradePlan from './pages/TradePlan';
 import RoboTrader from './pages/RoboTrader';
 import TradingSystem from './pages/TradingSystem';
 import Research from './pages/Research';
+import { AuthProvider } from './context/AuthContext';
 
 export default function App() {
   return (
@@ -24,111 +25,113 @@ export default function App() {
         v7_relativeSplatPath: true
       }}
     >
-      <AppLayout>
-        <Routes>
-          {/* Public route */}
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
+      <AuthProvider>
+        <AppLayout>
+          <Routes>
+            {/* Public route */}
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
 
-          {/* Protected routes */}
-          <Route
-            path="/"
-            element={
-              <PrivateRoute>
-                <Home />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/watchlist"
-            element={
-              <PrivateRoute>
-                <Home />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/stock/:symbol"
-            element={
-              <PrivateRoute>
-                <Stock />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/research"
-            element={
-              <PrivateRoute>
-                <Research />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/research/:symbol"
-            element={
-              <PrivateRoute>
-                <Research />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/plan"
-            element={
-              <PrivateRoute>
-                <TradePlan />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/portfolio"
-            element={
-              <PrivateRoute>
-                <Portfolio />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/activity"
-            element={
-              <PrivateRoute>
-                <Activity />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/analytics"
-            element={
-              <PrivateRoute>
-                <Analytics />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/discover"
-            element={
-              <PrivateRoute>
-                <Discover />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/robo"
-            element={
-              <PrivateRoute>
-                <RoboTrader />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/trading-system"
-            element={
-              <PrivateRoute>
-                <TradingSystem />
-              </PrivateRoute>
-            }
-          />
-        </Routes>
-      </AppLayout>
+            {/* Protected routes */}
+            <Route
+              path="/"
+              element={
+                <PrivateRoute>
+                  <Home />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/watchlist"
+              element={
+                <PrivateRoute>
+                  <Home />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/stock/:symbol"
+              element={
+                <PrivateRoute>
+                  <Stock />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/research"
+              element={
+                <PrivateRoute>
+                  <Research />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/research/:symbol"
+              element={
+                <PrivateRoute>
+                  <Research />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/plan"
+              element={
+                <PrivateRoute>
+                  <TradePlan />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/portfolio"
+              element={
+                <PrivateRoute>
+                  <Portfolio />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/activity"
+              element={
+                <PrivateRoute>
+                  <Activity />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/analytics"
+              element={
+                <PrivateRoute>
+                  <Analytics />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/discover"
+              element={
+                <PrivateRoute>
+                  <Discover />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/robo"
+              element={
+                <PrivateRoute>
+                  <RoboTrader />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/trading-system"
+              element={
+                <PrivateRoute>
+                  <TradingSystem />
+                </PrivateRoute>
+              }
+            />
+          </Routes>
+        </AppLayout>
+      </AuthProvider>
     </BrowserRouter>
   );
 }
