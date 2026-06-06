@@ -6,6 +6,11 @@ const RegimeSnapshot = require('../models/RegimeSnapshot');
 const { detectRegime } = require('../signal/regimeDetector');
 const { generateRecommendationLists } = require('../services/recommendationEngine');
 const mongoState = require('../utils/mongoState');
+const requireMongo = require('../middleware/requireMongo');
+const auth = require('../middleware/auth');
+
+router.use(requireMongo);
+router.use(auth);
 
 async function getTodayRegime() {
   const today = new Date().toISOString().slice(0, 10);

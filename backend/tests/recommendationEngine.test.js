@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const tradeLogic = require('../tradeLogic');
+const mongoState = require('../utils/mongoState');
+const RecommendationSnapshot = require('../models/RecommendationSnapshot');
 const recommendationEngine = require('../services/recommendationEngine');
 
 function buildBars(closes, { baseVolume = 1000000, range = 1 } = {}) {
@@ -64,6 +66,34 @@ test('generateRecommendationLists returns categorized multifactor ideas', async 
   assert.ok(result.lists.momentumLongs.some(idea => idea.symbol === 'AAPL'));
   assert.ok(result.lists.etfRotationIdeas.some(idea => idea.symbol === 'XLK'));
   assert.equal(result.topIdeas[0].paperEligible, true);
+});
+
+test('persistSnapshot upserts one retained recommendation snapshot per daily key', async t => {
+  let upsert = null;
+
+  t.mock.method(mongoState, 'isMongoReady', () => true);
+  t.mock.method(RecommendationSnapshot, 'findOneAndUpdate', async (...args) => {
+    upsert = args;
+    return {};
+  });
+
+  const result = await recommendationEngine.persistSnapshot({
+    asOf: new Date('2026-01-01T12:00:00.000Z'),
+    engineVersion: 'test-v1',
+    benchmarkSymbol: 'SPY',
+    universe: ['AAPL'],
+    regimeKey: 'TREND:CONTRACTION:RISK_ON',
+    regime: { trendChop: 'TREND', vol: 'CONTRACTION', risk: 'RISK_ON', notes: [] },
+    warnings: [],
+    topIdeas: [],
+    lists: {}
+  });
+
+  assert.equal(result, true);
+  assert.match(upsert[0].snapshotKey, /^recommendations:/);
+  assert.equal(upsert[1].$set.snapshotKey, upsert[0].snapshotKey);
+  assert.ok(upsert[1].$set.expiresAt instanceof Date);
+  assert.deepEqual(upsert[2], { upsert: true, new: true, setDefaultsOnInsert: true });
 });
 
 test('generateRecommendationLists sends low-quality symbols to do-not-trade list', async t => {

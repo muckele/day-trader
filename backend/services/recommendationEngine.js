@@ -436,7 +436,18 @@ function isIdeaCandidate({ bucket, bias, factors, flags, regime, instrument }) {
 async function persistSnapshot(snapshot) {
   if (!mongoState.isMongoReady()) return false;
   try {
-    await RecommendationSnapshot.create(snapshot);
+    const snapshotKey = buildSnapshotKey(snapshot);
+    await RecommendationSnapshot.findOneAndUpdate(
+      { snapshotKey },
+      {
+        $set: {
+          ...snapshot,
+          snapshotKey,
+          expiresAt: getSnapshotExpiry(snapshot.asOf)
+        }
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
     return true;
   } catch (_err) {
     return false;
@@ -549,6 +560,34 @@ function sortIdeas(ideas) {
   return [...ideas].sort((a, b) => Number(b.confidenceScore || 0) - Number(a.confidenceScore || 0));
 }
 
+function getRecommendationSnapshotRetentionDays(env = process.env) {
+  const parsed = Math.floor(Number(env.RECOMMENDATION_SNAPSHOT_RETENTION_DAYS));
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 90) : 14;
+}
+
+function buildSnapshotKey(snapshot = {}) {
+  const asOfDate = new Date(snapshot.asOf || Date.now()).toISOString().slice(0, 10);
+  const universe = Array.from(new Set((snapshot.universe || [])
+    .map(symbol => String(symbol || '').trim().toUpperCase())
+    .filter(Boolean)))
+    .sort()
+    .join(',');
+  return [
+    'recommendations',
+    snapshot.engineVersion || 'unknown',
+    snapshot.benchmarkSymbol || 'SPY',
+    snapshot.regimeKey || 'NO_REGIME',
+    asOfDate,
+    universe
+  ].join(':');
+}
+
+function getSnapshotExpiry(asOf = new Date(), env = process.env) {
+  const expiresAt = new Date(asOf);
+  expiresAt.setUTCDate(expiresAt.getUTCDate() + getRecommendationSnapshotRetentionDays(env));
+  return expiresAt;
+}
+
 function uniqueIdeasBySymbolAndBias(ideas) {
   const seen = new Set();
   return ideas.filter(idea => {
@@ -649,6 +688,10 @@ async function generateRecommendationLists(options = {}) {
 module.exports = {
   STRATEGY_BY_BUCKET,
   analyzeSymbol,
+  buildSnapshotKey,
   buildFactorSnapshot,
-  generateRecommendationLists
+  generateRecommendationLists,
+  getRecommendationSnapshotRetentionDays,
+  getSnapshotExpiry,
+  persistSnapshot
 };

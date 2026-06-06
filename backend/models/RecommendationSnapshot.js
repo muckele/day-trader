@@ -24,11 +24,14 @@ const recommendationIdeaSchema = new mongoose.Schema(
 
 const recommendationSnapshotSchema = new mongoose.Schema(
   {
+    snapshotKey: { type: String, required: true, unique: true, index: true },
     asOf: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
     engineVersion: { type: String, required: true },
     benchmarkSymbol: { type: String, default: 'SPY' },
     universe: { type: [String], default: [] },
     regime: { type: mongoose.Schema.Types.Mixed, default: null },
+    regimeKey: { type: String, default: null, index: true },
     warnings: { type: [String], default: [] },
     topIdeas: { type: [recommendationIdeaSchema], default: [] },
     lists: { type: mongoose.Schema.Types.Mixed, default: {} }
@@ -37,5 +40,6 @@ const recommendationSnapshotSchema = new mongoose.Schema(
 );
 
 recommendationSnapshotSchema.index({ createdAt: -1 });
+recommendationSnapshotSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 module.exports = mongoose.model('RecommendationSnapshot', recommendationSnapshotSchema);

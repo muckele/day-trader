@@ -18,16 +18,30 @@ function computeParameterHash(parameters = {}) {
   return crypto.createHash('sha256').update(stableSerialize(parameters)).digest('hex');
 }
 
-async function getOrCreateParameterVersion({ strategyId, parameters = {}, source = 'system', notes = '' } = {}) {
-  if (!mongoState.isMongoReady() || !strategyId) return null;
+function normalizeAccountId(accountId) {
+  const normalized = String(accountId || '').trim();
+  return normalized || null;
+}
+
+async function getOrCreateParameterVersion({ accountId, strategyId, parameters = {}, source = 'system', notes = '' } = {}) {
+  const scopedAccountId = normalizeAccountId(accountId);
+  if (!mongoState.isMongoReady() || !scopedAccountId || !strategyId) return null;
   try {
     const parameterHash = computeParameterHash(parameters);
-    const existing = await StrategyParameterVersion.findOne({ strategyId, parameterHash });
+    const existing = await StrategyParameterVersion.findOne({
+      accountId: scopedAccountId,
+      strategyId,
+      parameterHash
+    });
     if (existing) return existing;
 
-    const latest = await StrategyParameterVersion.findOne({ strategyId }).sort({ version: -1 }).lean();
+    const latest = await StrategyParameterVersion.findOne({
+      accountId: scopedAccountId,
+      strategyId
+    }).sort({ version: -1 }).lean();
     const version = Number(latest?.version || 0) + 1;
     return await StrategyParameterVersion.create({
+      accountId: scopedAccountId,
       strategyId,
       version,
       parameterHash,
@@ -41,6 +55,7 @@ async function getOrCreateParameterVersion({ strategyId, parameters = {}, source
 }
 
 async function createStrategyRun({
+  accountId,
   strategyId,
   strategyName = null,
   runType,
@@ -52,10 +67,17 @@ async function createStrategyRun({
   summary = {},
   context = {}
 } = {}) {
-  if (!mongoState.isMongoReady() || !strategyId || !runType) return null;
+  const scopedAccountId = normalizeAccountId(accountId);
+  if (!mongoState.isMongoReady() || !scopedAccountId || !strategyId || !runType) return null;
   try {
-    const parameterVersion = await getOrCreateParameterVersion({ strategyId, parameters, source });
+    const parameterVersion = await getOrCreateParameterVersion({
+      accountId: scopedAccountId,
+      strategyId,
+      parameters,
+      source
+    });
     return await StrategyRun.create({
+      accountId: scopedAccountId,
       strategyId,
       strategyName,
       runType,
@@ -96,10 +118,15 @@ async function finalizeStrategyRun(run, { status = 'completed', metrics = {}, su
   }
 }
 
-async function listRecentStrategyRuns({ limit = 25, runType = null } = {}) {
+async function listRecentStrategyRuns({ accountId, limit = 25, runType = null } = {}) {
+  const scopedAccountId = normalizeAccountId(accountId);
+  if (!scopedAccountId) return [];
   if (!mongoState.isMongoReady()) return [];
   try {
-    const query = runType ? { runType } : {};
+    const query = {
+      accountId: scopedAccountId,
+      ...(runType ? { runType } : {})
+    };
     return await StrategyRun.find(query)
       .populate('parameterVersionId')
       .sort({ startedAt: -1 })
@@ -110,10 +137,15 @@ async function listRecentStrategyRuns({ limit = 25, runType = null } = {}) {
   }
 }
 
-async function listRecentParameterVersions({ limit = 25, strategyId = null } = {}) {
+async function listRecentParameterVersions({ accountId, limit = 25, strategyId = null } = {}) {
+  const scopedAccountId = normalizeAccountId(accountId);
+  if (!scopedAccountId) return [];
   if (!mongoState.isMongoReady()) return [];
   try {
-    const query = strategyId ? { strategyId } : {};
+    const query = {
+      accountId: scopedAccountId,
+      ...(strategyId ? { strategyId } : {})
+    };
     return await StrategyParameterVersion.find(query)
       .sort({ createdAt: -1, version: -1 })
       .limit(Math.min(Math.max(Number(limit) || 25, 1), 100))
@@ -130,5 +162,6 @@ module.exports = {
   getOrCreateParameterVersion,
   listRecentParameterVersions,
   listRecentStrategyRuns,
+  normalizeAccountId,
   stableSerialize
 };

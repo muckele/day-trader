@@ -28,15 +28,26 @@ function preserveEnv(names) {
   };
 }
 
+async function waitFor(condition, { timeoutMs = 1000, intervalMs = 10 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return true;
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+  return condition();
+}
+
 test('startRoboScheduler runs scheduler tick and retention cleanup', async t => {
   const previousDisabled = process.env.ROBO_SCHEDULER_DISABLED;
   const previousRequireDb = process.env.ROBO_SCHEDULER_REQUIRE_DB;
   const previousWorkerDisabled = process.env.ROBOTRADER_WORKER_DISABLED;
   const previousLegacyEnabled = process.env.ROBO_LEGACY_SCHEDULER_ENABLED;
+  const previousReconciliationDisabled = process.env.ROBOTRADER_RECONCILIATION_DISABLED;
   delete process.env.ROBO_SCHEDULER_DISABLED;
   process.env.ROBO_SCHEDULER_REQUIRE_DB = 'false';
   process.env.ROBOTRADER_WORKER_DISABLED = 'true';
   process.env.ROBO_LEGACY_SCHEDULER_ENABLED = 'true';
+  process.env.ROBOTRADER_RECONCILIATION_DISABLED = 'true';
 
   let tickCalls = 0;
   const cleanupCalls = [];
@@ -62,7 +73,10 @@ test('startRoboScheduler runs scheduler tick and retention cleanup', async t => 
       startupDelayMs: 0
     });
 
-    await new Promise(resolve => setTimeout(resolve, 140));
+    await waitFor(
+      () => tickCalls >= 2 && cleanupCalls.length >= 1 && decisionCleanupCalls.length >= 1,
+      { timeoutMs: 1000 }
+    );
     stop();
 
     assert.ok(tickCalls >= 2);
@@ -79,6 +93,8 @@ test('startRoboScheduler runs scheduler tick and retention cleanup', async t => 
     else process.env.ROBOTRADER_WORKER_DISABLED = previousWorkerDisabled;
     if (previousLegacyEnabled === undefined) delete process.env.ROBO_LEGACY_SCHEDULER_ENABLED;
     else process.env.ROBO_LEGACY_SCHEDULER_ENABLED = previousLegacyEnabled;
+    if (previousReconciliationDisabled === undefined) delete process.env.ROBOTRADER_RECONCILIATION_DISABLED;
+    else process.env.ROBOTRADER_RECONCILIATION_DISABLED = previousReconciliationDisabled;
   }
 });
 

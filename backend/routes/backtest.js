@@ -1,12 +1,23 @@
 const router = require('express').Router();
 const { fetchDaily } = require('../tradeLogic');
+const auth = require('../middleware/auth');
+const requireMongo = require('../middleware/requireMongo');
 const { backtestStrategy } = require('../backtest/backtestEngine');
 const { getStrategy, STRATEGIES } = require('../signal/strategies');
 const { createStrategyRun, finalizeStrategyRun } = require('../services/strategyRunService');
+const { getRequestAccountId } = require('../utils/accountScope');
+
+router.get('/strategies', (req, res) => {
+  res.json(STRATEGIES);
+});
+
+router.use(requireMongo);
+router.use(auth);
 
 router.post('/', async (req, res) => {
   let strategyRun = null;
   try {
+    const accountId = getRequestAccountId(req);
     const { symbol, strategyId, start, end, timeframe } = req.body || {};
     if (!symbol || !strategyId) {
       return res.status(400).json({ error: 'symbol and strategyId are required.' });
@@ -21,6 +32,7 @@ router.post('/', async (req, res) => {
     }
 
     strategyRun = await createStrategyRun({
+      accountId,
       strategyId,
       strategyName: strategy.name,
       runType: 'backtest',
@@ -37,6 +49,7 @@ router.post('/', async (req, res) => {
         symbol: symbol.toUpperCase()
       },
       context: {
+        accountId,
         route: '/api/backtest'
       }
     });
@@ -91,10 +104,6 @@ router.post('/', async (req, res) => {
     });
     res.status(500).json({ error: err.message });
   }
-});
-
-router.get('/strategies', (req, res) => {
-  res.json(STRATEGIES);
 });
 
 module.exports = router;

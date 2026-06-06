@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const strategyRunSchema = new mongoose.Schema(
   {
     strategyId: { type: String, required: true, index: true },
+    accountId: { type: String, required: true, index: true },
     strategyName: { type: String, default: null },
     runType: { type: String, enum: ['backtest', 'robo', 'scheduler'], required: true, index: true },
     mode: { type: String, enum: ['paper', 'live', 'simulation'], default: 'paper' },
@@ -21,7 +22,8 @@ const strategyRunSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-strategyRunSchema.index({ strategyId: 1, startedAt: -1 });
+strategyRunSchema.index({ accountId: 1, startedAt: -1 });
+strategyRunSchema.index({ accountId: 1, strategyId: 1, startedAt: -1 });
 strategyRunSchema.index({ runType: 1, status: 1, startedAt: -1 });
 
 module.exports = mongoose.model('StrategyRun', strategyRunSchema);

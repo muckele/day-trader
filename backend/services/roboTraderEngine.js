@@ -9,6 +9,7 @@ const paperBroker = require('../paper/paperBrokerClient');
 const { fetchQuotes, isCryptoSymbol } = require('./marketData');
 const emailService = require('./roboEmail');
 const { getMarketStatus } = require('../utils/marketStatus');
+const { getAccountIdForUser } = require('../utils/accountScope');
 const { evaluateTradePolicy } = require('./tradePolicyService');
 const { writeRiskEvent } = require('./riskEventService');
 const { createStrategyRun, finalizeStrategyRun } = require('./strategyRunService');
@@ -862,7 +863,8 @@ function detectExecutionAnomaly(events, thresholdBps) {
   };
 }
 
-async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, deps = defaultDeps) {
+async function runRoboTradeForUser({ userId, accountId = null, signal = null, now = new Date() }, deps = defaultDeps) {
+  const scopedAccountId = accountId || getAccountIdForUser({ userId });
   const settings = await getOrCreateSettings(userId, deps);
   const settingsPayload = toSettingsPayload(settings);
   let activeSettingsPayload = settingsPayload;
@@ -1009,6 +1011,7 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
     }
 
     strategyRun = await createStrategyRun({
+      accountId: scopedAccountId,
       strategyId: candidateSignal.strategyId || AUTO_STRATEGY_ID,
       strategyName: candidateSignal.strategyName || AUTO_STRATEGY_NAME,
       runType: 'robo',
@@ -1026,6 +1029,7 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
         signalId
       },
       context: {
+        accountId: scopedAccountId,
         userId: String(userId),
         strategyName: candidateSignal.strategyName || AUTO_STRATEGY_NAME
       }
@@ -1316,7 +1320,7 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
         broker: 'alpaca',
         origin: 'robo',
         request: {
-          accountId: String(userId),
+          accountId: scopedAccountId,
           origin: 'robo',
           broker: 'alpaca',
           symbol,
@@ -1421,7 +1425,7 @@ async function runRoboTradeForUser({ userId, signal = null, now = new Date() }, 
         origin: 'robo',
         rejectedReason: err?.message || 'Execution failed',
         request: {
-          accountId: String(userId),
+          accountId: scopedAccountId,
           origin: 'robo',
           broker: 'alpaca',
           symbol,

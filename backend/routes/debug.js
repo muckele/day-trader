@@ -1,12 +1,15 @@
 /**
  * Verification:
  * Local:
- *   curl -s http://localhost:4000/api/debug/bars/AAPL
+ *   curl -H "Authorization: Bearer <token>" -s http://localhost:4000/api/debug/bars/AAPL
  * Fly:
- *   curl -s https://<backend>.fly.dev/api/debug/bars/AAPL
+ *   curl -H "Authorization: Bearer <token>" -s https://<backend>.fly.dev/api/debug/bars/AAPL
  */
 const router = require('express').Router();
+const auth = require('../middleware/auth');
 const tradeLogic = require('../tradeLogic');
+
+router.use(auth);
 
 router.get('/bars/:symbol', async (req, res, next) => {
   const symbol = req.params.symbol.toUpperCase();

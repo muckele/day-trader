@@ -64,8 +64,9 @@ router.get('/status', async (_req, res, next) => {
 
 router.get('/strategy-runs', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const { limit = 25, runType = null } = req.query;
-    const runs = await listRecentStrategyRuns({ limit, runType });
+    const runs = await listRecentStrategyRuns({ accountId, limit, runType });
     res.json({
       items: runs,
       ...(getDataWarning() || {})
@@ -77,8 +78,9 @@ router.get('/strategy-runs', async (req, res, next) => {
 
 router.get('/strategy-parameters', async (req, res, next) => {
   try {
+    const accountId = getRequestAccountId(req);
     const { limit = 25, strategyId = null } = req.query;
-    const items = await listRecentParameterVersions({ limit, strategyId });
+    const items = await listRecentParameterVersions({ accountId, limit, strategyId });
     res.json({
       items,
       ...(getDataWarning() || {})

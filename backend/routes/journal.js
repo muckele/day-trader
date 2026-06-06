@@ -20,6 +20,16 @@ function parseTags(tags) {
   return [];
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeSearchQuery(value) {
+  const search = String(value || '').trim();
+  if (search.length > 80) return null;
+  return search;
+}
+
 router.get('/:tradeId', async (req, res, next) => {
   try {
     const accountId = getRequestAccountId(req);
@@ -61,6 +71,10 @@ router.get('/', async (req, res, next) => {
   try {
     const accountId = getRequestAccountId(req);
     const { range = '30d', symbol = '', strategyId = '', tag = '', search = '' } = req.query;
+    const normalizedSearch = normalizeSearchQuery(search);
+    if (normalizedSearch === null) {
+      return res.status(400).json({ error: 'search is limited to 80 characters.' });
+    }
     const startDate = parseRange(range);
     const tradeQuery = { accountId };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
@@ -72,8 +86,8 @@ router.get('/', async (req, res, next) => {
     const journalQuery = { accountId, tradeId: { $in: tradeIds } };
 
     if (tag) journalQuery.tags = tag;
-    if (search) {
-      const regex = new RegExp(search, 'i');
+    if (normalizedSearch) {
+      const regex = new RegExp(escapeRegExp(normalizedSearch), 'i');
       journalQuery.$or = [
         { thesis: regex },
         { plan: regex },

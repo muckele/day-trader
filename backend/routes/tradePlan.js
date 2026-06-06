@@ -18,6 +18,15 @@ const { getRequestAccountId } = require('../utils/accountScope');
 router.use(requireMongo);
 router.use(auth);
 
+const MAX_HISTORY_DAYS = 90;
+const MAX_HISTORY_SYMBOL_FETCHES = 25;
+
+function clampPositiveInt(value, { fallback, max }) {
+  const parsed = Math.floor(Number(value));
+  const number = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  return Math.min(number, max);
+}
+
 router.get('/today', async (req, res, next) => {
   try {
     const accountId = getRequestAccountId(req);
@@ -108,8 +117,10 @@ router.post('/generate', async (req, res, next) => {
 router.get('/history', async (req, res, next) => {
   try {
     const accountId = getRequestAccountId(req);
-    const daysParam = Number(req.query.days || 14);
-    const days = Number.isFinite(daysParam) ? daysParam : 14;
+    const days = clampPositiveInt(req.query.days || 14, {
+      fallback: 14,
+      max: MAX_HISTORY_DAYS
+    });
     const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const plans = await TradePlan.find({
       accountId,
@@ -138,7 +149,11 @@ router.get('/history', async (req, res, next) => {
     });
 
     const barsBySymbol = {};
-    const symbolList = Array.from(symbols);
+    const allSymbolList = Array.from(symbols)
+      .filter(Boolean)
+      .sort();
+    const symbolList = allSymbolList.slice(0, MAX_HISTORY_SYMBOL_FETCHES);
+    const missedWinnersPartial = allSymbolList.length > symbolList.length;
     if (symbolList.length) {
       const results = await Promise.allSettled(
         symbolList.map(symbol => fetchDaily(symbol))
@@ -158,13 +173,25 @@ router.get('/history', async (req, res, next) => {
           ...plan,
           metrics: {
             ...stats,
-            missedWinners
+            missedWinners,
+            missedWinnersPartial
           }
         };
       })
     );
 
-    res.json({ history });
+    res.json({
+      history,
+      warnings: missedWinnersPartial
+        ? [{
+            code: 'MISSED_WINNERS_PARTIAL',
+            message: `Missed-winner metrics evaluated ${symbolList.length} of ${allSymbolList.length} symbols.`,
+            symbolLimit: MAX_HISTORY_SYMBOL_FETCHES,
+            symbolCount: allSymbolList.length,
+            omittedSymbolCount: allSymbolList.length - symbolList.length
+          }]
+        : []
+    });
   } catch (err) {
     next(err);
   }

@@ -208,6 +208,7 @@ ensureSlowBufferCompat();
 const jwt       = require('jsonwebtoken');
 const bcrypt    = require('bcryptjs');
 const { createRateLimit } = require('./middleware/rateLimit');
+const { createUnsafeMethodOriginGuard } = require('./middleware/unsafeMethodOriginGuard');
 const { clearSessionCookie, setSessionCookie } = require('./utils/sessionCookie');
 
 // 4. Import your models, trade logic & auth middleware
@@ -249,6 +250,9 @@ app.use(cors({
     if (allowedOrigins.has(origin)) return callback(null, true);
     return callback(new Error('Not allowed by CORS'));
   }
+}));
+app.use(createUnsafeMethodOriginGuard({
+  allowedOrigins: Array.from(allowedOrigins)
 }));
 
 const publicDataRateLimit = createRateLimit({
@@ -307,7 +311,7 @@ app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/journal', require('./routes/journal'));
 app.use('/api/trade-plan', require('./routes/tradePlan'));
 app.use('/api/execution', require('./routes/execution'));
-app.use('/api/debug', debugRoutes);
+app.use('/api/debug', publicDataRateLimit, debugRoutes);
 app.use('/api/robo', require('./routes/robo'));
 app.use('/api/robotrader', require('./routes/robotrader'));
 app.use('/api/trading-system', require('./routes/tradingSystem'));

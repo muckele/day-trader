@@ -1,13 +1,22 @@
+const mongoose = require('mongoose');
 const BrokerOrder = require('../models/BrokerOrder');
 const Fill = require('../models/Fill');
 const OrderIntent = require('../models/OrderIntent');
 const PaperOrder = require('../models/PaperOrder');
 const PaperTrade = require('../models/PaperTrade');
+const RecommendationSnapshot = require('../models/RecommendationSnapshot');
 const RoboLock = require('../models/RoboLock');
 const RoboSettings = require('../models/RoboSettings');
 const RoboSignalExecution = require('../models/RoboSignalExecution');
 const RoboTradeDecision = require('../models/RoboTradeDecision');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
+const StrategyParameterVersion = require('../models/StrategyParameterVersion');
+const StrategyRun = require('../models/StrategyRun');
+const User = require('../models/User');
+const { getAccountIdForUser } = require('../utils/accountScope');
+const {
+  getSnapshotExpiry
+} = require('./recommendationEngine');
 
 const TRADING_INDEX_MODELS = [
   BrokerOrder,
@@ -22,8 +31,240 @@ const TRADING_INDEX_MODELS = [
   RoboTradeOrder
 ];
 
+const STRATEGY_TELEMETRY_INDEX_MODELS = [
+  StrategyParameterVersion,
+  StrategyRun
+];
+
+const LEGACY_INDEXES = [
+  { model: StrategyParameterVersion, name: 'strategyId_1_version_1' },
+  { model: StrategyParameterVersion, name: 'strategyId_1_parameterHash_1' },
+  { model: StrategyRun, name: 'strategyId_1_startedAt_-1' }
+];
+
+function missingAccountQuery() {
+  return {
+    $or: [
+      { accountId: { $exists: false } },
+      { accountId: null },
+      { accountId: '' }
+    ]
+  };
+}
+
+function normalizeId(value) {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+}
+
+function selectLean(model, query, projection) {
+  const request = model.find(query);
+  if (typeof request.select === 'function') {
+    return request.select(projection).lean();
+  }
+  return request.lean();
+}
+
+async function loadUserAccountMap(userIds, UserModel = User) {
+  const validIds = Array.from(new Set(userIds.map(normalizeId).filter(Boolean)))
+    .filter(id => mongoose.Types.ObjectId.isValid(id));
+  if (!validIds.length || !UserModel.find) return new Map();
+
+  const users = await selectLean(UserModel, { _id: { $in: validIds } }, '_id username');
+  return users.reduce((acc, user) => {
+    acc.set(String(user._id), getAccountIdForUser(user));
+    return acc;
+  }, new Map());
+}
+
+function resolveRunAccountId(run = {}, userAccountMap = new Map()) {
+  const accountId = normalizeId(run.accountId || run.context?.accountId);
+  if (accountId) return accountId;
+
+  const userId = normalizeId(run.context?.userId);
+  if (userId && userAccountMap.has(userId)) return userAccountMap.get(userId);
+  if (userId) return getAccountIdForUser({ userId });
+
+  return 'default';
+}
+
+async function backfillStrategyRunAccountIds({ StrategyRunModel = StrategyRun, UserModel = User } = {}) {
+  const runs = await selectLean(StrategyRunModel, missingAccountQuery(), '_id accountId context');
+  if (!runs.length) return 0;
+
+  const userAccountMap = await loadUserAccountMap(
+    runs.map(run => run.context?.userId),
+    UserModel
+  );
+  const operations = runs.map(run => ({
+    updateOne: {
+      filter: { _id: run._id },
+      update: { $set: { accountId: resolveRunAccountId(run, userAccountMap) } }
+    }
+  }));
+  if (!operations.length) return 0;
+  await StrategyRunModel.bulkWrite(operations, { ordered: false });
+  return operations.length;
+}
+
+async function backfillStrategyParameterAccountIds({
+  StrategyParameterVersionModel = StrategyParameterVersion,
+  StrategyRunModel = StrategyRun
+} = {}) {
+  const versions = await selectLean(StrategyParameterVersionModel, missingAccountQuery(), '_id accountId');
+  if (!versions.length) return 0;
+
+  const versionIds = versions.map(version => version._id);
+  const runs = await selectLean(
+    StrategyRunModel,
+    {
+      accountId: { $exists: true, $nin: [null, ''] },
+      parameterVersionId: { $in: versionIds }
+    },
+    'accountId parameterVersionId'
+  );
+  const accountIdsByVersion = runs.reduce((acc, run) => {
+    const key = String(run.parameterVersionId || '');
+    if (!key) return acc;
+    if (!acc.has(key)) acc.set(key, new Set());
+    acc.get(key).add(run.accountId);
+    return acc;
+  }, new Map());
+
+  const operations = versions.map(version => {
+    const accountIds = Array.from(accountIdsByVersion.get(String(version._id)) || []);
+    return {
+      updateOne: {
+        filter: { _id: version._id },
+        update: { $set: { accountId: accountIds.length === 1 ? accountIds[0] : 'default' } }
+      }
+    };
+  });
+  await StrategyParameterVersionModel.bulkWrite(operations, { ordered: false });
+  return operations.length;
+}
+
+async function dropIndexIfExists(model, name, logger = console) {
+  if (!model?.collection?.dropIndex) return false;
+  try {
+    await model.collection.dropIndex(name);
+    return true;
+  } catch (err) {
+    const message = String(err?.message || '');
+    if (err?.code === 27 || /index not found|index does not exist/i.test(message)) {
+      return false;
+    }
+    logger.error(`[indexes] ${model.modelName || 'model'} legacy index drop failed:`, message || err);
+    throw err;
+  }
+}
+
+async function ensureStrategyTelemetryIndexes({
+  logger = console,
+  StrategyParameterVersionModel = StrategyParameterVersion,
+  StrategyRunModel = StrategyRun,
+  UserModel = User
+} = {}) {
+  try {
+    const runsBackfilled = await backfillStrategyRunAccountIds({ StrategyRunModel, UserModel });
+    const parameterVersionsBackfilled = await backfillStrategyParameterAccountIds({
+      StrategyParameterVersionModel,
+      StrategyRunModel
+    });
+    const droppedIndexes = [];
+    for (const item of LEGACY_INDEXES) {
+      const model = item.model === StrategyParameterVersion
+        ? StrategyParameterVersionModel
+        : StrategyRunModel;
+      if (await dropIndexIfExists(model, item.name, logger)) {
+        droppedIndexes.push(item.name);
+      }
+    }
+    await Promise.all([
+      StrategyParameterVersionModel.createIndexes(),
+      StrategyRunModel.createIndexes()
+    ]);
+    return [{
+      model: 'StrategyTelemetry',
+      ok: true,
+      migrated: {
+        runsBackfilled,
+        parameterVersionsBackfilled,
+        droppedIndexes
+      }
+    }];
+  } catch (err) {
+    logger.error('[indexes] StrategyTelemetry index bootstrap failed:', err?.message || err);
+    return [{
+      model: 'StrategyTelemetry',
+      ok: false,
+      error: err?.message || 'Strategy telemetry index bootstrap failed.'
+    }];
+  }
+}
+
+async function backfillRecommendationSnapshots({ RecommendationSnapshotModel = RecommendationSnapshot } = {}) {
+  const snapshots = await selectLean(
+    RecommendationSnapshotModel,
+    {
+      $or: [
+        { snapshotKey: { $exists: false } },
+        { snapshotKey: null },
+        { snapshotKey: '' },
+        { expiresAt: { $exists: false } },
+        { expiresAt: null }
+      ]
+    },
+    '_id snapshotKey expiresAt asOf createdAt'
+  );
+  if (!snapshots.length) return 0;
+
+  const operations = snapshots.map(snapshot => {
+    const asOf = snapshot.asOf || snapshot.createdAt || new Date();
+    return {
+      updateOne: {
+        filter: { _id: snapshot._id },
+        update: {
+          $set: {
+            snapshotKey: snapshot.snapshotKey || `legacy:${snapshot._id}`,
+            expiresAt: snapshot.expiresAt || getSnapshotExpiry(asOf)
+          }
+        }
+      }
+    };
+  });
+  await RecommendationSnapshotModel.bulkWrite(operations, { ordered: false });
+  return operations.length;
+}
+
+async function ensureRecommendationSnapshotIndexes({
+  logger = console,
+  RecommendationSnapshotModel = RecommendationSnapshot
+} = {}) {
+  try {
+    const snapshotsBackfilled = await backfillRecommendationSnapshots({ RecommendationSnapshotModel });
+    await RecommendationSnapshotModel.createIndexes();
+    return [{
+      model: 'RecommendationSnapshot',
+      ok: true,
+      migrated: { snapshotsBackfilled }
+    }];
+  } catch (err) {
+    logger.error('[indexes] RecommendationSnapshot index bootstrap failed:', err?.message || err);
+    return [{
+      model: 'RecommendationSnapshot',
+      ok: false,
+      error: err?.message || 'Recommendation snapshot index bootstrap failed.'
+    }];
+  }
+}
+
 async function ensureTradingIndexes({ logger = console, models = TRADING_INDEX_MODELS } = {}) {
   const results = [];
+  if (models === TRADING_INDEX_MODELS) {
+    results.push(...await ensureStrategyTelemetryIndexes({ logger }));
+    results.push(...await ensureRecommendationSnapshotIndexes({ logger }));
+  }
   for (const model of models) {
     try {
       await model.createIndexes();
@@ -41,6 +282,12 @@ async function ensureTradingIndexes({ logger = console, models = TRADING_INDEX_M
 }
 
 module.exports = {
+  backfillRecommendationSnapshots,
+  backfillStrategyParameterAccountIds,
+  backfillStrategyRunAccountIds,
+  ensureRecommendationSnapshotIndexes,
+  ensureStrategyTelemetryIndexes,
   ensureTradingIndexes,
+  STRATEGY_TELEMETRY_INDEX_MODELS,
   TRADING_INDEX_MODELS
 };

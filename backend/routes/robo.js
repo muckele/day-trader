@@ -4,6 +4,7 @@ const auth = require('../middleware/auth');
 const User = require('../models/User');
 const roboEngine = require('../services/roboTraderEngine');
 const { getSchedulerStatus } = require('../services/roboScheduler');
+const { getRequestAccountId } = require('../utils/accountScope');
 
 router.use(requireMongo);
 
@@ -123,6 +124,7 @@ async function runOnceHandler(req, res, next) {
     const signal = req.body?.signal || null;
     const result = await roboEngine.runRoboTradeForUser({
       userId: user._id,
+      accountId: getRequestAccountId(req),
       signal
     });
     res.json({ result });
