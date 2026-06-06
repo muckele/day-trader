@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { mapSettings } = require('../robotrader/settingsService');
 const {
   adaptOrderForMarketSession,
+  cleanupRoboTradeDecisions,
   emergencyStop,
   isAmbiguousSubmitError,
   previewRoboTraderForUser,
@@ -148,6 +149,9 @@ test('robotrader worker saves approved decisions and submitted orders', async ()
   assert.equal(context.createdDecisions.length, 1);
   assert.equal(context.createdOrders.length, 1);
   assert.equal(context.createdDecisions[0].accountId, 'user:user-worker');
+  assert.equal(context.createdDecisions[0].researchSnapshot.summaryVersion, 1);
+  assert.equal(context.createdDecisions[0].researchSnapshot.symbol, 'AAPL');
+  assert.equal(context.createdDecisions[0].researchSnapshot.bars, undefined);
   assert.equal(context.createdOrders[0].accountId, 'user:user-worker');
   assert.equal(context.createdOrders[0].externalOrderId, 'alpaca-order-1');
   assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
@@ -253,6 +257,51 @@ test('robotrader worker saves rejected decisions without submitting orders', asy
   assert.equal(context.createdDecisions[0].status, 'rejected');
   assert.equal(context.createdOrders.length, 0);
   assert.equal(context.brokerSubmissions.length, 0);
+});
+
+test('robotrader decision cleanup deletes stale unlinked decisions only', async () => {
+  const findQueries = [];
+  const deleteQueries = [];
+  const candidates = [
+    { _id: 'old-linked' },
+    { _id: 'old-unlinked' }
+  ];
+  const deps = {
+    RoboTradeDecision: {
+      find: query => {
+        findQueries.push(query);
+        return {
+          sort: () => ({
+            limit: () => ({
+              select: () => ({
+                lean: async () => (query._id ? [] : candidates)
+              })
+            })
+          })
+        };
+      },
+      deleteMany: async query => {
+        deleteQueries.push(query);
+        return { deletedCount: query._id.$in.length };
+      }
+    },
+    RoboTradeOrder: {
+      distinct: async () => ['old-linked']
+    }
+  };
+
+  const result = await cleanupRoboTradeDecisions({
+    olderThanDays: 7,
+    now: new Date('2026-01-10T00:00:00.000Z'),
+    batchSize: 10
+  }, deps);
+
+  assert.equal(result.retentionDays, 7);
+  assert.equal(result.scannedCount, 2);
+  assert.equal(result.preservedLinkedCount, 1);
+  assert.equal(result.deletedCount, 1);
+  assert.deepEqual(deleteQueries[0]._id.$in, ['old-unlinked']);
+  assert.deepEqual(findQueries[0].status.$in, ['approved', 'rejected', 'error', 'pending_manual_approval']);
 });
 
 test('robotrader worker tick finds enabled users', async () => {

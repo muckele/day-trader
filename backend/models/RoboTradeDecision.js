@@ -45,5 +45,6 @@ const roboTradeDecisionSchema = new mongoose.Schema(
 
 roboTradeDecisionSchema.index({ userId: 1, idempotencyKey: 1 }, { unique: true });
 roboTradeDecisionSchema.index({ userId: 1, decidedAt: -1 });
+roboTradeDecisionSchema.index({ status: 1, decidedAt: 1, _id: 1 });
 
 module.exports = mongoose.model('RoboTradeDecision', roboTradeDecisionSchema);

@@ -15,6 +15,7 @@ const {
   normalizeSymbol,
   updateRoboTraderSettings
 } = require('./settingsService');
+const { summarizeResearchSnapshot } = require('./researchSnapshotSummary');
 const { buildResearchBatch } = require('./researchService');
 const { evaluateResearchBatch } = require('./strategyEngine');
 const { evaluateRoboRisk } = require('./riskGate');
@@ -22,6 +23,8 @@ const { createAlpacaBroker } = require('./alpacaBroker');
 const { submitProtectiveStopForEntry } = require('./reconciliation');
 
 const TERMINAL_ORDER_STATUSES = ['filled', 'canceled', 'cancelled', 'expired', 'rejected'];
+const DAY_MS = 24 * 60 * 60 * 1000;
+const CLEANUP_DECISION_STATUSES = ['approved', 'rejected', 'error', 'pending_manual_approval'];
 
 function resolveWorkerLockTtlMs(env = process.env) {
   const parsed = Number(env.ROBOTRADER_WORKER_LOCK_TTL_MS);
@@ -35,6 +38,15 @@ const WORKER_LOCK_TTL_MS = resolveWorkerLockTtlMs();
 function toFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function toFinitePositiveInt(value, fallback) {
+  const parsed = Math.floor(Number(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function normalizeRetentionDays(value, fallback) {
+  return Math.max(1, toFinitePositiveInt(value, fallback));
 }
 
 function buildRunId(userId, now = new Date()) {
@@ -368,34 +380,6 @@ function resolveDecisionStatus(riskResult = {}) {
     : 'rejected';
 }
 
-function summarizeResearchSnapshot(research = {}) {
-  const indicators = research.indicators || {};
-  return {
-    symbol: research.symbol || null,
-    assetClass: research.assetClass || null,
-    price: research.price ?? research.quote?.price ?? null,
-    volume: indicators.recentVolume ?? null,
-    averageVolume20: indicators.avgVolume20 ?? null,
-    volumeRatio: indicators.volumeRatio ?? null,
-    volatility20: indicators.volatility20 ?? null,
-    rsi14: indicators.rsi14 ?? null,
-    sma20: indicators.sma20 ?? null,
-    sma50: indicators.sma50 ?? null,
-    sma200: indicators.sma200 ?? null,
-    atrPct: indicators.atrPct ?? null,
-    fiveDayChangePct: indicators.fiveDayChangePct ?? null,
-    twentyDayChangePct: indicators.twentyDayChangePct ?? null,
-    gap: indicators.gap || null,
-    newsSentiment: research.news?.sentiment || null,
-    newsItems: Array.isArray(research.news?.items)
-      ? research.news.items.slice(0, 3)
-      : [],
-    portfolioExposure: research.marketContext?.portfolioExposure || null,
-    dataQuality: research.dataQuality || null,
-    asOf: research.asOf || null
-  };
-}
-
 function buildDecisionPreview({
   decision,
   riskResult,
@@ -478,7 +462,7 @@ async function saveDecision({
       strategyId: decision.strategyId || null,
       strategyName: decision.strategyName || null,
       reasoningSummary: decision.reasoningSummary || null,
-      researchSnapshot: research || {},
+      researchSnapshot: summarizeResearchSnapshot(research),
       recommendedOrder: orderInput || {},
       riskChecks: riskResult.checks || [],
       rejectionReasons: riskResult.rejectionReasons || [],
@@ -496,6 +480,79 @@ async function saveDecision({
     }
     throw err;
   }
+}
+
+async function findCleanupDecisionCandidates(query, batchSize, deps) {
+  const result = deps.RoboTradeDecision.find(query)
+    .sort({ _id: 1 })
+    .limit(batchSize)
+    .select('_id');
+  return typeof result?.lean === 'function' ? result.lean() : result;
+}
+
+async function cleanupRoboTradeDecisions({
+  olderThanDays,
+  now = new Date(),
+  batchSize,
+  maxScan
+} = {}, deps = defaultDeps) {
+  const retentionDays = normalizeRetentionDays(
+    olderThanDays ?? process.env.ROBOTRADER_DECISION_RETENTION_DAYS,
+    7
+  );
+  const cleanupBatchSize = Math.min(
+    5000,
+    toFinitePositiveInt(batchSize ?? process.env.ROBOTRADER_DECISION_CLEANUP_BATCH_SIZE, 1000)
+  );
+  const scanLimit = Math.max(
+    cleanupBatchSize,
+    toFinitePositiveInt(maxScan ?? process.env.ROBOTRADER_DECISION_CLEANUP_MAX_SCAN, cleanupBatchSize * 10)
+  );
+  const cutoff = new Date(now.getTime() - (retentionDays * DAY_MS));
+  let scannedCount = 0;
+  let deletedCount = 0;
+  let preservedLinkedCount = 0;
+  let lastId = null;
+
+  while (scannedCount < scanLimit) {
+    const query = {
+      status: { $in: CLEANUP_DECISION_STATUSES },
+      decidedAt: { $lt: cutoff }
+    };
+    if (lastId) query._id = { $gt: lastId };
+
+    const remainingScan = scanLimit - scannedCount;
+    const candidates = await findCleanupDecisionCandidates(
+      query,
+      Math.min(cleanupBatchSize, remainingScan),
+      deps
+    );
+    if (!Array.isArray(candidates) || candidates.length === 0) break;
+
+    scannedCount += candidates.length;
+    lastId = candidates[candidates.length - 1]._id;
+    const candidateIds = candidates.map(item => item._id).filter(Boolean);
+    if (!candidateIds.length) continue;
+
+    const linkedIds = deps.RoboTradeOrder?.distinct
+      ? await deps.RoboTradeOrder.distinct('decisionId', { decisionId: { $in: candidateIds } })
+      : [];
+    const linkedSet = new Set((linkedIds || []).map(String));
+    const deletableIds = candidateIds.filter(id => !linkedSet.has(String(id)));
+    preservedLinkedCount += candidateIds.length - deletableIds.length;
+    if (!deletableIds.length) continue;
+
+    const result = await deps.RoboTradeDecision.deleteMany({ _id: { $in: deletableIds } });
+    deletedCount += Number(result?.deletedCount || 0);
+  }
+
+  return {
+    retentionDays,
+    cutoff,
+    scannedCount,
+    deletedCount,
+    preservedLinkedCount
+  };
 }
 
 async function submitApprovedOrder({
@@ -1161,6 +1218,7 @@ module.exports = {
   buildDecisionIdempotencyKey,
   buildRunId,
   buildSymbolUniverse,
+  cleanupRoboTradeDecisions,
   getSubmitErrorStatus,
   isAmbiguousSubmitError,
   acquireWorkerLock,

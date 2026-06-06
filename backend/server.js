@@ -12,6 +12,7 @@ const mongoose = require('mongoose');
 const requireMongo = require('./middleware/requireMongo');
 const mongoState = require('./utils/mongoState');
 const { ensureTradingIndexes } = require('./services/tradingIndexService');
+const { ensureResearchIndexes } = require('./services/researchIndexService');
 const { buildMongoConnectionTargets } = require('./utils/mongoConnectionConfig');
 const {
   buildMongoConnectOptions,
@@ -142,13 +143,16 @@ async function connectMongo() {
         } else {
           console.log('✅ MongoDB connected');
         }
-        ensureTradingIndexes().then(results => {
+        Promise.all([
+          ensureTradingIndexes(),
+          ensureResearchIndexes()
+        ]).then(resultGroups => resultGroups.flat()).then(results => {
           const failed = results.filter(result => !result.ok);
           if (failed.length) {
-            console.error(`⚠️ Trading index bootstrap completed with ${failed.length} failure(s).`);
+            console.error(`⚠️ Index bootstrap completed with ${failed.length} failure(s).`);
           }
         }).catch(indexErr => {
-          console.error('⚠️ Trading index bootstrap failed:', indexErr?.message || indexErr);
+          console.error('⚠️ Index bootstrap failed:', indexErr?.message || indexErr);
         });
         return;
       } catch (err) {

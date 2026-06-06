@@ -9,6 +9,8 @@
     "alpaca:check": "node scripts/check-alpaca-paper.js",
     "smoke:api": "node scripts/smoke-api.js",
     "mongo:check": "node scripts/check-mongo.js",
+    "mongo:audit": "node scripts/audit-mongo-storage.js",
+    "mongo:compact": "node scripts/compact-mongo-storage.js",
     "restart:check": "bash ./scripts/restart-and-check.sh",
     "verify:local": "npm run restart:check && npm run smoke:api"
   },

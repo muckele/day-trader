@@ -14,11 +14,12 @@ const researchSnapshotSchema = new mongoose.Schema(
     providerHealth: { type: [mongoose.Schema.Types.Mixed], default: [] },
     staleWarnings: { type: [String], default: [] },
     generatedAt: { type: Date, required: true, index: true },
-    expiresAt: { type: Date, required: true, index: true }
+    expiresAt: { type: Date, required: true }
   },
   { timestamps: true }
 );
 
 researchSnapshotSchema.index({ scope: 1, symbols: 1, expiresAt: 1 });
+researchSnapshotSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 module.exports = mongoose.model('ResearchSnapshot', researchSnapshotSchema);

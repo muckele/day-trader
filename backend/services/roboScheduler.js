@@ -98,6 +98,7 @@ function startRoboScheduler({
   cleanupIntervalMs = Number(process.env.ROBO_SIGNAL_CLEANUP_INTERVAL_MS) || (6 * 60 * 60 * 1000),
   reconciliationIntervalMs = Number(process.env.ROBOTRADER_RECONCILIATION_INTERVAL_MS) || (5 * 60 * 1000),
   retentionDays = process.env.ROBO_SIGNAL_RETENTION_DAYS,
+  decisionRetentionDays = process.env.ROBOTRADER_DECISION_RETENTION_DAYS,
   startupDelayMs = 5000,
   isDbReady = defaultIsDbReady
 } = {}) {
@@ -164,6 +165,14 @@ function startRoboScheduler({
           });
           if (result.deletedCount > 0) {
             console.log(`[robo-scheduler] cleaned ${result.deletedCount} signal records older than ${result.retentionDays} days`);
+          }
+          const decisionResult = await roboTraderWorker.cleanupRoboTradeDecisions({
+            olderThanDays: decisionRetentionDays
+          });
+          if (decisionResult.deletedCount > 0) {
+            console.log(
+              `[robo-scheduler] cleaned ${decisionResult.deletedCount} RoboTrader decisions older than ${decisionResult.retentionDays} days`
+            );
           }
         } catch (err) {
           console.error('Robo scheduler cleanup failed:', err.message);
