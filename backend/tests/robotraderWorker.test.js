@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { mapSettings } = require('../robotrader/settingsService');
 const {
   adaptOrderForMarketSession,
+  cleanupRoboAuditLogs,
   cleanupRoboTradeDecisions,
   emergencyStop,
   isAmbiguousSubmitError,
@@ -302,6 +303,58 @@ test('robotrader decision cleanup deletes stale unlinked decisions only', async 
   assert.equal(result.deletedCount, 1);
   assert.deepEqual(deleteQueries[0]._id.$in, ['old-unlinked']);
   assert.deepEqual(findQueries[0].status.$in, ['approved', 'rejected', 'error', 'pending_manual_approval']);
+});
+
+test('robotrader decision cleanup defaults to three-day retention', async () => {
+  const findQueries = [];
+  const deps = {
+    RoboTradeDecision: {
+      find: query => {
+        findQueries.push(query);
+        return {
+          sort: () => ({
+            limit: () => ({
+              select: () => ({
+                lean: async () => []
+              })
+            })
+          })
+        };
+      },
+      deleteMany: async () => ({ deletedCount: 0 })
+    },
+    RoboTradeOrder: {
+      distinct: async () => []
+    }
+  };
+
+  const result = await cleanupRoboTradeDecisions({
+    now: new Date('2026-01-10T00:00:00.000Z'),
+    batchSize: 10
+  }, deps);
+
+  assert.equal(result.retentionDays, 3);
+  assert.equal(findQueries[0].decidedAt.$lt.toISOString(), '2026-01-07T00:00:00.000Z');
+});
+
+test('robotrader audit cleanup deletes old audit logs by retention cutoff', async () => {
+  const deleteQueries = [];
+  const deps = {
+    RoboAuditLog: {
+      deleteMany: async query => {
+        deleteQueries.push(query);
+        return { deletedCount: 42 };
+      }
+    }
+  };
+
+  const result = await cleanupRoboAuditLogs({
+    now: new Date('2026-01-10T00:00:00.000Z')
+  }, deps);
+
+  assert.equal(result.retentionDays, 7);
+  assert.equal(result.deletedCount, 42);
+  assert.equal(deleteQueries[0].createdAt.$lt.toISOString(), '2026-01-03T00:00:00.000Z');
 });
 
 test('robotrader worker tick finds enabled users', async () => {

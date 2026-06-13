@@ -52,6 +52,7 @@ test('startRoboScheduler runs scheduler tick and retention cleanup', async t => 
   let tickCalls = 0;
   const cleanupCalls = [];
   const decisionCleanupCalls = [];
+  const auditCleanupCalls = [];
   t.mock.method(roboEngine, 'runSchedulerTick', async () => {
     tickCalls += 1;
   });
@@ -63,6 +64,10 @@ test('startRoboScheduler runs scheduler tick and retention cleanup', async t => 
     decisionCleanupCalls.push(args);
     return { deletedCount: 0, retentionDays: 3 };
   });
+  t.mock.method(roboTraderWorker, 'cleanupRoboAuditLogs', async args => {
+    auditCleanupCalls.push(args);
+    return { deletedCount: 0, retentionDays: 7 };
+  });
 
   try {
     const stop = startRoboScheduler({
@@ -70,11 +75,17 @@ test('startRoboScheduler runs scheduler tick and retention cleanup', async t => 
       cleanupIntervalMs: 40,
       retentionDays: 7,
       decisionRetentionDays: 3,
+      auditLogRetentionDays: 7,
       startupDelayMs: 0
     });
 
     await waitFor(
-      () => tickCalls >= 2 && cleanupCalls.length >= 1 && decisionCleanupCalls.length >= 1,
+      () => (
+        tickCalls >= 2
+        && cleanupCalls.length >= 1
+        && decisionCleanupCalls.length >= 1
+        && auditCleanupCalls.length >= 1
+      ),
       { timeoutMs: 1000 }
     );
     stop();
@@ -84,6 +95,8 @@ test('startRoboScheduler runs scheduler tick and retention cleanup', async t => 
     assert.equal(cleanupCalls[0].olderThanDays, 7);
     assert.ok(decisionCleanupCalls.length >= 1);
     assert.equal(decisionCleanupCalls[0].olderThanDays, 3);
+    assert.ok(auditCleanupCalls.length >= 1);
+    assert.equal(auditCleanupCalls[0].olderThanDays, 7);
   } finally {
     if (previousDisabled === undefined) delete process.env.ROBO_SCHEDULER_DISABLED;
     else process.env.ROBO_SCHEDULER_DISABLED = previousDisabled;
@@ -122,6 +135,7 @@ test('startRoboScheduler defaults to Phase 1 worker without running legacy sched
   });
   t.mock.method(roboEngine, 'cleanupSignalExecutions', async () => ({ deletedCount: 0, retentionDays: 7 }));
   t.mock.method(roboTraderWorker, 'cleanupRoboTradeDecisions', async () => ({ deletedCount: 0, retentionDays: 7 }));
+  t.mock.method(roboTraderWorker, 'cleanupRoboAuditLogs', async () => ({ deletedCount: 0, retentionDays: 7 }));
   t.mock.method(roboTraderWorker, 'runWorkerTick', async () => {
     workerCalls += 1;
     return { ok: true, usersChecked: 0, results: [] };
@@ -271,6 +285,7 @@ test('startRoboScheduler reconciles paper only when live reconciliation is not e
   const reconciliationModes = [];
   t.mock.method(roboEngine, 'cleanupSignalExecutions', async () => ({ deletedCount: 0, retentionDays: 7 }));
   t.mock.method(roboTraderWorker, 'cleanupRoboTradeDecisions', async () => ({ deletedCount: 0, retentionDays: 7 }));
+  t.mock.method(roboTraderWorker, 'cleanupRoboAuditLogs', async () => ({ deletedCount: 0, retentionDays: 7 }));
   t.mock.method(RoboSettings, 'exists', () => ({ lean: async () => null }));
   t.mock.method(roboReconciliation, 'reconcileRoboOrders', async ({ mode }) => {
     reconciliationModes.push(mode);
@@ -323,6 +338,7 @@ test('startRoboScheduler reconciles live when live reconciliation is explicitly 
   const reconciliationModes = [];
   t.mock.method(roboEngine, 'cleanupSignalExecutions', async () => ({ deletedCount: 0, retentionDays: 7 }));
   t.mock.method(roboTraderWorker, 'cleanupRoboTradeDecisions', async () => ({ deletedCount: 0, retentionDays: 7 }));
+  t.mock.method(roboTraderWorker, 'cleanupRoboAuditLogs', async () => ({ deletedCount: 0, retentionDays: 7 }));
   t.mock.method(roboReconciliation, 'reconcileRoboOrders', async ({ mode }) => {
     reconciliationModes.push(mode);
     return { ok: true, environment: mode };
@@ -382,6 +398,7 @@ test('startRoboScheduler skips ticks when DB is unavailable and requirement is e
     return { deletedCount: 0, retentionDays: 7 };
   });
   t.mock.method(roboTraderWorker, 'cleanupRoboTradeDecisions', async () => ({ deletedCount: 0, retentionDays: 7 }));
+  t.mock.method(roboTraderWorker, 'cleanupRoboAuditLogs', async () => ({ deletedCount: 0, retentionDays: 7 }));
 
   try {
     const stop = startRoboScheduler({

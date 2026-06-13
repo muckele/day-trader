@@ -175,9 +175,10 @@ Robo Trader:
 - `ROBO_FALLBACK_EMAIL` (optional fallback recipient)
 - `ROBO_SIGNAL_RETENTION_DAYS` (default `90`; cleanup age for idempotency records)
 - `ROBO_SIGNAL_CLEANUP_INTERVAL_MS` (default `21600000` = 6 hours)
-- `ROBOTRADER_DECISION_RETENTION_DAYS` (default `7`; cleanup age for old RoboTrader decisions that are not linked to submitted/filled orders)
+- `ROBOTRADER_DECISION_RETENTION_DAYS` (default `3`; cleanup age for old RoboTrader decisions that are not linked to submitted/filled orders)
 - `ROBOTRADER_DECISION_CLEANUP_BATCH_SIZE` (default `1000`; max stale decisions evaluated per cleanup page)
-- `ROBOTRADER_DECISION_CLEANUP_MAX_SCAN` (default `10x` batch size; max stale decisions scanned per cleanup pass)
+- `ROBOTRADER_DECISION_CLEANUP_MAX_SCAN` (default `100x` batch size; max stale decisions scanned per cleanup pass)
+- `ROBOTRADER_AUDIT_LOG_RETENTION_DAYS` (default `7`; cleanup age for RoboTrader audit logs)
 - `ROBO_CIRCUIT_FAILURE_THRESHOLD` (default `3`; consecutive failures before pause)
 - `ROBO_CIRCUIT_COOLDOWN_MINUTES` (default `60`; pause duration after threshold hit)
 - `ROBO_MIN_MINUTES_BETWEEN_EXECUTIONS` (default `0`; set `>0` to enforce cooldown between Robo executions)
@@ -190,8 +191,8 @@ Robo Trader:
 Mongo storage maintenance:
 
 - `npm run mongo:audit` reports per-collection logical data, index size, storage size, and sampled large fields.
-- `npm run mongo:compact` runs a dry-run for historical RoboTrader decision compaction and ResearchSnapshot TTL migration.
-- `MONGO_COMPACT_APPLY=true npm run mongo:compact` applies the compaction, converts/creates the `researchsnapshots.expiresAt` TTL index, and deletes expired research cache documents. The backend also bootstraps this TTL index on startup.
+- `npm run mongo:compact` runs a dry-run for historical RoboTrader decision compaction, old unlinked decision cleanup, RoboTrader audit-log cleanup, and ResearchSnapshot TTL migration.
+- `MONGO_COMPACT_APPLY=true npm run mongo:compact` applies the compaction, deletes old unlinked decisions/audit logs, converts/creates the `researchsnapshots.expiresAt` TTL index, and deletes expired research cache documents. The backend also bootstraps these TTL indexes on startup.
 - `ROBO_SLIPPAGE_ANOMALY_BPS_THRESHOLD` (default `0`; set `>0` to block executions when recent slippage spikes)
 - `ROBO_SLIPPAGE_ANOMALY_LOOKBACK` (default `5`; recent trade samples used for anomaly detection)
 - `ROBOTRADER_WORKER_DISABLED` (`true` to disable the Phase 1 RoboTrader worker loop)

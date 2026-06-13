@@ -5,6 +5,7 @@ const OrderIntent = require('../models/OrderIntent');
 const PaperOrder = require('../models/PaperOrder');
 const PaperTrade = require('../models/PaperTrade');
 const RecommendationSnapshot = require('../models/RecommendationSnapshot');
+const RoboAuditLog = require('../models/RoboAuditLog');
 const RoboLock = require('../models/RoboLock');
 const RoboSettings = require('../models/RoboSettings');
 const RoboSignalExecution = require('../models/RoboSignalExecution');
@@ -24,6 +25,7 @@ const TRADING_INDEX_MODELS = [
   OrderIntent,
   PaperOrder,
   PaperTrade,
+  RoboAuditLog,
   RoboLock,
   RoboSettings,
   RoboSignalExecution,
@@ -41,6 +43,14 @@ const LEGACY_INDEXES = [
   { model: StrategyParameterVersion, name: 'strategyId_1_parameterHash_1' },
   { model: StrategyRun, name: 'strategyId_1_startedAt_-1' }
 ];
+
+function isSingleCreatedAtIndex(index = {}) {
+  return Boolean(
+    index.key
+    && index.key.createdAt === 1
+    && Object.keys(index.key).length === 1
+  );
+}
 
 function missingAccountQuery() {
   return {
@@ -259,11 +269,75 @@ async function ensureRecommendationSnapshotIndexes({
   }
 }
 
+async function ensureRoboAuditLogIndexes({
+  logger = console,
+  RoboAuditLogModel = RoboAuditLog,
+  env = process.env
+} = {}) {
+  const desiredTtlSeconds = typeof RoboAuditLogModel.getRoboAuditLogTtlSeconds === 'function'
+    ? RoboAuditLogModel.getRoboAuditLogTtlSeconds(env)
+    : 7 * 24 * 60 * 60;
+  try {
+    const collection = RoboAuditLogModel.collection;
+    const indexes = typeof collection?.indexes === 'function'
+      ? await collection.indexes()
+      : [];
+    const ttlIndex = indexes.find(index => (
+      index.name === 'roboAuditLogCreatedAtTtl'
+      || isSingleCreatedAtIndex(index)
+    ));
+    let ttlStatus = ttlIndex ? 'ok' : 'missing';
+
+    if (ttlIndex && ttlIndex.expireAfterSeconds !== desiredTtlSeconds) {
+      const collectionName = collection.name || collection.collectionName || 'roboauditlogs';
+      try {
+        await collection.db.command({
+          collMod: collectionName,
+          index: {
+            name: ttlIndex.name,
+            expireAfterSeconds: desiredTtlSeconds
+          }
+        });
+        ttlStatus = 'converted_ttl_index';
+      } catch (err) {
+        logger.warn?.(
+          `[indexes] RoboAuditLog TTL collMod failed; recreating ${ttlIndex.name}:`,
+          err?.message || err
+        );
+        await collection.dropIndex(ttlIndex.name);
+        await collection.createIndex(
+          { createdAt: 1 },
+          { expireAfterSeconds: desiredTtlSeconds, name: 'roboAuditLogCreatedAtTtl' }
+        );
+        ttlStatus = 'recreated_ttl_index';
+      }
+    }
+
+    await RoboAuditLogModel.createIndexes();
+    return [{
+      model: 'RoboAuditLog',
+      ok: true,
+      migrated: {
+        ttlSeconds: desiredTtlSeconds,
+        ttlStatus
+      }
+    }];
+  } catch (err) {
+    logger.error('[indexes] RoboAuditLog index bootstrap failed:', err?.message || err);
+    return [{
+      model: 'RoboAuditLog',
+      ok: false,
+      error: err?.message || 'RoboAuditLog index bootstrap failed.'
+    }];
+  }
+}
+
 async function ensureTradingIndexes({ logger = console, models = TRADING_INDEX_MODELS } = {}) {
   const results = [];
   if (models === TRADING_INDEX_MODELS) {
     results.push(...await ensureStrategyTelemetryIndexes({ logger }));
     results.push(...await ensureRecommendationSnapshotIndexes({ logger }));
+    results.push(...await ensureRoboAuditLogIndexes({ logger }));
   }
   for (const model of models) {
     try {
@@ -286,8 +360,10 @@ module.exports = {
   backfillStrategyParameterAccountIds,
   backfillStrategyRunAccountIds,
   ensureRecommendationSnapshotIndexes,
+  ensureRoboAuditLogIndexes,
   ensureStrategyTelemetryIndexes,
   ensureTradingIndexes,
+  isSingleCreatedAtIndex,
   STRATEGY_TELEMETRY_INDEX_MODELS,
   TRADING_INDEX_MODELS
 };

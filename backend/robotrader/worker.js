@@ -25,6 +25,8 @@ const { submitProtectiveStopForEntry } = require('./reconciliation');
 const TERMINAL_ORDER_STATUSES = ['filled', 'canceled', 'cancelled', 'expired', 'rejected'];
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CLEANUP_DECISION_STATUSES = ['approved', 'rejected', 'error', 'pending_manual_approval'];
+const DEFAULT_DECISION_RETENTION_DAYS = 3;
+const DEFAULT_AUDIT_LOG_RETENTION_DAYS = RoboAuditLog.DEFAULT_ROBO_AUDIT_LOG_RETENTION_DAYS || 7;
 
 function resolveWorkerLockTtlMs(env = process.env) {
   const parsed = Number(env.ROBOTRADER_WORKER_LOCK_TTL_MS);
@@ -498,7 +500,7 @@ async function cleanupRoboTradeDecisions({
 } = {}, deps = defaultDeps) {
   const retentionDays = normalizeRetentionDays(
     olderThanDays ?? process.env.ROBOTRADER_DECISION_RETENTION_DAYS,
-    7
+    DEFAULT_DECISION_RETENTION_DAYS
   );
   const cleanupBatchSize = Math.min(
     5000,
@@ -506,7 +508,7 @@ async function cleanupRoboTradeDecisions({
   );
   const scanLimit = Math.max(
     cleanupBatchSize,
-    toFinitePositiveInt(maxScan ?? process.env.ROBOTRADER_DECISION_CLEANUP_MAX_SCAN, cleanupBatchSize * 10)
+    toFinitePositiveInt(maxScan ?? process.env.ROBOTRADER_DECISION_CLEANUP_MAX_SCAN, cleanupBatchSize * 100)
   );
   const cutoff = new Date(now.getTime() - (retentionDays * DAY_MS));
   let scannedCount = 0;
@@ -552,6 +554,23 @@ async function cleanupRoboTradeDecisions({
     scannedCount,
     deletedCount,
     preservedLinkedCount
+  };
+}
+
+async function cleanupRoboAuditLogs({
+  olderThanDays,
+  now = new Date()
+} = {}, deps = defaultDeps) {
+  const retentionDays = normalizeRetentionDays(
+    olderThanDays ?? process.env.ROBOTRADER_AUDIT_LOG_RETENTION_DAYS,
+    DEFAULT_AUDIT_LOG_RETENTION_DAYS
+  );
+  const cutoff = new Date(now.getTime() - (retentionDays * DAY_MS));
+  const result = await deps.RoboAuditLog.deleteMany({ createdAt: { $lt: cutoff } });
+  return {
+    retentionDays,
+    cutoff,
+    deletedCount: Number(result?.deletedCount || 0)
   };
 }
 
@@ -1218,6 +1237,7 @@ module.exports = {
   buildDecisionIdempotencyKey,
   buildRunId,
   buildSymbolUniverse,
+  cleanupRoboAuditLogs,
   cleanupRoboTradeDecisions,
   getSubmitErrorStatus,
   isAmbiguousSubmitError,

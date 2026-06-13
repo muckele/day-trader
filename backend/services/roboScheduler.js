@@ -99,6 +99,7 @@ function startRoboScheduler({
   reconciliationIntervalMs = Number(process.env.ROBOTRADER_RECONCILIATION_INTERVAL_MS) || (5 * 60 * 1000),
   retentionDays = process.env.ROBO_SIGNAL_RETENTION_DAYS,
   decisionRetentionDays = process.env.ROBOTRADER_DECISION_RETENTION_DAYS,
+  auditLogRetentionDays = process.env.ROBOTRADER_AUDIT_LOG_RETENTION_DAYS,
   startupDelayMs = 5000,
   isDbReady = defaultIsDbReady
 } = {}) {
@@ -172,6 +173,14 @@ function startRoboScheduler({
           if (decisionResult.deletedCount > 0) {
             console.log(
               `[robo-scheduler] cleaned ${decisionResult.deletedCount} RoboTrader decisions older than ${decisionResult.retentionDays} days`
+            );
+          }
+          const auditLogResult = await roboTraderWorker.cleanupRoboAuditLogs({
+            olderThanDays: auditLogRetentionDays
+          });
+          if (auditLogResult.deletedCount > 0) {
+            console.log(
+              `[robo-scheduler] cleaned ${auditLogResult.deletedCount} RoboTrader audit logs older than ${auditLogResult.retentionDays} days`
             );
           }
         } catch (err) {

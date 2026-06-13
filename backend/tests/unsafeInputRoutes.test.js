@@ -89,6 +89,33 @@ test('market bars route caps provider limit and validates timeframe', async t =>
   }
 });
 
+test('market intraday and historical routes reject invalid symbols before provider calls', async t => {
+  const marketRouter = loadRoute('../routes/market');
+  const intradayHandler = getRouteHandler(marketRouter, '/intraday/:symbol', 'get');
+  const historicalHandler = getRouteHandler(marketRouter, '/historical/:symbol', 'get');
+  t.mock.method(tradeLogic, 'fetchIntraday', async () => {
+    throw new Error('provider should not be called for invalid intraday symbol');
+  });
+  t.mock.method(tradeLogic, 'fetchDaily', async () => {
+    throw new Error('provider should not be called for invalid historical symbol');
+  });
+  t.mock.method(axios, 'get', async () => {
+    throw new Error('provider should not be called for invalid market symbol');
+  });
+
+  const intradayRes = createMockRes();
+  await intradayHandler({ params: { symbol: 'bad symbol!' } }, intradayRes);
+
+  assert.equal(intradayRes.statusCode, 400);
+  assert.equal(intradayRes.body.error, 'Invalid symbol.');
+
+  const historicalRes = createMockRes();
+  await historicalHandler({ params: { symbol: 'bad symbol!' } }, historicalRes);
+
+  assert.equal(historicalRes.statusCode, 400);
+  assert.equal(historicalRes.body.error, 'Invalid symbol.');
+});
+
 test('journal search escapes regex metacharacters and caps length', async t => {
   const journalRouter = loadRoute('../routes/journal');
   const handler = getRouteHandler(journalRouter, '/', 'get');

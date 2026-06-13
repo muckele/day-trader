@@ -4,8 +4,10 @@ const {
   backfillRecommendationSnapshots,
   backfillStrategyParameterAccountIds,
   backfillStrategyRunAccountIds,
+  ensureRoboAuditLogIndexes,
   ensureStrategyTelemetryIndexes,
-  ensureTradingIndexes
+  ensureTradingIndexes,
+  isSingleCreatedAtIndex
 } = require('../services/tradingIndexService');
 
 function createFindChain(result) {
@@ -153,4 +155,53 @@ test('backfillRecommendationSnapshots adds unique legacy keys and TTL dates', as
   assert.equal(count, 1);
   assert.equal(operations[0].updateOne.update.$set.snapshotKey, 'legacy:snapshot-1');
   assert.equal(operations[0].updateOne.update.$set.expiresAt.toISOString(), '2026-01-15T00:00:00.000Z');
+});
+
+test('isSingleCreatedAtIndex detects the audit TTL candidate key only', () => {
+  assert.equal(isSingleCreatedAtIndex({ key: { createdAt: 1 } }), true);
+  assert.equal(isSingleCreatedAtIndex({ key: { createdAt: -1 } }), false);
+  assert.equal(isSingleCreatedAtIndex({ key: { userId: 1, createdAt: -1 } }), false);
+});
+
+test('ensureRoboAuditLogIndexes converts existing TTL index to configured retention', async () => {
+  const calls = [];
+  const RoboAuditLogModel = {
+    modelName: 'RoboAuditLog',
+    getRoboAuditLogTtlSeconds: env => Number(env.ROBOTRADER_AUDIT_LOG_RETENTION_DAYS) * 24 * 60 * 60,
+    createIndexes: async () => calls.push(['createIndexes']),
+    collection: {
+      name: 'roboauditlogs',
+      indexes: async () => [{
+        name: 'roboAuditLogCreatedAtTtl',
+        key: { createdAt: 1 },
+        expireAfterSeconds: 7 * 24 * 60 * 60
+      }],
+      db: {
+        command: async command => calls.push(['collMod', command])
+      },
+      dropIndex: async name => calls.push(['dropIndex', name]),
+      createIndex: async (key, options) => calls.push(['createIndex', key, options])
+    }
+  };
+
+  const result = await ensureRoboAuditLogIndexes({
+    logger: { error: () => {}, warn: () => {} },
+    RoboAuditLogModel,
+    env: { ROBOTRADER_AUDIT_LOG_RETENTION_DAYS: '14' }
+  });
+
+  assert.equal(result[0].ok, true);
+  assert.equal(result[0].migrated.ttlSeconds, 14 * 24 * 60 * 60);
+  assert.equal(result[0].migrated.ttlStatus, 'converted_ttl_index');
+  assert.deepEqual(calls[0], [
+    'collMod',
+    {
+      collMod: 'roboauditlogs',
+      index: {
+        name: 'roboAuditLogCreatedAtTtl',
+        expireAfterSeconds: 14 * 24 * 60 * 60
+      }
+    }
+  ]);
+  assert.deepEqual(calls.at(-1), ['createIndexes']);
 });

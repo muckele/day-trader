@@ -57,7 +57,10 @@ function extractCryptoBars(payload, symbol) {
 
 router.get('/intraday/:symbol', async (req, res) => {
   try {
-    const symbol = req.params.symbol.toUpperCase();
+    const symbol = normalizeMarketSymbol(req.params.symbol);
+    if (!symbol) {
+      return res.status(400).json({ error: 'Invalid symbol.' });
+    }
     if (isCryptoSymbol(symbol)) {
       if (missingCredentials()) {
         return res.json([]);
@@ -105,7 +108,10 @@ router.get('/status', (req, res) => {
 
 router.get('/historical/:symbol', async (req, res) => {
   try {
-    const symbol = req.params.symbol.toUpperCase();
+    const symbol = normalizeMarketSymbol(req.params.symbol);
+    if (!symbol) {
+      return res.status(400).json({ error: 'Invalid symbol.' });
+    }
     if (isCryptoSymbol(symbol)) {
       if (missingCredentials()) {
         return res.json([]);

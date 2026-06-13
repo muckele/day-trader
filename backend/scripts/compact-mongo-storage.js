@@ -24,6 +24,16 @@ const MIN_SNAPSHOT_BYTES = Math.max(
   Number(process.env.MONGO_COMPACT_MIN_SNAPSHOT_BYTES || 4096)
 );
 const LIMIT = Math.max(0, Number(process.env.MONGO_COMPACT_LIMIT || 0));
+const DAY_MS = 24 * 60 * 60 * 1000;
+const CLEANUP_DECISION_STATUSES = ['approved', 'rejected', 'error', 'pending_manual_approval'];
+const DECISION_RETENTION_DAYS = normalizeRetentionDays(
+  process.env.ROBOTRADER_DECISION_RETENTION_DAYS,
+  3
+);
+const AUDIT_LOG_RETENTION_DAYS = normalizeRetentionDays(
+  process.env.ROBOTRADER_AUDIT_LOG_RETENTION_DAYS,
+  7
+);
 const MONGO_DNS_SERVERS = String(process.env.MONGO_DNS_SERVERS || '')
   .split(',')
   .map(value => value.trim())
@@ -54,6 +64,29 @@ function objectSize(value) {
     return calculateObjectSize(value);
   } catch (_err) {
     return 0;
+  }
+}
+
+function normalizeRetentionDays(value, fallback) {
+  const parsed = Math.floor(Number(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function estimateSavingsBytes(count, stats = {}) {
+  const avgObjSize = Number(stats.avgObjSize);
+  return Number.isFinite(avgObjSize) && avgObjSize > 0 ? count * avgObjSize : 0;
+}
+
+async function collectionExists(db, name) {
+  const result = await db.listCollections({ name }, { nameOnly: true }).toArray();
+  return result.length > 0;
+}
+
+async function safeCollectionStats(db, name) {
+  try {
+    return await db.command({ collStats: name, scale: 1 });
+  } catch (_err) {
+    return {};
   }
 }
 
@@ -104,8 +137,7 @@ async function connectToMongoTarget() {
 }
 
 async function ensureResearchSnapshotTtl(db) {
-  const collectionExists = await db.listCollections({ name: 'researchsnapshots' }, { nameOnly: true }).toArray();
-  if (!collectionExists.length) {
+  if (!await collectionExists(db, 'researchsnapshots')) {
     return {
       collection: 'researchsnapshots',
       status: 'missing',
@@ -184,8 +216,7 @@ function buildCompactSnapshot(doc, beforeBytes) {
 }
 
 async function compactRoboTradeDecisions(db) {
-  const collectionExists = await db.listCollections({ name: 'robotradedecisions' }, { nameOnly: true }).toArray();
-  if (!collectionExists.length) {
+  if (!await collectionExists(db, 'robotradedecisions')) {
     return {
       collection: 'robotradedecisions',
       status: 'missing',
@@ -275,7 +306,100 @@ async function compactRoboTradeDecisions(db) {
   return result;
 }
 
-function printReport({ target, database, ttlResult, decisionResult }) {
+async function cleanupOldRoboTradeDecisions(db) {
+  if (!await collectionExists(db, 'robotradedecisions')) {
+    return {
+      collection: 'robotradedecisions',
+      status: 'missing',
+      retentionDays: DECISION_RETENTION_DAYS,
+      candidates: 0,
+      deleted: 0,
+      preservedLinked: 0,
+      estimatedSavingsBytes: 0
+    };
+  }
+
+  const decisions = db.collection('robotradedecisions');
+  const orders = db.collection('robotradeorders');
+  const cutoff = new Date(Date.now() - DECISION_RETENTION_DAYS * DAY_MS);
+  const linkedIds = await collectionExists(db, 'robotradeorders')
+    ? (await orders.distinct('decisionId')).filter(Boolean)
+    : [];
+  const baseQuery = {
+    status: { $in: CLEANUP_DECISION_STATUSES },
+    decidedAt: { $lt: cutoff }
+  };
+  const deleteQuery = linkedIds.length
+    ? { ...baseQuery, _id: { $nin: linkedIds } }
+    : baseQuery;
+  const [candidates, linkedCandidates, stats] = await Promise.all([
+    decisions.countDocuments(deleteQuery),
+    linkedIds.length ? decisions.countDocuments({ ...baseQuery, _id: { $in: linkedIds } }) : 0,
+    safeCollectionStats(db, 'robotradedecisions')
+  ]);
+
+  let deleted = 0;
+  if (APPLY && candidates > 0) {
+    const result = await decisions.deleteMany(deleteQuery);
+    deleted = Number(result?.deletedCount || 0);
+  }
+
+  return {
+    collection: 'robotradedecisions',
+    status: APPLY ? 'applied' : 'dry_run',
+    retentionDays: DECISION_RETENTION_DAYS,
+    cutoff,
+    candidates,
+    deleted,
+    preservedLinked: linkedCandidates,
+    estimatedSavingsBytes: estimateSavingsBytes(candidates, stats)
+  };
+}
+
+async function cleanupOldRoboAuditLogs(db) {
+  if (!await collectionExists(db, 'roboauditlogs')) {
+    return {
+      collection: 'roboauditlogs',
+      status: 'missing',
+      retentionDays: AUDIT_LOG_RETENTION_DAYS,
+      candidates: 0,
+      deleted: 0,
+      estimatedSavingsBytes: 0
+    };
+  }
+
+  const audits = db.collection('roboauditlogs');
+  const cutoff = new Date(Date.now() - AUDIT_LOG_RETENTION_DAYS * DAY_MS);
+  const query = { createdAt: { $lt: cutoff } };
+  const [candidates, stats] = await Promise.all([
+    audits.countDocuments(query),
+    safeCollectionStats(db, 'roboauditlogs')
+  ]);
+  let deleted = 0;
+  if (APPLY && candidates > 0) {
+    const result = await audits.deleteMany(query);
+    deleted = Number(result?.deletedCount || 0);
+  }
+
+  return {
+    collection: 'roboauditlogs',
+    status: APPLY ? 'applied' : 'dry_run',
+    retentionDays: AUDIT_LOG_RETENTION_DAYS,
+    cutoff,
+    candidates,
+    deleted,
+    estimatedSavingsBytes: estimateSavingsBytes(candidates, stats)
+  };
+}
+
+function printReport({
+  target,
+  database,
+  ttlResult,
+  decisionResult,
+  decisionCleanupResult,
+  auditCleanupResult
+}) {
   console.log(`\nMongo storage compaction ${APPLY ? 'apply' : 'dry-run'}: ${database}`);
   console.log(`Connected target: ${target.label}`);
   console.log(`Minimum snapshot size: ${formatBytes(MIN_SNAPSHOT_BYTES)}`);
@@ -301,6 +425,23 @@ function printReport({ target, database, ttlResult, decisionResult }) {
       `  example ${example.id} ${example.symbol || ''}: ${formatBytes(example.beforeBytes)} -> ${formatBytes(example.afterBytes)}`
     );
   });
+
+  console.log('\nRoboTradeDecision retention cleanup');
+  console.log(
+    `- status=${decisionCleanupResult.status} retentionDays=${decisionCleanupResult.retentionDays} candidates=${decisionCleanupResult.candidates} deleted=${decisionCleanupResult.deleted}`
+  );
+  console.log(
+    `- preservedLinked=${decisionCleanupResult.preservedLinked} estimatedSavings=${formatBytes(decisionCleanupResult.estimatedSavingsBytes)} cutoff=${decisionCleanupResult.cutoff?.toISOString?.() || 'n/a'}`
+  );
+
+  console.log('\nRoboAuditLog retention cleanup');
+  console.log(
+    `- status=${auditCleanupResult.status} retentionDays=${auditCleanupResult.retentionDays} candidates=${auditCleanupResult.candidates} deleted=${auditCleanupResult.deleted}`
+  );
+  console.log(
+    `- estimatedSavings=${formatBytes(auditCleanupResult.estimatedSavingsBytes)} cutoff=${auditCleanupResult.cutoff?.toISOString?.() || 'n/a'}`
+  );
+
   if (!APPLY) {
     console.log('\nRun with MONGO_COMPACT_APPLY=true to apply these changes.');
   }
@@ -311,12 +452,16 @@ async function main() {
   const db = mongoose.connection.db;
   const ttlResult = await ensureResearchSnapshotTtl(db);
   const decisionResult = await compactRoboTradeDecisions(db);
+  const decisionCleanupResult = await cleanupOldRoboTradeDecisions(db);
+  const auditCleanupResult = await cleanupOldRoboAuditLogs(db);
 
   printReport({
     target,
     database: db.databaseName,
     ttlResult,
-    decisionResult
+    decisionResult,
+    decisionCleanupResult,
+    auditCleanupResult
   });
 
   await mongoose.disconnect();
