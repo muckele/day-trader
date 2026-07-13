@@ -1,10 +1,16 @@
 const RoboSettings = require('../models/RoboSettings');
+const {
+  APPROVAL_MODES,
+  normalizeApprovalPolicy
+} = require('../services/canonicalTradingPolicyService');
 
 const LIVE_CONFIRMATION_TEXT = 'I understand live trading risk';
+const AUTONOMOUS_CONFIRMATION_TEXT = 'I understand autonomous live trading risk';
 
 const DEFAULT_ROBOTRADER_SETTINGS = Object.freeze({
   enabled: false,
   isEnabled: false,
+  controlGeneration: 0,
   mode: 'paper',
   liveTradingExplicitlyEnabled: false,
   allowedAssetClasses: ['stocks'],
@@ -21,6 +27,27 @@ const DEFAULT_ROBOTRADER_SETTINGS = Object.freeze({
   allowOptionsTrading: false,
   allowCryptoTrading: false,
   riskLevel: 'balanced',
+  approvalPolicy: {
+    mode: APPROVAL_MODES.EVERY_TRADE,
+    thresholdUsd: 0,
+    authorizationTtlSeconds: 300,
+    requireExactOrderMatch: true
+  },
+  executionPolicy: {
+    maxQuoteAgeSeconds: 15,
+    maxSpreadBps: 35,
+    minAverageDailyDollarVolume: 20000000,
+    maxEstimatedSlippageBps: 25,
+    cutoffMinutesBeforeClose: 15,
+    regularSessionCutoffEt: '15:45'
+  },
+  portfolioPolicy: {
+    maxGrossExposurePct: 100,
+    maxNetExposurePct: 100,
+    maxDailyDrawdownPct: 2,
+    maxTotalDrawdownPct: 5,
+    pauseOnBreach: true
+  },
   requireManualApprovalAboveDollarAmount: 0,
   pausedReason: null
 });
@@ -66,7 +93,53 @@ function normalizeRiskLevel(value) {
 }
 
 function normalizeMode(value) {
-  return String(value || '').trim().toLowerCase() === 'live' ? 'live' : 'paper';
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'live') return 'live';
+  if (['shadow', 'shadow-live', 'shadow_live'].includes(normalized)) return 'shadow';
+  return 'paper';
+}
+
+function clampNumber(value, fallback, min, max) {
+  return Math.min(max, Math.max(min, toFiniteNumber(value, fallback)));
+}
+
+function normalizeExecutionPolicy(policy = {}) {
+  const defaults = DEFAULT_ROBOTRADER_SETTINGS.executionPolicy;
+  return {
+    maxQuoteAgeSeconds: clampNumber(policy.maxQuoteAgeSeconds, defaults.maxQuoteAgeSeconds, 1, 300),
+    maxSpreadBps: clampNumber(policy.maxSpreadBps, defaults.maxSpreadBps, 1, 500),
+    minAverageDailyDollarVolume: clampNumber(
+      policy.minAverageDailyDollarVolume,
+      defaults.minAverageDailyDollarVolume,
+      0,
+      Number.MAX_SAFE_INTEGER
+    ),
+    maxEstimatedSlippageBps: clampNumber(
+      policy.maxEstimatedSlippageBps,
+      defaults.maxEstimatedSlippageBps,
+      1,
+      500
+    ),
+    cutoffMinutesBeforeClose: clampNumber(
+      policy.cutoffMinutesBeforeClose,
+      defaults.cutoffMinutesBeforeClose,
+      0,
+      120
+    ),
+    // Sprint 2 deliberately fixes the regular-session cutoff at 3:45 PM ET.
+    regularSessionCutoffEt: '15:45'
+  };
+}
+
+function normalizePortfolioPolicy(policy = {}) {
+  const defaults = DEFAULT_ROBOTRADER_SETTINGS.portfolioPolicy;
+  return {
+    maxGrossExposurePct: clampNumber(policy.maxGrossExposurePct, defaults.maxGrossExposurePct, 0, 1000),
+    maxNetExposurePct: clampNumber(policy.maxNetExposurePct, defaults.maxNetExposurePct, 0, 1000),
+    maxDailyDrawdownPct: clampNumber(policy.maxDailyDrawdownPct, defaults.maxDailyDrawdownPct, 0, 100),
+    maxTotalDrawdownPct: clampNumber(policy.maxTotalDrawdownPct, defaults.maxTotalDrawdownPct, 0, 100),
+    pauseOnBreach: sanitizeBoolean(policy.pauseOnBreach, defaults.pauseOnBreach)
+  };
 }
 
 function sanitizeBoolean(value, fallback = false) {
@@ -86,6 +159,7 @@ function mapSettings(settingsDoc) {
     userId: doc.userId,
     enabled: isEnabled,
     isEnabled,
+    controlGeneration: Math.max(0, Math.floor(toFiniteNumber(doc.controlGeneration, 0))),
     mode: normalizeMode(doc.mode),
     liveTradingExplicitlyEnabled: Boolean(doc.liveTradingExplicitlyEnabled),
     allowedAssetClasses: normalizeAssetClasses(doc.allowedAssetClasses),
@@ -102,6 +176,12 @@ function mapSettings(settingsDoc) {
     allowOptionsTrading: Boolean(doc.allowOptionsTrading),
     allowCryptoTrading: Boolean(doc.allowCryptoTrading),
     riskLevel: normalizeRiskLevel(doc.riskLevel),
+    approvalPolicy: normalizeApprovalPolicy(
+      doc.approvalPolicy,
+      doc.requireManualApprovalAboveDollarAmount
+    ),
+    executionPolicy: normalizeExecutionPolicy(doc.executionPolicy),
+    portfolioPolicy: normalizePortfolioPolicy(doc.portfolioPolicy),
     requireManualApprovalAboveDollarAmount: toNonNegativeNumber(
       doc.requireManualApprovalAboveDollarAmount,
       DEFAULT_ROBOTRADER_SETTINGS.requireManualApprovalAboveDollarAmount
@@ -141,12 +221,22 @@ function sanitizeSettingsUpdate(input = {}, current = {}) {
         throw err;
       }
       update.liveTradingExplicitlyEnabled = true;
+    } else {
+      // A live opt-in is a property of the current live-mode session. Clearing
+      // it when paper mode is selected prevents a stale flag from authorizing
+      // a later live-only action.
+      update.liveTradingExplicitlyEnabled = false;
     }
     update.mode = mode;
   }
 
   if (input.liveTradingExplicitlyEnabled !== undefined && input.mode === undefined) {
     const requested = sanitizeBoolean(input.liveTradingExplicitlyEnabled, false);
+    if (requested && normalizeMode(current.mode) !== 'live') {
+      const err = new Error('Live trading opt-in can only be enabled while live mode is active.');
+      err.status = 400;
+      throw err;
+    }
     if (requested && input.confirmLiveTrading !== LIVE_CONFIRMATION_TEXT) {
       const err = new Error('Live trading requires explicit confirmation before it can be enabled.');
       err.status = 400;
@@ -169,8 +259,41 @@ function sanitizeSettingsUpdate(input = {}, current = {}) {
   if (input.allowOptionsTrading !== undefined) update.allowOptionsTrading = sanitizeBoolean(input.allowOptionsTrading);
   if (input.allowCryptoTrading !== undefined) update.allowCryptoTrading = sanitizeBoolean(input.allowCryptoTrading);
   if (input.riskLevel !== undefined) update.riskLevel = normalizeRiskLevel(input.riskLevel);
+  if (input.approvalPolicy !== undefined) {
+    const approvalPolicy = normalizeApprovalPolicy(
+      input.approvalPolicy,
+      current.requireManualApprovalAboveDollarAmount
+    );
+    const currentApprovalPolicy = normalizeApprovalPolicy(
+      current.approvalPolicy,
+      current.requireManualApprovalAboveDollarAmount
+    );
+    if (
+      approvalPolicy.mode === APPROVAL_MODES.AUTONOMOUS
+      && currentApprovalPolicy.mode !== APPROVAL_MODES.AUTONOMOUS
+      && input.confirmAutonomousTrading !== AUTONOMOUS_CONFIRMATION_TEXT
+    ) {
+      const err = new Error('Autonomous trading requires a separate explicit confirmation.');
+      err.status = 400;
+      throw err;
+    }
+    update.approvalPolicy = approvalPolicy;
+    update.requireManualApprovalAboveDollarAmount = approvalPolicy.mode === APPROVAL_MODES.ABOVE_THRESHOLD
+      ? approvalPolicy.thresholdUsd
+      : 0;
+  }
+  if (input.executionPolicy !== undefined) {
+    update.executionPolicy = normalizeExecutionPolicy(input.executionPolicy);
+  }
+  if (input.portfolioPolicy !== undefined) {
+    update.portfolioPolicy = normalizePortfolioPolicy(input.portfolioPolicy);
+  }
   if (input.requireManualApprovalAboveDollarAmount !== undefined) {
-    update.requireManualApprovalAboveDollarAmount = toNonNegativeNumber(input.requireManualApprovalAboveDollarAmount);
+    const legacyThreshold = toNonNegativeNumber(input.requireManualApprovalAboveDollarAmount);
+    update.requireManualApprovalAboveDollarAmount = legacyThreshold;
+    if (input.approvalPolicy === undefined) {
+      update.approvalPolicy = normalizeApprovalPolicy({}, legacyThreshold);
+    }
   }
   if (input.pausedReason !== undefined) update.pausedReason = input.pausedReason ? String(input.pausedReason).slice(0, 500) : null;
 
@@ -212,16 +335,27 @@ async function getOrCreateRoboTraderSettings(userId) {
 async function updateRoboTraderSettings(userId, input = {}) {
   const settings = await getOrCreateRoboTraderSettings(userId);
   const sanitized = sanitizeSettingsUpdate(input, settings);
-  Object.assign(settings, sanitized);
-  await settings.save();
-  return settings;
+  return RoboSettings.findOneAndUpdate(
+    { userId },
+    {
+      $set: sanitized,
+      $inc: { controlGeneration: 1 }
+    },
+    {
+      new: true,
+      runValidators: true
+    }
+  );
 }
 
 module.exports = {
+  AUTONOMOUS_CONFIRMATION_TEXT,
   DEFAULT_ROBOTRADER_SETTINGS,
   LIVE_CONFIRMATION_TEXT,
   getOrCreateRoboTraderSettings,
   mapSettings,
+  normalizeExecutionPolicy,
+  normalizePortfolioPolicy,
   normalizeAssetClass,
   normalizeAssetClasses,
   normalizeMode,

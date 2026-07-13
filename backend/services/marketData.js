@@ -29,9 +29,18 @@ function toNumber(value) {
 function mockQuote(symbol) {
   const base = 100 + Math.random() * 200;
   const change = (Math.random() - 0.5) * 4;
+  const bidPrice = Number((base - 0.02).toFixed(2));
+  const askPrice = Number((base + 0.02).toFixed(2));
   return {
     symbol,
     price: Number(base.toFixed(2)),
+    bidPrice,
+    askPrice,
+    bidSize: 100,
+    askSize: 100,
+    timestamp: new Date().toISOString(),
+    source: 'mock',
+    isMock: true,
     change: Number(change.toFixed(2)),
     changePercent: Number((change / base * 100).toFixed(2))
   };
@@ -109,6 +118,13 @@ async function fetchStockQuotes(symbols) {
       symbol,
       assetClass: 'equity',
       price: Number(toNumber(price).toFixed(2)),
+      bidPrice: Number.isFinite(toNumber(quote?.bp)) ? toNumber(quote.bp) : null,
+      askPrice: Number.isFinite(toNumber(quote?.ap)) ? toNumber(quote.ap) : null,
+      bidSize: Number.isFinite(toNumber(quote?.bs)) ? toNumber(quote.bs) : null,
+      askSize: Number.isFinite(toNumber(quote?.as)) ? toNumber(quote.as) : null,
+      timestamp: quote?.t || null,
+      source: 'alpaca',
+      isMock: false,
       change: Number(toNumber(change).toFixed(2)),
       changePercent: prev ? Number((change / prev * 100).toFixed(2)) : 0
     };
@@ -146,6 +162,13 @@ async function fetchCryptoQuotes(symbols) {
         symbol: normalizeSymbol(symbol).replace(/[^A-Z0-9]/g, ''),
         assetClass: 'crypto',
         price: Number(toNumber(price).toFixed(2)),
+        bidPrice: Number.isFinite(bid) ? bid : null,
+        askPrice: Number.isFinite(ask) ? ask : null,
+        bidSize: toNumber(quote?.bs ?? quote?.bid_size) || null,
+        askSize: toNumber(quote?.as ?? quote?.ask_size) || null,
+        timestamp: quote?.t || null,
+        source: 'alpaca',
+        isMock: false,
         change: Number(toNumber(change).toFixed(2)),
         changePercent: prev ? Number((change / prev * 100).toFixed(2)) : 0
       };
@@ -169,6 +192,13 @@ async function fetchCryptoQuotes(symbols) {
         symbol: normalizeSymbol(symbol).replace(/[^A-Z0-9]/g, ''),
         assetClass: 'crypto',
         price: Number(toNumber(price).toFixed(2)),
+        bidPrice: null,
+        askPrice: null,
+        bidSize: null,
+        askSize: null,
+        timestamp: trade?.t || null,
+        source: 'alpaca_trade_fallback',
+        isMock: false,
         change: 0,
         changePercent: 0
       };
@@ -182,7 +212,7 @@ async function fetchQuotes(symbols, options = {}) {
     ? options.assetClass
     : null;
   const cacheKey = `quotes:${normalized.sort().join(',')}:${requestedAssetClass || 'mixed'}`;
-  const cached = getCache(cacheKey);
+  const cached = options.bypassCache ? null : getCache(cacheKey);
   if (cached) return cached;
 
   if (missingCredentials()) {
@@ -190,7 +220,7 @@ async function fetchQuotes(symbols, options = {}) {
       ...mockQuote(symbol),
       assetClass: requestedAssetClass || (isCryptoSymbol(symbol) ? 'crypto' : 'equity')
     }));
-    setCache(cacheKey, data, 60 * 1000);
+    if (!options.bypassCache) setCache(cacheKey, data, 60 * 1000);
     return data;
   }
 
@@ -223,12 +253,19 @@ async function fetchQuotes(symbols, options = {}) {
       symbol: key,
       assetClass: requestedAssetClass || (isCryptoSymbol(symbol) ? 'crypto' : 'equity'),
       price: 0,
+      bidPrice: null,
+      askPrice: null,
+      bidSize: null,
+      askSize: null,
+      timestamp: null,
+      source: 'unavailable',
+      isMock: false,
       change: 0,
       changePercent: 0
     };
   });
 
-  setCache(cacheKey, data, 60 * 1000);
+  if (!options.bypassCache) setCache(cacheKey, data, 60 * 1000);
   return data;
 }
 

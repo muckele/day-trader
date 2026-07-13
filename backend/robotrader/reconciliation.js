@@ -1,8 +1,11 @@
 const RoboTradeOrder = require('../models/RoboTradeOrder');
 const RoboAuditLog = require('../models/RoboAuditLog');
+const RoboTradeDecision = require('../models/RoboTradeDecision');
+const OrderIntent = require('../models/OrderIntent');
 const { createAlpacaBroker } = require('./alpacaBroker');
 const { buildClientOrderId } = require('../services/alpacaTradingClient');
 const { normalizeSymbol } = require('./settingsService');
+const { recordControlledLiveOutcome } = require('../services/controlledLiveActivationService');
 
 const OPEN_STATUSES = ['pending_submit', 'accepted', 'new', 'pending_new', 'partially_filled', 'submitted'];
 const PROTECTIVE_STOP_RETRY_STATUSES = ['canceled', 'cancelled', 'expired'];
@@ -104,6 +107,31 @@ async function writeAudit(userId, eventType, payload, deps) {
   return deps.RoboAuditLog.create({ userId, eventType, payload: payload || {} });
 }
 
+async function recordCanaryOutcome(localOrder, status, details, deps) {
+  if (!localOrder?.liveActivationId || typeof deps.recordControlledLiveOutcome !== 'function') return null;
+  try {
+    return await deps.recordControlledLiveOutcome({
+      activationId: localOrder.liveActivationId,
+      liveOrderId: localOrder._id,
+      status,
+      details,
+      now: new Date()
+    }, deps);
+  } catch (_err) {
+    return null;
+  }
+}
+
+function mapBrokerLifecycle(status) {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'filled') return { intentStatus: 'filled', decisionStatus: 'filled' };
+  if (['canceled', 'cancelled', 'expired'].includes(normalized)) {
+    return { intentStatus: 'cancelled', decisionStatus: 'cancelled' };
+  }
+  if (normalized === 'rejected') return { intentStatus: 'rejected', decisionStatus: 'rejected' };
+  return { intentStatus: 'submitted', decisionStatus: 'submitted' };
+}
+
 async function applyAlpacaOrder(localOrder, alpacaOrder, deps) {
   const mapped = mapAlpacaOrder(alpacaOrder);
   Object.assign(localOrder, mapped, {
@@ -112,6 +140,51 @@ async function applyAlpacaOrder(localOrder, alpacaOrder, deps) {
     lastReconciledAt: new Date()
   });
   await localOrder.save();
+  const brokerStatus = String(localOrder.status || '').toLowerCase();
+  const canaryOutcomeStatus = brokerStatus === 'filled'
+    ? 'reconciled'
+    : (brokerStatus === 'rejected'
+        ? 'rejected'
+        : (['canceled', 'cancelled', 'expired'].includes(brokerStatus) ? 'reconciled' : 'broker_pending'));
+  await recordCanaryOutcome(
+    localOrder,
+    canaryOutcomeStatus,
+    { brokerStatus: localOrder.status, reconciliationStatus: localOrder.reconciliationStatus },
+    deps
+  );
+  if (localOrder.intentId) {
+    const lifecycle = mapBrokerLifecycle(localOrder.status);
+    const lifecycleUpdates = [];
+    if (deps.OrderIntent?.updateOne) {
+      lifecycleUpdates.push(deps.OrderIntent.updateOne(
+        { _id: localOrder.intentId, userId: localOrder.userId },
+        {
+          $set: {
+            status: lifecycle.intentStatus,
+            roboTradeOrderId: localOrder._id,
+            rejectionReason: lifecycle.intentStatus === 'rejected'
+              ? (localOrder.discrepancy || 'Broker rejected the order.')
+              : null
+          }
+        }
+      ));
+    }
+    if (localOrder.decisionId && deps.RoboTradeDecision?.updateOne) {
+      lifecycleUpdates.push(deps.RoboTradeDecision.updateOne(
+        { _id: localOrder.decisionId, userId: localOrder.userId },
+        {
+          $set: {
+            status: lifecycle.decisionStatus,
+            alpacaResponse: alpacaOrder,
+            error: lifecycle.decisionStatus === 'rejected'
+              ? (localOrder.discrepancy || 'Broker rejected the order.')
+              : null
+          }
+        }
+      ));
+    }
+    await Promise.all(lifecycleUpdates);
+  }
   await writeAudit(localOrder.userId, 'robotrader_order_status_changed', {
     orderId: localOrder.externalOrderId,
     clientOrderId: localOrder.clientOrderId,
@@ -363,6 +436,7 @@ async function reconcileRoboOrders({
       localOrder.discrepancy = 'Local RoboTradeOrder does not have an Alpaca order id.';
       localOrder.lastReconciledAt = new Date();
       await localOrder.save();
+      await recordCanaryOutcome(localOrder, 'reconciliation_failed', { type: 'missing_alpaca_confirmation' }, deps);
       discrepancies.push({ type: 'missing_alpaca_confirmation', localOrderId: String(localOrder._id) });
       await writeAudit(localOrder.userId, 'robotrader_reconciliation_discrepancy', {
         type: 'missing_alpaca_confirmation',
@@ -380,6 +454,7 @@ async function reconcileRoboOrders({
           : 'Local RoboTradeOrder does not have an Alpaca order id.';
         localOrder.lastReconciledAt = new Date();
         await localOrder.save();
+        await recordCanaryOutcome(localOrder, 'reconciliation_failed', { type: 'missing_alpaca_confirmation' }, deps);
         discrepancies.push({ type: 'missing_alpaca_confirmation', localOrderId: String(localOrder._id) });
         await writeAudit(localOrder.userId, 'robotrader_reconciliation_discrepancy', {
           type: 'missing_alpaca_confirmation',
@@ -395,6 +470,7 @@ async function reconcileRoboOrders({
       localOrder.discrepancy = err?.message || 'Alpaca order lookup failed.';
       localOrder.lastReconciledAt = new Date();
       await localOrder.save();
+      await recordCanaryOutcome(localOrder, 'reconciliation_failed', { type: 'alpaca_lookup_failed', reason: localOrder.discrepancy }, deps);
       discrepancies.push({
         type: 'alpaca_lookup_failed',
         localOrderId: String(localOrder._id),
@@ -474,7 +550,10 @@ async function reconcileRoboOrders({
 }
 
 const defaultDeps = {
+  OrderIntent,
   RoboTradeOrder,
+  recordControlledLiveOutcome,
+  RoboTradeDecision,
   RoboAuditLog,
   createAlpacaBroker,
   buildClientOrderId

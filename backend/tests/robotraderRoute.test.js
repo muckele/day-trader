@@ -5,6 +5,13 @@ const RoboSettings = require('../models/RoboSettings');
 const RoboTradeDecision = require('../models/RoboTradeDecision');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
 const RoboAuditLog = require('../models/RoboAuditLog');
+const OrderIntent = require('../models/OrderIntent');
+const TradeAuthorization = require('../models/TradeAuthorization');
+const RoboExposureSnapshot = require('../models/RoboExposureSnapshot');
+const RoboCanaryDossier = require('../models/RoboCanaryDossier');
+const {
+  SPECIFIC_ORDER_CONFIRMATION_TEXT
+} = require('../services/tradeAuthorizationService');
 const robotraderRouter = require('../routes/robotrader');
 
 function getRouteHandler(path, method) {
@@ -29,6 +36,42 @@ function createMockRes() {
     }
   };
 }
+
+test('Sprint 6 through 9 supervision, dossier, promotion, strategy, and discrepancy endpoints are registered', () => {
+  getRouteHandler('/live-activation/heartbeat', 'post');
+  getRouteHandler('/live-activation/dossier', 'get');
+  getRouteHandler('/live-activation/dossier/seal', 'post');
+  getRouteHandler('/live-activation/dossiers', 'get');
+  getRouteHandler('/live-activation/dossiers/:canaryId', 'get');
+  getRouteHandler('/live-promotion', 'get');
+  getRouteHandler('/live-promotions', 'get');
+  getRouteHandler('/strategy-evidence', 'get');
+  getRouteHandler('/execution-discrepancy', 'get');
+  getRouteHandler('/live-promotion/approve', 'post');
+  getRouteHandler('/live-promotion/revoke', 'post');
+});
+
+test('GET /robotrader/live-activation/dossiers/:canaryId scopes archived evidence to the user', async t => {
+  const userId = '507f1f77bcf86cd799439090';
+  let dossierQuery = null;
+  t.mock.method(User, 'findOne', async () => ({ _id: userId }));
+  t.mock.method(RoboCanaryDossier, 'findOne', query => {
+    dossierQuery = query;
+    return { lean: async () => ({ canaryId: query.canaryId, dossierHash: 'sealed-hash' }) };
+  });
+
+  const handler = getRouteHandler('/live-activation/dossiers/:canaryId', 'get');
+  const req = { user: { username: 'matt' }, params: { canaryId: 'canary-1' } };
+  const res = createMockRes();
+  let nextErr = null;
+  await handler(req, res, err => { nextErr = err; });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 200);
+  assert.equal(dossierQuery.userId, userId);
+  assert.equal(dossierQuery.canaryId, 'canary-1');
+  assert.equal(res.body.dossier.dossierHash, 'sealed-hash');
+});
 
 test('GET /robotrader/settings returns extended settings payload', async t => {
   t.mock.method(User, 'findOne', async () => ({ _id: 'user-route-1' }));
@@ -104,6 +147,184 @@ test('GET /robotrader/decisions/:decisionId returns decision detail with linked 
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.decision.symbol, 'AAPL');
   assert.equal(res.body.orders.length, 1);
+});
+
+test('POST /robotrader/intents/:intentId/authorize binds approval to the exact fingerprint', async t => {
+  const userId = '507f1f77bcf86cd799439020';
+  const intentId = '507f1f77bcf86cd799439021';
+  const authorizationId = '507f1f77bcf86cd799439022';
+  const intent = {
+    _id: intentId,
+    userId,
+    accountId: 'user:matt',
+    environment: 'live',
+    status: 'awaiting_authorization',
+    orderFingerprint: 'fingerprint-1',
+    policyVersion: 'controlled-live-readiness-v2',
+    approvalPolicy: { mode: 'every_trade', authorizationTtlSeconds: 300 },
+    save: async function save() { return this; }
+  };
+  t.mock.method(User, 'findOne', async () => ({ _id: userId }));
+  t.mock.method(RoboSettings, 'findOne', () => ({
+    sort: async () => ({
+      mode: 'live',
+      liveTradingExplicitlyEnabled: true,
+      approvalPolicy: { mode: 'every_trade', authorizationTtlSeconds: 300 },
+      allowedAssetClasses: ['stocks']
+    })
+  }));
+  t.mock.method(OrderIntent, 'findOne', async () => intent);
+  t.mock.method(TradeAuthorization, 'updateMany', async () => ({ modifiedCount: 0 }));
+  t.mock.method(TradeAuthorization, 'findOne', async () => null);
+  t.mock.method(TradeAuthorization, 'create', async payload => ({
+    _id: authorizationId,
+    ...payload
+  }));
+  t.mock.method(RoboAuditLog, 'create', async payload => payload);
+
+  const handler = getRouteHandler('/intents/:intentId/authorize', 'post');
+  const req = {
+    user: { username: 'matt' },
+    params: { intentId },
+    body: {
+      orderFingerprint: 'fingerprint-1',
+      confirmation: SPECIFIC_ORDER_CONFIRMATION_TEXT
+    }
+  };
+  const res = createMockRes();
+  let nextErr = null;
+  await handler(req, res, err => { nextErr = err; });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 200);
+  assert.equal(intent.status, 'authorized');
+  assert.equal(intent.authorizationStatus, 'active');
+  assert.equal(String(intent.authorizationId), authorizationId);
+  assert.equal(res.body.authorization.orderFingerprint, 'fingerprint-1');
+});
+
+test('trade authorization rejects a stale live opt-in while settings are in paper mode', async t => {
+  const userId = '507f1f77bcf86cd799439023';
+  const intentId = '507f1f77bcf86cd799439024';
+  t.mock.method(User, 'findOne', async () => ({ _id: userId }));
+  t.mock.method(RoboSettings, 'findOne', () => ({
+    sort: async () => ({
+      mode: 'paper',
+      liveTradingExplicitlyEnabled: true,
+      approvalPolicy: { mode: 'every_trade' },
+      allowedAssetClasses: ['stocks']
+    })
+  }));
+  t.mock.method(OrderIntent, 'findOne', async () => ({
+    _id: intentId,
+    userId,
+    environment: 'live',
+    status: 'awaiting_authorization',
+    orderFingerprint: 'fingerprint-stale-opt-in',
+    policyVersion: 'controlled-live-readiness-v2'
+  }));
+
+  const handler = getRouteHandler('/intents/:intentId/authorize', 'post');
+  const req = {
+    user: { username: 'matt' },
+    params: { intentId },
+    body: {
+      orderFingerprint: 'fingerprint-stale-opt-in',
+      confirmation: SPECIFIC_ORDER_CONFIRMATION_TEXT
+    }
+  };
+  const res = createMockRes();
+  let nextErr = null;
+  await handler(req, res, err => { nextErr = err; });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 403);
+  assert.match(res.body.message, /explicit live trading opt-in/);
+});
+
+test('GET /robotrader/approval-queue returns live intents with their latest authorization', async t => {
+  const userId = '507f1f77bcf86cd799439025';
+  const intentId = '507f1f77bcf86cd799439026';
+  t.mock.method(User, 'findOne', async () => ({ _id: userId }));
+  t.mock.method(RoboSettings, 'findOne', () => ({
+    sort: async () => ({
+      mode: 'live',
+      liveTradingExplicitlyEnabled: true,
+      allowedAssetClasses: ['stocks']
+    })
+  }));
+  t.mock.method(OrderIntent, 'find', () => ({
+    sort: () => ({
+      limit: () => ({
+        lean: async () => [{
+          _id: intentId,
+          userId,
+          environment: 'live',
+          status: 'authorized',
+          symbol: 'AAPL'
+        }]
+      })
+    })
+  }));
+  t.mock.method(TradeAuthorization, 'find', query => {
+    if (query.status === 'active') {
+      return { select: () => ({ lean: async () => [] }) };
+    }
+    return {
+      sort: () => ({
+        lean: async () => [{
+          _id: '507f1f77bcf86cd799439027',
+          intentId,
+          status: 'active'
+        }]
+      })
+    };
+  });
+
+  const handler = getRouteHandler('/approval-queue', 'get');
+  const req = { user: { username: 'matt' } };
+  const res = createMockRes();
+  let nextErr = null;
+  await handler(req, res, err => { nextErr = err; });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.intents.length, 1);
+  assert.equal(res.body.intents[0].latestAuthorization.status, 'active');
+});
+
+test('GET /robotrader/exposure scopes snapshot history by environment', async t => {
+  const userId = '507f1f77bcf86cd799439028';
+  let exposureQuery = null;
+  t.mock.method(User, 'findOne', async () => ({ _id: userId }));
+  t.mock.method(RoboSettings, 'findOne', () => ({
+    sort: async () => ({
+      mode: 'shadow',
+      allowedAssetClasses: ['stocks']
+    })
+  }));
+  t.mock.method(RoboExposureSnapshot, 'find', query => {
+    exposureQuery = query;
+    return {
+      sort: () => ({
+        limit: () => ({
+          lean: async () => [{ _id: 'exposure-route-1', environment: 'shadow', grossExposurePct: 20 }]
+        })
+      })
+    };
+  });
+
+  const handler = getRouteHandler('/exposure', 'get');
+  const req = { user: { username: 'matt' }, query: { environment: 'shadow' } };
+  const res = createMockRes();
+  let nextErr = null;
+  await handler(req, res, err => { nextErr = err; });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 200);
+  assert.equal(exposureQuery.userId, userId);
+  assert.equal(exposureQuery.environment, 'shadow');
+  assert.equal(res.body.latest.grossExposurePct, 20);
 });
 
 test('GET /robotrader/reconciliation-status summarizes local order matching state', async t => {
@@ -313,6 +534,28 @@ test('POST /robotrader/run-once-paper requires RoboTrader to be enabled', async 
   assert.equal(nextErr, null);
   assert.equal(res.statusCode, 400);
   assert.match(res.body.message, /Enable RoboTrader/);
+});
+
+test('POST /robotrader/run-once-shadow requires shadow mode', async t => {
+  t.mock.method(User, 'findOne', async () => ({ _id: 'user-route-shadow-mode' }));
+  t.mock.method(RoboSettings, 'findOne', () => ({
+    sort: () => ({
+      mode: 'paper',
+      isEnabled: true,
+      enabled: true,
+      allowedAssetClasses: ['stocks']
+    })
+  }));
+
+  const handler = getRouteHandler('/run-once-shadow', 'post');
+  const req = { user: { username: 'matt' } };
+  const res = createMockRes();
+  let nextErr = null;
+  await handler(req, res, err => { nextErr = err; });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.message, /only available.*shadow mode/i);
 });
 
 test('GET /robotrader/performance blocks live account reads without explicit opt-in', async t => {

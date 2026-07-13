@@ -10,7 +10,7 @@ const strategyRunSchema = new mongoose.Schema(
     status: { type: String, enum: ['running', 'completed', 'skipped', 'failed'], default: 'running', index: true },
     symbol: { type: String, default: null },
     universe: { type: [String], default: [] },
-    parameterVersionId: { type: mongoose.Schema.Types.ObjectId, ref: 'StrategyParameterVersion', default: null },
+    parameterVersionId: { type: mongoose.Schema.Types.ObjectId, ref: 'StrategyParameterVersion', required: true },
     startedAt: { type: Date, default: Date.now, index: true },
     completedAt: { type: Date, default: null },
     metrics: { type: mongoose.Schema.Types.Mixed, default: {} },

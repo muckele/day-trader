@@ -4,8 +4,9 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import axios from 'axios';
 import Stock from './Stock';
 import { emitToast } from '../utils/toast';
+import { vi } from 'vitest';
 
-jest.mock('../hooks/useMarketStatus', () => ({
+vi.mock('../hooks/useMarketStatus', () => ({
   useMarketStatus: () => ({
     status: 'OPEN',
     nextOpen: null,
@@ -14,16 +15,16 @@ jest.mock('../hooks/useMarketStatus', () => ({
   })
 }));
 
-jest.mock('../utils/cache', () => ({
-  getCache: jest.fn(() => null),
-  setCache: jest.fn()
+vi.mock('../utils/cache', () => ({
+  getCache: vi.fn(() => null),
+  setCache: vi.fn()
 }));
 
-jest.mock('../utils/toast', () => ({
-  emitToast: jest.fn()
+vi.mock('../utils/toast', () => ({
+  emitToast: vi.fn()
 }));
 
-jest.mock('recharts', () => {
+vi.mock('recharts', () => {
   const Wrapper = ({ children }) => <div>{children}</div>;
   return {
     ResponsiveContainer: Wrapper,
@@ -118,7 +119,7 @@ function renderStockPage() {
 
 describe('Stock page', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   test('renders company/chart/stats and analysis on happy path', async () => {

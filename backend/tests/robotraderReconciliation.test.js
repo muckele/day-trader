@@ -10,6 +10,8 @@ test('robotrader reconciliation updates local order status from Alpaca', async (
   const localOrder = {
     _id: 'local-order-1',
     userId: 'user-1',
+    intentId: 'intent-1',
+    decisionId: 'decision-1',
     environment: 'paper',
     externalOrderId: 'alpaca-order-1',
     clientOrderId: 'robotrader-client-1',
@@ -20,7 +22,19 @@ test('robotrader reconciliation updates local order status from Alpaca', async (
     }
   };
   const auditEvents = [];
+  const intentUpdates = [];
+  const decisionUpdates = [];
   const deps = {
+    OrderIntent: {
+      updateOne: async (query, update) => {
+        intentUpdates.push({ query, update });
+      }
+    },
+    RoboTradeDecision: {
+      updateOne: async (query, update) => {
+        decisionUpdates.push({ query, update });
+      }
+    },
     RoboTradeOrder: {
       find: () => ({
         sort: () => ({
@@ -53,6 +67,8 @@ test('robotrader reconciliation updates local order status from Alpaca', async (
   assert.equal(saved[0].status, 'filled');
   assert.equal(saved[0].filledQty, 1);
   assert.equal(saved[0].reconciliationStatus, 'matched');
+  assert.equal(intentUpdates[0].update.$set.status, 'filled');
+  assert.equal(decisionUpdates[0].update.$set.status, 'filled');
   assert.equal(auditEvents[0].eventType, 'robotrader_order_status_changed');
 });
 

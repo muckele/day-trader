@@ -17,7 +17,8 @@ const { recordFilledExecution, recordRejectedExecution } = require('./executionT
 const {
   buildAlpacaOrderPayload,
   buildClientOrderId,
-  getAlpacaTradingConfig
+  getAlpacaTradingConfig,
+  isPaperTradingEndpoint
 } = require('./alpacaTradingClient');
 
 const LOCK_TTL_MS = 30 * 1000;
@@ -96,6 +97,10 @@ function normalizeTradeSide(value, fallback = 'buy') {
 function getExecutionBackend() {
   const raw = String(process.env.ROBO_EXECUTION_BACKEND || 'paper').trim().toLowerCase();
   return raw === 'alpaca' ? 'alpaca' : 'paper';
+}
+
+function requiresControlledLiveWorker(executionBackend, alpacaBaseUrl) {
+  return executionBackend === 'alpaca' && !isPaperTradingEndpoint(alpacaBaseUrl);
 }
 
 async function placeAlpacaOrder({
@@ -1001,6 +1006,16 @@ async function runRoboTradeForUser({ userId, accountId = null, signal = null, no
     signalId = deriveSignalId(candidateSignal, symbol, side, qty, now);
     executionBackend = getExecutionBackend();
 
+    if (requiresControlledLiveWorker(executionBackend, getAlpacaTradingConfig().baseUrl)) {
+      await writeAuditLog(userId, 'trade_skipped_controlled_live_worker_required', {
+        reason: 'Legacy Robo execution cannot submit to a live Alpaca endpoint; use the controlled-live worker path.',
+        symbol,
+        signalId,
+        at: now.toISOString()
+      }, deps);
+      return { ok: false, executed: false, skipped: true, reason: 'CONTROLLED_LIVE_WORKER_REQUIRED', signalId };
+    }
+
     if (!symbol) {
       await writeAuditLog(userId, 'trade_skipped_invalid_signal', {
         reason: 'Signal missing symbol.',
@@ -1633,5 +1648,6 @@ module.exports = {
   cleanupSignalExecutions,
   buildAutoSignalForUser,
   runRoboTradeForUser,
+  requiresControlledLiveWorker,
   runSchedulerTick
 };

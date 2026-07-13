@@ -35,3 +35,14 @@ test('mongoState clears failure metadata after a successful connection', () => {
   assert.equal(state.lastErrorAt, null);
   assert.equal(state.lastHint, null);
 });
+
+test('mongoState exposes and fails closed on index bootstrap status', () => {
+  mongoState.resetMongoRuntimeState();
+  mongoState.markMongoIndexesBuilding();
+  assert.equal(mongoState.getMongoServiceState().indexes.state, 'building');
+  assert.equal(mongoState.isMongoRequestReady(), false);
+  mongoState.markMongoIndexesFailed([{ model: 'TradeAuthorization', error: 'duplicate values' }]);
+  const state = mongoState.getMongoServiceState();
+  assert.equal(state.indexes.state, 'failed');
+  assert.equal(state.indexes.failures[0].model, 'TradeAuthorization');
+});

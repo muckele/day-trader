@@ -11,9 +11,10 @@ export function AuthProvider({ children }) {
     setStatus('checking');
     try {
       const res = await axios.get('/api/me');
-      setUser(res.data.user || null);
-      setStatus('authenticated');
-      return res.data.user || null;
+      const currentUser = res.data.user || null;
+      setUser(currentUser);
+      setStatus(currentUser ? 'authenticated' : 'anonymous');
+      return currentUser;
     } catch (err) {
       setUser(null);
       setStatus('anonymous');

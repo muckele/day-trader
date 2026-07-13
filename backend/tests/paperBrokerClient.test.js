@@ -1,7 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const PaperTrade = require('../models/PaperTrade');
+const PaperAccountLock = require('../models/PaperAccountLock');
 const {
+  acquirePaperAccountLock,
   normalizeOrderInput,
   enforceMarketHours,
   enforcePriceControls,
@@ -221,6 +223,16 @@ test('PaperTrade enforces one persisted trade per paper order', () => {
   ));
 
   assert.equal(hasUniqueOrderIndex, true);
+});
+
+test('paper account lock fails closed on a concurrent account order', async t => {
+  const duplicate = new Error('duplicate account lock');
+  duplicate.code = 11000;
+  t.mock.method(PaperAccountLock, 'findOneAndUpdate', async () => {
+    throw duplicate;
+  });
+  const lock = await acquirePaperAccountLock('user:alice', 'owner-2');
+  assert.equal(lock, null);
 });
 
 test('reconcileAlpacaPaperOrder creates a local trade for partial fills', async () => {

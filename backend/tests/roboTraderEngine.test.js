@@ -6,9 +6,16 @@ const {
   evaluateNotionalAgainstLimits,
   cleanupSignalExecutions,
   buildAutoSignalForUser,
+  requiresControlledLiveWorker,
   runSchedulerTick,
   runRoboTradeForUser
 } = require('../services/roboTraderEngine');
+
+test('legacy Robo execution cannot target a live Alpaca endpoint', () => {
+  assert.equal(requiresControlledLiveWorker('alpaca', 'https://api.alpaca.markets'), true);
+  assert.equal(requiresControlledLiveWorker('alpaca', 'https://paper-api.alpaca.markets'), false);
+  assert.equal(requiresControlledLiveWorker('paper', 'https://api.alpaca.markets'), false);
+});
 
 test('getBucketStart returns UTC day/week/month anchors', () => {
   const now = new Date('2026-02-18T15:42:10.000Z'); // Wednesday

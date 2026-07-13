@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const requireMongo = require('../middleware/requireMongo');
 const auth = require('../middleware/auth');
+const { createRateLimit } = require('../middleware/rateLimit');
 const User = require('../models/User');
 const roboEngine = require('../services/roboTraderEngine');
 const { getSchedulerStatus } = require('../services/roboScheduler');
@@ -8,24 +9,13 @@ const { getRequestAccountId } = require('../utils/accountScope');
 
 router.use(requireMongo);
 
-const rateState = new Map();
-
 function sensitiveRateLimit({ windowMs = 60 * 1000, max = 12 } = {}) {
-  return function limiter(req, res, next) {
-    const key = `${req.user?.username || 'anonymous'}:${req.ip || req.socket?.remoteAddress || 'local'}`;
-    const now = Date.now();
-    const current = rateState.get(key) || { count: 0, resetAt: now + windowMs };
-    if (now > current.resetAt) {
-      current.count = 0;
-      current.resetAt = now + windowMs;
-    }
-    current.count += 1;
-    rateState.set(key, current);
-    if (current.count > max) {
-      return res.status(429).json({ message: 'Too many Robo requests. Try again shortly.' });
-    }
-    next();
-  };
+  return createRateLimit({
+    windowMs,
+    max,
+    keyPrefix: 'robo-sensitive',
+    message: 'Too many Robo requests. Try again shortly.'
+  });
 }
 
 function mapSettingsPayload(settings) {

@@ -3,6 +3,7 @@ const PaperOrder = require('../models/PaperOrder');
 const PaperTrade = require('../models/PaperTrade');
 const PaperEquity = require('../models/PaperEquity');
 const PaperGuardrailEvent = require('../models/PaperGuardrailEvent');
+const PaperAccountLock = require('../models/PaperAccountLock');
 const RegimeSnapshot = require('../models/RegimeSnapshot');
 const { fetchQuotes } = require('../services/marketData');
 const { getMarketStatus } = require('../utils/marketStatus');
@@ -38,6 +39,7 @@ const ACCOUNT_ID = 'default';
 const MAX_EQUITY_QTY_DECIMALS = 6;
 const MAX_CRYPTO_QTY_DECIMALS = 8;
 const activeOpenOrderReconciliations = new Map();
+const PAPER_ORDER_LOCK_MS = 10 * 60 * 1000;
 
 function normalizePaperAccountId(accountId = ACCOUNT_ID) {
   const normalized = String(accountId || '').trim();
@@ -898,7 +900,7 @@ async function createAttachedExitOrders({
   return attached;
 }
 
-async function placeOrder({
+async function placeOrderUnlocked({
   accountId = ACCOUNT_ID,
   symbol,
   side,
@@ -1311,7 +1313,9 @@ async function placeOrder({
     ? executedTradeRealized / (executedRiskPerShare * executedQty)
     : null;
 
-  const trade = await PaperTrade.create({
+  let trade = null;
+  try {
+    trade = await PaperTrade.create({
     accountId: scopedAccountId,
     broker: alpacaPaperOrder?.broker || 'paper',
     externalOrderId: alpacaPaperOrder?.order?.id || null,
@@ -1350,7 +1354,15 @@ async function placeOrder({
     realizedPnl: executedTradeRealized,
     orderId: order._id,
     filledAt: now
-  });
+    });
+  } catch (err) {
+    // Internal paper fills have no external side effect, so compensate the
+    // earlier order write rather than leave a filled order without a trade.
+    if (!syncToAlpaca && order?._id) {
+      await PaperOrder.deleteOne({ _id: order._id, broker: 'paper' }).catch(() => {});
+    }
+    throw err;
+  }
 
   const attachedOrders = await createAttachedExitOrders({
     parentOrder: order,
@@ -1436,6 +1448,53 @@ async function placeOrder({
     account: updatedAccount,
     positions: updatedAccount.positions
   };
+}
+
+async function acquirePaperAccountLock(accountId, owner, now = new Date()) {
+  try {
+    return await PaperAccountLock.findOneAndUpdate(
+      {
+        accountId,
+        $or: [
+          { lockedUntil: { $lte: now } },
+          { owner }
+        ]
+      },
+      {
+        $set: {
+          owner,
+          lockedUntil: new Date(now.getTime() + PAPER_ORDER_LOCK_MS)
+        }
+      },
+      { new: true, upsert: true, runValidators: true }
+    );
+  } catch (err) {
+    if (err?.code === 11000) return null;
+    throw err;
+  }
+}
+
+async function releasePaperAccountLock(accountId, owner) {
+  await PaperAccountLock.updateOne(
+    { accountId, owner },
+    { $set: { lockedUntil: new Date(0) } }
+  );
+}
+
+async function placeOrder(input = {}) {
+  const accountId = normalizePaperAccountId(input.accountId);
+  const owner = `paper-order:${accountId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  const lock = await acquirePaperAccountLock(accountId, owner);
+  if (!lock) {
+    const err = new Error('Another paper order is already being processed for this account. Retry after it completes.');
+    err.statusCode = 409;
+    throw err;
+  }
+  try {
+    return await placeOrderUnlocked({ ...input, accountId });
+  } finally {
+    await releasePaperAccountLock(accountId, owner).catch(() => {});
+  }
 }
 
 async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejected') {
@@ -1524,6 +1583,7 @@ async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejecte
 }
 
 module.exports = {
+  acquirePaperAccountLock,
   getSettings,
   updateSettings,
   getTrades,
@@ -1532,6 +1592,7 @@ module.exports = {
   getAccount,
   getEquityCurve,
   placeOrder,
+  releasePaperAccountLock,
   recordRejectedOrder,
   createFilledTradeFromSyncedOrder,
   normalizeOrderInput,

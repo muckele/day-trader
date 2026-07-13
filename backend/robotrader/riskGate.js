@@ -1,5 +1,6 @@
 const { validateAlpacaOrderRequest } = require('./alpacaCapabilities');
 const { normalizeAssetClass, normalizeSymbol } = require('./settingsService');
+const { deriveEffectiveNotional } = require('../services/canonicalTradingPolicyService');
 
 const CONFIDENCE_MINIMUMS = Object.freeze({
   conservative: 72,
@@ -173,10 +174,10 @@ function evaluateRoboRisk({
   const side = String(orderInput.side || '').toLowerCase();
   const confidenceMinimum = CONFIDENCE_MINIMUMS[settings.riskLevel] || CONFIDENCE_MINIMUMS.balanced;
   const rewardRiskMinimum = REWARD_RISK_MINIMUMS[settings.riskLevel] || REWARD_RISK_MINIMUMS.balanced;
-  const notional = toFiniteNumber(orderInput.notional, 0);
+  const notional = deriveEffectiveNotional(orderInput);
   const qty = toFiniteNumber(orderInput.qty, 0);
-  const estimatedNotional = notional || toFiniteNumber(orderInput.estimatedNotional, 0);
-  const requiresFractionableAsset = assetClass === 'stocks' && (isFractionalQty(qty) || notional > 0);
+  const estimatedNotional = notional.value;
+  const requiresFractionableAsset = assetClass === 'stocks' && (isFractionalQty(qty) || notional.explicitNotional > 0);
   const currentPositionQty = getPositionQty(symbol, positions);
   const currentPositionValue = getPositionValue(symbol, positions);
   const riskReducingOnly = isRiskReducingOnly({
@@ -208,6 +209,7 @@ function evaluateRoboRisk({
     orderInput.requiresRegularSessionForProtection
     || orderInput.requires_regular_session_for_protection
   );
+  const liveLike = environment === 'live' || environment === 'shadow';
 
   const runCheck = (name, passed, message, severity = 'warning', metadata = {}) => {
     addCheck(checks, name, passed, message, severity, metadata);
@@ -215,8 +217,14 @@ function evaluateRoboRisk({
   };
 
   runCheck('robotrader_enabled', Boolean(settings.isEnabled || settings.enabled), 'RoboTrader is disabled.');
-  runCheck('mode_allowed', environment === 'paper' || (settings.mode === 'live' && settings.liveTradingExplicitlyEnabled), 'Live trading is not explicitly enabled by the user.');
-  runCheck('mode_match', environment === 'paper' || settings.mode === environment, 'User is in paper/live mode mismatch.');
+  runCheck(
+    'mode_allowed',
+    environment === 'paper'
+      || (environment === 'shadow' && settings.mode === 'shadow')
+      || (environment === 'live' && settings.mode === 'live' && settings.liveTradingExplicitlyEnabled),
+    'The selected paper/shadow/live environment is not enabled by the user.'
+  );
+  runCheck('mode_match', environment === 'paper' || settings.mode === environment, 'User is in a paper/shadow/live mode mismatch.');
   runCheck('account_allowed', !isAccountRestricted(account), 'Alpaca account is restricted.');
   runCheck('symbol_present', Boolean(symbol), 'Symbol is required.');
   runCheck(
@@ -358,12 +366,21 @@ function evaluateRoboRisk({
     settings.allowFractionalShares === true || !qty || Number.isInteger(qty),
     'Fractional share order is not allowed by user settings.'
   );
+  runCheck(
+    'order_notional_verified',
+    !liveLike || notional.authoritative,
+    'Live order notional could not be verified from explicit notional or executable order fields.',
+    'critical',
+    notional
+  );
 
-  if (settings.requireManualApprovalAboveDollarAmount > 0 && estimatedNotional > settings.requireManualApprovalAboveDollarAmount) {
-    runCheck('manual_approval', false, 'Trade requires manual approval above configured dollar amount.', 'critical');
-  } else {
-    addCheck(checks, 'manual_approval', true, 'Manual approval threshold not triggered.', 'info');
-  }
+  addCheck(
+    checks,
+    'manual_approval',
+    true,
+    'Per-order approval is evaluated by the canonical trading policy.',
+    'info'
+  );
 
   return {
     approved: rejectionReasons.length === 0,

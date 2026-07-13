@@ -71,12 +71,16 @@ async function buildResearchForSymbol(symbol, {
   assetClass = 'stocks',
   account = null,
   positions = [],
-  openOrders = []
+  openOrders = [],
+  bypassQuoteCache = false
 } = {}) {
   const normalizedSymbol = normalizeSymbol(symbol);
   const normalizedAssetClass = normalizeAssetClass(assetClass) || (isCryptoSymbol(symbol) ? 'crypto' : 'stocks');
   const providerAssetClass = normalizedAssetClass === 'crypto' ? 'crypto' : 'equity';
-  const [quote] = await fetchQuotes([normalizedSymbol], { assetClass: providerAssetClass });
+  const [quote] = await fetchQuotes([normalizedSymbol], {
+    assetClass: providerAssetClass,
+    bypassCache: bypassQuoteCache
+  });
   let bars = [];
   let dataError = null;
   try {

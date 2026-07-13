@@ -28,6 +28,18 @@ function summarizeResearchSnapshot(research = {}) {
     symbol: research.symbol || null,
     assetClass: research.assetClass || null,
     price: toFiniteNumber(research.price ?? research.quote?.price, null),
+    quote: research.quote
+      ? {
+          price: toFiniteNumber(research.quote.price, null),
+          bidPrice: toFiniteNumber(research.quote.bidPrice, null),
+          askPrice: toFiniteNumber(research.quote.askPrice, null),
+          bidSize: toFiniteNumber(research.quote.bidSize, null),
+          askSize: toFiniteNumber(research.quote.askSize, null),
+          timestamp: research.quote.timestamp || null,
+          source: research.quote.source || null,
+          isMock: research.quote.isMock === true
+        }
+      : null,
     volume: toFiniteNumber(indicators.recentVolume, null),
     averageVolume20: toFiniteNumber(indicators.avgVolume20, null),
     volumeRatio: toFiniteNumber(indicators.volumeRatio, null),

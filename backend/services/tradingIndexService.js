@@ -4,15 +4,23 @@ const Fill = require('../models/Fill');
 const OrderIntent = require('../models/OrderIntent');
 const PaperOrder = require('../models/PaperOrder');
 const PaperTrade = require('../models/PaperTrade');
+const PaperAccountLock = require('../models/PaperAccountLock');
 const RecommendationSnapshot = require('../models/RecommendationSnapshot');
 const RoboAuditLog = require('../models/RoboAuditLog');
+const RoboCanaryDossier = require('../models/RoboCanaryDossier');
+const RoboExposureSnapshot = require('../models/RoboExposureSnapshot');
+const RoboLiveActivation = require('../models/RoboLiveActivation');
+const RoboLivePromotion = require('../models/RoboLivePromotion');
 const RoboLock = require('../models/RoboLock');
+const RoboOperationalAlert = require('../models/RoboOperationalAlert');
+const RoboReadinessEvidence = require('../models/RoboReadinessEvidence');
 const RoboSettings = require('../models/RoboSettings');
 const RoboSignalExecution = require('../models/RoboSignalExecution');
 const RoboTradeDecision = require('../models/RoboTradeDecision');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
 const StrategyParameterVersion = require('../models/StrategyParameterVersion');
 const StrategyRun = require('../models/StrategyRun');
+const TradeAuthorization = require('../models/TradeAuthorization');
 const User = require('../models/User');
 const { getAccountIdForUser } = require('../utils/accountScope');
 const {
@@ -23,14 +31,22 @@ const TRADING_INDEX_MODELS = [
   BrokerOrder,
   Fill,
   OrderIntent,
+  PaperAccountLock,
   PaperOrder,
   PaperTrade,
   RoboAuditLog,
+  RoboCanaryDossier,
+  RoboExposureSnapshot,
+  RoboLiveActivation,
+  RoboLivePromotion,
   RoboLock,
+  RoboOperationalAlert,
+  RoboReadinessEvidence,
   RoboSettings,
   RoboSignalExecution,
   RoboTradeDecision,
-  RoboTradeOrder
+  RoboTradeOrder,
+  TradeAuthorization
 ];
 
 const STRATEGY_TELEMETRY_INDEX_MODELS = [

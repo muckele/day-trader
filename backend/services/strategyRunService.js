@@ -26,32 +26,41 @@ function normalizeAccountId(accountId) {
 async function getOrCreateParameterVersion({ accountId, strategyId, parameters = {}, source = 'system', notes = '' } = {}) {
   const scopedAccountId = normalizeAccountId(accountId);
   if (!mongoState.isMongoReady() || !scopedAccountId || !strategyId) return null;
-  try {
-    const parameterHash = computeParameterHash(parameters);
-    const existing = await StrategyParameterVersion.findOne({
-      accountId: scopedAccountId,
-      strategyId,
-      parameterHash
-    });
-    if (existing) return existing;
+  const parameterHash = computeParameterHash(parameters);
+  const existing = await StrategyParameterVersion.findOne({
+    accountId: scopedAccountId,
+    strategyId,
+    parameterHash
+  });
+  if (existing) return existing;
 
+  for (let attempt = 0; attempt < 5; attempt += 1) {
     const latest = await StrategyParameterVersion.findOne({
       accountId: scopedAccountId,
       strategyId
     }).sort({ version: -1 }).lean();
     const version = Number(latest?.version || 0) + 1;
-    return await StrategyParameterVersion.create({
-      accountId: scopedAccountId,
-      strategyId,
-      version,
-      parameterHash,
-      source,
-      parameters,
-      notes
-    });
-  } catch (_err) {
-    return null;
+    try {
+      return await StrategyParameterVersion.create({
+        accountId: scopedAccountId,
+        strategyId,
+        version,
+        parameterHash,
+        source,
+        parameters,
+        notes
+      });
+    } catch (err) {
+      if (err?.code !== 11000) throw err;
+      const racedHash = await StrategyParameterVersion.findOne({
+        accountId: scopedAccountId,
+        strategyId,
+        parameterHash
+      });
+      if (racedHash) return racedHash;
+    }
   }
+  throw new Error('Could not allocate a strategy parameter version after concurrent updates.');
 }
 
 async function createStrategyRun({
@@ -69,30 +78,29 @@ async function createStrategyRun({
 } = {}) {
   const scopedAccountId = normalizeAccountId(accountId);
   if (!mongoState.isMongoReady() || !scopedAccountId || !strategyId || !runType) return null;
-  try {
-    const parameterVersion = await getOrCreateParameterVersion({
-      accountId: scopedAccountId,
-      strategyId,
-      parameters,
-      source
-    });
-    return await StrategyRun.create({
-      accountId: scopedAccountId,
-      strategyId,
-      strategyName,
-      runType,
-      mode,
-      symbol,
-      universe,
-      parameterVersionId: parameterVersion?._id || null,
-      summary,
-      context,
-      startedAt: new Date(),
-      status: 'running'
-    });
-  } catch (_err) {
-    return null;
+  const parameterVersion = await getOrCreateParameterVersion({
+    accountId: scopedAccountId,
+    strategyId,
+    parameters,
+    source
+  });
+  if (!parameterVersion?._id) {
+    throw new Error('A durable parameter version is required before creating a strategy run.');
   }
+  return StrategyRun.create({
+    accountId: scopedAccountId,
+    strategyId,
+    strategyName,
+    runType,
+    mode,
+    symbol,
+    universe,
+    parameterVersionId: parameterVersion._id,
+    summary,
+    context,
+    startedAt: new Date(),
+    status: 'running'
+  });
 }
 
 async function finalizeStrategyRun(run, { status = 'completed', metrics = {}, summary = {}, result = {}, error = null } = {}) {

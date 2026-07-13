@@ -17,7 +17,7 @@ module.exports = defineConfig({
   webServer: process.env.E2E_BASE_URL
     ? undefined
     : {
-        command: `PORT=${defaultPort} BROWSER=none npm start`,
+        command: `npm start -- --port ${defaultPort}`,
         url: baseURL,
         timeout: 120_000,
         reuseExistingServer: true

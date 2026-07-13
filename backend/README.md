@@ -87,7 +87,7 @@ Robo Trader adds:
 
 Phase 1 RoboTrader adds a richer server-side automation layer without removing the older `/api/robo` routes:
 
-- Extended per-user settings with `isEnabled`, paper/live mode, allowed/blocked symbols, asset-class permissions, max trade size, max daily loss, max open positions, max trades per day, fractional/extended-hours/options/crypto toggles, risk level, manual approval threshold, `lastRunAt`, and `pausedReason`
+- Extended per-user settings with `isEnabled`, paper/live mode, allowed/blocked symbols, asset-class permissions, max trade size, max daily loss, max open positions, max trades per day, fractional/extended-hours/options/crypto toggles, risk level, explicit approval policy, `lastRunAt`, and `pausedReason`
 - Paper mode remains the default. Live mode requires explicit opt-in plus the confirmation phrase `I understand live trading risk`.
 - Background execution runs from the backend scheduler when Mongo is connected and `ROBOTRADER_WORKER_DISABLED` is not `true`.
 - Alpaca order validation uses a code-level capability matrix before submitting orders.
@@ -95,6 +95,15 @@ Phase 1 RoboTrader adds a richer server-side automation layer without removing t
 - Emergency stop disables RoboTrader immediately and can cancel open RoboTrader-created Alpaca orders.
 - Reconciliation checks local RoboTrader orders against Alpaca and records status changes/discrepancies.
 - Fractional stock RoboTrader entries are submitted as simple day orders after Alpaca asset eligibility checks. Whole-share stock entries can use Alpaca bracket orders with broker-attached take-profit/stop-loss legs; filled simple/fractional stock entries create a follow-up Alpaca stop order during reconciliation so stored risk stops become broker-side protection.
+- Controlled live-readiness Sprint 1 adds canonical order fingerprints, stable policy reason codes, durable `OrderIntent` records, and short-lived one-time `TradeAuthorization` records. See `../docs/controlled-live-readiness-sprint1.md`.
+- Controlled live-readiness Sprint 2 adds fresh-quote/spread/liquidity/slippage vetoes, exchange-aware entry cutoffs, shadow-live evaluation, persisted portfolio exposure/drawdown snapshots, automatic risk pauses, and an exact-intent approval queue. See `../docs/controlled-live-readiness-sprint2.md`.
+- Controlled live-readiness Sprint 3 adds durable operational alerts, expiring drill/review evidence, fail-closed readiness gates, and the operator incident runbook. See `../docs/controlled-live-readiness-sprint3.md`.
+- Controlled live-readiness Sprint 4 adds readiness-bound approval, short-lived canary activation, explicit deployment/credential gates, immutable live-order limits, and Emergency Stop revocation. See `../docs/controlled-live-readiness-sprint4.md`.
+- Controlled live-readiness Sprint 5 adds atomic single-attempt canaries, activation/order lifecycle tracking, automatic failure revocation, reconciliation outcomes, expiry handling, and post-canary review. See `../docs/controlled-live-readiness-sprint5.md`.
+- Controlled live-readiness Sprint 6 adds an explicit five-minute supervisor heartbeat, scheduler-independent submission enforcement, automatic watchdog revocation and automation pause, critical supervision-loss alerts, and append-only SHA-256 evidence dossiers. See `../docs/controlled-live-readiness-sprint6.md`.
+- Controlled live-readiness Sprint 7 adds three-canary cohort verification, dossier-integrity and protection gates, a 24-hour cooling period, fingerprint-bound single-use repeat-canary promotion, cohort symbol/strategy restrictions, and promotion rollback without increasing any hard trading limit. See `../docs/controlled-live-readiness-sprint7.md`.
+- Controlled live-readiness Sprint 8 binds promotion to recent per-symbol backtests of the exact Robo strategy and one parameter version, applies minimum sample/average-R/drawdown gates, measures realized canary execution drift, and automatically expires promotion when its strategy evidence becomes stale. See `../docs/controlled-live-readiness-sprint8.md`.
+- Controlled live-readiness Sprint 9 integrates persisted rolling walk-forward validation and a paper-versus-live execution discrepancy report into the promotion fingerprint. See `../docs/controlled-live-readiness-sprint9.md`.
 
 API endpoints:
 
@@ -109,6 +118,13 @@ API endpoints:
 - `POST /api/robotrader/disable`
 - `POST /api/robotrader/emergency-stop`
 - `GET /api/robotrader/decisions`
+- `GET /api/robotrader/intents`
+- `GET /api/robotrader/intents/:intentId`
+- `GET /api/robotrader/approval-queue`
+- `POST /api/robotrader/intents/:intentId/authorize`
+- `POST /api/robotrader/intents/:intentId/submit`
+- `POST /api/robotrader/intents/:intentId/revoke`
+- `GET /api/robotrader/exposure?environment=paper|shadow|live`
 - `GET /api/robotrader/orders`
 - `POST /api/robotrader/orders/:orderId/cancel`
 - `POST /api/robotrader/orders/:orderId/replace`
@@ -116,6 +132,7 @@ API endpoints:
 - `GET /api/robotrader/performance`
 - `GET /api/robotrader/audit`
 - `POST /api/robotrader/run-once-paper`
+- `POST /api/robotrader/run-once-shadow`
 - `POST /api/robotrader/reconcile`
 
 Execution quality endpoint:

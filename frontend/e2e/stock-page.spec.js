@@ -32,6 +32,13 @@ async function mockApiForStockFlow(page, {
       body: JSON.stringify(body)
     });
 
+    if (method === 'GET' && path === '/api/me') {
+      return reply({
+        user: { id: 'playwright-user', username: 'playwright', email: 'playwright@example.com' },
+        databaseAvailable: true
+      });
+    }
+
     if (method === 'GET' && path === '/api/market/status') {
       return reply({
         status: 'OPEN',
@@ -122,12 +129,6 @@ async function mockApiForStockFlow(page, {
 }
 
 test.describe('Watchlist To Stock Flow', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => {
-      localStorage.setItem('token', 'playwright-e2e-token');
-    });
-  });
-
   test('clicking watchlist symbol loads Stock page content', async ({ page }) => {
     await mockApiForStockFlow(page, {
       analyzePayload: {

@@ -4,7 +4,7 @@ primary_region = "ord"
 [build]
   dockerfile = "Dockerfile"
   [build.args]
-    REACT_APP_API_URL = "https://day-trader-backend.fly.dev"
+    VITE_API_URL = "https://day-trader-backend.fly.dev"
 
 [env]
   NODE_ENV = "production"

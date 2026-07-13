@@ -5,6 +5,7 @@ const StrategyParameterVersion = require('../models/StrategyParameterVersion');
 const StrategyRun = require('../models/StrategyRun');
 const {
   createStrategyRun,
+  getOrCreateParameterVersion,
   listRecentParameterVersions,
   listRecentStrategyRuns,
   normalizeAccountId
@@ -112,4 +113,35 @@ test('createStrategyRun writes account scope to run and parameter version', asyn
   assert.equal(runPayload.parameterVersionId, 'parameter-version-3');
   assert.equal(findQueries[0].accountId, 'user:alice');
   assert.equal(findQueries[1].accountId, 'user:alice');
+});
+
+test('parameter version allocation retries a concurrent version collision', async t => {
+  t.mock.method(mongoState, 'isMongoReady', () => true);
+  let hashLookups = 0;
+  let latestVersion = 1;
+  let createAttempts = 0;
+  t.mock.method(StrategyParameterVersion, 'findOne', query => {
+    if (query.parameterHash) {
+      hashLookups += 1;
+      return Promise.resolve(null);
+    }
+    return { sort: () => ({ lean: async () => ({ version: latestVersion++ }) }) };
+  });
+  t.mock.method(StrategyParameterVersion, 'create', async payload => {
+    createAttempts += 1;
+    if (createAttempts === 1) {
+      const error = new Error('duplicate version');
+      error.code = 11000;
+      throw error;
+    }
+    return { _id: 'parameter-retried', ...payload };
+  });
+  const version = await getOrCreateParameterVersion({
+    accountId: 'user:alice',
+    strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    parameters: { timeframe: '1D' }
+  });
+  assert.equal(version._id, 'parameter-retried');
+  assert.equal(createAttempts, 2);
+  assert.ok(hashLookups >= 2);
 });

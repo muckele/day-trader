@@ -1,7 +1,7 @@
 const mongoState = require('../utils/mongoState');
 
 module.exports = function requireMongo(req, res, next) {
-  if (mongoState.isMongoReady()) {
+  if (mongoState.isMongoRequestReady()) {
     return next();
   }
 

@@ -26,6 +26,34 @@ const STRATEGIES = [
     description: 'Breakout with volume expansion.',
     tags: ['trend', 'momentum', 'highVol'],
     expectedHold: 'SWING'
+  },
+  {
+    strategyId: 'ROBO_MOMENTUM_BREAKOUT_V1',
+    name: 'Robo Momentum Breakout v1',
+    description: 'RoboTrader momentum, volume expansion, and moving-average alignment profile.',
+    tags: ['robo', 'trend', 'momentum'],
+    expectedHold: 'SWING'
+  },
+  {
+    strategyId: 'ROBO_MEAN_REVERSION_V1',
+    name: 'Robo Mean Reversion v1',
+    description: 'RoboTrader oversold RSI and short-term pullback profile.',
+    tags: ['robo', 'meanReversion'],
+    expectedHold: 'INTRADAY'
+  },
+  {
+    strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    name: 'Robo Trend Following v1',
+    description: 'RoboTrader multi-horizon moving-average trend profile.',
+    tags: ['robo', 'trend'],
+    expectedHold: 'SWING'
+  },
+  {
+    strategyId: 'ROBO_RISK_OFF_PROTECTION_V1',
+    name: 'Robo Risk-Off Protection v1',
+    description: 'RoboTrader downside-momentum protection profile.',
+    tags: ['robo', 'riskOff', 'short'],
+    expectedHold: 'INTRADAY'
   }
 ];
 

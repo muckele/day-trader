@@ -130,6 +130,7 @@ test('startRoboScheduler defaults to Phase 1 worker without running legacy sched
 
   let legacyCalls = 0;
   let workerCalls = 0;
+  let watchdogCalls = 0;
   t.mock.method(roboEngine, 'runSchedulerTick', async () => {
     legacyCalls += 1;
   });
@@ -146,7 +147,10 @@ test('startRoboScheduler defaults to Phase 1 worker without running legacy sched
       intervalMs: 25,
       cleanupIntervalMs: 1000,
       startupDelayMs: 0,
-      isDbReady: () => true
+      isDbReady: () => true,
+      controlledLiveWatchdog: async () => { watchdogCalls += 1; },
+      livePromotionExpiry: async () => ({ modifiedCount: 0 }),
+      strategyEvidenceDemotion: async () => ({ revokedCount: 0 })
     });
 
     await new Promise(resolve => setTimeout(resolve, 90));
@@ -154,6 +158,7 @@ test('startRoboScheduler defaults to Phase 1 worker without running legacy sched
 
     assert.equal(legacyCalls, 0);
     assert.ok(workerCalls >= 1);
+    assert.ok(watchdogCalls >= 1);
   } finally {
     if (previousDisabled === undefined) delete process.env.ROBO_SCHEDULER_DISABLED;
     else process.env.ROBO_SCHEDULER_DISABLED = previousDisabled;
@@ -298,7 +303,10 @@ test('startRoboScheduler reconciles paper only when live reconciliation is not e
       cleanupIntervalMs: 1000,
       reconciliationIntervalMs: 20,
       startupDelayMs: 0,
-      isDbReady: () => true
+      isDbReady: () => true,
+      controlledLiveWatchdog: async () => ({ modifiedCount: 0 }),
+      livePromotionExpiry: async () => ({ modifiedCount: 0 }),
+      strategyEvidenceDemotion: async () => ({ revokedCount: 0 })
     });
 
     await new Promise(resolve => setTimeout(resolve, 75));
@@ -350,7 +358,10 @@ test('startRoboScheduler reconciles live when live reconciliation is explicitly 
       cleanupIntervalMs: 1000,
       reconciliationIntervalMs: 20,
       startupDelayMs: 0,
-      isDbReady: () => true
+      isDbReady: () => true,
+      controlledLiveWatchdog: async () => ({ modifiedCount: 0 }),
+      livePromotionExpiry: async () => ({ modifiedCount: 0 }),
+      strategyEvidenceDemotion: async () => ({ revokedCount: 0 })
     });
 
     await new Promise(resolve => setTimeout(resolve, 75));

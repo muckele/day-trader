@@ -1,10 +1,12 @@
 const roboEngine = require('./roboTraderEngine');
-const mongoose = require('mongoose');
 const roboTraderWorker = require('../robotrader/worker');
 const roboReconciliation = require('../robotrader/reconciliation');
 const RoboSettings = require('../models/RoboSettings');
 const { getAlpacaConfigForMode } = require('../robotrader/alpacaBroker');
 const { isPaperTradingEndpoint } = require('./alpacaTradingClient');
+const { enforceControlledLiveWatchdog } = require('./controlledLiveActivationService');
+const { enforceStrategyEvidenceDemotion, expireLivePromotions } = require('./livePromotionService');
+const mongoState = require('../utils/mongoState');
 
 const schedulerState = {
   enabled: true,
@@ -35,7 +37,7 @@ function isSchedulerDbRequired() {
 }
 
 function defaultIsDbReady() {
-  return mongoose.connection.readyState === 1;
+  return mongoState.isMongoRequestReady();
 }
 
 function isEnvTrue(value) {
@@ -101,7 +103,10 @@ function startRoboScheduler({
   decisionRetentionDays = process.env.ROBOTRADER_DECISION_RETENTION_DAYS,
   auditLogRetentionDays = process.env.ROBOTRADER_AUDIT_LOG_RETENTION_DAYS,
   startupDelayMs = 5000,
-  isDbReady = defaultIsDbReady
+  isDbReady = defaultIsDbReady,
+  controlledLiveWatchdog = enforceControlledLiveWatchdog,
+  livePromotionExpiry = expireLivePromotions,
+  strategyEvidenceDemotion = enforceStrategyEvidenceDemotion
 } = {}) {
   if (process.env.ROBO_SCHEDULER_DISABLED === 'true') {
     schedulerState.enabled = false;
@@ -145,6 +150,12 @@ function startRoboScheduler({
       const shouldRunPhase1Worker = isPhase1WorkerEnabled();
       schedulerState.legacySchedulerEnabled = shouldRunLegacyScheduler;
       schedulerState.phase1WorkerEnabled = shouldRunPhase1Worker;
+
+      if (isDbReady()) {
+        await controlledLiveWatchdog({ now: new Date() });
+        await livePromotionExpiry({ now: new Date() });
+        await strategyEvidenceDemotion({ now: new Date() });
+      }
 
       if (shouldRunLegacyScheduler) {
         await roboEngine.runSchedulerTick();

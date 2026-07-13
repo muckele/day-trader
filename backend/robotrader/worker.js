@@ -3,10 +3,15 @@ const RoboTradeDecision = require('../models/RoboTradeDecision');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
 const RoboAuditLog = require('../models/RoboAuditLog');
 const RoboLock = require('../models/RoboLock');
+const OrderIntent = require('../models/OrderIntent');
+const RoboExposureSnapshot = require('../models/RoboExposureSnapshot');
+const RoboOperationalAlert = require('../models/RoboOperationalAlert');
+const RoboLivePromotion = require('../models/RoboLivePromotion');
 const User = require('../models/User');
 const { getRecommendationUniverse } = require('../config/tradingConfig');
 const { getAccountIdForUser } = require('../utils/accountScope');
 const { isCryptoSymbol } = require('../services/marketData');
+const { fetchQuotes } = require('../services/marketData');
 const { buildClientOrderId } = require('../services/alpacaTradingClient');
 const {
   getOrCreateRoboTraderSettings,
@@ -21,6 +26,26 @@ const { evaluateResearchBatch } = require('./strategyEngine');
 const { evaluateRoboRisk } = require('./riskGate');
 const { createAlpacaBroker } = require('./alpacaBroker');
 const { submitProtectiveStopForEntry } = require('./reconciliation');
+const {
+  POLICY_VERSION,
+  evaluateCanonicalTradingPolicy
+} = require('../services/canonicalTradingPolicyService');
+const {
+  claimTradeAuthorization,
+  findActiveTradeAuthorization
+} = require('../services/tradeAuthorizationService');
+const { evaluateExecutionQuality } = require('../services/executionQualityService');
+const { createOperationalAlertFromAudit } = require('../services/roboReadinessService');
+const {
+  claimControlledLiveAttempt,
+  recordControlledLiveOutcome,
+  revalidateControlledLiveAttempt,
+  validateControlledLiveSubmission
+} = require('../services/controlledLiveActivationService');
+const {
+  buildPortfolioRiskSnapshot,
+  evaluateProjectedPortfolioRisk
+} = require('../services/portfolioRiskService');
 
 const TERMINAL_ORDER_STATUSES = ['filled', 'canceled', 'cancelled', 'expired', 'rejected'];
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -53,6 +78,35 @@ function normalizeRetentionDays(value, fallback) {
 
 function buildRunId(userId, now = new Date()) {
   return `robotrader-${String(userId)}-${now.toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
+}
+
+function getEvaluationNow(fallbackNow, deps) {
+  return typeof deps.getCurrentTime === 'function' ? deps.getCurrentTime() : fallbackNow;
+}
+
+function normalizeControlGeneration(value) {
+  const generation = Math.floor(Number(value));
+  return Number.isFinite(generation) && generation >= 0 ? generation : 0;
+}
+
+async function readControlGeneration(userId, deps) {
+  if (typeof deps.readControlGeneration === 'function') {
+    return normalizeControlGeneration(await deps.readControlGeneration(userId));
+  }
+  if (typeof deps.RoboSettings?.findOne !== 'function') return null;
+  let query = deps.RoboSettings.findOne({ userId });
+  if (typeof query?.select === 'function') query = query.select('controlGeneration');
+  if (typeof query?.lean === 'function') query = query.lean();
+  const settings = await query;
+  return settings ? normalizeControlGeneration(settings.controlGeneration) : null;
+}
+
+async function controlGenerationMatches(userId, expectedControlGeneration, deps) {
+  const current = await readControlGeneration(userId, deps);
+  // Lightweight unit-test adapters predating the control-generation field do
+  // not implement a settings read. Production always has RoboSettings.findOne.
+  if (current === null && typeof deps.RoboSettings?.findOne !== 'function') return true;
+  return current !== null && current === normalizeControlGeneration(expectedControlGeneration);
 }
 
 function minuteBucket(now = new Date()) {
@@ -142,10 +196,84 @@ function normalizeAlpacaOrder(order = {}) {
     side: order.side || null,
     qty: toFiniteNumber(order.qty, null),
     notional: toFiniteNumber(order.notional, null),
+    orderType: order.type || order.order_type || 'market',
+    limitPrice: toFiniteNumber(order.limit_price ?? order.limitPrice, null),
+    stopPrice: toFiniteNumber(order.stop_price ?? order.stopPrice, null),
     submittedAt: order.submitted_at || order.created_at || null,
     createdAt: order.created_at || null,
     raw: order
   };
+}
+
+function mergeRiskResults(...results) {
+  const normalized = results.filter(Boolean);
+  return {
+    approved: normalized.every(result => result.approved !== false),
+    checks: normalized.flatMap(result => result.checks || []),
+    rejectionReasons: [...new Set(normalized.flatMap(result => result.rejectionReasons || []).filter(Boolean))]
+  };
+}
+
+async function readLatestExposureSnapshot(userId, environment, deps) {
+  if (!deps.RoboExposureSnapshot?.findOne) return null;
+  let query = deps.RoboExposureSnapshot.findOne({ userId, environment });
+  if (typeof query?.sort === 'function') query = query.sort({ capturedAt: -1 });
+  if (typeof query?.lean === 'function') query = query.lean();
+  return query;
+}
+
+async function capturePortfolioRisk({
+  userId,
+  accountId,
+  environment,
+  account,
+  positions,
+  openOrders,
+  settings,
+  now,
+  deps
+}) {
+  const previousSnapshot = await readLatestExposureSnapshot(userId, environment, deps);
+  const snapshot = buildPortfolioRiskSnapshot({
+    userId,
+    accountId,
+    environment,
+    account,
+    positions,
+    openOrders,
+    portfolioPolicy: settings.portfolioPolicy,
+    previousSnapshot,
+    now
+  });
+  const persisted = deps.RoboExposureSnapshot?.create
+    ? await deps.RoboExposureSnapshot.create(snapshot)
+    : snapshot;
+  if (
+    snapshot.breached
+    && snapshot.limits.pauseOnBreach
+    && ['shadow', 'live'].includes(environment)
+  ) {
+    if (deps.RoboSettings?.updateOne) {
+      await deps.RoboSettings.updateOne(
+        { userId },
+        {
+          $set: {
+            enabled: false,
+            isEnabled: false,
+            pausedReason: `Portfolio risk breach: ${snapshot.breachReasonCodes.join(', ')}`
+          },
+          $inc: { controlGeneration: 1 }
+        }
+      );
+    }
+    await writeAudit(userId, 'robotrader_portfolio_risk_pause', {
+      environment,
+      exposureSnapshotId: persisted?._id ? String(persisted._id) : null,
+      breachReasonCodes: snapshot.breachReasonCodes,
+      checks: snapshot.checks
+    }, deps);
+  }
+  return persisted;
 }
 
 async function loadAssetMetadataForRisk(symbol, assetClass, broker) {
@@ -207,7 +335,17 @@ function buildSymbolUniverse(settings) {
 }
 
 async function writeAudit(userId, eventType, payload, deps) {
-  return deps.RoboAuditLog.create({ userId, eventType, payload: payload || {} });
+  const normalizedPayload = payload || {};
+  const audit = await deps.RoboAuditLog.create({ userId, eventType, payload: normalizedPayload });
+  if (typeof deps.createOperationalAlertFromAudit === 'function') {
+    try {
+      await deps.createOperationalAlertFromAudit({ userId, eventType, payload: normalizedPayload }, deps);
+    } catch (_err) {
+      // Alert fan-out must not replace the durable audit event or alter the
+      // trading decision.
+    }
+  }
+  return audit;
 }
 
 async function acquireWorkerLock(userId, owner, now = new Date(), deps = defaultDeps) {
@@ -374,12 +512,60 @@ function buildOrderInputFromDecision(decision, settings) {
   };
 }
 
+function buildOrderInputFromIntent(intent = {}) {
+  const snapshot = intent.orderSnapshot || {};
+  const takeProfitPrice = snapshot.takeProfit?.limitPrice
+    ?? snapshot.takeProfit?.limit_price
+    ?? intent.takeProfitPrice;
+  const stopLossStopPrice = snapshot.stopLoss?.stopPrice
+    ?? snapshot.stopLoss?.stop_price
+    ?? intent.stopLossPrice;
+  const stopLossLimitPrice = snapshot.stopLoss?.limitPrice
+    ?? snapshot.stopLoss?.limit_price;
+  return {
+    symbol: snapshot.symbol || intent.symbol,
+    assetClass: normalizeAssetClass(snapshot.assetClass || intent.assetClass) || 'stocks',
+    side: snapshot.side || intent.side,
+    orderType: snapshot.orderType || intent.orderType || 'market',
+    orderClass: snapshot.orderClass || intent.orderClass || 'simple',
+    timeInForce: snapshot.timeInForce || intent.timeInForce || 'day',
+    qty: snapshot.qty ?? intent.qty ?? null,
+    notional: snapshot.notional ?? intent.notional ?? null,
+    estimatedNotional: snapshot.estimatedNotional ?? intent.estimatedNotional ?? null,
+    limitPrice: snapshot.limitPrice ?? intent.limitPrice ?? null,
+    stopPrice: snapshot.stopPrice ?? intent.stopPrice ?? null,
+    trailPrice: snapshot.trailPrice ?? null,
+    trailPercent: snapshot.trailPercent ?? intent.trailingStopPct ?? null,
+    takeProfit: takeProfitPrice ? { limitPrice: takeProfitPrice } : null,
+    stopLoss: stopLossStopPrice
+      ? {
+          stopPrice: stopLossStopPrice,
+          ...(stopLossLimitPrice ? { limitPrice: stopLossLimitPrice } : {})
+        }
+      : null,
+    riskStopPrice: snapshot.riskStopPrice ?? null,
+    riskTakeProfitPrice: snapshot.riskTakeProfitPrice ?? null,
+    extendedHours: Boolean(snapshot.extendedHours ?? intent.allowExtendedHours),
+    strategyId: snapshot.strategyId || intent.strategyId || null,
+    referencePrice: snapshot.referencePrice ?? null,
+    quoteTimestamp: snapshot.quoteTimestamp ?? null
+  };
+}
+
+function mapBrokerOrderLifecycle(status) {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'filled') return { intentStatus: 'filled', decisionStatus: 'filled' };
+  if (['canceled', 'cancelled', 'expired'].includes(normalized)) {
+    return { intentStatus: 'cancelled', decisionStatus: 'cancelled' };
+  }
+  if (normalized === 'rejected') return { intentStatus: 'rejected', decisionStatus: 'rejected' };
+  return { intentStatus: 'submitted', decisionStatus: 'submitted' };
+}
+
 function resolveDecisionStatus(riskResult = {}) {
-  const rejectionReasons = riskResult.rejectionReasons || [];
+  if (riskResult.decisionStatus) return riskResult.decisionStatus;
   if (riskResult.approved) return 'approved';
-  return rejectionReasons.includes('Trade requires manual approval above configured dollar amount.')
-    ? 'pending_manual_approval'
-    : 'rejected';
+  return 'rejected';
 }
 
 function buildDecisionPreview({
@@ -402,6 +588,10 @@ function buildDecisionPreview({
     reasoningSummary: decision.reasoningSummary || null,
     recommendedOrder: orderInput || {},
     riskChecks: riskResult.checks || [],
+    policyVersion: riskResult.policyVersion || null,
+    reasonCodes: riskResult.reasonCodes || [],
+    orderFingerprint: riskResult.orderFingerprint || null,
+    approval: riskResult.approval || null,
     rejectionReasons: riskResult.rejectionReasons || [],
     researchSummary: summarizeResearchSnapshot(research)
   };
@@ -414,6 +604,32 @@ async function getRecentLocalOrders(userId, environment, now, deps) {
     environment,
     createdAt: { $gte: since }
   }).sort({ createdAt: -1 }).lean();
+}
+
+async function resolveCanonicalPolicy({
+  userId,
+  accountId,
+  environment,
+  settings,
+  decision,
+  orderInput,
+  baseRiskResult,
+  authorization = null,
+  now,
+  deps
+}) {
+  const evaluatePolicy = deps.evaluateCanonicalTradingPolicy || evaluateCanonicalTradingPolicy;
+  return evaluatePolicy({
+    accountId,
+    broker: 'alpaca',
+    environment,
+    settings,
+    decision,
+    orderInput,
+    riskResult: baseRiskResult,
+    authorization,
+    now
+  });
 }
 
 async function resolveAccountIdForUserId(userId, deps = defaultDeps) {
@@ -437,6 +653,8 @@ async function saveDecision({
   decision,
   riskResult,
   orderInput,
+  executionQuality,
+  exposureSnapshot,
   now,
   deps
 }) {
@@ -467,6 +685,12 @@ async function saveDecision({
       researchSnapshot: summarizeResearchSnapshot(research),
       recommendedOrder: orderInput || {},
       riskChecks: riskResult.checks || [],
+      executionQuality: executionQuality || null,
+      exposureSnapshotId: exposureSnapshot?._id || null,
+      policyVersion: riskResult.policyVersion || null,
+      reasonCodes: riskResult.reasonCodes || [],
+      orderFingerprint: riskResult.orderFingerprint || null,
+      approval: riskResult.approval || null,
       rejectionReasons: riskResult.rejectionReasons || [],
       decidedAt: now
     });
@@ -482,6 +706,88 @@ async function saveDecision({
     }
     throw err;
   }
+}
+
+function resolveIntentStatus(policyResult = {}) {
+  if (policyResult.approved) return 'policy_approved';
+  if (policyResult.decisionStatus === 'pending_manual_approval') return 'awaiting_authorization';
+  return 'policy_blocked';
+}
+
+async function saveOrderIntent({
+  userId,
+  accountId,
+  environment,
+  decisionDoc,
+  orderInput,
+  policyResult,
+  executionQuality,
+  exposureSnapshot,
+  now,
+  deps
+}) {
+  if (!decisionDoc || !orderInput?.symbol || !deps.OrderIntent?.create) return null;
+  const idempotencyKey = `${decisionDoc.idempotencyKey}:${policyResult.orderFingerprint}`;
+  const payload = {
+    userId,
+    accountId,
+    decisionId: decisionDoc._id,
+    idempotencyKey,
+    origin: 'robotrader',
+    broker: 'alpaca',
+    environment,
+    symbol: normalizeSymbol(orderInput.symbol),
+    assetClass: normalizeAssetClass(orderInput.assetClass) || 'stocks',
+    side: orderInput.side,
+    qty: orderInput.qty,
+    notional: orderInput.notional,
+    estimatedNotional: orderInput.estimatedNotional,
+    orderType: orderInput.orderType,
+    orderClass: orderInput.orderClass,
+    timeInForce: orderInput.timeInForce,
+    limitPrice: orderInput.limitPrice,
+    stopPrice: orderInput.stopPrice,
+    takeProfitPrice: getNestedPrice(orderInput, 'takeProfit', 'limit_price'),
+    stopLossPrice: getNestedPrice(orderInput, 'stopLoss', 'stop_price'),
+    trailingStopPct: orderInput.trailPercent,
+    allowExtendedHours: Boolean(orderInput.extendedHours),
+    strategyId: orderInput.strategyId || decisionDoc.strategyId || null,
+    status: resolveIntentStatus(policyResult),
+    policyVersion: policyResult.policyVersion,
+    reasonCodes: policyResult.reasonCodes || [],
+    riskChecks: policyResult.checks || [],
+    executionQuality: executionQuality || null,
+    exposureSnapshotId: exposureSnapshot?._id || null,
+    orderFingerprint: policyResult.orderFingerprint,
+    orderSnapshot: policyResult.orderSnapshot,
+    approvalPolicy: policyResult.approval?.policy || null,
+    authorizationStatus: policyResult.approval?.status || 'not_required',
+    authorizationId: policyResult.approval?.authorizationId || null,
+    authorizationExpiresAt: policyResult.approval?.expiresAt || null,
+    authorizedAt: policyResult.approval?.valid && policyResult.approval?.required ? now : null,
+    rejectionReason: policyResult.rejectionReasons?.join(' ') || null,
+    requestedAt: now,
+    metadata: {
+      runId: decisionDoc.runId,
+      confidenceScore: decisionDoc.confidenceScore,
+      rewardRiskRatio: decisionDoc.rewardRiskRatio
+    }
+  };
+
+  try {
+    return await deps.OrderIntent.create(payload);
+  } catch (err) {
+    if (err?.code === 11000 && deps.OrderIntent.findOne) {
+      return deps.OrderIntent.findOne({ userId, idempotencyKey });
+    }
+    throw err;
+  }
+}
+
+async function setIntentLifecycle(intentDoc, status, update = {}) {
+  if (!intentDoc) return;
+  Object.assign(intentDoc, update, { status });
+  if (typeof intentDoc.save === 'function') await intentDoc.save();
 }
 
 async function findCleanupDecisionCandidates(query, batchSize, deps) {
@@ -536,10 +842,15 @@ async function cleanupRoboTradeDecisions({
     const candidateIds = candidates.map(item => item._id).filter(Boolean);
     if (!candidateIds.length) continue;
 
-    const linkedIds = deps.RoboTradeOrder?.distinct
-      ? await deps.RoboTradeOrder.distinct('decisionId', { decisionId: { $in: candidateIds } })
-      : [];
-    const linkedSet = new Set((linkedIds || []).map(String));
+    const [linkedOrderIds, linkedIntentIds] = await Promise.all([
+      deps.RoboTradeOrder?.distinct
+        ? deps.RoboTradeOrder.distinct('decisionId', { decisionId: { $in: candidateIds } })
+        : [],
+      deps.OrderIntent?.distinct
+        ? deps.OrderIntent.distinct('decisionId', { decisionId: { $in: candidateIds } })
+        : []
+    ]);
+    const linkedSet = new Set([...(linkedOrderIds || []), ...(linkedIntentIds || [])].map(String));
     const deletableIds = candidateIds.filter(id => !linkedSet.has(String(id)));
     preservedLinkedCount += candidateIds.length - deletableIds.length;
     if (!deletableIds.length) continue;
@@ -579,12 +890,127 @@ async function submitApprovedOrder({
   accountId,
   environment,
   decisionDoc,
+  intentDoc,
   orderInput,
   riskResult,
   broker,
   now,
+  expectedControlGeneration,
   deps
 }) {
+  let controlledLiveGuard = null;
+  let controlledAttemptClaimed = false;
+  const recordOutcome = async payload => {
+    if (typeof deps.recordControlledLiveOutcome !== 'function') return null;
+    try {
+      return await deps.recordControlledLiveOutcome(payload, deps);
+    } catch (_err) {
+      return null;
+    }
+  };
+  if (environment === 'live') {
+    const guard = typeof deps.validateControlledLiveSubmission === 'function'
+      ? await deps.validateControlledLiveSubmission({ userId, orderInput, now }, deps)
+      : {
+          approved: false,
+          reasonCode: 'CONTROLLED_LIVE_GUARD_UNAVAILABLE',
+          message: 'The controlled-live submission guard is unavailable.'
+        };
+    if (!guard.approved) {
+      riskResult.submissionBlockReason = guard.reasonCode || 'CONTROLLED_LIVE_BLOCKED';
+      await setIntentLifecycle(intentDoc, 'policy_blocked', { rejectionReason: guard.message });
+      decisionDoc.status = 'rejected';
+      decisionDoc.error = guard.message;
+      await decisionDoc.save();
+      await writeAudit(userId, 'robotrader_controlled_live_blocked', {
+        decisionId: String(decisionDoc._id),
+        intentId: intentDoc?._id ? String(intentDoc._id) : null,
+        reasonCode: guard.reasonCode,
+        reason: guard.message,
+        metadata: guard.metadata || null,
+        environment
+      }, deps);
+      return null;
+    }
+    controlledLiveGuard = guard;
+  }
+
+  const blockBeforeBrokerSubmission = async (pendingOrder, {
+    reason = 'RoboTrader settings changed or an emergency stop was triggered before broker submission.',
+    reasonCode = 'CONTROL_GENERATION_CHANGED',
+    eventType = 'robotrader_submission_control_invalidated'
+  } = {}) => {
+    riskResult.submissionBlockReason = reasonCode;
+    if (pendingOrder) {
+      pendingOrder.status = 'canceled';
+      pendingOrder.canceledAt = now;
+      pendingOrder.reconciliationStatus = reasonCode.toLowerCase();
+      pendingOrder.discrepancy = reason;
+      await pendingOrder.save();
+    }
+    await setIntentLifecycle(intentDoc, 'policy_blocked', { rejectionReason: reason });
+    decisionDoc.status = 'rejected';
+    decisionDoc.error = reason;
+    await decisionDoc.save();
+    if (controlledAttemptClaimed && controlledLiveGuard?.activationId) {
+      await recordOutcome({
+        activationId: controlledLiveGuard.activationId,
+        liveOrderId: pendingOrder?._id || null,
+        status: 'control_invalidated',
+        details: { reasonCode, reason },
+        now
+      });
+    }
+    await writeAudit(userId, eventType, {
+      decisionId: String(decisionDoc._id),
+      intentId: intentDoc?._id ? String(intentDoc._id) : null,
+      pendingOrderId: pendingOrder?._id ? String(pendingOrder._id) : null,
+      expectedControlGeneration: normalizeControlGeneration(expectedControlGeneration),
+      environment
+    }, deps);
+    return null;
+  };
+
+  if (!await controlGenerationMatches(userId, expectedControlGeneration, deps)) {
+    return blockBeforeBrokerSubmission(null);
+  }
+
+  if (
+    environment === 'live'
+    && riskResult.approval?.required
+    && typeof deps.claimTradeAuthorization === 'function'
+  ) {
+    const claimedAuthorization = await deps.claimTradeAuthorization({
+      authorizationId: riskResult.approval.authorizationId,
+      userId,
+      accountId,
+      intentId: intentDoc?._id,
+      orderFingerprint: riskResult.orderFingerprint,
+      policyVersion: riskResult.policyVersion,
+      runId: decisionDoc.runId,
+      now
+    });
+    if (!claimedAuthorization) {
+      decisionDoc.status = 'pending_manual_approval';
+      decisionDoc.error = 'Trade authorization was unavailable or already consumed.';
+      await decisionDoc.save();
+      await setIntentLifecycle(intentDoc, 'awaiting_authorization', {
+        authorizationStatus: 'missing',
+        rejectionReason: 'Trade authorization was unavailable or already consumed.'
+      });
+      await writeAudit(userId, 'robotrader_authorization_claim_failed', {
+        decisionId: String(decisionDoc._id),
+        intentId: intentDoc?._id ? String(intentDoc._id) : null,
+        orderFingerprint: riskResult.orderFingerprint,
+        environment
+      }, deps);
+      return null;
+    }
+    if (intentDoc) intentDoc.authorizationStatus = 'consumed';
+  }
+  if (!await controlGenerationMatches(userId, expectedControlGeneration, deps)) {
+    return blockBeforeBrokerSubmission(null);
+  }
   const clientOrderId = orderInput.clientOrderId || orderInput.client_order_id || deps.buildClientOrderId({
     origin: 'robotrader',
     symbol: orderInput.symbol,
@@ -594,6 +1020,7 @@ async function submitApprovedOrder({
     userId,
     accountId,
     decisionId: decisionDoc._id,
+    intentId: intentDoc?._id || null,
     environment,
     symbol: normalizeSymbol(orderInput.symbol),
     assetClass: normalizeAssetClass(orderInput.assetClass) || 'stocks',
@@ -615,8 +1042,57 @@ async function submitApprovedOrder({
     status: 'pending_submit',
     reasoningSummary: decisionDoc.reasoningSummary,
     strategyId: decisionDoc.strategyId,
-    riskChecks: riskResult.checks || []
+    riskChecks: riskResult.checks || [],
+    executionQuality: intentDoc?.executionQuality || null,
+    exposureSnapshotId: intentDoc?.exposureSnapshotId || null,
+    liveActivationId: controlledLiveGuard?.activationId || null,
+    policyVersion: riskResult.policyVersion || null,
+    orderFingerprint: riskResult.orderFingerprint || null
   });
+
+  await setIntentLifecycle(intentDoc, 'submitting', {
+    roboTradeOrderId: pendingOrder._id
+  });
+
+  if (!await controlGenerationMatches(userId, expectedControlGeneration, deps)) {
+    return blockBeforeBrokerSubmission(pendingOrder);
+  }
+
+  if (environment === 'live') {
+    const claim = typeof deps.claimControlledLiveAttempt === 'function'
+      ? await deps.claimControlledLiveAttempt({
+          activationId: controlledLiveGuard?.activationId,
+          userId,
+          now
+        }, deps)
+      : null;
+    if (!claim) {
+      return blockBeforeBrokerSubmission(pendingOrder, {
+        reason: 'The single broker-attempt slot for this controlled-live activation is unavailable or already consumed.',
+        reasonCode: 'CANARY_ATTEMPT_ALREADY_USED',
+        eventType: 'robotrader_controlled_live_blocked'
+      });
+    }
+    controlledAttemptClaimed = true;
+
+    const activeAttempt = typeof deps.revalidateControlledLiveAttempt === 'function'
+      ? await deps.revalidateControlledLiveAttempt({
+          activationId: controlledLiveGuard.activationId,
+          userId,
+          now
+        }, deps)
+      : null;
+    if (!activeAttempt) {
+      return blockBeforeBrokerSubmission(pendingOrder, {
+        reason: 'The controlled-live activation was revoked or expired before broker submission.',
+        reasonCode: 'CONTROLLED_LIVE_REVOKED_BEFORE_SUBMIT',
+        eventType: 'robotrader_controlled_live_blocked'
+      });
+    }
+    if (!await controlGenerationMatches(userId, expectedControlGeneration, deps)) {
+      return blockBeforeBrokerSubmission(pendingOrder);
+    }
+  }
 
   try {
     const result = await broker.submitOrder({
@@ -634,6 +1110,25 @@ async function submitApprovedOrder({
     pendingOrder.filledAvgPrice = toFiniteNumber(order.filled_avg_price, null);
     pendingOrder.filledAt = order.filled_at || null;
     await pendingOrder.save();
+    if (controlledLiveGuard?.activationId) {
+      const brokerStatus = String(pendingOrder.status || '').toLowerCase();
+      const canaryOutcomeStatus = brokerStatus === 'filled'
+        ? 'filled'
+        : (brokerStatus === 'rejected'
+            ? 'rejected'
+            : (['canceled', 'cancelled', 'expired'].includes(brokerStatus) ? 'reconciled' : 'broker_pending'));
+      await recordOutcome({
+        activationId: controlledLiveGuard.activationId,
+        liveOrderId: pendingOrder._id,
+        status: canaryOutcomeStatus,
+        details: { brokerOrderId: pendingOrder.externalOrderId, brokerStatus: pendingOrder.status },
+        now
+      });
+    }
+    const lifecycle = mapBrokerOrderLifecycle(pendingOrder.status);
+    await setIntentLifecycle(intentDoc, lifecycle.intentStatus, {
+      roboTradeOrderId: pendingOrder._id
+    });
     if (String(pendingOrder.status || '').toLowerCase() === 'filled' && typeof deps.submitProtectiveStopForEntry === 'function') {
       try {
         const positions = typeof broker.getPositions === 'function'
@@ -641,6 +1136,15 @@ async function submitApprovedOrder({
           : [];
         await deps.submitProtectiveStopForEntry(pendingOrder, { broker, positions, now }, deps);
       } catch (err) {
+        if (controlledLiveGuard?.activationId) {
+          await recordOutcome({
+            activationId: controlledLiveGuard.activationId,
+            liveOrderId: pendingOrder._id,
+            status: 'protection_failed',
+            details: { reason: err?.message || 'Could not create protective stop.' },
+            now
+          });
+        }
         await writeAudit(userId, 'robotrader_protective_stop_error', {
           decisionId: String(decisionDoc._id),
           parentOrderId: String(pendingOrder._id),
@@ -652,7 +1156,7 @@ async function submitApprovedOrder({
       }
     }
 
-    decisionDoc.status = 'submitted';
+    decisionDoc.status = lifecycle.decisionStatus;
     decisionDoc.alpacaResponse = order;
     await decisionDoc.save();
 
@@ -678,6 +1182,19 @@ async function submitApprovedOrder({
     pendingOrder.rawPayload = err.alpacaPayload || {};
     pendingOrder.alpacaResponse = brokerError;
     await pendingOrder.save();
+    if (controlledLiveGuard?.activationId) {
+      await recordOutcome({
+        activationId: controlledLiveGuard.activationId,
+        liveOrderId: pendingOrder._id,
+        status: ambiguousSubmit ? 'submission_uncertain' : 'rejected',
+        details: brokerError,
+        now
+      });
+    }
+    await setIntentLifecycle(intentDoc, ambiguousSubmit ? 'submission_uncertain' : 'rejected', {
+      roboTradeOrderId: pendingOrder._id,
+      rejectionReason: brokerErrorMessage
+    });
 
     decisionDoc.status = ambiguousSubmit ? 'error' : 'rejected';
     decisionDoc.error = brokerErrorMessage;
@@ -695,6 +1212,278 @@ async function submitApprovedOrder({
       environment
     }, deps);
     return pendingOrder;
+  }
+}
+
+async function submitAuthorizedIntentForUser({
+  userId,
+  intentId,
+  now = new Date()
+} = {}, deps = defaultDeps) {
+  const settingsDoc = await deps.getOrCreateRoboTraderSettings(userId);
+  const settings = deps.mapSettings(settingsDoc);
+  const accountId = await resolveAccountIdForUserId(userId, deps);
+
+  if (!accountId) {
+    return { ok: false, submitted: false, reason: 'USER_NOT_FOUND' };
+  }
+  if (settings.mode !== 'live' || !settings.liveTradingExplicitlyEnabled) {
+    return { ok: false, submitted: false, reason: 'LIVE_TRADING_NOT_ENABLED' };
+  }
+
+  const lockOwner = `authorized-intent-${String(intentId)}-${now.getTime()}`;
+  const lockAcquired = typeof deps.acquireWorkerLock === 'function'
+    ? await deps.acquireWorkerLock(userId, lockOwner, now, deps)
+    : await acquireWorkerLock(userId, lockOwner, now, deps);
+  if (!lockAcquired) {
+    return { ok: false, submitted: false, reason: 'ROBOTRADER_LOCKED' };
+  }
+
+  const stopLockHeartbeat = typeof deps.startWorkerLockHeartbeat === 'function'
+    ? deps.startWorkerLockHeartbeat(userId, lockOwner, deps)
+    : startWorkerLockHeartbeat(userId, lockOwner, deps);
+  try {
+    const intentDoc = await deps.OrderIntent.findOne({
+      _id: intentId,
+      userId,
+      accountId,
+      environment: 'live'
+    });
+    if (!intentDoc) return { ok: false, submitted: false, reason: 'INTENT_NOT_FOUND' };
+    if (intentDoc.status !== 'authorized') {
+      return {
+        ok: false,
+        submitted: false,
+        reason: 'INTENT_NOT_AUTHORIZED',
+        intent: intentDoc
+      };
+    }
+
+    const decisionDoc = await deps.RoboTradeDecision.findOne({
+      _id: intentDoc.decisionId,
+      userId,
+      accountId,
+      environment: 'live'
+    });
+    if (!decisionDoc) {
+      await setIntentLifecycle(intentDoc, 'policy_blocked', {
+        rejectionReason: 'The originating decision could not be loaded for revalidation.'
+      });
+      return { ok: false, submitted: false, reason: 'DECISION_NOT_FOUND', intent: intentDoc };
+    }
+
+    const orderInput = buildOrderInputFromIntent(intentDoc);
+    const authorization = await deps.findActiveTradeAuthorization({
+      userId,
+      accountId,
+      intentId: intentDoc._id,
+      orderFingerprint: intentDoc.orderFingerprint,
+      policyVersion: intentDoc.policyVersion,
+      now
+    });
+    const broker = deps.createAlpacaBroker({ mode: 'live' });
+    const [account, positions, openOrders, marketClock, recentOrders, assetContext, quotes] = await Promise.all([
+      broker.getAccount(),
+      broker.getPositions(),
+      broker.listOrders({ status: 'open', limit: 100, nested: true }),
+      typeof broker.getClock === 'function' ? broker.getClock() : Promise.resolve(null),
+      getRecentLocalOrders(userId, 'live', now, deps),
+      loadAssetMetadataForRisk(orderInput.symbol, orderInput.assetClass, broker),
+      (deps.fetchQuotes || fetchQuotes)([orderInput.symbol], {
+        assetClass: orderInput.assetClass === 'crypto' ? 'crypto' : 'equity',
+        bypassCache: true
+      })
+    ]);
+    const normalizedPositions = (positions || []).map(normalizeAlpacaPosition);
+    const normalizedOpenOrders = (openOrders || []).map(normalizeAlpacaOrder);
+    const evaluationNow = getEvaluationNow(now, deps);
+    const exposureSnapshot = await capturePortfolioRisk({
+      userId,
+      accountId,
+      environment: 'live',
+      account,
+      positions: normalizedPositions,
+      openOrders: normalizedOpenOrders,
+      settings,
+      now: evaluationNow,
+      deps
+    });
+    const tradesToday = recentOrders.filter(order => {
+      const status = String(order.status || '').toLowerCase();
+      return !TERMINAL_ORDER_STATUSES.includes(status) || status === 'filled';
+    }).length;
+    const dailyPnl = toFiniteNumber(account.equity, 0)
+      - toFiniteNumber(account.last_equity, toFiniteNumber(account.equity, 0));
+    const roboRiskResult = deps.evaluateRoboRisk({
+      settings,
+      account,
+      positions: normalizedPositions,
+      openOrders: normalizedOpenOrders,
+      recentOrders,
+      tradesToday,
+      dailyPnl,
+      decision: decisionDoc,
+      orderInput,
+      asset: assetContext.asset,
+      assetLookupError: assetContext.assetLookupError,
+      environment: 'live',
+      marketClock,
+      now: evaluationNow
+    });
+    const freshQuote = quotes?.[0] || null;
+    const executionResearch = {
+      ...(decisionDoc.researchSnapshot || {}),
+      quote: freshQuote,
+      price: freshQuote?.price ?? decisionDoc.researchSnapshot?.price ?? orderInput.referencePrice,
+      indicators: {
+        avgVolume20: decisionDoc.researchSnapshot?.averageVolume20
+      }
+    };
+    const executionQuality = (deps.evaluateExecutionQuality || evaluateExecutionQuality)({
+      environment: 'live',
+      assetClass: orderInput.assetClass,
+      orderInput,
+      research: executionResearch,
+      positions: normalizedPositions,
+      marketClock,
+      executionPolicy: settings.executionPolicy,
+      now: evaluationNow
+    });
+    const baseRiskResult = mergeRiskResults(
+      roboRiskResult,
+      executionQuality,
+      evaluateProjectedPortfolioRisk(exposureSnapshot, orderInput)
+    );
+    const riskResult = await resolveCanonicalPolicy({
+      userId,
+      accountId,
+      environment: 'live',
+      settings,
+      decision: decisionDoc,
+      orderInput,
+      baseRiskResult,
+      authorization,
+      now: evaluationNow,
+      deps
+    });
+
+    // An authorization is only valid for the policy version and immutable
+    // fingerprint reviewed on this exact intent. Revalidation never upgrades an
+    // old intent silently after a policy change.
+    if (intentDoc.policyVersion !== POLICY_VERSION) {
+      riskResult.approved = false;
+      riskResult.decisionStatus = 'pending_manual_approval';
+      riskResult.reasonCodes = [...new Set([
+        ...(riskResult.reasonCodes || []),
+        'AUTHORIZATION_POLICY_VERSION_MISMATCH'
+      ])];
+      riskResult.rejectionReasons = [...new Set([
+        ...(riskResult.rejectionReasons || []),
+        'The intent was evaluated under a different policy version and must be regenerated.'
+      ])];
+      riskResult.approval = {
+        ...(riskResult.approval || {}),
+        valid: false,
+        status: 'policy_version_mismatch'
+      };
+    }
+    if (riskResult.orderFingerprint !== intentDoc.orderFingerprint) {
+      riskResult.approved = false;
+      riskResult.decisionStatus = 'pending_manual_approval';
+      riskResult.reasonCodes = [...new Set([
+        ...(riskResult.reasonCodes || []),
+        'AUTHORIZATION_ORDER_MISMATCH'
+      ])];
+      riskResult.rejectionReasons = [...new Set([
+        ...(riskResult.rejectionReasons || []),
+        'The persisted order no longer matches the exact reviewed intent.'
+      ])];
+      riskResult.approval = {
+        ...(riskResult.approval || {}),
+        valid: false,
+        status: 'mismatch'
+      };
+    }
+
+    intentDoc.riskChecks = riskResult.checks || [];
+    intentDoc.executionQuality = executionQuality;
+    intentDoc.exposureSnapshotId = exposureSnapshot?._id || null;
+    intentDoc.reasonCodes = riskResult.reasonCodes || [];
+    intentDoc.authorizationStatus = riskResult.approval?.status || 'missing';
+    intentDoc.rejectionReason = riskResult.rejectionReasons?.join(' ') || null;
+    decisionDoc.riskChecks = riskResult.checks || [];
+    decisionDoc.executionQuality = executionQuality;
+    decisionDoc.exposureSnapshotId = exposureSnapshot?._id || null;
+    decisionDoc.reasonCodes = riskResult.reasonCodes || [];
+    decisionDoc.approval = riskResult.approval || null;
+    decisionDoc.rejectionReasons = riskResult.rejectionReasons || [];
+
+    if (!riskResult.approved) {
+      const awaitingAuthorization = riskResult.decisionStatus === 'pending_manual_approval';
+      await setIntentLifecycle(
+        intentDoc,
+        awaitingAuthorization ? 'awaiting_authorization' : 'policy_blocked'
+      );
+      decisionDoc.status = awaitingAuthorization ? 'pending_manual_approval' : 'rejected';
+      decisionDoc.error = intentDoc.rejectionReason;
+      await decisionDoc.save();
+      await writeAudit(userId, 'robotrader_authorized_intent_revalidation_failed', {
+        intentId: String(intentDoc._id),
+        decisionId: String(decisionDoc._id),
+        policyVersion: riskResult.policyVersion,
+        reasonCodes: riskResult.reasonCodes,
+        reasons: riskResult.rejectionReasons
+      }, deps);
+      return {
+        ok: false,
+        submitted: false,
+        reason: 'REVALIDATION_FAILED',
+        intent: intentDoc,
+        decision: decisionDoc
+      };
+    }
+
+    const order = await submitApprovedOrder({
+      userId,
+      accountId,
+      environment: 'live',
+      decisionDoc,
+      intentDoc,
+      orderInput,
+      riskResult,
+      broker,
+      now: evaluationNow,
+      expectedControlGeneration: settings.controlGeneration,
+      deps
+    });
+    const orderStatus = String(order?.status || '').toLowerCase();
+    const submitted = Boolean(order) && ![
+      'pending_submit',
+      'rejected',
+      'canceled',
+      'cancelled',
+      'expired'
+    ].includes(orderStatus);
+    return {
+      ok: submitted,
+      submitted,
+      submissionAttempted: Boolean(order),
+      reason: submitted
+        ? null
+        : (order
+            ? (orderStatus === 'pending_submit' ? 'SUBMISSION_UNCERTAIN' : 'BROKER_REJECTED')
+            : (riskResult.submissionBlockReason || 'AUTHORIZATION_CLAIM_FAILED')),
+      intent: intentDoc,
+      decision: decisionDoc,
+      order
+    };
+  } finally {
+    stopLockHeartbeat();
+    if (typeof deps.releaseWorkerLock === 'function') {
+      await deps.releaseWorkerLock(userId, lockOwner, deps);
+    } else {
+      await releaseWorkerLock(userId, lockOwner, deps);
+    }
   }
 }
 
@@ -721,6 +1510,9 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
       at: now.toISOString()
     }, deps);
     return { ok: false, skipped: true, reason: 'LIVE_TRADING_NOT_ENABLED', runId };
+  }
+  if (environment === 'shadow' && settings.mode !== 'shadow') {
+    return { ok: false, skipped: true, reason: 'SHADOW_MODE_NOT_ENABLED', runId };
   }
 
   if (!settings.isEnabled && !runOnce) {
@@ -749,7 +1541,7 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
     ? deps.startWorkerLockHeartbeat(userId, lockOwner, deps)
     : startWorkerLockHeartbeat(userId, lockOwner, deps);
   try {
-  const broker = deps.createAlpacaBroker({ mode: environment });
+  const broker = deps.createAlpacaBroker({ mode: environment === 'live' ? 'live' : 'paper' });
   let account = {};
   let positions = [];
   let openOrders = [];
@@ -772,11 +1564,23 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
 
   const normalizedPositions = (positions || []).map(normalizeAlpacaPosition);
   const normalizedOpenOrders = (openOrders || []).map(normalizeAlpacaOrder);
+  const exposureSnapshot = await capturePortfolioRisk({
+    userId,
+    accountId,
+    environment,
+    account,
+    positions: normalizedPositions,
+    openOrders: normalizedOpenOrders,
+    settings,
+    now,
+    deps
+  });
   const symbols = buildSymbolUniverse(settings);
   const researchItems = await deps.buildResearchBatch(symbols, {
     account,
     positions: normalizedPositions,
-    openOrders: normalizedOpenOrders
+    openOrders: normalizedOpenOrders,
+    bypassQuoteCache: ['shadow', 'live'].includes(environment)
   });
   const decisions = deps.evaluateResearchBatch(researchItems, settings);
   const recentOrders = await getRecentLocalOrders(userId, environment, now, deps);
@@ -787,6 +1591,7 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
   const dailyPnl = toFiniteNumber(account.equity, 0) - toFiniteNumber(account.last_equity, toFiniteNumber(account.equity, 0));
   const savedDecisions = [];
   let submittedOrder = null;
+  let shadowApprovedCount = 0;
 
   for (const decision of decisions) {
     const research = researchItems.find(item => item.symbol === decision.symbol) || {};
@@ -801,18 +1606,27 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
           qty: 1,
           estimatedNotional: 0
         };
-    const orderInput = adaptOrderForMarketSession(baseOrderInput, {
-      settings,
-      marketClock,
-      research
-    });
+    const orderInput = {
+      ...adaptOrderForMarketSession(baseOrderInput, {
+        settings,
+        marketClock,
+        research
+      }),
+      referencePrice: research.price ?? research.quote?.price ?? baseOrderInput.referencePrice ?? null,
+      quoteTimestamp: research.quote?.timestamp
+        || research.quoteTimestamp
+        || research.asOf
+        || research.generatedAt
+        || null
+    };
     const assetContext = await loadAssetMetadataForRisk(
       orderInput.symbol || decision.symbol,
       orderInput.assetClass || decision.assetClass,
       broker
     );
+    const evaluationNow = getEvaluationNow(now, deps);
 
-    const riskResult = deps.evaluateRoboRisk({
+    const roboRiskResult = deps.evaluateRoboRisk({
       settings,
       account,
       positions: normalizedPositions,
@@ -826,7 +1640,33 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
       assetLookupError: assetContext.assetLookupError,
       environment,
       marketClock,
-      now
+      now: evaluationNow
+    });
+    const executionQuality = (deps.evaluateExecutionQuality || evaluateExecutionQuality)({
+      environment,
+      assetClass: orderInput.assetClass || decision.assetClass,
+      orderInput,
+      research,
+      positions: normalizedPositions,
+      marketClock,
+      executionPolicy: settings.executionPolicy,
+      now: evaluationNow
+    });
+    const baseRiskResult = mergeRiskResults(
+      roboRiskResult,
+      executionQuality,
+      evaluateProjectedPortfolioRisk(exposureSnapshot, orderInput)
+    );
+    const riskResult = await resolveCanonicalPolicy({
+      userId,
+      accountId,
+      environment,
+      settings,
+      decision,
+      orderInput,
+      baseRiskResult,
+      now: evaluationNow,
+      deps
     });
 
     const decisionDoc = await saveDecision({
@@ -838,10 +1678,31 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
       decision,
       riskResult,
       orderInput,
-      now,
+      executionQuality,
+      exposureSnapshot,
+      now: evaluationNow,
       deps
     });
     if (decisionDoc) savedDecisions.push(decisionDoc);
+
+    const intentDoc = decision.recommendedOrder && decisionDoc
+      ? await saveOrderIntent({
+          userId,
+          accountId,
+          environment,
+          decisionDoc,
+          orderInput,
+          policyResult: riskResult,
+          executionQuality,
+          exposureSnapshot,
+          now: evaluationNow,
+          deps
+        })
+      : null;
+    if (decisionDoc && intentDoc) {
+      decisionDoc.intentId = intentDoc._id;
+      if (typeof decisionDoc.save === 'function') await decisionDoc.save();
+    }
 
     if (!riskResult.approved || submittedOrder || !decisionDoc || !decision.recommendedOrder) {
       if (decisionDoc && !riskResult.approved) {
@@ -849,10 +1710,27 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
           runId,
           decisionId: String(decisionDoc._id),
           symbol: decision.symbol,
+          intentId: intentDoc?._id ? String(intentDoc._id) : null,
+          policyVersion: riskResult.policyVersion,
+          reasonCodes: riskResult.reasonCodes,
           reasons: riskResult.rejectionReasons,
           strategyId: decision.strategyId
         }, deps);
       }
+      continue;
+    }
+
+    if (environment === 'shadow') {
+      shadowApprovedCount += 1;
+      await writeAudit(userId, 'robotrader_shadow_candidate_approved', {
+        runId,
+        decisionId: String(decisionDoc._id),
+        intentId: intentDoc?._id ? String(intentDoc._id) : null,
+        symbol: decision.symbol,
+        orderFingerprint: riskResult.orderFingerprint,
+        executionQuality: executionQuality.metrics,
+        exposureSnapshotId: exposureSnapshot?._id ? String(exposureSnapshot._id) : null
+      }, deps);
       continue;
     }
 
@@ -861,23 +1739,31 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
       accountId,
       environment,
       decisionDoc,
+      intentDoc,
       orderInput,
       riskResult,
       broker,
-      now,
+      now: evaluationNow,
+      expectedControlGeneration: settings.controlGeneration,
       deps
     });
   }
 
   await deps.RoboSettings.updateOne(
     { userId },
-    { $set: { lastRunAt: now, enabled: settings.isEnabled, isEnabled: settings.isEnabled } }
+    {
+      $set: {
+        lastRunAt: now
+      }
+    }
   );
   await writeAudit(userId, 'robotrader_worker_run', {
     runId,
     environment,
     symbolsEvaluated: researchItems.length,
     decisionsSaved: savedDecisions.length,
+    shadowApprovedCount,
+    exposureSnapshotId: exposureSnapshot?._id ? String(exposureSnapshot._id) : null,
     submittedOrderId: submittedOrder?.externalOrderId || null,
     at: now.toISOString()
   }, deps);
@@ -887,6 +1773,8 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
     runId,
     environment,
     decisionsSaved: savedDecisions.length,
+    shadowApprovedCount,
+    exposureSnapshot: exposureSnapshot || null,
     submittedOrder: submittedOrder || null
   };
   } finally {
@@ -915,6 +1803,7 @@ async function previewRoboTraderForUser({
   const settings = deps.mapSettings(settingsDoc);
   const environment = modeOverride === 'live' ? 'live' : 'paper';
   const runId = buildRunId(userId, now);
+  const accountId = await resolveAccountIdForUserId(userId, deps);
 
   if (environment === 'live') {
     return {
@@ -978,17 +1867,25 @@ async function previewRoboTraderForUser({
           qty: 1,
           estimatedNotional: 0
         };
-    const orderInput = adaptOrderForMarketSession(baseOrderInput, {
-      settings,
-      marketClock,
-      research
-    });
+    const orderInput = {
+      ...adaptOrderForMarketSession(baseOrderInput, {
+        settings,
+        marketClock,
+        research
+      }),
+      referencePrice: research.price ?? research.quote?.price ?? baseOrderInput.referencePrice ?? null,
+      quoteTimestamp: research.quote?.timestamp
+        || research.quoteTimestamp
+        || research.asOf
+        || research.generatedAt
+        || null
+    };
     const assetContext = await loadAssetMetadataForRisk(
       orderInput.symbol || decision.symbol,
       orderInput.assetClass || decision.assetClass,
       broker
     );
-    const riskResult = deps.evaluateRoboRisk({
+    const baseRiskResult = deps.evaluateRoboRisk({
       settings,
       account,
       positions: normalizedPositions,
@@ -1003,6 +1900,17 @@ async function previewRoboTraderForUser({
       environment,
       marketClock,
       now
+    });
+    const riskResult = await resolveCanonicalPolicy({
+      userId,
+      accountId,
+      environment,
+      settings,
+      decision,
+      orderInput,
+      baseRiskResult,
+      now,
+      deps
     });
     const wouldSubmit = Boolean(riskResult.approved && decision.recommendedOrder && !firstSubmittableDecisionSeen);
     if (wouldSubmit) firstSubmittableDecisionSeen = true;
@@ -1210,6 +2118,10 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
 }
 
 const defaultDeps = {
+  OrderIntent,
+  RoboExposureSnapshot,
+  RoboOperationalAlert,
+  RoboLivePromotion,
   RoboSettings,
   RoboTradeDecision,
   RoboTradeOrder,
@@ -1221,11 +2133,22 @@ const defaultDeps = {
   buildResearchBatch,
   buildClientOrderId,
   createAlpacaBroker,
+  createOperationalAlertFromAudit,
+  claimControlledLiveAttempt,
+  recordControlledLiveOutcome,
+  revalidateControlledLiveAttempt,
+  validateControlledLiveSubmission,
+  claimTradeAuthorization,
   evaluateResearchBatch,
+  evaluateCanonicalTradingPolicy,
+  evaluateExecutionQuality,
   evaluateRoboRisk,
+  fetchQuotes,
+  findActiveTradeAuthorization,
   isAmbiguousSubmitError,
   submitProtectiveStopForEntry,
   getOrCreateRoboTraderSettings,
+  getCurrentTime: () => new Date(),
   mapSettings,
   refreshWorkerLock,
   releaseWorkerLock,
@@ -1250,5 +2173,6 @@ module.exports = {
   startWorkerLockHeartbeat,
   previewRoboTraderForUser,
   runRoboTraderForUser,
+  submitAuthorizedIntentForUser,
   runWorkerTick
 };

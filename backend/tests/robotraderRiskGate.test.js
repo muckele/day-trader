@@ -185,7 +185,38 @@ test('robotrader risk gate rejects live trading without explicit opt-in', () => 
   });
 
   assert.equal(result.approved, false);
-  assert.ok(result.rejectionReasons.includes('Live trading is not explicitly enabled by the user.'));
+  assert.ok(result.rejectionReasons.includes('The selected paper/shadow/live environment is not enabled by the user.'));
+});
+
+test('robotrader risk gate uses executable order fields over an understated estimate', () => {
+  const result = evaluateRoboRisk({
+    settings: {
+      ...baseSettings,
+      mode: 'live',
+      liveTradingExplicitlyEnabled: true,
+      maxTradeAmount: 5000
+    },
+    account: { buying_power: '50000', status: 'ACTIVE' },
+    positions: [],
+    openOrders: [],
+    recentOrders: [],
+    tradesToday: 0,
+    dailyPnl: 0,
+    decision: { ...baseDecision, confidenceScore: 80 },
+    orderInput: {
+      ...baseOrder,
+      orderType: 'limit',
+      qty: 100,
+      limitPrice: 100,
+      estimatedNotional: 100
+    },
+    environment: 'live',
+    marketClock: { is_open: true }
+  });
+
+  assert.equal(result.approved, false);
+  assert.equal(result.checks.find(check => check.name === 'trade_amount').metadata.estimatedNotional, 10000);
+  assert.ok(result.rejectionReasons.includes('Trade amount exceeds user max trade amount.'));
 });
 
 test('robotrader risk gate rejects sell orders that would open shorts when disabled', () => {

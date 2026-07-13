@@ -20,7 +20,7 @@ function createMockRes() {
 }
 
 test('requireMongo passes through when mongo is ready', t => {
-  t.mock.method(mongoState, 'isMongoReady', () => true);
+  t.mock.method(mongoState, 'isMongoRequestReady', () => true);
 
   const res = createMockRes();
   let nextCalled = false;
@@ -35,7 +35,7 @@ test('requireMongo passes through when mongo is ready', t => {
 });
 
 test('requireMongo returns 503 payload when mongo is unavailable', t => {
-  t.mock.method(mongoState, 'isMongoReady', () => false);
+  t.mock.method(mongoState, 'isMongoRequestReady', () => false);
   t.mock.method(mongoState, 'createMongoUnavailablePayload', () => ({
     message: 'Database temporarily unavailable',
     service: 'mongo',

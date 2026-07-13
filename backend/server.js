@@ -136,6 +136,7 @@ async function connectMongo() {
           })
         );
         mongoState.markMongoConnected(attempt.label);
+        mongoState.markMongoIndexesBuilding();
         if (attempt.label === 'MONGO_LOCAL_URI') {
           console.log('✅ MongoDB connected via local development instance.');
         } else if (attempt.label === 'MONGO_URI_DIRECT') {
@@ -143,17 +144,22 @@ async function connectMongo() {
         } else {
           console.log('✅ MongoDB connected');
         }
-        Promise.all([
-          ensureTradingIndexes(),
-          ensureResearchIndexes()
-        ]).then(resultGroups => resultGroups.flat()).then(results => {
+        try {
+          const results = (await Promise.all([
+            ensureTradingIndexes(),
+            ensureResearchIndexes()
+          ])).flat();
           const failed = results.filter(result => !result.ok);
           if (failed.length) {
-            console.error(`⚠️ Index bootstrap completed with ${failed.length} failure(s).`);
+            mongoState.markMongoIndexesFailed(failed);
+            console.error(`⚠️ Index bootstrap completed with ${failed.length} failure(s); database-backed routes remain unavailable.`);
+          } else {
+            mongoState.markMongoIndexesReady();
           }
-        }).catch(indexErr => {
-          console.error('⚠️ Index bootstrap failed:', indexErr?.message || indexErr);
-        });
+        } catch (indexErr) {
+          mongoState.markMongoIndexesFailed([{ model: 'bootstrap', error: indexErr?.message || String(indexErr) }]);
+          console.error('⚠️ Index bootstrap failed; database-backed routes remain unavailable:', indexErr?.message || indexErr);
+        }
         return;
       } catch (err) {
         lastErr = err;

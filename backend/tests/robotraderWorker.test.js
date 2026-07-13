@@ -10,8 +10,10 @@ const {
   previewRoboTraderForUser,
   resolveWorkerLockTtlMs,
   runRoboTraderForUser,
+  submitAuthorizedIntentForUser,
   runWorkerTick
 } = require('../robotrader/worker');
+const { POLICY_VERSION } = require('../services/canonicalTradingPolicyService');
 
 function chain(result) {
   return {
@@ -23,6 +25,7 @@ function chain(result) {
 
 function createDeps({ approved = true } = {}) {
   const createdDecisions = [];
+  const createdIntents = [];
   const createdOrders = [];
   const auditEvents = [];
   const brokerSubmissions = [];
@@ -41,6 +44,20 @@ function createDeps({ approved = true } = {}) {
           }
         };
         createdDecisions.push(doc);
+        return doc;
+      }
+    },
+    OrderIntent: {
+      create: async payload => {
+        const doc = {
+          _id: `intent-${createdIntents.length + 1}`,
+          ...payload,
+          save: async function save() {
+            createdIntents[createdIntents.length - 1] = this;
+            return this;
+          }
+        };
+        createdIntents.push(doc);
         return doc;
       }
     },
@@ -70,6 +87,7 @@ function createDeps({ approved = true } = {}) {
       userId,
       isEnabled: true,
       enabled: true,
+      controlGeneration: 0,
       mode: 'paper',
       allowedAssetClasses: ['stocks'],
       allowedSymbols: ['AAPL'],
@@ -90,7 +108,16 @@ function createDeps({ approved = true } = {}) {
       symbol: 'AAPL',
       assetClass: 'stocks',
       price: 200,
-      indicators: {},
+      quote: {
+        symbol: 'AAPL',
+        price: 200,
+        bidPrice: 199.95,
+        askPrice: 200.05,
+        timestamp: '2026-07-13T14:00:00.000Z',
+        source: 'alpaca',
+        isMock: false
+      },
+      indicators: { avgVolume20: 1000000 },
       marketContext: {}
     }],
     evaluateResearchBatch: () => [{
@@ -120,9 +147,16 @@ function createDeps({ approved = true } = {}) {
       checks: [{ name: 'test', passed: approved, message: approved ? null : 'Rejected by test.' }],
       rejectionReasons: approved ? [] : ['Rejected by test.']
     }),
+    validateControlledLiveSubmission: async () => ({ approved: true }),
+    claimControlledLiveAttempt: async () => ({ _id: 'activation-1', attemptsUsed: 1 }),
+    revalidateControlledLiveAttempt: async () => ({ _id: 'activation-1', status: 'active' }),
+    recordControlledLiveOutcome: async () => null,
     createAlpacaBroker: () => ({
       getAccount: async () => ({ buying_power: '10000', equity: '10000', last_equity: '10000', status: 'ACTIVE' }),
-      getClock: async () => ({ is_open: true }),
+      getClock: async () => ({
+        is_open: true,
+        next_close: '2026-07-13T20:00:00.000Z'
+      }),
       getPositions: async () => [],
       listOrders: async () => [],
       submitOrder: async input => {
@@ -139,7 +173,7 @@ function createDeps({ approved = true } = {}) {
       }
     })
   };
-  return { deps, createdDecisions, createdOrders, auditEvents, brokerSubmissions };
+  return { deps, createdDecisions, createdIntents, createdOrders, auditEvents, brokerSubmissions };
 }
 
 test('robotrader worker saves approved decisions and submitted orders', async () => {
@@ -148,16 +182,78 @@ test('robotrader worker saves approved decisions and submitted orders', async ()
 
   assert.equal(result.ok, true);
   assert.equal(context.createdDecisions.length, 1);
+  assert.equal(context.createdIntents.length, 1);
   assert.equal(context.createdOrders.length, 1);
   assert.equal(context.createdDecisions[0].accountId, 'user:user-worker');
   assert.equal(context.createdDecisions[0].researchSnapshot.summaryVersion, 1);
   assert.equal(context.createdDecisions[0].researchSnapshot.symbol, 'AAPL');
   assert.equal(context.createdDecisions[0].researchSnapshot.bars, undefined);
   assert.equal(context.createdOrders[0].accountId, 'user:user-worker');
+  assert.equal(context.createdOrders[0].intentId, context.createdIntents[0]._id);
+  assert.equal(context.createdIntents[0].status, 'submitted');
+  assert.equal(context.createdIntents[0].orderFingerprint, context.createdOrders[0].orderFingerprint);
   assert.equal(context.createdOrders[0].externalOrderId, 'alpaca-order-1');
   assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
   assert.equal(context.brokerSubmissions.length, 1);
   assert.equal(context.brokerSubmissions[0].clientOrderId, context.createdOrders[0].clientOrderId);
+});
+
+test('robotrader worker aborts submission when a stop changes the control generation', async () => {
+  const context = createDeps({ approved: true });
+  const settingsUpdates = [];
+  context.deps.readControlGeneration = async () => 1;
+  context.deps.RoboSettings.updateOne = async (query, update) => {
+    settingsUpdates.push({ query, update });
+    return { matchedCount: 1 };
+  };
+
+  const result = await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true,
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(context.createdOrders.length, 0);
+  assert.equal(context.createdIntents[0].status, 'policy_blocked');
+  assert.equal(context.createdDecisions[0].status, 'rejected');
+  assert.equal(
+    context.auditEvents.some(event => event.eventType === 'robotrader_submission_control_invalidated'),
+    true
+  );
+  assert.equal(settingsUpdates.length, 1);
+  assert.deepEqual(settingsUpdates[0].update.$set, {
+    lastRunAt: new Date('2026-07-13T14:00:00.000Z')
+  });
+});
+
+test('robotrader worker records an immediate broker fill on the intent and decision', async () => {
+  const context = createDeps({ approved: true });
+  context.deps.createAlpacaBroker = () => ({
+    getAccount: async () => ({ buying_power: '10000', equity: '10000', last_equity: '10000', status: 'ACTIVE' }),
+    getClock: async () => ({ is_open: true }),
+    getPositions: async () => [],
+    listOrders: async () => [],
+    submitOrder: async input => ({
+      payload: { client_order_id: input.clientOrderId },
+      order: {
+        id: 'alpaca-filled-1',
+        client_order_id: input.clientOrderId,
+        status: 'filled',
+        filled_qty: '1',
+        filled_avg_price: '200',
+        filled_at: '2026-05-19T00:00:01.000Z'
+      }
+    })
+  });
+
+  await runRoboTraderForUser({ userId: 'user-worker', modeOverride: 'paper', runOnce: true }, context.deps);
+
+  assert.equal(context.createdOrders[0].status, 'filled');
+  assert.equal(context.createdIntents[0].status, 'filled');
+  assert.equal(context.createdDecisions[0].status, 'filled');
 });
 
 test('robotrader worker keeps failed submissions reconcilable by client order id', async () => {
@@ -430,12 +526,325 @@ test('robotrader worker scopes recent orders to the active live environment', as
     riskLevel: 'balanced'
   });
 
-  const result = await runRoboTraderForUser({ userId: 'user-worker', modeOverride: 'live', runOnce: true }, context.deps);
+  const result = await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'live',
+    runOnce: true,
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
 
   assert.equal(result.ok, true);
   assert.equal(findQueries.length, 1);
   assert.equal(findQueries[0].userId, 'user-worker');
   assert.equal(findQueries[0].environment, 'live');
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(context.createdDecisions[0].status, 'pending_manual_approval');
+  assert.equal(context.createdIntents[0].status, 'awaiting_authorization');
+});
+
+test('live submission fails closed when the controlled-live boundary rejects it', async () => {
+  const context = createDeps({ approved: true });
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    controlGeneration: 0,
+    mode: 'live',
+    liveTradingExplicitlyEnabled: true,
+    approvalPolicy: { mode: 'autonomous', thresholdUsd: 0, requireExactOrderMatch: true },
+    allowedAssetClasses: ['stocks'],
+    allowedSymbols: ['AAPL'],
+    blockedSymbols: [],
+    maxTradeAmount: 1000,
+    maxPositionSize: 5000,
+    maxDailyLoss: 500,
+    maxOpenPositions: 5,
+    maxTradesPerDay: 3,
+    allowFractionalShares: true,
+    riskLevel: 'balanced'
+  });
+  context.deps.validateControlledLiveSubmission = async () => ({
+    approved: false,
+    reasonCode: 'CONTROLLED_LIVE_NOT_ACTIVE',
+    message: 'No current controlled-live activation exists.'
+  });
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'live',
+    runOnce: true,
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(context.createdOrders.length, 0);
+  assert.equal(context.createdIntents[0].status, 'policy_blocked');
+  assert.equal(
+    context.auditEvents.some(event => event.eventType === 'robotrader_controlled_live_blocked'),
+    true
+  );
+});
+
+test('shadow-live worker applies live-like gates and never submits a broker order', async () => {
+  const context = createDeps({ approved: true });
+  const createPaperBroker = context.deps.createAlpacaBroker;
+  let brokerMode = null;
+  context.deps.createAlpacaBroker = ({ mode }) => {
+    brokerMode = mode;
+    return createPaperBroker();
+  };
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    mode: 'shadow',
+    liveTradingExplicitlyEnabled: false,
+    allowedAssetClasses: ['stocks'],
+    allowedSymbols: ['AAPL'],
+    blockedSymbols: [],
+    maxTradeAmount: 1000,
+    maxPositionSize: 5000,
+    maxDailyLoss: 500,
+    maxOpenPositions: 5,
+    maxTradesPerDay: 3,
+    allowFractionalShares: true,
+    riskLevel: 'balanced'
+  });
+
+  const result = await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'shadow',
+    runOnce: true,
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.environment, 'shadow');
+  assert.equal(result.shadowApprovedCount, 1);
+  assert.equal(brokerMode, 'paper');
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(context.createdOrders.length, 0);
+  assert.equal(context.createdDecisions[0].status, 'approved');
+  assert.equal(context.createdIntents[0].status, 'policy_approved');
+  assert.equal(
+    context.auditEvents.some(event => event.eventType === 'robotrader_shadow_candidate_approved'),
+    true
+  );
+});
+
+test('portfolio breach vetoes shadow candidates and pauses automation', async () => {
+  const context = createDeps({ approved: true });
+  const baseBroker = context.deps.createAlpacaBroker();
+  const settingsUpdates = [];
+  context.deps.RoboSettings.updateOne = async (query, update) => {
+    settingsUpdates.push({ query, update });
+    return { matchedCount: 1 };
+  };
+  context.deps.RoboExposureSnapshot = {
+    findOne: () => ({
+      sort: () => ({
+        lean: async () => null
+      })
+    }),
+    create: async payload => ({ _id: 'exposure-1', ...payload })
+  };
+  context.deps.createAlpacaBroker = () => ({
+    ...baseBroker,
+    getPositions: async () => [{ symbol: 'AAPL', qty: 10, market_value: 2000 }]
+  });
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    mode: 'shadow',
+    allowedAssetClasses: ['stocks'],
+    allowedSymbols: ['AAPL'],
+    maxTradeAmount: 1000,
+    maxPositionSize: 5000,
+    maxDailyLoss: 500,
+    maxOpenPositions: 5,
+    maxTradesPerDay: 3,
+    allowFractionalShares: true,
+    riskLevel: 'balanced',
+    portfolioPolicy: {
+      maxGrossExposurePct: 10,
+      maxNetExposurePct: 100,
+      maxDailyDrawdownPct: 2,
+      maxTotalDrawdownPct: 5,
+      pauseOnBreach: true
+    }
+  });
+
+  const result = await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'shadow',
+    runOnce: true,
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+
+  assert.equal(result.exposureSnapshot.breached, true);
+  assert.equal(context.createdDecisions[0].status, 'rejected');
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(
+    settingsUpdates.some(call => call.update.$set?.isEnabled === false),
+    true
+  );
+  assert.equal(
+    context.auditEvents.some(event => event.eventType === 'robotrader_portfolio_risk_pause'),
+    true
+  );
+});
+
+test('authorized-intent submission reloads and submits only the exact persisted intent', async () => {
+  const context = createDeps({ approved: true });
+  let claimCount = 0;
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    mode: 'live',
+    liveTradingExplicitlyEnabled: true,
+    approvalPolicy: {
+      mode: 'every_trade',
+      thresholdUsd: 0,
+      authorizationTtlSeconds: 300,
+      requireExactOrderMatch: true
+    },
+    allowedAssetClasses: ['stocks'],
+    allowedSymbols: ['AAPL'],
+    blockedSymbols: [],
+    maxTradeAmount: 1000,
+    maxPositionSize: 5000,
+    maxDailyLoss: 500,
+    maxOpenPositions: 5,
+    maxTradesPerDay: 3,
+    allowFractionalShares: true,
+    riskLevel: 'balanced'
+  });
+  const initial = await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'live',
+    runOnce: true,
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+  assert.equal(initial.ok, true);
+  assert.equal(context.brokerSubmissions.length, 0);
+  const intent = context.createdIntents[0];
+  const decision = context.createdDecisions[0];
+  intent.status = 'authorized';
+  intent.authorizationStatus = 'active';
+  context.deps.OrderIntent.findOne = async query => (
+    String(query._id) === String(intent._id) ? intent : null
+  );
+  context.deps.RoboTradeDecision.findOne = async query => (
+    String(query._id) === String(decision._id) ? decision : null
+  );
+  context.deps.findActiveTradeAuthorization = async args => ({
+    id: 'authorization-1',
+    status: 'active',
+    intentId: args.intentId,
+    policyVersion: POLICY_VERSION,
+    orderFingerprint: args.orderFingerprint,
+    expiresAt: '2026-07-13T14:05:00.000Z'
+  });
+  context.deps.fetchQuotes = async () => [{
+    symbol: 'AAPL',
+    price: 200,
+    bidPrice: 199.95,
+    askPrice: 200.05,
+    timestamp: '2026-07-13T14:01:00.000Z',
+    source: 'alpaca',
+    isMock: false
+  }];
+  context.deps.claimTradeAuthorization = async args => {
+    claimCount += 1;
+    assert.equal(String(args.intentId), String(intent._id));
+    assert.equal(args.policyVersion, POLICY_VERSION);
+    return { id: 'authorization-1', status: 'consumed', orderFingerprint: args.orderFingerprint };
+  };
+
+  const result = await submitAuthorizedIntentForUser({
+    userId: 'user-worker',
+    intentId: intent._id,
+    now: new Date('2026-07-13T14:01:00.000Z')
+  }, context.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(claimCount, 1);
+  assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(context.createdDecisions[0].status, 'submitted');
+  assert.equal(context.createdIntents[0].authorizationStatus, 'consumed');
+  assert.equal(context.createdIntents[0].status, 'submitted');
+  assert.equal(context.createdOrders[0].orderFingerprint, context.createdIntents[0].orderFingerprint);
+});
+
+test('authorized-intent submission fails closed when authorization was already consumed', async () => {
+  const context = createDeps({ approved: true });
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    mode: 'live',
+    liveTradingExplicitlyEnabled: true,
+    approvalPolicy: { mode: 'every_trade', requireExactOrderMatch: true },
+    allowedAssetClasses: ['stocks'],
+    allowedSymbols: ['AAPL'],
+    blockedSymbols: [],
+    maxTradeAmount: 1000,
+    maxPositionSize: 5000,
+    maxDailyLoss: 500,
+    maxOpenPositions: 5,
+    maxTradesPerDay: 3,
+    allowFractionalShares: true,
+    riskLevel: 'balanced'
+  });
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'live',
+    runOnce: true,
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+  const intent = context.createdIntents[0];
+  const decision = context.createdDecisions[0];
+  intent.status = 'authorized';
+  intent.authorizationStatus = 'active';
+  context.deps.OrderIntent.findOne = async () => intent;
+  context.deps.RoboTradeDecision.findOne = async () => decision;
+  context.deps.findActiveTradeAuthorization = async args => ({
+    id: 'authorization-1',
+    status: 'active',
+    intentId: args.intentId,
+    policyVersion: POLICY_VERSION,
+    orderFingerprint: args.orderFingerprint,
+    expiresAt: '2026-07-13T14:05:00.000Z'
+  });
+  context.deps.fetchQuotes = async () => [{
+    symbol: 'AAPL',
+    price: 200,
+    bidPrice: 199.95,
+    askPrice: 200.05,
+    timestamp: '2026-07-13T14:01:00.000Z',
+    source: 'alpaca',
+    isMock: false
+  }];
+  context.deps.claimTradeAuthorization = async () => null;
+
+  const result = await submitAuthorizedIntentForUser({
+    userId: 'user-worker',
+    intentId: intent._id,
+    now: new Date('2026-07-13T14:01:00.000Z')
+  }, context.deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'AUTHORIZATION_CLAIM_FAILED');
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(context.createdOrders.length, 0);
+  assert.equal(context.createdDecisions[0].status, 'pending_manual_approval');
+  assert.equal(context.createdIntents[0].status, 'awaiting_authorization');
+  assert.equal(
+    context.auditEvents.some(event => event.eventType === 'robotrader_authorization_claim_failed'),
+    true
+  );
 });
 
 test('robotrader paper preview scopes recent orders to paper environment', async () => {

@@ -6,7 +6,10 @@ const runtimeState = {
   lastConnectedAt: null,
   lastError: null,
   lastErrorAt: null,
-  lastHint: null
+  lastHint: null,
+  indexState: 'not_started',
+  indexFailures: [],
+  indexesVerifiedAt: null
 };
 
 function getMongoStateName(readyState) {
@@ -37,8 +40,33 @@ function markMongoFailed(err, hint) {
   runtimeState.lastHint = hint || null;
 }
 
+function markMongoIndexesBuilding() {
+  runtimeState.indexState = 'building';
+  runtimeState.indexFailures = [];
+  runtimeState.indexesVerifiedAt = null;
+}
+
+function markMongoIndexesReady() {
+  runtimeState.indexState = 'ready';
+  runtimeState.indexFailures = [];
+  runtimeState.indexesVerifiedAt = new Date().toISOString();
+}
+
+function markMongoIndexesFailed(failures = []) {
+  runtimeState.indexState = 'failed';
+  runtimeState.indexFailures = failures.map(item => ({
+    model: item.model || 'unknown',
+    error: item.error || 'Index verification failed.'
+  }));
+  runtimeState.indexesVerifiedAt = new Date().toISOString();
+}
+
 function isMongoReady() {
   return mongoose.connection.readyState === 1;
+}
+
+function isMongoRequestReady() {
+  return isMongoReady() && !['building', 'failed'].includes(runtimeState.indexState);
 }
 
 function getMongoServiceState() {
@@ -50,7 +78,12 @@ function getMongoServiceState() {
     activeUriLabel: runtimeState.activeUriLabel,
     lastConnectedAt: runtimeState.lastConnectedAt,
     lastErrorAt: runtimeState.lastErrorAt,
-    lastHint: runtimeState.lastHint
+    lastHint: runtimeState.lastHint,
+    indexes: {
+      state: runtimeState.indexState,
+      failures: runtimeState.indexFailures,
+      verifiedAt: runtimeState.indexesVerifiedAt
+    }
   };
 }
 
@@ -72,12 +105,19 @@ function resetMongoRuntimeState() {
   runtimeState.lastError = null;
   runtimeState.lastErrorAt = null;
   runtimeState.lastHint = null;
+  runtimeState.indexState = 'not_started';
+  runtimeState.indexFailures = [];
+  runtimeState.indexesVerifiedAt = null;
 }
 
 module.exports = {
   createMongoUnavailablePayload,
   getMongoServiceState,
+  isMongoRequestReady,
   isMongoReady,
+  markMongoIndexesBuilding,
+  markMongoIndexesFailed,
+  markMongoIndexesReady,
   markMongoConnected,
   markMongoFailed,
   resetMongoRuntimeState,
