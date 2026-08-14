@@ -271,7 +271,10 @@ function buildCanonicalOrderSnapshot({
       orderInput.riskTakeProfitPrice ?? orderInput.risk_take_profit_price
     ),
     extendedHours: Boolean(orderInput.extendedHours ?? orderInput.extended_hours),
-    strategyId: normalizeScalar(orderInput.strategyId ?? orderInput.strategy_id)
+    strategyId: normalizeScalar(orderInput.strategyId ?? orderInput.strategy_id),
+    parameterVersionId: normalizeScalar(
+      orderInput.parameterVersionId ?? orderInput.parameter_version_id
+    )
   });
 }
 
@@ -530,7 +533,8 @@ function evaluateCanonicalTradingPolicy({
     decisionContext: {
       confidenceScore: toFiniteNumber(decision.confidenceScore, 0),
       rewardRiskRatio: toFiniteNumber(decision.rewardRiskRatio),
-      strategyId: decision.strategyId || null
+      strategyId: decision.strategyId || null,
+      parameterVersionId: decision.parameterVersionId || null
     }
   };
 }

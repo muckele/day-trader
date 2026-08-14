@@ -29,6 +29,7 @@ function buildInput(overrides = {}) {
     research: {
       price: 200,
       quote: {
+        symbol: 'AAPL',
         bidPrice: 199.95,
         askPrice: 200.05,
         timestamp: '2026-07-13T13:59:55.000Z',
@@ -151,6 +152,14 @@ test('execution quality requires explicit trusted quote provenance', () => {
   assert.equal(mixedCaseMockResult.checks.find(check => check.name === 'market_data_live').passed, false);
 });
 
+test('paper and live execution reject a quote for a different symbol', () => {
+  const input = buildInput({ environment: 'paper' });
+  input.research.quote.symbol = 'MSFT';
+  const result = evaluateExecutionQuality(input);
+  assert.equal(result.approved, false);
+  assert.equal(result.checks.find(check => check.name === 'quote_symbol_matches').passed, false);
+});
+
 test('new-order cutoff does not veto a quantity-bounded risk-reducing exit', () => {
   const input = buildInput({
     now: new Date('2026-07-13T19:46:00.000Z'),
@@ -165,12 +174,20 @@ test('new-order cutoff does not veto a quantity-bounded risk-reducing exit', () 
   assert.equal(result.checks.find(check => check.name === 'new_order_cutoff').passed, true);
 });
 
-test('paper execution records informational checks without live-like vetoes', () => {
+test('paper execution fails closed without trusted current execution data', () => {
   const result = evaluateExecutionQuality(buildInput({
     environment: 'paper',
     research: { price: 200, indicators: {} },
     marketClock: null
   }));
+
+  assert.equal(result.approved, false);
+  assert.equal(result.checks.find(check => check.name === 'market_data_live').passed, false);
+  assert.equal(result.checks.find(check => check.name === 'quote_fresh').passed, false);
+});
+
+test('paper execution uses the same trusted-data and market-session vetoes as external live execution', () => {
+  const result = evaluateExecutionQuality(buildInput({ environment: 'paper' }));
 
   assert.equal(result.approved, true);
   assert.equal(result.checks.every(check => check.passed), true);

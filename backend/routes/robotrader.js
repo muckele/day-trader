@@ -16,6 +16,7 @@ const RoboCanaryDossier = require('../models/RoboCanaryDossier');
 const RoboLivePromotion = require('../models/RoboLivePromotion');
 const { ALPACA_CAPABILITY_MATRIX } = require('../robotrader/alpacaCapabilities');
 const { createAlpacaBroker } = require('../robotrader/alpacaBroker');
+const { requireBrokerOperator } = require('../services/brokerOperatorService');
 const { reconcileRoboOrders } = require('../robotrader/reconciliation');
 const { getSchedulerStatus, isLegacySchedulerEnabled, isPhase1WorkerEnabled } = require('../services/roboScheduler');
 const {
@@ -29,8 +30,10 @@ const {
   emergencyStop,
   previewRoboTraderForUser,
   runRoboTraderForUser,
+  submitPaperIntentForUser,
   submitAuthorizedIntentForUser
 } = require('../robotrader/worker');
+const { buildPaperMvpSettings } = require('../services/paperMvpPolicyService');
 const {
   createTradeAuthorization,
   expireStaleTradeAuthorizations,
@@ -110,7 +113,10 @@ async function getCurrentUser(req) {
 
 function handleRouteError(err, res, next) {
   if (err?.status) {
-    return res.status(err.status).json({ message: err.message });
+    return res.status(err.status).json({
+      message: err.message,
+      code: err.code || 'REQUEST_REJECTED'
+    });
   }
   return next(err);
 }
@@ -132,6 +138,13 @@ async function getMappedSettingsForUser(userId) {
 
 function isLiveTradingAllowed(settings = {}) {
   return settings.mode === 'live' && settings.liveTradingExplicitlyEnabled === true;
+}
+
+function getBrokerOperatorUser(req, user) {
+  return {
+    _id: user?._id,
+    username: user?.username || req.user?.username
+  };
 }
 
 function ensureLiveTradingAllowed(settings, action = 'Live trading') {
@@ -1538,48 +1551,52 @@ router.post('/preview-paper', sensitiveRateLimit({ max: 12 }), async (req, res, 
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    requireBrokerOperator(getBrokerOperatorUser(req, user));
     const currentSettings = await getMappedSettingsForUser(user._id);
-    const sanitizedPreviewSettings = sanitizeSettingsUpdate({
-      ...(req.body?.settings || {}),
-      mode: 'paper',
-      liveTradingExplicitlyEnabled: false
-    }, currentSettings);
-    const settingsOverride = mapSettings({
-      ...currentSettings,
-      ...sanitizedPreviewSettings,
-      mode: 'paper',
-      liveTradingExplicitlyEnabled: false
-    });
+    const settingsOverride = buildPaperMvpSettings(currentSettings);
     const preview = await previewRoboTraderForUser({
       userId: user._id,
       settingsOverride,
-      modeOverride: 'paper'
+      modeOverride: 'paper',
+      persistIntent: true,
+      idempotencyKey: req.get('Idempotency-Key')
     });
     res.json({ preview });
   } catch (err) {
-    next(err);
+    handleRouteError(err, res, next);
   }
 });
 
 router.post('/run-once-paper', sensitiveRateLimit({ max: 8 }), async (req, res, next) => {
+  return res.status(409).json({
+    code: 'FROZEN_PAPER_INTENT_REQUIRED',
+    message: 'Direct paper execution is disabled. Preview and explicitly submit the exact frozen paper intent.'
+  });
+});
+
+router.post('/paper-intents/:intentId/submit', sensitiveRateLimit({ max: 8 }), async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
-    const settings = await getMappedSettingsForUser(user._id);
-    if (!settings.isEnabled) {
-      return res.status(400).json({ message: 'Enable RoboTrader before running a paper test.' });
+    requireBrokerOperator(getBrokerOperatorUser(req, user));
+    if (!mongoose.Types.ObjectId.isValid(req.params.intentId)) {
+      return res.status(400).json({ message: 'Invalid paper intent id.' });
     }
-    if (settings.mode !== 'paper') {
-      return res.status(400).json({ message: 'Run Once Paper is only available while RoboTrader is in paper mode.' });
-    }
-    const result = await runRoboTraderForUser({
+    const result = await submitPaperIntentForUser({
       userId: user._id,
-      modeOverride: 'paper',
-      runOnce: true
+      intentId: req.params.intentId,
+      idempotencyKey: req.get('Idempotency-Key'),
+      now: new Date()
     });
-    res.json({ result });
+    if (result.reason === 'INTENT_NOT_FOUND') {
+      return res.status(404).json({ message: 'Paper intent not found.', result });
+    }
+    if (!result.submitted) {
+      return res.status(409).json({ message: 'The exact frozen paper intent was not submitted.', result });
+    }
+    return res.json(result);
   } catch (err) {
-    next(err);
+    return handleRouteError(err, res, next);
   }
 });
 

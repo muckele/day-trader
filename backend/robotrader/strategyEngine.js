@@ -151,6 +151,25 @@ const STRATEGY_MODULES = [
 ];
 
 function evaluateResearch(research, settings = {}) {
+  if (research?.dataProvenance && research.dataProvenance.trustedForExecution !== true) {
+    return {
+      symbol: research.symbol || null,
+      assetClass: research.assetClass || null,
+      action: 'hold',
+      confidenceScore: 0,
+      rewardRiskRatio: null,
+      strategyId: settings.activeStrategyId || 'ROBO_DATA_UNAVAILABLE',
+      parameterVersionId: settings.activeParameterVersionId || null,
+      strategyName: 'Trusted data unavailable',
+      reasoningSummary: 'Trusted, current market data is unavailable; no paper intent can be recommended.',
+      unavailable: research.dataQuality?.availability || {
+        available: false,
+        code: 'TRUSTED_MARKET_DATA_UNAVAILABLE',
+        provenance: research.dataProvenance
+      },
+      recommendedOrder: null
+    };
+  }
   if (!research || !research.symbol || !Number(research.price)) {
     return {
       symbol: research?.symbol || null,
@@ -165,7 +184,26 @@ function evaluateResearch(research, settings = {}) {
   }
 
   const candidates = STRATEGY_MODULES.map(strategy => strategy(research));
-  const best = candidates.sort((a, b) => b.confidenceScore - a.confidenceScore)[0];
+  const configuredStrategyId = String(settings.activeStrategyId || '').trim();
+  const eligibleCandidates = configuredStrategyId
+    ? candidates.filter(candidate => candidate.strategyId === configuredStrategyId)
+    : candidates;
+  if (!eligibleCandidates.length) {
+    return {
+      symbol: research.symbol,
+      assetClass: research.assetClass,
+      action: 'hold',
+      confidenceScore: 0,
+      rewardRiskRatio: null,
+      strategyId: configuredStrategyId || 'ROBO_NO_STRATEGY',
+      parameterVersionId: settings.activeParameterVersionId || null,
+      strategyName: 'Unconfigured strategy',
+      reasoningSummary: 'The configured RoboTrader strategy is not available in this runtime.',
+      recommendedOrder: null,
+      candidates
+    };
+  }
+  const best = eligibleCandidates.sort((a, b) => b.confidenceScore - a.confidenceScore)[0];
   const action = best.direction || 'hold';
   const side = action === 'sell' ? 'sell' : 'buy';
   const recommendedOrder = action === 'hold'
@@ -187,6 +225,7 @@ function evaluateResearch(research, settings = {}) {
     confidenceScore: best.confidenceScore,
     rewardRiskRatio: best.rewardRiskRatio,
     strategyId: best.strategyId,
+    parameterVersionId: settings.activeParameterVersionId || null,
     strategyName: best.strategyName,
     reasoningSummary: best.reason,
     recommendedOrder,

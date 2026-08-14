@@ -66,8 +66,11 @@ function summarizeResearchSnapshot(research = {}) {
     },
     dataQuality: {
       barsAvailable,
-      dataError: research.dataQuality?.dataError || null
+      dataError: research.dataQuality?.dataError || null,
+      executionEligible: research.dataQuality?.executionEligible === true,
+      availability: research.dataQuality?.availability || null
     },
+    dataProvenance: research.dataProvenance || null,
     asOf: research.asOf || null
   };
 }

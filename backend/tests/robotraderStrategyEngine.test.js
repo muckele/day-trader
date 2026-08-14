@@ -58,3 +58,29 @@ test('strategy engine keeps broker bracket protection for whole-share stock sizi
   assert.deepEqual(decision.recommendedOrder.takeProfit, { limit_price: 262 });
   assert.equal(decision.recommendedOrder.extendedHours, false);
 });
+
+test('strategy engine uses only the configured strategy and carries its exact parameter version', () => {
+  const decision = evaluateResearch({
+    symbol: 'AAPL',
+    assetClass: 'stocks',
+    price: 200,
+    indicators: {
+      twentyDayChangePct: 8,
+      volumeRatio: 2,
+      sma20: 210,
+      sma50: 190,
+      sma200: 180,
+      atrPct: 2
+    }
+  }, {
+    activeStrategyId: 'ROBO_TREND_FOLLOWING_V1',
+    activeParameterVersionId: '507f1f77bcf86cd799439011',
+    allowFractionalShares: true,
+    maxTradeAmount: 1000,
+    riskLevel: 'balanced'
+  });
+
+  assert.equal(decision.strategyId, 'ROBO_TREND_FOLLOWING_V1');
+  assert.equal(decision.parameterVersionId, '507f1f77bcf86cd799439011');
+  assert.equal(decision.recommendedOrder.strategyId, 'ROBO_TREND_FOLLOWING_V1');
+});

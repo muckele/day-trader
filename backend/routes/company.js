@@ -14,9 +14,7 @@ function normalizeBaseUrl(url) {
 }
 
 const TRADING_BASE_URLS = [
-  RAW_TRADING_URL,
-  'https://paper-api.alpaca.markets',
-  'https://api.alpaca.markets'
+  RAW_TRADING_URL || 'https://paper-api.alpaca.markets'
 ]
   .filter(Boolean)
   .map(normalizeBaseUrl)

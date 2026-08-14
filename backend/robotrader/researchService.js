@@ -7,6 +7,10 @@ const {
   sma
 } = require('../signal/indicators');
 const { normalizeAssetClass, normalizeSymbol } = require('./settingsService');
+const {
+  buildMarketDataProvenance,
+  createMarketDataUnavailableResult
+} = require('../services/marketDataProvenanceService');
 
 function toFiniteNumber(value, fallback = null) {
   const numeric = Number(value);
@@ -105,6 +109,19 @@ async function buildResearchForSymbol(symbol, {
   const volumeRatio = avgVolume20 ? recentVolume / avgVolume20 : null;
   const openOrderCount = (openOrders || []).filter(order => normalizeSymbol(order.symbol) === normalizedSymbol).length;
   const exposure = resolvePortfolioExposure(normalizedSymbol, positions);
+  const historicalTimestamp = bars.length ? bars[bars.length - 1]?.t : null;
+  const dataProvenance = buildMarketDataProvenance({
+    symbol: normalizedSymbol,
+    quote,
+    bars,
+    historicalProvider: bars.length ? 'alpaca' : null,
+    historicalTimestamp,
+    environment: 'paper',
+    dataError
+  });
+  const availability = dataProvenance.trustedForExecution
+    ? { available: true, code: null, message: null, provenance: dataProvenance }
+    : createMarketDataUnavailableResult(dataProvenance);
 
   return {
     symbol: normalizedSymbol,
@@ -144,8 +161,11 @@ async function buildResearchForSymbol(symbol, {
     },
     dataQuality: {
       barsAvailable: bars.length,
-      dataError
+      dataError,
+      executionEligible: dataProvenance.trustedForExecution,
+      availability
     },
+    dataProvenance,
     asOf: new Date().toISOString()
   };
 }

@@ -15,11 +15,15 @@ const API_URL =
   process.env.ALPACA_DATA_BASE_URL;
 
 const API_KEY =
+  process.env.APCA_PAPER_API_KEY_ID ||
+  process.env.ALPACA_PAPER_API_KEY ||
   process.env.BROKER_API_KEY ||
   process.env.APCA_API_KEY_ID ||
   process.env.ALPACA_API_KEY;
 
 const API_SECRET =
+  process.env.APCA_PAPER_API_SECRET_KEY ||
+  process.env.ALPACA_PAPER_API_SECRET ||
   process.env.BROKER_API_SECRET ||
   process.env.APCA_API_SECRET_KEY ||
   process.env.ALPACA_API_SECRET;
@@ -29,7 +33,7 @@ function getAlpacaConfig() {
     throw new Error('Missing Alpaca data base URL (APCA_DATA_URL or ALPACA_DATA_URL).');
   }
   if (!API_KEY || !API_SECRET) {
-    throw new Error('Missing Alpaca API keys (BROKER_API_KEY/BROKER_API_SECRET or APCA_API_KEY_ID/APCA_API_SECRET_KEY).');
+    throw new Error('Missing Alpaca data credentials (APCA_PAPER_API_KEY_ID/APCA_PAPER_API_SECRET_KEY or an explicit data-only Alpaca key pair).');
   }
   const dataBaseUrl = API_URL.replace(/\/v2\/?$/, '').replace(/\/+$/, '');
   return {

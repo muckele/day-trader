@@ -9,11 +9,15 @@ const RAW_DATA_URL =
 const DATA_URL = RAW_DATA_URL.replace(/\/v2\/?$/, '');
 
 const API_KEY =
+  process.env.APCA_PAPER_API_KEY_ID ||
+  process.env.ALPACA_PAPER_API_KEY ||
   process.env.BROKER_API_KEY ||
   process.env.APCA_API_KEY_ID ||
   process.env.ALPACA_API_KEY;
 
 const API_SECRET =
+  process.env.APCA_PAPER_API_SECRET_KEY ||
+  process.env.ALPACA_PAPER_API_SECRET ||
   process.env.BROKER_API_SECRET ||
   process.env.APCA_API_SECRET_KEY ||
   process.env.ALPACA_API_SECRET;

@@ -10,6 +10,7 @@ const {
   previewRoboTraderForUser,
   resolveWorkerLockTtlMs,
   runRoboTraderForUser,
+  submitPaperIntentForUser,
   submitAuthorizedIntentForUser,
   runWorkerTick
 } = require('../robotrader/worker');
@@ -35,6 +36,10 @@ function createDeps({ approved = true } = {}) {
       updateOne: async () => ({ matchedCount: 1 })
     },
     RoboTradeDecision: {
+      findOne: async query => createdDecisions.find(item => (
+        (!query._id || String(item._id) === String(query._id))
+        && (!query.idempotencyKey || item.idempotencyKey === query.idempotencyKey)
+      )) || null,
       create: async payload => {
         const doc = {
           _id: `decision-${createdDecisions.length + 1}`,
@@ -48,6 +53,33 @@ function createDeps({ approved = true } = {}) {
       }
     },
     OrderIntent: {
+      findOne: async query => createdIntents.find(item => (
+        (!query._id || (
+          query._id.$ne
+            ? String(item._id) !== String(query._id.$ne)
+            : String(item._id) === String(query._id)
+        ))
+        && (!query.idempotencyKey || item.idempotencyKey === query.idempotencyKey)
+        && (!query.userId || String(item.userId) === String(query.userId))
+        && (!query.accountId || item.accountId === query.accountId)
+        && (!query.broker || item.broker === query.broker)
+        && (!query.environment || item.environment === query.environment)
+        && (!query.origin || item.origin === query.origin)
+        && (!query.status || (
+          query.status.$in
+            ? query.status.$in.includes(item.status)
+            : item.status === query.status
+        ))
+      )) || null,
+      findOneAndUpdate: async (query, update) => {
+        const item = createdIntents.find(candidate => (
+          String(candidate._id) === String(query._id)
+          && (!query.status || candidate.status === query.status)
+        ));
+        if (!item) return null;
+        Object.assign(item, update.$set || {});
+        return item;
+      },
       create: async payload => {
         const doc = {
           _id: `intent-${createdIntents.length + 1}`,
@@ -63,6 +95,12 @@ function createDeps({ approved = true } = {}) {
     },
     RoboTradeOrder: {
       find: () => chain([]),
+      findOne: async query => query?._id
+        ? createdOrders.find(item => (
+            String(item._id) === String(query._id)
+            && (!query.accountId || item.accountId === query.accountId)
+          )) || null
+        : null,
       create: async payload => {
         const doc = {
           _id: `order-${createdOrders.length + 1}`,
@@ -101,6 +139,7 @@ function createDeps({ approved = true } = {}) {
       riskLevel: 'balanced'
     }),
     mapSettings,
+    hasBrokerOperatorAccess: async () => true,
     updateRoboTraderSettings: async () => ({ isEnabled: false, enabled: false }),
     buildClientOrderId: () => 'daytrader-robotrader-AAPL-fixed',
     isAmbiguousSubmitError,
@@ -146,6 +185,15 @@ function createDeps({ approved = true } = {}) {
       approved,
       checks: [{ name: 'test', passed: approved, message: approved ? null : 'Rejected by test.' }],
       rejectionReasons: approved ? [] : ['Rejected by test.']
+    }),
+    // Submission-outcome tests isolate the worker lifecycle from the separately
+    // covered external-execution market-data/session gate.
+    evaluateExecutionQuality: () => ({
+      approved: true,
+      veto: false,
+      checks: [{ name: 'trusted_execution_data', passed: true, message: 'Test fixture.' }],
+      rejectionReasons: [],
+      metrics: {}
     }),
     validateControlledLiveSubmission: async () => ({ approved: true }),
     claimControlledLiveAttempt: async () => ({ _id: 'activation-1', attemptsUsed: 1 }),
@@ -1010,4 +1058,130 @@ test('robotrader worker converts stock orders to valid extended-hours limit orde
   assert.equal(order.takeProfit, null);
   assert.equal(order.riskStopPrice, 190);
   assert.equal(order.requiresRegularSessionForProtection, true);
+});
+
+function configureFrozenPaperMvp(context) {
+  const parameterVersionId = '507f1f77bcf86cd799439011';
+  context.deps.env = {
+    LIVE_TRADING_ENABLED: 'false',
+    PAPER_MVP_PARAMETER_VERSION_ID: parameterVersionId
+  };
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    controlGeneration: 0,
+    mode: 'paper',
+    allowedAssetClasses: ['stocks'],
+    allowedSymbols: ['AAPL'],
+    blockedSymbols: [],
+    maxTradeAmount: 100,
+    maxPositionSize: 250,
+    maxDailyLoss: 50,
+    maxOpenPositions: 1,
+    maxTradesPerDay: 1,
+    allowFractionalShares: true,
+    riskLevel: 'balanced',
+    activeStrategyId: 'ROBO_TREND_FOLLOWING_V1',
+    activeParameterVersionId: parameterVersionId
+  });
+  context.deps.buildResearchBatch = async () => [{
+    symbol: 'AAPL',
+    assetClass: 'stocks',
+    price: 200,
+    quote: {
+      symbol: 'AAPL',
+      price: 200,
+      bidPrice: 199.95,
+      askPrice: 200.05,
+      timestamp: '2026-07-13T14:00:00.000Z',
+      source: 'alpaca',
+      isMock: false
+    },
+    indicators: { avgVolume20: 1000000 },
+    marketContext: {},
+    dataProvenance: { trustedForExecution: true, provider: 'alpaca', symbol: 'AAPL' }
+  }];
+  context.deps.evaluateResearchBatch = () => [{
+    symbol: 'AAPL',
+    assetClass: 'stocks',
+    action: 'buy',
+    confidenceScore: 80,
+    rewardRiskRatio: 2,
+    strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    parameterVersionId,
+    strategyName: 'Trend following',
+    reasoningSummary: 'Frozen test decision.',
+    recommendedOrder: {
+      symbol: 'AAPL',
+      assetClass: 'stocks',
+      side: 'buy',
+      orderType: 'market',
+      orderClass: 'simple',
+      timeInForce: 'day',
+      qty: 0.5,
+      estimatedNotional: 100
+    }
+  }];
+  context.deps.fetchQuotes = async () => [{
+    symbol: 'AAPL',
+    price: 200,
+    bidPrice: 199.95,
+    askPrice: 200.05,
+    timestamp: '2026-07-13T14:00:00.000Z',
+    source: 'alpaca',
+    isMock: false
+  }];
+  context.deps.getCurrentTime = () => new Date('2026-07-13T14:00:00.000Z');
+}
+
+test('paper MVP preview durably freezes one exact AAPL intent without broker POST', async () => {
+  const context = createDeps({ approved: true });
+  configureFrozenPaperMvp(context);
+  const result = await previewRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    persistIntent: true,
+    idempotencyKey: 'preview-1',
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.decisions[0].symbol, 'AAPL');
+  assert.equal(result.decisions[0].intentId, 'intent-1');
+  assert.equal(context.createdIntents.length, 1);
+  assert.equal(context.createdIntents[0].orderFingerprint, result.decisions[0].orderFingerprint);
+  assert.equal(context.createdIntents[0].marketDataProvenance.trustedForExecution, true);
+  assert.equal(context.brokerSubmissions.length, 0);
+});
+
+test('paper MVP explicitly submits the frozen intent once and replays its idempotency key', async () => {
+  const context = createDeps({ approved: true });
+  configureFrozenPaperMvp(context);
+  const preview = await previewRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    persistIntent: true,
+    idempotencyKey: 'preview-2',
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+  const intentId = preview.decisions[0].intentId;
+
+  const first = await submitPaperIntentForUser({
+    userId: 'user-worker',
+    intentId,
+    idempotencyKey: 'submit-2',
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+  const replay = await submitPaperIntentForUser({
+    userId: 'user-worker',
+    intentId,
+    idempotencyKey: 'submit-2',
+    now: new Date('2026-07-13T14:00:01.000Z')
+  }, context.deps);
+
+  assert.equal(first.submitted, true);
+  assert.equal(replay.idempotentReplay, true);
+  assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
 });

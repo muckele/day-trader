@@ -11,6 +11,7 @@ const {
 } = require('../signal/indicators');
 const { createAlpacaBroker } = require('../robotrader/alpacaBroker');
 const { mapSymbolSector } = require('../paper/marketMeta');
+const { normalizeMarketSymbol } = require('../utils/marketSymbol');
 const {
   buildFallbackResearchIntelligence,
   buildResearchIntelligence,
@@ -65,7 +66,7 @@ const CHART_TIMEFRAMES = [
 ];
 
 function normalizeSymbol(symbol) {
-  return String(symbol || '').trim().toUpperCase().replace(/[^A-Z0-9./-]/g, '');
+  return normalizeMarketSymbol(symbol);
 }
 
 function positiveNumber(value, fallback) {

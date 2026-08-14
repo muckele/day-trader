@@ -1,7 +1,7 @@
 const { deriveEffectiveNotional } = require('./canonicalTradingPolicyService');
 const { normalizeAssetClass } = require('../robotrader/settingsService');
 
-const LIVE_LIKE_ENVIRONMENTS = new Set(['live', 'shadow']);
+const LIVE_LIKE_ENVIRONMENTS = new Set(['paper', 'live', 'shadow']);
 const TRUSTED_LIVE_QUOTE_SOURCES = new Set(['alpaca', 'alpaca_trade_fallback']);
 
 function toFiniteNumber(value, fallback = null) {
@@ -85,6 +85,7 @@ function evaluateExecutionQuality({
   const isStock = normalizedAssetClass === 'stocks';
   const quote = normalizeExecutionQuote(research.quote || {});
   const symbol = String(orderInput.symbol || '').toUpperCase();
+  const quoteSymbol = String(research.quote?.symbol || '').trim().toUpperCase();
   const currentPositionQty = toFiniteNumber(
     (positions || []).find(position => String(position.symbol || '').toUpperCase() === symbol)?.qty,
     0
@@ -178,10 +179,14 @@ function evaluateExecutionQuality({
   } else if (!isStock) {
     addCheck('market_session_open', true, 'Non-equity instruments are not subject to the US equity session clock.');
     addCheck('new_order_cutoff', true, 'Non-equity instruments are not subject to the 3:45 PM ET equity cutoff.');
-    addCheck('market_data_live', marketDataLive, 'Shadow/live execution requires explicitly non-mock data from a trusted provider.', {
+    addCheck('market_data_live', marketDataLive, 'External execution requires explicitly non-mock data from a trusted provider.', {
       source: quote.source,
       explicitlyNonMock: quote.explicitlyNonMock,
       trustedLiveSource: quote.trustedLiveSource
+    });
+    addCheck('quote_symbol_matches', Boolean(symbol && quoteSymbol === symbol), 'The execution quote symbol does not match the order symbol.', {
+      orderSymbol: symbol,
+      quoteSymbol
     });
     addCheck(
       'quote_fresh',
@@ -224,10 +229,14 @@ function evaluateExecutionQuality({
         riskReducingOnly
       }
     );
-    addCheck('market_data_live', marketDataLive, 'Shadow/live execution requires explicitly non-mock data from a trusted provider.', {
+    addCheck('market_data_live', marketDataLive, 'External execution requires explicitly non-mock data from a trusted provider.', {
       source: quote.source,
       explicitlyNonMock: quote.explicitlyNonMock,
       trustedLiveSource: quote.trustedLiveSource
+    });
+    addCheck('quote_symbol_matches', Boolean(symbol && quoteSymbol === symbol), 'The execution quote symbol does not match the order symbol.', {
+      orderSymbol: symbol,
+      quoteSymbol
     });
     addCheck(
       'quote_fresh',

@@ -512,28 +512,17 @@ test('GET /robotrader/decisions and orders scope list queries by environment', a
   assert.equal(ordersQuery.environment, 'paper');
 });
 
-test('POST /robotrader/run-once-paper requires RoboTrader to be enabled', async t => {
-  t.mock.method(User, 'findOne', async () => ({ _id: 'user-route-run-disabled' }));
-  t.mock.method(RoboSettings, 'findOne', () => ({
-    sort: () => ({
-      mode: 'paper',
-      isEnabled: false,
-      enabled: false,
-      allowedAssetClasses: ['stocks']
-    })
-  }));
-
+test('POST /robotrader/run-once-paper is disabled in favor of frozen preview and explicit submit', async () => {
   const handler = getRouteHandler('/run-once-paper', 'post');
-  const req = {
-    user: { username: 'matt' }
-  };
+  const req = { user: { username: 'matt' } };
   const res = createMockRes();
   let nextErr = null;
   await handler(req, res, err => { nextErr = err; });
 
   assert.equal(nextErr, null);
-  assert.equal(res.statusCode, 400);
-  assert.match(res.body.message, /Enable RoboTrader/);
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.body.code, 'FROZEN_PAPER_INTENT_REQUIRED');
+  assert.match(res.body.message, /Preview and explicitly submit/);
 });
 
 test('POST /robotrader/run-once-shadow requires shadow mode', async t => {
