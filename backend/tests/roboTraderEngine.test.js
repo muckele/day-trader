@@ -1,6 +1,5 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const axios = require('axios');
 const {
   getBucketStart,
   evaluateNotionalAgainstLimits,
@@ -11,9 +10,9 @@ const {
   runRoboTradeForUser
 } = require('../services/roboTraderEngine');
 
-test('legacy Robo execution cannot target a live Alpaca endpoint', () => {
+test('legacy Robo execution cannot target any Alpaca endpoint', () => {
   assert.equal(requiresControlledLiveWorker('alpaca', 'https://api.alpaca.markets'), true);
-  assert.equal(requiresControlledLiveWorker('alpaca', 'https://paper-api.alpaca.markets'), false);
+  assert.equal(requiresControlledLiveWorker('alpaca', 'https://paper-api.alpaca.markets'), true);
   assert.equal(requiresControlledLiveWorker('paper', 'https://api.alpaca.markets'), false);
 });
 
@@ -216,7 +215,7 @@ test('runSchedulerTick uses auto-generated multi-symbol signals', async () => {
   const deps = {
     User: {
       findById: () => ({
-        lean: async () => ({ email: 'trader@example.com' })
+        lean: async () => ({ username: 'alice', email: 'trader@example.com' })
       })
     },
     RoboSettings: {
@@ -285,6 +284,7 @@ test('runSchedulerTick uses auto-generated multi-symbol signals', async () => {
   try {
     await runSchedulerTick(deps);
     assert.equal(orderCalls.length, 1);
+    assert.equal(orderCalls[0].accountId, 'user:alice');
     assert.equal(orderCalls[0].symbol, 'TLT');
     assert.equal(orderCalls[0].side, 'sell');
     assert.equal(events.some(event => event.eventType === 'trade_executed'), true);
@@ -298,6 +298,53 @@ test('runSchedulerTick uses auto-generated multi-symbol signals', async () => {
     if (previousShortFlag === undefined) delete process.env.SHORT_SELLING_ENABLED;
     else process.env.SHORT_SELLING_ENABLED = previousShortFlag;
   }
+});
+
+test('runSchedulerTick cannot fall back to a database ObjectId for paper submission', async () => {
+  const userId = '507f1f77bcf86cd799439011';
+  const events = [];
+  let orderCalls = 0;
+  let signalBuildCalls = 0;
+  const deps = {
+    User: {
+      findById: id => ({
+        lean: async () => ({ _id: id, email: 'missing-username@example.com' })
+      })
+    },
+    RoboSettings: {
+      find: () => ({
+        lean: async () => [{ userId, enabled: true }]
+      })
+    },
+    RoboAuditLog: {
+      create: async entry => {
+        events.push(entry);
+        return entry;
+      }
+    },
+    paperBroker: {
+      placeOrder: async () => {
+        orderCalls += 1;
+        return {};
+      }
+    },
+    fetchQuotes: async () => {
+      signalBuildCalls += 1;
+      return [{ symbol: 'AAPL', price: 100, changePercent: 1 }];
+    }
+  };
+
+  await runSchedulerTick(deps);
+
+  assert.equal(orderCalls, 0);
+  assert.equal(signalBuildCalls, 0);
+  assert.equal(
+    events.some(event => (
+      event.eventType === 'trade_skipped_canonical_account_unresolved'
+      && String(event.userId) === userId
+    )),
+    true
+  );
 });
 
 test('runRoboTradeForUser skips execution and logs when robo is disabled', async () => {
@@ -993,11 +1040,13 @@ test('runRoboTradeForUser executes trade, updates usage, and sends email', async
   const result = await runRoboTradeForUser(
     {
       userId: 'user-1',
+      accountId: 'account-robo-1',
       now: new Date('2026-02-20T15:00:00.000Z'),
       signal: {
         symbol: 'AAPL',
         side: 'buy',
         qty: 1,
+        signalId: 'signal-forwarding-1',
         strategyName: 'Momentum Test'
       }
     },
@@ -1007,6 +1056,8 @@ test('runRoboTradeForUser executes trade, updates usage, and sends email', async
   assert.equal(result.ok, true);
   assert.equal(result.executed, true);
   assert.equal(orderCalls.length, 1);
+  assert.equal(orderCalls[0].accountId, 'account-robo-1');
+  assert.equal(orderCalls[0].idempotencyKey, 'robo:signal-forwarding-1');
   assert.equal(emailCalls.length, 1);
   assert.equal(emailCalls[0].to, 'trader@example.com');
   assert.equal(emailCalls[0].details.orderId, 'order-123');
@@ -1088,6 +1139,7 @@ test('runRoboTradeForUser maps short signal side to sell execution', async () =>
     const result = await runRoboTradeForUser(
       {
         userId: 'user-short',
+        accountId: 'user:short',
         now: new Date('2026-02-20T15:00:00.000Z'),
         signal: {
           symbol: 'AAPL',
@@ -1114,7 +1166,7 @@ test('runRoboTradeForUser maps short signal side to sell execution', async () =>
   }
 });
 
-test('runRoboTradeForUser executes via Alpaca backend when configured', async t => {
+test('runRoboTradeForUser fails closed for legacy Alpaca live and paper endpoints', async () => {
   const previousBackend = process.env.ROBO_EXECUTION_BACKEND;
   const previousApiKey = process.env.APCA_API_KEY_ID;
   const previousApiSecret = process.env.APCA_API_SECRET_KEY;
@@ -1123,30 +1175,11 @@ test('runRoboTradeForUser executes via Alpaca backend when configured', async t 
   process.env.ROBO_EXECUTION_BACKEND = 'alpaca';
   process.env.APCA_API_KEY_ID = 'alpaca-key';
   process.env.APCA_API_SECRET_KEY = 'alpaca-secret';
-  process.env.APCA_BASE_URL = 'https://paper-api.alpaca.markets';
 
   const events = [];
-  const usageUpdates = [];
-  const orderCalls = [];
-
-  t.mock.method(axios, 'post', async (...args) => {
-    orderCalls.push(args);
-    return {
-      data: {
-        id: 'alpaca-order-1',
-        filled_avg_price: '101.5',
-        filled_qty: '1',
-        notional: '101.5'
-      }
-    };
-  });
+  let paperOrderCalls = 0;
 
   const deps = {
-    User: {
-      findById: () => ({
-        lean: async () => ({ email: 'trader@example.com' })
-      })
-    },
     RoboSettings: {
       findOne: async () => ({
         enabled: true,
@@ -1155,26 +1188,11 @@ test('runRoboTradeForUser executes via Alpaca backend when configured', async t 
         monthlyLimit: 5000
       })
     },
-    RoboUsage: {
-      find: () => ({
-        lean: async () => []
-      }),
-      updateOne: async (query, update, options) => {
-        usageUpdates.push({ query, update, options });
-        return { acknowledged: true };
-      }
-    },
     RoboAuditLog: {
       create: async entry => {
         events.push(entry);
         return entry;
       }
-    },
-    RoboSignalExecution: {
-      create: async payload => ({ _id: 'signal-alpaca', ...payload }),
-      findOne: () => ({ lean: async () => null }),
-      updateOne: async () => ({ acknowledged: true }),
-      countDocuments: async () => 0
     },
     RoboLock: {
       findOneAndUpdate: async () => ({ _id: 'lock-alpaca' }),
@@ -1182,42 +1200,43 @@ test('runRoboTradeForUser executes via Alpaca backend when configured', async t 
     },
     paperBroker: {
       placeOrder: async () => {
-        throw new Error('paper broker should not be called in alpaca execution mode');
+        paperOrderCalls += 1;
+        throw new Error('paper broker should not be called in legacy Alpaca execution mode');
       }
-    },
-    fetchQuotes: async () => [{ symbol: 'AAPL', price: 100 }],
-    emailService: {
-      sendTradeEmail: async () => ({ provider: 'log', messageId: 'email-alpaca' })
     }
   };
 
   try {
-    const result = await runRoboTradeForUser(
-      {
-        userId: 'user-alpaca',
-        now: new Date('2026-02-20T15:00:00.000Z'),
-        signal: {
-          symbol: 'AAPL',
-          side: 'buy',
-          qty: 1,
-          strategyName: 'Alpaca Test'
-        }
-      },
-      deps
+    for (const [index, baseUrl] of [
+      'https://api.alpaca.markets',
+      'https://paper-api.alpaca.markets'
+    ].entries()) {
+      process.env.APCA_BASE_URL = baseUrl;
+      const result = await runRoboTradeForUser(
+        {
+          userId: `user-alpaca-disabled-${index}`,
+          now: new Date('2026-02-20T15:00:00.000Z'),
+          signal: {
+            symbol: 'AAPL',
+            side: 'buy',
+            qty: 1,
+            signalId: `legacy-alpaca-disabled-${index}`
+          }
+        },
+        deps
+      );
+
+      assert.equal(result.ok, false);
+      assert.equal(result.executed, false);
+      assert.equal(result.skipped, true);
+      assert.equal(result.reason, 'LEGACY_ALPACA_EXECUTION_DISABLED');
+    }
+
+    assert.equal(paperOrderCalls, 0);
+    assert.equal(
+      events.filter(event => event.eventType === 'trade_skipped_legacy_alpaca_execution_disabled').length,
+      2
     );
-
-    assert.equal(result.ok, true);
-    assert.equal(result.executed, true);
-    assert.equal(orderCalls.length, 1);
-    assert.equal(orderCalls[0][0], 'https://paper-api.alpaca.markets/v2/orders');
-    assert.equal(orderCalls[0][1].symbol, 'AAPL');
-    assert.equal(orderCalls[0][1].side, 'buy');
-    assert.equal(usageUpdates.length, 3);
-
-    const tradeEvent = events.find(event => event.eventType === 'trade_executed');
-    assert.ok(tradeEvent);
-    assert.equal(tradeEvent.payload.executionBackend, 'alpaca');
-    assert.equal(tradeEvent.payload.orderId, 'alpaca-order-1');
   } finally {
     if (previousBackend === undefined) delete process.env.ROBO_EXECUTION_BACKEND;
     else process.env.ROBO_EXECUTION_BACKEND = previousBackend;
@@ -1290,6 +1309,7 @@ test('runRoboTradeForUser resets circuit-breaker state after successful trade', 
   const result = await runRoboTradeForUser(
     {
       userId: 'user-reset',
+      accountId: 'user:reset',
       signal: { symbol: 'AAPL', side: 'buy', qty: 1 },
       now: new Date('2026-02-20T16:00:00.000Z')
     },
@@ -1374,6 +1394,7 @@ test('runRoboTradeForUser arms circuit breaker after consecutive execution failu
       runRoboTradeForUser(
         {
           userId: 'user-fail',
+          accountId: 'user:fail',
           signal: { symbol: 'AAPL', side: 'buy', qty: 1 },
           now: new Date('2026-02-20T16:00:00.000Z')
         },
@@ -1395,6 +1416,127 @@ test('runRoboTradeForUser arms circuit breaker after consecutive execution failu
   assert.equal(signalUpdates[0].update.$set.status, 'failed');
   assert.equal(events.some(event => event.eventType === 'trade_failed'), true);
   assert.equal(events.some(event => event.eventType === 'circuit_breaker_armed'), true);
+});
+
+test('runRoboTradeForUser never synthesizes rejection telemetry for non-rejection outcomes', async () => {
+  const previousBackend = process.env.ROBO_EXECUTION_BACKEND;
+  process.env.ROBO_EXECUTION_BACKEND = 'paper';
+
+  const cases = [
+    {
+      name: 'unknown submit outcome',
+      error: Object.assign(new Error('submission outcome unknown'), {
+        code: 'SUBMIT_UNKNOWN',
+        submissionOutcome: 'SUBMIT_UNKNOWN',
+        paperOrderRecorded: true
+      })
+    },
+    {
+      name: 'post-ack reconciliation failure',
+      error: Object.assign(new Error('acknowledged order needs reconciliation'), {
+        code: 'PAPER_ORDER_RECONCILIATION_REQUIRED',
+        submissionOutcome: 'SUBMITTED',
+        paperOrderRecorded: true
+      })
+    },
+    {
+      name: 'pre-submit failure',
+      error: Object.assign(new Error('paper sync is not configured'), {
+        code: 'ALPACA_NOT_CONFIGURED',
+        submissionOutcome: 'NOT_ATTEMPTED',
+        submissionAttempted: false,
+        paperOrderRecorded: false
+      })
+    }
+  ];
+
+  try {
+    for (const [index, scenario] of cases.entries()) {
+      let rejectedOrderCalls = 0;
+      const events = [];
+      const deps = {
+        User: {
+          findById: () => ({
+            lean: async () => ({ email: 'trader@example.com' })
+          })
+        },
+        RoboSettings: {
+          findOne: async () => ({
+            enabled: true,
+            dailyLimit: 500,
+            weeklyLimit: 1000,
+            monthlyLimit: 2000,
+            failureStreak: 0,
+            pausedUntil: null
+          }),
+          updateOne: async () => ({ acknowledged: true })
+        },
+        RoboUsage: {
+          find: () => ({
+            lean: async () => []
+          }),
+          updateOne: async () => ({ acknowledged: true })
+        },
+        RoboAuditLog: {
+          create: async entry => {
+            events.push(entry);
+            return entry;
+          }
+        },
+        RoboSignalExecution: {
+          create: async payload => ({ _id: `signal-outcome-${index}`, ...payload }),
+          findOne: () => ({ lean: async () => null }),
+          updateOne: async () => ({ acknowledged: true }),
+          countDocuments: async () => 0
+        },
+        RoboLock: {
+          findOneAndUpdate: async () => ({ _id: `lock-outcome-${index}` }),
+          updateOne: async () => ({ acknowledged: true })
+        },
+        paperBroker: {
+          placeOrder: async () => {
+            throw scenario.error;
+          },
+          recordRejectedOrder: async () => {
+            rejectedOrderCalls += 1;
+          }
+        },
+        fetchQuotes: async () => [{ symbol: 'AAPL', price: 100 }],
+        emailService: {
+          sendTradeEmail: async () => ({ provider: 'log', messageId: 'unused' })
+        }
+      };
+
+      await assert.rejects(
+        runRoboTradeForUser(
+          {
+            userId: `user-outcome-${index}`,
+            accountId: `account-outcome-${index}`,
+            signal: {
+              symbol: 'AAPL',
+              side: 'buy',
+              qty: 1,
+              signalId: `outcome-${index}`
+            },
+            now: new Date('2026-02-20T16:00:00.000Z')
+          },
+          deps
+        ),
+        err => err === scenario.error,
+        scenario.name
+      );
+
+      assert.equal(rejectedOrderCalls, 0, scenario.name);
+      assert.equal(
+        events.some(event => event.eventType === 'order_rejected'),
+        false,
+        scenario.name
+      );
+    }
+  } finally {
+    if (previousBackend === undefined) delete process.env.ROBO_EXECUTION_BACKEND;
+    else process.env.ROBO_EXECUTION_BACKEND = previousBackend;
+  }
 });
 
 test('runRoboTradeForUser skips trade when limit would be exceeded', async () => {

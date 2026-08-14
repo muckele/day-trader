@@ -53,6 +53,7 @@ const orderIntentSchema = new mongoose.Schema(
     riskChecks: { type: [mongoose.Schema.Types.Mixed], default: [] },
     executionQuality: { type: mongoose.Schema.Types.Mixed, default: null },
     marketDataProvenance: { type: mongoose.Schema.Types.Mixed, default: null },
+    brokerAccountId: { type: String, default: null, index: true },
     exposureSnapshotId: { type: mongoose.Schema.Types.ObjectId, ref: 'RoboExposureSnapshot', default: null },
     orderFingerprint: { type: String, default: null, immutable: true, index: true },
     orderSnapshot: { type: mongoose.Schema.Types.Mixed, default: null, immutable: true },
@@ -86,5 +87,15 @@ orderIntentSchema.index(
   }
 );
 orderIntentSchema.index({ userId: 1, environment: 1, status: 1, requestedAt: -1 });
+orderIntentSchema.index(
+  { userId: 1, submissionIdempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      userId: { $type: 'objectId' },
+      submissionIdempotencyKey: { $type: 'string' }
+    }
+  }
+);
 
 module.exports = mongoose.model('OrderIntent', orderIntentSchema);

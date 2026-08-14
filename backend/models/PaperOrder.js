@@ -1,12 +1,26 @@
 const mongoose = require('mongoose');
+const { SUBMISSION_STATES } = require('../services/submissionOutcomeService');
 
 const paperOrderSchema = new mongoose.Schema(
   {
     accountId: { type: String, default: 'default', index: true },
     broker: { type: String, enum: ['paper', 'alpaca'], default: 'paper', index: true },
     externalOrderId: { type: String, default: null, index: true },
+    brokerRequestId: { type: String, default: null, index: true },
     clientOrderId: { type: String, default: null, index: true },
+    idempotencyKey: { type: String, default: null },
+    idempotencyFingerprint: { type: String, default: null },
     brokerOrderStatus: { type: String, default: null },
+    submissionState: {
+      type: String,
+      enum: Object.values(SUBMISSION_STATES),
+      default: SUBMISSION_STATES.NOT_ATTEMPTED,
+      index: true
+    },
+    submissionAttemptCount: { type: Number, min: 0, default: 0 },
+    submissionLastAttemptAt: { type: Date, default: null },
+    submissionLastError: { type: mongoose.Schema.Types.Mixed, default: null },
+    submissionLastReconciledAt: { type: Date, default: null },
     symbol: { type: String, required: true },
     assetClass: { type: String, enum: ['equity', 'crypto'], default: 'equity' },
     side: { type: String, enum: ['buy', 'sell'], required: true },
@@ -45,6 +59,27 @@ const paperOrderSchema = new mongoose.Schema(
     rejectedReason: { type: String, default: null }
   },
   { timestamps: true }
+);
+
+paperOrderSchema.index(
+  { accountId: 1, broker: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      idempotencyKey: { $type: 'string' }
+    }
+  }
+);
+
+paperOrderSchema.index(
+  { broker: 1, clientOrderId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      broker: 'alpaca',
+      clientOrderId: { $type: 'string' }
+    }
+  }
 );
 
 module.exports = mongoose.model('PaperOrder', paperOrderSchema);

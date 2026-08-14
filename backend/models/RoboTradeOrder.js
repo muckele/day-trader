@@ -1,4 +1,6 @@
 const mongoose = require('mongoose');
+const { SUBMISSION_STATES } = require('../services/submissionOutcomeService');
+const SUBMISSION_STATE_VALUES = Object.values(SUBMISSION_STATES);
 
 const riskCheckSchema = new mongoose.Schema(
   {
@@ -41,6 +43,10 @@ const roboTradeOrderSchema = new mongoose.Schema(
     riskStopPrice: { type: Number, default: null },
     riskTakeProfitPrice: { type: Number, default: null },
     status: { type: String, default: 'pending_submit', index: true },
+    submissionState: { type: String, enum: SUBMISSION_STATE_VALUES, default: null, index: true },
+    submissionAttemptCount: { type: Number, default: 0 },
+    submissionLastAttemptAt: { type: Date, default: null, index: true },
+    submissionLastError: { type: mongoose.Schema.Types.Mixed, default: null },
     filledQty: { type: Number, default: null },
     filledAvgPrice: { type: Number, default: null },
     rawPayload: { type: mongoose.Schema.Types.Mixed, default: {} },
@@ -51,6 +57,8 @@ const roboTradeOrderSchema = new mongoose.Schema(
     riskChecks: { type: [riskCheckSchema], default: [] },
     executionQuality: { type: mongoose.Schema.Types.Mixed, default: null },
     marketDataProvenance: { type: mongoose.Schema.Types.Mixed, default: null },
+    brokerAccountId: { type: String, default: null, index: true },
+    brokerRequestId: { type: String, default: null, index: true },
     exposureSnapshotId: { type: mongoose.Schema.Types.ObjectId, ref: 'RoboExposureSnapshot', default: null },
     liveActivationId: { type: mongoose.Schema.Types.ObjectId, ref: 'RoboLiveActivation', default: null, index: true },
     policyVersion: { type: String, default: null, index: true },
@@ -64,6 +72,10 @@ const roboTradeOrderSchema = new mongoose.Schema(
     reconciliationArchivedAt: { type: Date, default: null, index: true },
     reconciliationArchivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     reconciliationArchiveReason: { type: String, default: null },
+    reconciliationResolvedAt: { type: Date, default: null, index: true },
+    reconciliationResolvedBy: { type: String, default: null },
+    reconciliationResolution: { type: String, default: null },
+    reconciliationResolutionEvidence: { type: mongoose.Schema.Types.Mixed, default: null },
     discrepancy: { type: String, default: null }
   },
   { timestamps: true }
@@ -88,5 +100,7 @@ roboTradeOrderSchema.index(
 );
 roboTradeOrderSchema.index({ userId: 1, symbol: 1, status: 1, submittedAt: -1 });
 roboTradeOrderSchema.index({ userId: 1, environment: 1, reconciliationArchivedAt: 1, updatedAt: -1 });
+roboTradeOrderSchema.index({ accountId: 1, createdAt: -1 });
+roboTradeOrderSchema.index({ accountId: 1, environment: 1, submissionState: 1, status: 1 });
 
 module.exports = mongoose.model('RoboTradeOrder', roboTradeOrderSchema);

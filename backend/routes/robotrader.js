@@ -15,8 +15,16 @@ const RoboLiveActivation = require('../models/RoboLiveActivation');
 const RoboCanaryDossier = require('../models/RoboCanaryDossier');
 const RoboLivePromotion = require('../models/RoboLivePromotion');
 const { ALPACA_CAPABILITY_MATRIX } = require('../robotrader/alpacaCapabilities');
-const { createAlpacaBroker } = require('../robotrader/alpacaBroker');
-const { requireBrokerOperator } = require('../services/brokerOperatorService');
+const {
+  assertOrderReplacementAllowed,
+  createAlpacaBroker
+} = require('../robotrader/alpacaBroker');
+const { normalizeMarketSymbol } = require('../utils/marketSymbol');
+const {
+  BROKER_POSITION_CLOSE_CONFIRMATION,
+  isBrokerOperator,
+  requireBrokerOperator
+} = require('../services/brokerOperatorService');
 const { reconcileRoboOrders } = require('../robotrader/reconciliation');
 const { getSchedulerStatus, isLegacySchedulerEnabled, isPhase1WorkerEnabled } = require('../services/roboScheduler');
 const {
@@ -181,6 +189,7 @@ const MATCHED_RECONCILIATION_STATUSES = [
   'matched',
   'synced',
   'updated',
+  'resolved_rejected',
   'cancel_requested',
   'replace_requested',
   'emergency_stop'
@@ -306,10 +315,15 @@ router.get('/settings', async (req, res, next) => {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
     const settings = await getOrCreateRoboTraderSettings(user._id);
+    const brokerOperator = isBrokerOperator(getBrokerOperatorUser(req, user));
     res.json({
       settings: mapSettings(settings),
       capabilities: ALPACA_CAPABILITY_MATRIX,
-      liveConfirmationText: LIVE_CONFIRMATION_TEXT
+      liveConfirmationText: LIVE_CONFIRMATION_TEXT,
+      brokerAccountAccess: {
+        operator: brokerOperator,
+        positionCloseConfirmationText: brokerOperator ? BROKER_POSITION_CLOSE_CONFIRMATION : null
+      }
     });
   } catch (err) {
     next(err);
@@ -322,10 +336,12 @@ router.get('/health', async (req, res, next) => {
     let settings = mapSettings({});
     let latestReconciledOrder = null;
     let latestError = null;
+    let brokerOperator = false;
 
     if (mongoConnected) {
       const user = await getCurrentUser(req);
       if (!user) return res.status(401).json({ message: 'User not found.' });
+      brokerOperator = isBrokerOperator(getBrokerOperatorUser(req, user));
 
       [settings, latestReconciledOrder, latestError] = await Promise.all([
         getMappedSettingsForUser(user._id),
@@ -345,20 +361,24 @@ router.get('/health', async (req, res, next) => {
       accountStatus: null,
       tradingBlocked: null,
       buyingPower: null,
+      restricted: !brokerOperator,
       error: null
     };
-    try {
-      const account = await createAlpacaBroker({ mode: 'paper' }).getAccount();
-      alpacaPaper = {
-        ...alpacaPaper,
-        connected: true,
-        accountStatus: account?.status || null,
-        tradingBlocked: Boolean(account?.trading_blocked || account?.account_blocked),
-        buyingPower: toFiniteNumber(account?.buying_power ?? account?.buyingPower, null),
-        error: null
-      };
-    } catch (err) {
-      alpacaPaper.error = err?.message || 'Could not reach Alpaca paper account.';
+    if (brokerOperator) {
+      try {
+        const account = await createAlpacaBroker({ mode: 'paper' }).getAccount();
+        alpacaPaper = {
+          ...alpacaPaper,
+          connected: true,
+          accountStatus: account?.status || null,
+          tradingBlocked: Boolean(account?.trading_blocked || account?.account_blocked),
+          buyingPower: toFiniteNumber(account?.buying_power ?? account?.buyingPower, null),
+          restricted: false,
+          error: null
+        };
+      } catch (err) {
+        alpacaPaper.error = err?.message || 'Could not reach Alpaca paper account.';
+      }
     }
 
     const scheduler = getSchedulerStatus();
@@ -413,6 +433,11 @@ router.put('/settings', sensitiveRateLimit(), async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    const currentSettings = await getMappedSettingsForUser(user._id);
+    const requestedMode = req.body?.mode || currentSettings.mode;
+    if (requestedMode === 'live' || req.body?.liveTradingExplicitlyEnabled === true) {
+      requireBrokerOperator(getBrokerOperatorUser(req, user));
+    }
     const settings = await updateRoboTraderSettings(user._id, req.body || {});
     await RoboAuditLog.create({
       userId: user._id,
@@ -431,6 +456,11 @@ router.post('/enable', sensitiveRateLimit(), async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    const currentSettings = await getMappedSettingsForUser(user._id);
+    const requestedMode = req.body?.mode || currentSettings.mode;
+    if (requestedMode === 'live' || req.body?.liveTradingExplicitlyEnabled === true) {
+      requireBrokerOperator(getBrokerOperatorUser(req, user));
+    }
     const settings = await updateRoboTraderSettings(user._id, {
       ...(req.body || {}),
       isEnabled: true,
@@ -755,6 +785,7 @@ router.get('/reconciliation-status', async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    const brokerOperator = isBrokerOperator(getBrokerOperatorUser(req, user));
     const settings = await getMappedSettingsForUser(user._id);
     const environment = resolveRequestedEnvironment(req, settings);
     if (environment === 'live' && !isLiveTradingAllowed(settings)) {
@@ -765,25 +796,29 @@ router.get('/reconciliation-status', async (req, res, next) => {
         .sort({ updatedAt: -1, createdAt: -1 })
         .limit(250)
         .lean(),
-      RoboTradeOrder.find(buildUnarchivedReconciliationQuery({
-        userId: null,
-        environment,
-        reconciliationStatus: 'orphan_alpaca_order'
-      }))
-        .sort({ lastReconciledAt: -1, createdAt: -1 })
-        .limit(25)
-        .lean(),
+      brokerOperator
+        ? RoboTradeOrder.find(buildUnarchivedReconciliationQuery({
+            userId: null,
+            environment,
+            reconciliationStatus: 'orphan_alpaca_order'
+          }))
+          .sort({ lastReconciledAt: -1, createdAt: -1 })
+          .limit(25)
+          .lean()
+        : Promise.resolve([]),
       RoboTradeOrder.countDocuments({
         userId: user._id,
         environment,
         reconciliationArchivedAt: { $ne: null }
       }),
-      RoboTradeOrder.countDocuments({
-        userId: null,
-        environment,
-        reconciliationStatus: 'orphan_alpaca_order',
-        reconciliationArchivedAt: { $ne: null }
-      })
+      brokerOperator
+        ? RoboTradeOrder.countDocuments({
+            userId: null,
+            environment,
+            reconciliationStatus: 'orphan_alpaca_order',
+            reconciliationArchivedAt: { $ne: null }
+          })
+        : Promise.resolve(0)
     ]);
     const currentOrders = orders.filter(isCurrentReconciliationRecord);
     const historicalOrders = [
@@ -828,6 +863,7 @@ router.get('/reconciliation-status', async (req, res, next) => {
         createdAt: order.createdAt
       }));
     res.json({
+      brokerOperator,
       summary,
       orphanSummary: {
         count: orphanOrders.filter(isCurrentReconciliationRecord).length,
@@ -862,6 +898,7 @@ router.post('/reconciliation/archive-history', sensitiveRateLimit({ max: 6 }), a
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    const brokerOperator = isBrokerOperator(getBrokerOperatorUser(req, user));
     const settings = await getMappedSettingsForUser(user._id);
     const environment = req.body?.environment === 'live' ? 'live' : 'paper';
     if (environment === 'live' && !isLiveTradingAllowed(settings)) {
@@ -884,10 +921,12 @@ router.post('/reconciliation/archive-history', sensitiveRateLimit({ max: 6 }), a
         buildHistoricalArchiveQuery({ userId: user._id, environment, cutoff }),
         archiveUpdate
       ),
-      RoboTradeOrder.updateMany(
-        buildHistoricalArchiveQuery({ userId: user._id, environment, cutoff, includeOrphans: true }),
-        archiveUpdate
-      )
+      brokerOperator
+        ? RoboTradeOrder.updateMany(
+            buildHistoricalArchiveQuery({ userId: user._id, environment, cutoff, includeOrphans: true }),
+            archiveUpdate
+          )
+        : Promise.resolve({ modifiedCount: 0 })
     ]);
     const archivedUserOrders = userResult.modifiedCount ?? userResult.nModified ?? 0;
     const archivedOrphanOrders = orphanResult.modifiedCount ?? orphanResult.nModified ?? 0;
@@ -923,13 +962,27 @@ router.post('/orders/:orderId/cancel', sensitiveRateLimit({ max: 12 }), async (r
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    requireBrokerOperator(getBrokerOperatorUser(req, user));
     const order = await RoboTradeOrder.findOne(buildOrderLookup(user._id, req.params.orderId));
     if (!order) return res.status(404).json({ message: 'RoboTrader order not found.' });
-    if (!order.externalOrderId) {
-      return res.status(400).json({ message: 'Order does not have an Alpaca order id.' });
-    }
     const broker = createAlpacaBroker({ mode: order.environment });
-    const response = await broker.cancelOrder(order.externalOrderId);
+    let externalOrderId = order.externalOrderId;
+    if (!externalOrderId && order.clientOrderId) {
+      const brokerOrder = await broker.getOrderByClientOrderId(order.clientOrderId);
+      const returnedClientOrderId = String(brokerOrder?.client_order_id || '').trim();
+      if (!brokerOrder?.id || returnedClientOrderId !== order.clientOrderId) {
+        return res.status(409).json({
+          code: 'BROKER_ORDER_IDENTITY_UNCONFIRMED',
+          message: 'The original client identity could not be matched to a broker order; reconciliation remains required.'
+        });
+      }
+      externalOrderId = brokerOrder.id;
+      order.externalOrderId = externalOrderId;
+    }
+    if (!externalOrderId) {
+      return res.status(400).json({ message: 'Order does not have a broker or client correlation identity.' });
+    }
+    const response = await broker.cancelOrder(externalOrderId);
     order.status = 'canceled';
     order.canceledAt = new Date();
     order.lastReconciledAt = new Date();
@@ -940,7 +993,7 @@ router.post('/orders/:orderId/cancel', sensitiveRateLimit({ max: 12 }), async (r
       userId: user._id,
       eventType: 'robotrader_order_cancel_requested',
       payload: {
-        orderId: order.externalOrderId,
+        orderId: externalOrderId,
         clientOrderId: order.clientOrderId,
         symbol: order.symbol
       }
@@ -957,11 +1010,9 @@ router.post('/orders/:orderId/replace', sensitiveRateLimit({ max: 12 }), async (
     if (!user) return res.status(401).json({ message: 'User not found.' });
     const order = await RoboTradeOrder.findOne(buildOrderLookup(user._id, req.params.orderId));
     if (!order) return res.status(404).json({ message: 'RoboTrader order not found.' });
+    assertOrderReplacementAllowed(order.environment);
     if (!order.externalOrderId) {
       return res.status(400).json({ message: 'Order does not have an Alpaca order id.' });
-    }
-    if (order.environment === 'live') {
-      ensureLiveTradingAllowed(await getMappedSettingsForUser(user._id), 'Live order replacement');
     }
     const broker = createAlpacaBroker({ mode: order.environment });
     const response = await broker.replaceOrder(order.externalOrderId, req.body || {});
@@ -988,20 +1039,29 @@ router.post('/orders/:orderId/replace', sensitiveRateLimit({ max: 12 }), async (
 
 router.post('/positions/:symbol/close', sensitiveRateLimit({ max: 12 }), async (req, res, next) => {
   try {
+    const symbol = normalizeMarketSymbol(req.params.symbol);
+    if (!symbol) return res.status(400).json({ message: 'Invalid symbol.' });
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    requireBrokerOperator(getBrokerOperatorUser(req, user));
+    if (req.body?.confirmation !== BROKER_POSITION_CLOSE_CONFIRMATION) {
+      return res.status(400).json({ message: 'Exact broker-position close confirmation is required.' });
+    }
     const settings = await getMappedSettingsForUser(user._id);
     const environment = req.body?.environment === 'live' ? 'live' : settings.mode;
+    if (environment === 'live' && String(process.env.LIVE_TRADING_ENABLED || '').toLowerCase() !== 'true') {
+      return res.status(403).json({ message: 'Live position closing requires the deployment live-trading flag.' });
+    }
     if (environment === 'live' && !isLiveTradingAllowed(settings)) {
       return res.status(403).json({ message: 'Live position closing requires explicit live trading opt-in.' });
     }
     const broker = createAlpacaBroker({ mode: environment });
-    const response = await broker.closePosition(req.params.symbol, req.body?.close || {});
+    const response = await broker.closePosition(symbol, req.body?.close || {});
     await RoboAuditLog.create({
       userId: user._id,
       eventType: 'robotrader_position_close_requested',
       payload: {
-        symbol: req.params.symbol.toUpperCase(),
+        symbol,
         environment,
         response
       }
@@ -1031,6 +1091,7 @@ router.get('/performance', async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    const brokerOperator = isBrokerOperator(getBrokerOperatorUser(req, user));
     const settings = await getMappedSettingsForUser(user._id);
     const environment = resolveRequestedEnvironment(req, settings);
     if (environment === 'live' && !isLiveTradingAllowed(settings)) {
@@ -1043,16 +1104,19 @@ router.get('/performance', async (req, res, next) => {
     let account = null;
     let positions = [];
     let brokerError = null;
-    try {
-      const broker = createAlpacaBroker({ mode: environment });
-      [account, positions] = await Promise.all([broker.getAccount(), broker.getPositions()]);
-    } catch (err) {
-      brokerError = err?.message || 'Could not load Alpaca account context.';
+    if (brokerOperator) {
+      try {
+        const broker = createAlpacaBroker({ mode: environment });
+        [account, positions] = await Promise.all([broker.getAccount(), broker.getPositions()]);
+      } catch (err) {
+        brokerError = err?.message || 'Could not load Alpaca account context.';
+      }
     }
     const submitted = orders.filter(order => !['rejected', 'pending_submit'].includes(String(order.status || '').toLowerCase()));
     const filled = orders.filter(order => String(order.status || '').toLowerCase() === 'filled');
     const rejected = decisions.filter(decision => decision.status === 'rejected');
     res.json({
+      brokerAccountRestricted: !brokerOperator,
       summary: {
         decisions: decisions.length,
         submittedOrders: submitted.length,
@@ -1203,6 +1267,7 @@ router.post('/live-activation/approve', sensitiveRateLimit({ max: 5 }), async (r
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    requireBrokerOperator(getBrokerOperatorUser(req, user));
     const activation = await approveControlledLive({
       userId: user._id,
       confirmation: req.body?.confirmation,
@@ -1232,6 +1297,7 @@ router.post('/live-activation/activate', sensitiveRateLimit({ max: 3 }), async (
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    requireBrokerOperator(getBrokerOperatorUser(req, user));
     const activation = await activateControlledLive({
       userId: user._id,
       confirmation: req.body?.confirmation,
@@ -1257,6 +1323,7 @@ router.post('/live-activation/heartbeat', sensitiveRateLimit({ max: 30 }), async
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    requireBrokerOperator(getBrokerOperatorUser(req, user));
     const activation = await heartbeatControlledLive({
       userId: user._id,
       confirmation: req.body?.confirmation,
@@ -1331,6 +1398,7 @@ router.post('/live-activation/dossier/seal', sensitiveRateLimit({ max: 3 }), asy
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    requireBrokerOperator(getBrokerOperatorUser(req, user));
     const result = await sealCanaryDossier({
       userId: user._id,
       confirmation: req.body?.confirmation,
@@ -1436,6 +1504,7 @@ router.post('/live-promotion/approve', sensitiveRateLimit({ max: 3 }), async (re
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    requireBrokerOperator(getBrokerOperatorUser(req, user));
     const promotion = await approveRepeatCanaryPromotion({
       userId: user._id,
       confirmation: req.body?.confirmation,
@@ -1525,6 +1594,7 @@ router.post('/live-activation/review', sensitiveRateLimit({ max: 5 }), async (re
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
+    requireBrokerOperator(getBrokerOperatorUser(req, user));
     const activation = await reviewControlledLiveCanary({
       userId: user._id,
       confirmation: req.body?.confirmation,
@@ -1630,6 +1700,9 @@ router.post('/reconcile', sensitiveRateLimit({ max: 8 }), async (req, res, next)
     const requestedMode = req.body?.mode === 'live' ? 'live' : 'paper';
     if (requestedMode === 'live' && !isLiveTradingAllowed(settings)) {
       return res.status(403).json({ message: 'Live reconciliation requires explicit live trading opt-in.' });
+    }
+    if (requestedMode === 'live') {
+      requireBrokerOperator(getBrokerOperatorUser(req, user));
     }
     const result = await reconcileRoboOrders({
       mode: requestedMode,

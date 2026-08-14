@@ -1,4 +1,14 @@
+const crypto = require('crypto');
 const axios = require('axios');
+const {
+  SUBMISSION_STATES,
+  buildSubmissionErrorSnapshot,
+  classifySubmissionError,
+  createSubmitUnknownError,
+  getBrokerErrorMessage,
+  getSubmitErrorStatus,
+  hasConclusiveBrokerOrder
+} = require('./submissionOutcomeService');
 const {
   assertAlpacaPaperSubmissionBinding,
   isPaperTradingEndpoint,
@@ -10,6 +20,7 @@ const EQUITY_ORDER_TYPES = ['market', 'limit', 'stop', 'stop_limit', 'trailing_s
 const EQUITY_TIME_IN_FORCE = ['day', 'gtc', 'opg', 'cls', 'ioc', 'fok'];
 const CRYPTO_ORDER_TYPES = ['market', 'limit', 'stop_limit'];
 const CRYPTO_TIME_IN_FORCE = ['gtc', 'ioc'];
+const MAX_ALPACA_CLIENT_ORDER_ID_LENGTH = 48;
 
 function parseBoolean(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -67,12 +78,31 @@ function hasPositiveNumber(value) {
   return Number.isFinite(numeric) && numeric > 0;
 }
 
+function assertAlpacaClientOrderId(value) {
+  if (
+    typeof value !== 'string'
+    || !value
+    || value !== value.trim()
+    || value.length > MAX_ALPACA_CLIENT_ORDER_ID_LENGTH
+  ) {
+    throw new Error(
+      `client_order_id must be an exact nonblank string of at most ${MAX_ALPACA_CLIENT_ORDER_ID_LENGTH} characters.`
+    );
+  }
+  return value;
+}
+
 function buildClientOrderId({ origin = 'manual', symbol = 'ORDER', now = new Date() } = {}) {
   const safeOrigin = String(origin || 'manual').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'manual';
   const safeSymbol = String(symbol || 'ORDER').replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 16) || 'ORDER';
   const timestamp = now.toISOString().replace(/[^0-9]/g, '').slice(0, 14);
-  const suffix = Math.random().toString(36).slice(2, 10);
-  return `daytrader-${safeOrigin}-${safeSymbol}-${timestamp}-${suffix}`.slice(0, 128);
+  const suffix = crypto.randomBytes(4).toString('hex');
+  const tail = `-${timestamp}-${suffix}`;
+  const headBudget = MAX_ALPACA_CLIENT_ORDER_ID_LENGTH - tail.length;
+  const head = `dt-${safeOrigin}-${safeSymbol}`
+    .slice(0, headBudget)
+    .replace(/[-_]+$/, '');
+  return `${head}${tail}`;
 }
 
 function buildAlpacaOrderPayload({
@@ -99,7 +129,7 @@ function buildAlpacaOrderPayload({
     side,
     type: normalizedOrderType,
     time_in_force: normalizedTimeInForce,
-    client_order_id: clientOrderId
+    client_order_id: assertAlpacaClientOrderId(clientOrderId)
   };
 
   if (!payload.symbol) {
@@ -190,21 +220,70 @@ function assertAlpacaPaperConfig(config) {
   }
 }
 
+function getAlpacaRequestConfig(config) {
+  return {
+    headers: {
+      'APCA-API-KEY-ID': config.apiKey,
+      'APCA-API-SECRET-KEY': config.apiSecret
+    },
+    timeout: 20000
+  };
+}
+
+function extractBrokerRequestId(headers = {}) {
+  return headers['x-request-id']
+    || headers['apca-request-id']
+    || headers['request-id']
+    || null;
+}
+
+function markPreSubmitError(err, clientOrderId = null) {
+  err.submissionAttempted = false;
+  err.submissionOutcome = SUBMISSION_STATES.NOT_ATTEMPTED;
+  err.submissionPhase = 'pre_submit';
+  err.statusCode = err.statusCode || 400;
+  err.clientOrderId = clientOrderId;
+  return err;
+}
+
 async function readAlpacaPaperOrder(orderId, { httpClient = axios, env = process.env } = {}) {
   const config = getAlpacaTradingConfig(env);
   assertAlpacaPaperConfig(config);
 
   const response = await httpClient.get(
     `${config.baseUrl}/v2/orders/${orderId}`,
-    {
-      headers: {
-        'APCA-API-KEY-ID': config.apiKey,
-        'APCA-API-SECRET-KEY': config.apiSecret
-      },
-      timeout: 20000
-    }
+    getAlpacaRequestConfig(config)
   );
   return response?.data || {};
+}
+
+async function readAlpacaPaperOrderByClientOrderId(
+  clientOrderId,
+  { httpClient = axios, env = process.env } = {}
+) {
+  const normalizedClientOrderId = String(clientOrderId || '').trim();
+  if (!normalizedClientOrderId) {
+    throw markPreSubmitError(new Error('Alpaca client order ID is required for reconciliation.'));
+  }
+
+  const config = getAlpacaTradingConfig(env);
+  assertAlpacaPaperConfig(config);
+
+  try {
+    const response = await httpClient.get(
+      `${config.baseUrl}/v2/orders:by_client_order_id`,
+      {
+        ...getAlpacaRequestConfig(config),
+        params: {
+          client_order_id: normalizedClientOrderId
+        }
+      }
+    );
+    return response?.data || {};
+  } catch (err) {
+    err.clientOrderId = normalizedClientOrderId;
+    throw err;
+  }
 }
 
 async function refreshSubmittedOrderStatus({
@@ -212,15 +291,45 @@ async function refreshSubmittedOrderStatus({
   httpClient,
   env,
   attempts,
-  delayMs
+  delayMs,
+  expectedQty = null,
+  expectedNotional = null
 }) {
-  const orderId = order?.id;
+  const orderId = String(order?.id || '').trim();
+  const clientOrderId = String(order?.client_order_id || order?.clientOrderId || '').trim();
   if (!orderId || attempts <= 0) return order || {};
 
   let latest = order;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (attempt > 0) await wait(delayMs);
-    latest = await readAlpacaPaperOrder(orderId, { httpClient, env });
+    const candidate = await readAlpacaPaperOrder(orderId, { httpClient, env });
+    const candidateOrderId = String(candidate?.id || '').trim();
+    const candidateClientOrderId = String(
+      candidate?.client_order_id || candidate?.clientOrderId || ''
+    ).trim();
+    if (
+      !hasConclusiveBrokerOrder(
+        candidate,
+        clientOrderId,
+        expectedQty,
+        expectedNotional
+      )
+      || candidateOrderId !== orderId
+      || (clientOrderId && candidateClientOrderId !== clientOrderId)
+    ) {
+      const err = createSubmitUnknownError(
+        'Alpaca paper status polling returned an inconclusive or identity-mismatched order.',
+        {
+          clientOrderId,
+          brokerOrder: candidate
+        }
+      );
+      err.code = 'ALPACA_STATUS_POLL_IDENTITY_MISMATCH';
+      err.submissionOutcome = SUBMISSION_STATES.UNKNOWN;
+      err.submissionPhase = 'status_poll';
+      throw err;
+    }
+    latest = candidate;
     if (!['pending_new', 'accepted', 'new'].includes(latest?.status)) {
       return latest;
     }
@@ -237,67 +346,165 @@ async function submitAlpacaPaperOrder(
     pollStatusDelayMs = 300
   } = {}
 ) {
-  const config = getAlpacaTradingConfig(env);
-  assertAlpacaPaperConfig(config);
-  const initialBinding = assertAlpacaPaperSubmissionBinding({ config, env });
-  if (initialBinding.requiresAccountLookup) {
-    const accountResponse = await httpClient.get(
-      `${config.baseUrl}/v2/account`,
-      {
-        headers: {
-          'APCA-API-KEY-ID': config.apiKey,
-          'APCA-API-SECRET-KEY': config.apiSecret
-        },
-        timeout: 20000
-      }
-    );
-    assertAlpacaPaperSubmissionBinding({ config, env, account: accountResponse?.data || {} });
+  const clientOrderId = orderInput?.clientOrderId || null;
+  let config;
+  let payload;
+  try {
+    config = getAlpacaTradingConfig(env);
+    assertAlpacaPaperConfig(config);
+    const initialBinding = assertAlpacaPaperSubmissionBinding({ config, env });
+    if (initialBinding.requiresAccountLookup) {
+      const accountResponse = await httpClient.get(
+        `${config.baseUrl}/v2/account`,
+        getAlpacaRequestConfig(config)
+      );
+      assertAlpacaPaperSubmissionBinding({ config, env, account: accountResponse?.data || {} });
+    }
+    payload = buildAlpacaOrderPayload(orderInput);
+  } catch (err) {
+    throw markPreSubmitError(err, clientOrderId);
   }
 
-  const payload = buildAlpacaOrderPayload(orderInput);
+  let submittedOrder;
+  let brokerRequestId = null;
   try {
     const response = await httpClient.post(
       `${config.baseUrl}/v2/orders`,
       payload,
+      getAlpacaRequestConfig(config)
+    );
+    submittedOrder = response?.data || {};
+    brokerRequestId = extractBrokerRequestId(response?.headers || {});
+  } catch (err) {
+    err.brokerRequestId = extractBrokerRequestId(err.response?.headers || {});
+    err.submissionAttempted = true;
+    err.submissionPhase = 'submit';
+    err.clientOrderId = payload.client_order_id;
+    err.alpacaPayload = payload;
+    const submissionOutcome = classifySubmissionError(err);
+    const message = getBrokerErrorMessage(err, 'Unknown Alpaca order error');
+
+    if (submissionOutcome === SUBMISSION_STATES.UNKNOWN) {
+      const unknown = createSubmitUnknownError(
+        `Alpaca paper order submission outcome is unknown: ${message}`,
+        {
+          clientOrderId: payload.client_order_id,
+          payload,
+          cause: err
+        }
+      );
+      unknown.status = getSubmitErrorStatus(err);
+      unknown.brokerRequestId = err.brokerRequestId || null;
+      unknown.submissionPhase = 'submit';
+      unknown.submissionError = {
+        ...buildSubmissionErrorSnapshot(err),
+        submissionPhase: 'submit'
+      };
+      throw unknown;
+    }
+
+    const wrapped = new Error(`Alpaca paper order rejected: ${message}`);
+    wrapped.code = 'ALPACA_PAPER_ORDER_REJECTED';
+    wrapped.status = getSubmitErrorStatus(err);
+    wrapped.statusCode = 400;
+    wrapped.submissionAttempted = true;
+    wrapped.submissionOutcome = SUBMISSION_STATES.REJECTED;
+    wrapped.submissionPhase = 'submit';
+    wrapped.clientOrderId = payload.client_order_id;
+    wrapped.alpacaPayload = payload;
+    wrapped.submissionError = {
+      ...buildSubmissionErrorSnapshot(err),
+      submissionPhase: 'submit'
+    };
+    wrapped.cause = err;
+    throw wrapped;
+  }
+
+  if (
+    !hasConclusiveBrokerOrder(
+      submittedOrder,
+      payload.client_order_id,
+      payload.qty,
+      payload.notional
+    )
+    || !String(submittedOrder?.id || '').trim()
+    || String(
+      submittedOrder?.client_order_id || submittedOrder?.clientOrderId || ''
+    ).trim() !== payload.client_order_id
+  ) {
+    const unknown = createSubmitUnknownError(
+      'Alpaca paper order returned an inconclusive acknowledgement.',
       {
-        headers: {
-          'APCA-API-KEY-ID': config.apiKey,
-          'APCA-API-SECRET-KEY': config.apiSecret
-        },
-        timeout: 20000
+        clientOrderId: payload.client_order_id,
+        payload,
+        brokerOrder: submittedOrder
       }
     );
-    const submittedOrder = response?.data || {};
-    const order = await refreshSubmittedOrderStatus({
+    unknown.submissionPhase = 'submit';
+    unknown.brokerRequestId = brokerRequestId;
+    unknown.submissionError = {
+      submissionOutcome: SUBMISSION_STATES.UNKNOWN,
+      submissionAttempted: true,
+      submissionPhase: 'submit',
+      status: null,
+      code: 'INCONCLUSIVE_BROKER_ACKNOWLEDGEMENT',
+      message: unknown.message,
+      data: submittedOrder,
+      clientOrderId: payload.client_order_id
+    };
+    throw unknown;
+  }
+
+  let order = submittedOrder;
+  let pollError = null;
+  try {
+    order = await refreshSubmittedOrderStatus({
       order: submittedOrder,
       httpClient,
       env,
       attempts: pollStatusAttempts,
-      delayMs: pollStatusDelayMs
+      delayMs: pollStatusDelayMs,
+      expectedQty: payload.qty,
+      expectedNotional: payload.notional
     });
-
-    return {
-      broker: 'alpaca',
-      order,
-      payload
-    };
   } catch (err) {
-    const message = err?.response?.data?.message || err?.message || 'Unknown Alpaca order error';
-    const wrapped = new Error(`Alpaca paper order failed: ${message}`);
-    wrapped.code = err?.code || 'ALPACA_PAPER_ORDER_FAILED';
-    wrapped.status = err?.response?.status || null;
-    throw wrapped;
+    err.submissionAttempted = true;
+    err.submissionPhase = 'status_poll';
+    err.clientOrderId = payload.client_order_id;
+    pollError = {
+      ...buildSubmissionErrorSnapshot(err),
+      submissionPhase: 'status_poll',
+      brokerAcknowledged: true
+    };
+    order = submittedOrder;
   }
+
+  return {
+    broker: 'alpaca',
+    order,
+    submittedOrder,
+    payload,
+    submissionOutcome: String(order?.status || '').toLowerCase() === 'rejected'
+      ? SUBMISSION_STATES.REJECTED
+      : SUBMISSION_STATES.SUBMITTED,
+    statusRefreshPending: Boolean(pollError),
+    pollError,
+    brokerRequestId
+  };
 }
 
 module.exports = {
   DEFAULT_ALPACA_PAPER_BASE_URL,
+  MAX_ALPACA_CLIENT_ORDER_ID_LENGTH,
+  assertAlpacaClientOrderId,
   buildAlpacaOrderPayload,
   buildClientOrderId,
+  extractBrokerRequestId,
   getAlpacaTradingConfig,
   isPaperTradingEndpoint,
   normalizeAlpacaSymbol,
   readAlpacaPaperOrder,
+  readAlpacaPaperOrderByClientOrderId,
   shouldSyncPaperTradesToAlpaca,
   submitAlpacaPaperOrder
 };

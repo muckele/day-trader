@@ -1,4 +1,3 @@
-const axios = require('axios');
 const User = require('../models/User');
 const RoboSettings = require('../models/RoboSettings');
 const RoboUsage = require('../models/RoboUsage');
@@ -13,13 +12,7 @@ const { getAccountIdForUser } = require('../utils/accountScope');
 const { evaluateTradePolicy } = require('./tradePolicyService');
 const { writeRiskEvent } = require('./riskEventService');
 const { createStrategyRun, finalizeStrategyRun } = require('./strategyRunService');
-const { recordFilledExecution, recordRejectedExecution } = require('./executionTelemetryService');
-const {
-  buildAlpacaOrderPayload,
-  buildClientOrderId,
-  getAlpacaTradingConfig,
-  isPaperTradingEndpoint
-} = require('./alpacaTradingClient');
+const { getAlpacaTradingConfig } = require('./alpacaTradingClient');
 
 const LOCK_TTL_MS = 30 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -99,78 +92,23 @@ function getExecutionBackend() {
   return raw === 'alpaca' ? 'alpaca' : 'paper';
 }
 
-function requiresControlledLiveWorker(executionBackend, alpacaBaseUrl) {
-  return executionBackend === 'alpaca' && !isPaperTradingEndpoint(alpacaBaseUrl);
+function requiresControlledLiveWorker(executionBackend) {
+  // The legacy engine cannot durably classify or reconcile direct Alpaca
+  // submissions. Fail closed for both live and Alpaca paper endpoints.
+  return executionBackend === 'alpaca';
 }
 
-async function placeAlpacaOrder({
-  symbol,
-  side,
-  qty,
-  assetClass = 'equity',
-  allowExtendedHours,
-  estimatedPrice
-}) {
-  const config = getAlpacaTradingConfig();
-  if (!config.apiKey || !config.apiSecret) {
-    const err = new Error('Alpaca API credentials are not configured for Robo execution.');
-    err.code = 'ALPACA_NOT_CONFIGURED';
-    throw err;
-  }
+function normalizeAccountId(value) {
+  const normalized = String(value || '').trim();
+  return normalized && normalized !== 'default' ? normalized : null;
+}
 
-  try {
-    const payload = buildAlpacaOrderPayload({
-      symbol,
-      assetClass,
-      side,
-      qty,
-      orderType: 'market',
-      timeInForce: assetClass === 'crypto' ? 'gtc' : 'day',
-      allowExtendedHours,
-      clientOrderId: buildClientOrderId({ origin: 'robo', symbol })
-    });
-    const response = await axios.post(
-      `${config.baseUrl}/v2/orders`,
-      payload,
-      {
-        headers: {
-          'APCA-API-KEY-ID': config.apiKey,
-          'APCA-API-SECRET-KEY': config.apiSecret
-        },
-        timeout: 20000
-      }
-    );
-
-    const orderData = response?.data || {};
-    const orderId = orderData.id || orderData.client_order_id || null;
-    const fillPrice = Number(
-      toFiniteNumber(orderData.filled_avg_price, estimatedPrice).toFixed(4)
-    );
-    const filledQty = toFiniteNumber(orderData.filled_qty, qty);
-    const responseNotional = toFiniteNumber(orderData.notional, NaN);
-    const notional = Number.isFinite(responseNotional) && responseNotional > 0
-      ? Number(responseNotional.toFixed(2))
-      : Number((filledQty * fillPrice).toFixed(2));
-
-    return {
-      order: {
-        id: orderId,
-        _id: orderId,
-        notional,
-        fillPrice
-      },
-      trade: {
-        notional,
-        price: fillPrice
-      }
-    };
-  } catch (err) {
-    const upstreamMessage = err?.response?.data?.message || err?.message || 'Unknown Alpaca order error';
-    const wrapped = new Error(`Alpaca order failed: ${upstreamMessage}`);
-    wrapped.code = err?.code || 'ALPACA_ORDER_FAILED';
-    wrapped.status = err?.response?.status || null;
-    throw wrapped;
-  }
+async function resolveCanonicalAccountIdForUserId(userId, deps = defaultDeps) {
+  if (!userId || typeof deps.User?.findById !== 'function') return null;
+  const query = deps.User.findById(userId);
+  const user = typeof query?.lean === 'function' ? await query.lean() : await query;
+  const username = String(user?.username || '').trim();
+  return username ? getAccountIdForUser({ username }) : null;
 }
 
 function normalizeAllowedSide(value) {
@@ -869,7 +807,7 @@ function detectExecutionAnomaly(events, thresholdBps) {
 }
 
 async function runRoboTradeForUser({ userId, accountId = null, signal = null, now = new Date() }, deps = defaultDeps) {
-  const scopedAccountId = accountId || getAccountIdForUser({ userId });
+  let scopedAccountId = normalizeAccountId(accountId);
   const settings = await getOrCreateSettings(userId, deps);
   const settingsPayload = toSettingsPayload(settings);
   let activeSettingsPayload = settingsPayload;
@@ -1006,14 +944,20 @@ async function runRoboTradeForUser({ userId, accountId = null, signal = null, no
     signalId = deriveSignalId(candidateSignal, symbol, side, qty, now);
     executionBackend = getExecutionBackend();
 
-    if (requiresControlledLiveWorker(executionBackend, getAlpacaTradingConfig().baseUrl)) {
-      await writeAuditLog(userId, 'trade_skipped_controlled_live_worker_required', {
-        reason: 'Legacy Robo execution cannot submit to a live Alpaca endpoint; use the controlled-live worker path.',
+    if (requiresControlledLiveWorker(executionBackend)) {
+      await writeAuditLog(userId, 'trade_skipped_legacy_alpaca_execution_disabled', {
+        reason: 'Legacy Robo direct Alpaca submission is disabled for every endpoint; use a controlled broker worker.',
         symbol,
         signalId,
         at: now.toISOString()
       }, deps);
-      return { ok: false, executed: false, skipped: true, reason: 'CONTROLLED_LIVE_WORKER_REQUIRED', signalId };
+      return {
+        ok: false,
+        executed: false,
+        skipped: true,
+        reason: 'LEGACY_ALPACA_EXECUTION_DISABLED',
+        signalId
+      };
     }
 
     if (!symbol) {
@@ -1265,33 +1209,52 @@ async function runRoboTradeForUser({ userId, accountId = null, signal = null, no
       return { ok: false, executed: false, skipped: true, reason: 'LIMIT_EXCEEDED', signalId };
     }
 
-    const execution = executionBackend === 'alpaca'
-      ? await placeAlpacaOrder({
-          symbol,
-          side,
-          qty,
-          assetClass: candidateSignal.assetClass || 'equity',
-          allowExtendedHours: executionControls.allowExtendedHours,
-          estimatedPrice
-        })
-      : await deps.paperBroker.placeOrder({
-          symbol,
-          side,
-          qty,
-          assetClass: candidateSignal.assetClass || undefined,
-          orderType: 'market',
-          allowExtendedHours: executionControls.allowExtendedHours,
-          strategyId: candidateSignal.strategyId || null,
-          setupType: 'ROBO',
-          strategyTags: ['robo'],
-          stopPrice: candidateSignal.stopPrice || null,
-          origin: 'robo',
-          metadata: {
-            userId: String(userId),
-            signalId,
-            strategyName: candidateSignal.strategyName || AUTO_STRATEGY_NAME
-          }
-        });
+    if (!scopedAccountId) {
+      scopedAccountId = await resolveCanonicalAccountIdForUserId(userId, deps);
+    }
+    if (!scopedAccountId) {
+      await updateSignalExecution(userId, signalId, {
+        status: 'skipped',
+        reason: 'CANONICAL_ACCOUNT_UNRESOLVED'
+      }, now, deps);
+      await writeAuditLog(userId, 'trade_skipped_canonical_account_unresolved', {
+        reason: 'A username-backed account scope is required before paper order submission.',
+        symbol,
+        signalId,
+        at: now.toISOString()
+      }, deps);
+      await finalizeRun('skipped', {
+        summary: { signalId, reason: 'CANONICAL_ACCOUNT_UNRESOLVED' }
+      });
+      return {
+        ok: false,
+        executed: false,
+        skipped: true,
+        reason: 'CANONICAL_ACCOUNT_UNRESOLVED',
+        signalId
+      };
+    }
+
+    const execution = await deps.paperBroker.placeOrder({
+      accountId: scopedAccountId,
+      idempotencyKey: `robo:${signalId}`,
+      symbol,
+      side,
+      qty,
+      assetClass: candidateSignal.assetClass || undefined,
+      orderType: 'market',
+      allowExtendedHours: executionControls.allowExtendedHours,
+      strategyId: candidateSignal.strategyId || null,
+      setupType: 'ROBO',
+      strategyTags: ['robo'],
+      stopPrice: candidateSignal.stopPrice || null,
+      origin: 'robo',
+      metadata: {
+        userId: String(userId),
+        signalId,
+        strategyName: candidateSignal.strategyName || AUTO_STRATEGY_NAME
+      }
+    });
 
     const order = execution?.order || {};
     const trade = execution?.trade || {};
@@ -1329,52 +1292,6 @@ async function runRoboTradeForUser({ userId, accountId = null, signal = null, no
       executedAt: now,
       notional: executedNotional
     }, now, deps);
-
-    if (executionBackend === 'alpaca') {
-      await recordFilledExecution({
-        broker: 'alpaca',
-        origin: 'robo',
-        request: {
-          accountId: scopedAccountId,
-          origin: 'robo',
-          broker: 'alpaca',
-          symbol,
-          assetClass: candidateSignal.assetClass || 'equity',
-          side,
-          qty,
-          orderType: 'market',
-          timeInForce: 'day',
-          allowExtendedHours: executionControls.allowExtendedHours,
-          strategyId: candidateSignal.strategyId || AUTO_STRATEGY_ID,
-          setupType: 'ROBO',
-          metadata: {
-            signalId,
-            strategyName: candidateSignal.strategyName || AUTO_STRATEGY_NAME
-          }
-        },
-        order: {
-          id: eventPayload.orderId,
-          fillPrice,
-          notional: executedNotional,
-          estimatedPrice,
-          fillLatencyMs: null,
-          effectiveSlippageBps: slippageBps,
-          filledAt: now
-        },
-        trade: {
-          symbol,
-          assetClass: candidateSignal.assetClass || 'equity',
-          side,
-          qty,
-          price: fillPrice,
-          notional: executedNotional,
-          strategyId: candidateSignal.strategyId || AUTO_STRATEGY_ID,
-          setupType: 'ROBO',
-          realizedPnl: null,
-          filledAt: now
-        }
-      });
-    }
 
     const user = await deps.User.findById(userId).lean();
     const recipient = user?.email || process.env.ROBO_FALLBACK_EMAIL || null;
@@ -1434,49 +1351,6 @@ async function runRoboTradeForUser({ userId, accountId = null, signal = null, no
       signalId
     };
   } catch (err) {
-    if (executionBackend === 'alpaca' && symbol && qty > 0) {
-      await recordRejectedExecution({
-        broker: 'alpaca',
-        origin: 'robo',
-        rejectedReason: err?.message || 'Execution failed',
-        request: {
-          accountId: scopedAccountId,
-          origin: 'robo',
-          broker: 'alpaca',
-          symbol,
-          assetClass: candidateSignal?.assetClass || 'equity',
-          side,
-          qty,
-          orderType: 'market',
-          timeInForce: 'day',
-          allowExtendedHours: executionControls.allowExtendedHours,
-          strategyId: candidateSignal?.strategyId || AUTO_STRATEGY_ID,
-          setupType: 'ROBO',
-          metadata: {
-            signalId,
-            strategyName: candidateSignal?.strategyName || AUTO_STRATEGY_NAME
-          }
-        }
-      });
-    } else if (symbol && qty > 0 && typeof deps.paperBroker?.recordRejectedOrder === 'function') {
-      await deps.paperBroker.recordRejectedOrder({
-        symbol,
-        side,
-        qty,
-        assetClass: candidateSignal?.assetClass || 'equity',
-        orderType: 'market',
-        allowExtendedHours: executionControls.allowExtendedHours,
-        strategyId: candidateSignal?.strategyId || AUTO_STRATEGY_ID,
-        setupType: 'ROBO',
-        origin: 'robo',
-        metadata: {
-          userId: String(userId),
-          signalId,
-          strategyName: candidateSignal?.strategyName || AUTO_STRATEGY_NAME
-        }
-      }, err?.message || 'Execution failed');
-    }
-
     try {
       await markCircuitFailure(userId, activeSettingsPayload, err, now, deps);
     } catch (_circuitErr) {
@@ -1615,6 +1489,14 @@ async function runSchedulerTick(deps = defaultDeps) {
   for (const setting of enabled) {
     try {
       const now = new Date();
+      const accountId = await resolveCanonicalAccountIdForUserId(setting.userId, deps);
+      if (!accountId) {
+        await writeAuditLog(setting.userId, 'trade_skipped_canonical_account_unresolved', {
+          reason: 'Legacy scheduler requires a username-backed account scope; database IDs are not broker account scopes.',
+          at: now.toISOString()
+        }, deps);
+        continue;
+      }
       const signal = await buildAutoSignalForUser({
         userId: setting.userId,
         now
@@ -1627,7 +1509,12 @@ async function runSchedulerTick(deps = defaultDeps) {
         }, deps);
         continue;
       }
-      await runRoboTradeForUser({ userId: setting.userId, signal, now }, deps);
+      await runRoboTradeForUser({
+        userId: setting.userId,
+        accountId,
+        signal,
+        now
+      }, deps);
     } catch (err) {
       await writeAuditLog(setting.userId, 'trade_skipped_scheduler_error', {
         reason: err?.message || 'Unknown scheduler error'

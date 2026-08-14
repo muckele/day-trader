@@ -9,6 +9,8 @@
     "alpaca:check": "node scripts/check-alpaca-paper.js",
     "smoke:api": "node scripts/smoke-api.js",
     "smoke:isolated": "node scripts/run-isolated-smoke.js",
+    "test:integration:mongo": "node integration/realMongoDurability.js",
+    "test:integration:fake-broker": "node --test tests/robotraderFakeBroker.integration.test.js",
     "mongo:check": "node scripts/check-mongo.js",
     "mongo:audit": "node scripts/audit-mongo-storage.js",
     "mongo:compact": "node scripts/compact-mongo-storage.js",

@@ -1,9 +1,9 @@
+const crypto = require('crypto');
 const PaperSettings = require('../models/PaperSettings');
 const PaperOrder = require('../models/PaperOrder');
 const PaperTrade = require('../models/PaperTrade');
 const PaperEquity = require('../models/PaperEquity');
 const PaperGuardrailEvent = require('../models/PaperGuardrailEvent');
-const PaperAccountLock = require('../models/PaperAccountLock');
 const RegimeSnapshot = require('../models/RegimeSnapshot');
 const { fetchQuotes } = require('../services/marketData');
 const { getMarketStatus } = require('../utils/marketStatus');
@@ -31,19 +31,264 @@ const {
 const {
   buildClientOrderId,
   readAlpacaPaperOrder,
+  readAlpacaPaperOrderByClientOrderId,
   shouldSyncPaperTradesToAlpaca,
   submitAlpacaPaperOrder
 } = require('../services/alpacaTradingClient');
+const {
+  SUBMISSION_STATES,
+  SUBMIT_UNKNOWN,
+  buildSubmissionErrorSnapshot,
+  classifySubmissionError,
+  createSubmitUnknownError,
+  hasConclusiveBrokerOrder,
+  isCanonicalBrokerIdentifier
+} = require('../services/submissionOutcomeService');
+const {
+  LEGACY_UNRESOLVED_BROKER_STATUSES,
+  UNRESOLVED_SUBMISSION_STATES,
+  acquireAlpacaPaperSubmissionLock,
+  findUnresolvedAlpacaPaperSubmission,
+  releaseAlpacaPaperSubmissionLock,
+  renewAlpacaPaperSubmissionLock
+} = require('../services/alpacaPaperSubmissionGuardService');
 
 const ACCOUNT_ID = 'default';
 const MAX_EQUITY_QTY_DECIMALS = 6;
 const MAX_CRYPTO_QTY_DECIMALS = 8;
 const activeOpenOrderReconciliations = new Map();
-const PAPER_ORDER_LOCK_MS = 10 * 60 * 1000;
+const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 
 function normalizePaperAccountId(accountId = ACCOUNT_ID) {
   const normalized = String(accountId || '').trim();
   return normalized || ACCOUNT_ID;
+}
+
+function normalizePaperIdempotencyKey(value) {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+  if (normalized.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+    const err = new Error(
+      `Idempotency-Key must be ${MAX_IDEMPOTENCY_KEY_LENGTH} characters or fewer.`
+    );
+    err.code = 'INVALID_IDEMPOTENCY_KEY';
+    err.statusCode = 400;
+    err.submissionAttempted = false;
+    err.submissionOutcome = SUBMISSION_STATES.NOT_ATTEMPTED;
+    err.submissionPhase = 'pre_submit';
+    throw err;
+  }
+  return normalized;
+}
+
+function buildPaperOrderIdempotencyFingerprint(input = {}) {
+  const normalized = normalizeOrderInput(input, { skipTemporalValidation: true });
+  const canonical = {
+    symbol: normalized.normalizedSymbol,
+    assetClass: normalized.normalizedAssetClass,
+    side: normalized.normalizedSide,
+    qty: normalized.numericQty,
+    orderType: normalized.normalizedOrderType,
+    timeInForce: normalized.normalizedTimeInForce,
+    goodTilDate: normalized.parsedGoodTilDate
+      ? normalized.parsedGoodTilDate.toISOString()
+      : null,
+    limitPrice: normalized.parsedLimitPrice,
+    takeProfitPrice: normalized.parsedTakeProfitPrice,
+    stopLossPrice: normalized.parsedStopLossPrice,
+    trailingStopPct: normalized.parsedTrailingStopPct,
+    stopPrice: normalized.parsedStopTriggerPrice,
+    maxPricePerShare: normalized.parsedMaxPricePerShare,
+    allowExtendedHours: normalized.allowExtendedHours,
+    origin: String(input.origin || 'manual'),
+    strategyId: input.strategyId ? String(input.strategyId) : null,
+    setupType: input.setupType ? String(input.setupType) : null
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+}
+
+function createPaperNotAttemptedError(message, {
+  code,
+  statusCode = 400,
+  submissionPhase = 'pre_submit'
+} = {}) {
+  const err = new Error(message);
+  err.code = code || 'PAPER_ORDER_NOT_ATTEMPTED';
+  err.statusCode = statusCode;
+  err.submissionAttempted = false;
+  err.submissionOutcome = SUBMISSION_STATES.NOT_ATTEMPTED;
+  err.submissionPhase = submissionPhase;
+  return err;
+}
+
+async function runPaperCoordinationStep(step, {
+  message,
+  code = 'ALPACA_PAPER_COORDINATION_FAILED',
+  submissionPhase = 'coordination'
+} = {}) {
+  try {
+    return await step();
+  } catch (cause) {
+    if (cause?.submissionOutcome === SUBMISSION_STATES.NOT_ATTEMPTED) throw cause;
+    const err = createPaperNotAttemptedError(
+      message || 'Alpaca-paper submission coordination failed before broker I/O.',
+      {
+        code,
+        statusCode: 409,
+        submissionPhase
+      }
+    );
+    err.cause = cause;
+    throw err;
+  }
+}
+
+async function findPaperOrderByIdempotencyKey(accountId, idempotencyKey) {
+  if (!idempotencyKey) return null;
+  let query = PaperOrder.findOne({
+    accountId: normalizePaperAccountId(accountId),
+    broker: 'alpaca',
+    idempotencyKey
+  });
+  if (typeof query?.sort === 'function') query = query.sort({ createdAt: 1 });
+  return query;
+}
+
+function buildPaperIdempotencyReplayResult(order) {
+  return {
+    order,
+    trade: null,
+    attachedOrders: [],
+    brokerOrder: null,
+    account: null,
+    positions: null,
+    idempotentReplay: true,
+    submissionState: order?.submissionState || null
+  };
+}
+
+function assertPaperIdempotencyFingerprint(order, expectedFingerprint) {
+  if (
+    expectedFingerprint
+    && order?.idempotencyFingerprint
+    && order.idempotencyFingerprint === expectedFingerprint
+  ) {
+    return;
+  }
+  const err = createPaperNotAttemptedError(
+    'Idempotency-Key was already used for a different paper-order request.',
+    {
+      code: 'IDEMPOTENCY_CONFLICT',
+      statusCode: 409,
+      submissionPhase: 'idempotency_replay'
+    }
+  );
+  err.idempotentReplay = true;
+  err.paperOrderRecorded = true;
+  err.paperOrder = order || null;
+  throw err;
+}
+
+function resolvePaperIdempotencyReplay(order, expectedFingerprint) {
+  assertPaperIdempotencyFingerprint(order, expectedFingerprint);
+  if (isUnresolvedAlpacaPaperOrder(order)) {
+    throw createPaperIdempotencyUnknownError(order);
+  }
+  return buildPaperIdempotencyReplayResult(order);
+}
+
+function isUnresolvedAlpacaPaperOrder(order = {}) {
+  return order.broker === 'alpaca'
+    && (
+      UNRESOLVED_SUBMISSION_STATES.includes(order.submissionState)
+      || (
+        order.status === 'open'
+        && LEGACY_UNRESOLVED_BROKER_STATUSES.includes(order.brokerOrderStatus)
+      )
+    );
+}
+
+async function findUnresolvedAlpacaPaperOrder(accountId = ACCOUNT_ID, {
+  excludePaperOrderId = null,
+  excludeRoboOrderId = null
+} = {}) {
+  const match = await findUnresolvedAlpacaPaperSubmission({
+    accountId,
+    excludePaperOrderId,
+    excludeRoboOrderId
+  });
+  return match?.order || null;
+}
+
+function createPaperSubmissionFreezeError(order) {
+  const err = createSubmitUnknownError(
+    'Alpaca paper submissions are frozen while an earlier submission remains unresolved.',
+    {
+      clientOrderId: order?.clientOrderId || null,
+      brokerOrder: order?.externalOrderId
+        ? { id: order.externalOrderId, status: order.brokerOrderStatus || null }
+        : null
+    }
+  );
+  err.submissionAttempted = false;
+  err.submissionPhase = 'account_freeze';
+  err.paperOrderRecorded = true;
+  err.paperOrder = order || null;
+  return err;
+}
+
+function createPaperIdempotencyUnknownError(order) {
+  const err = createPaperSubmissionFreezeError(order);
+  err.idempotentReplay = true;
+  err.submissionPhase = 'idempotency_replay';
+  return err;
+}
+
+function preserveCorrelatedPaperBrokerExternalOrderId(
+  order,
+  brokerOrder,
+  expectedClientOrderId
+) {
+  const persistedExternalOrderId = order?.externalOrderId;
+  if (isCanonicalBrokerIdentifier(persistedExternalOrderId)) {
+    return persistedExternalOrderId;
+  }
+
+  const expectedClientId = expectedClientOrderId;
+  const returnedClientId = brokerOrder?.client_order_id ?? brokerOrder?.clientOrderId;
+  const returnedExternalOrderId = brokerOrder?.id;
+  if (
+    isCanonicalBrokerIdentifier(expectedClientId)
+    && isCanonicalBrokerIdentifier(returnedClientId)
+    && returnedClientId === expectedClientId
+    && isCanonicalBrokerIdentifier(returnedExternalOrderId)
+  ) {
+    order.externalOrderId = returnedExternalOrderId;
+  }
+  return isCanonicalBrokerIdentifier(order?.externalOrderId)
+    ? order.externalOrderId
+    : null;
+}
+
+function markPaperOrderReconciliationRequired(err, {
+  order,
+  alpacaPaperOrder,
+  brokerOrderPersisted = false
+} = {}) {
+  err.localProcessingCode = err.code || null;
+  err.code = 'PAPER_ORDER_RECONCILIATION_REQUIRED';
+  err.statusCode = 409;
+  err.submissionAttempted = true;
+  err.submissionOutcome = order?.submissionState || SUBMISSION_STATES.SUBMITTED;
+  err.submissionPhase = 'post_ack';
+  err.clientOrderId = order?.clientOrderId || alpacaPaperOrder?.payload?.client_order_id || null;
+  err.reconciliationRequired = true;
+  err.brokerOrderPersisted = brokerOrderPersisted;
+  err.paperOrderRecorded = true;
+  err.paperOrder = order || null;
+  err.brokerOrder = alpacaPaperOrder?.order || null;
+  return err;
 }
 
 function getDecimalPlaces(value) {
@@ -84,7 +329,9 @@ function normalizeOrderInput({
   stopPrice,
   maxPricePerShare,
   allowExtendedHours = false
-}) {
+}, {
+  skipTemporalValidation = false
+} = {}) {
   const rawSymbol = String(symbol || '').trim().toUpperCase();
   const normalizedSymbol = normalizeCompactSymbol(rawSymbol);
   if (!normalizedSymbol) {
@@ -151,7 +398,7 @@ function normalizeOrderInput({
     if (!parsedGoodTilDate || Number.isNaN(parsedGoodTilDate.getTime())) {
       throw new Error('goodTilDate is required for GTD orders.');
     }
-    if (parsedGoodTilDate <= new Date()) {
+    if (!skipTemporalValidation && parsedGoodTilDate <= new Date()) {
       throw new Error('goodTilDate must be in the future.');
     }
   }
@@ -300,12 +547,12 @@ function getAlpacaPaperRejectionReason(order = {}) {
 }
 
 function getAlpacaFilledQty(order = {}, fallback = 0) {
-  const filledQty = Number(order.filled_qty ?? order.filledQty);
+  const filledQty = Number(order.filled_qty);
   return Number.isFinite(filledQty) && filledQty > 0 ? filledQty : fallback;
 }
 
 function getAlpacaFillPrice(order = {}, fallback = null) {
-  const filledAvgPrice = Number(order.filled_avg_price ?? order.filledAvgPrice);
+  const filledAvgPrice = Number(order.filled_avg_price);
   return Number.isFinite(filledAvgPrice) && filledAvgPrice > 0 ? filledAvgPrice : fallback;
 }
 
@@ -565,11 +812,78 @@ async function createFilledTradeFromSyncedOrder(order, brokerOrder = {}, {
 async function reconcileAlpacaPaperOrder(order, {
   now = new Date(),
   readOrder = readAlpacaPaperOrder,
+  readOrderByClientOrderId = readAlpacaPaperOrderByClientOrderId,
   createTradeFromOrder = createFilledTradeFromSyncedOrder
 } = {}) {
-  if (!order?.externalOrderId) return { ok: false, reason: 'MISSING_EXTERNAL_ORDER_ID' };
+  if (!order?.externalOrderId && !order?.clientOrderId) {
+    return { ok: false, reason: 'MISSING_BROKER_CORRELATION_ID' };
+  }
 
-  const brokerOrder = await readOrder(order.externalOrderId);
+  let brokerOrder;
+  try {
+    brokerOrder = order.externalOrderId
+      ? await readOrder(order.externalOrderId)
+      : await readOrderByClientOrderId(order.clientOrderId);
+    const returnedExternalOrderId = String(brokerOrder?.id || '').trim();
+    const expectedExternalOrderId = String(order.externalOrderId || '').trim();
+    const returnedClientOrderId = String(
+      brokerOrder?.client_order_id || brokerOrder?.clientOrderId || ''
+    ).trim();
+    const expectedClientOrderId = String(order.clientOrderId || '').trim();
+    if (
+      !hasConclusiveBrokerOrder(
+        brokerOrder,
+        expectedClientOrderId || null,
+        order.qty,
+        order.notional
+      )
+      || (expectedExternalOrderId && returnedExternalOrderId !== expectedExternalOrderId)
+      || (expectedClientOrderId && returnedClientOrderId !== expectedClientOrderId)
+    ) {
+      const err = createSubmitUnknownError(
+        'Alpaca paper reconciliation returned an inconclusive or identity-mismatched order.',
+        {
+          clientOrderId: order.clientOrderId,
+          brokerOrder
+        }
+      );
+      err.submissionError = {
+        submissionOutcome: SUBMISSION_STATES.UNKNOWN,
+        submissionAttempted: true,
+        status: null,
+        code: 'INCONCLUSIVE_BROKER_LOOKUP',
+        message: err.message,
+        data: brokerOrder,
+        clientOrderId: order.clientOrderId
+      };
+      throw err;
+    }
+  } catch (err) {
+    if (!isUnresolvedAlpacaPaperOrder(order)) throw err;
+
+    order.status = 'open';
+    order.submissionState = SUBMISSION_STATES.UNKNOWN;
+    order.brokerOrderStatus = order.brokerOrderStatus === 'pending_submit'
+      ? 'submit_unknown'
+      : (order.brokerOrderStatus || 'submit_unknown');
+    order.submissionLastError = {
+      ...(err.submissionError || buildSubmissionErrorSnapshot(err)),
+      submissionOutcome: SUBMISSION_STATES.UNKNOWN,
+      submissionPhase: 'reconciliation_lookup',
+      reconciliationLookup: true,
+      clientOrderId: order.clientOrderId || null
+    };
+    order.submissionLastReconciledAt = now;
+    await order.save();
+    return {
+      ok: false,
+      reason: SUBMIT_UNKNOWN,
+      order,
+      brokerOrder: err.brokerOrder || null,
+      error: order.submissionLastError
+    };
+  }
+
   const localStatus = mapAlpacaPaperOrderStatus(brokerOrder);
   const brokerFilledQty = getAlpacaFilledQty(brokerOrder, 0);
   const brokerFillPrice = getAlpacaFillPrice(brokerOrder, null);
@@ -577,9 +891,14 @@ async function reconcileAlpacaPaperOrder(order, {
   const shouldCreateTrade = hasFill;
 
   order.externalOrderId = brokerOrder.id || order.externalOrderId;
-  order.clientOrderId = brokerOrder.client_order_id || order.clientOrderId;
+  order.clientOrderId = order.clientOrderId || brokerOrder.client_order_id || null;
   order.brokerOrderStatus = brokerOrder.status || order.brokerOrderStatus;
   order.status = localStatus;
+  order.submissionState = localStatus === 'rejected'
+    ? SUBMISSION_STATES.REJECTED
+    : SUBMISSION_STATES.SUBMITTED;
+  order.submissionLastError = null;
+  order.submissionLastReconciledAt = now;
   if (hasFill) {
     order.fillPrice = brokerFillPrice;
     order.notional = Number((brokerFilledQty * brokerFillPrice).toFixed(2));
@@ -611,6 +930,7 @@ async function runOpenAlpacaPaperOrderReconciliation({
   limit = 50,
   now = new Date(),
   readOrder = readAlpacaPaperOrder,
+  readOrderByClientOrderId = readAlpacaPaperOrderByClientOrderId,
   accountId = ACCOUNT_ID
 } = {}) {
   const scopedAccountId = normalizePaperAccountId(accountId);
@@ -618,19 +938,37 @@ async function runOpenAlpacaPaperOrderReconciliation({
     accountId: scopedAccountId,
     broker: 'alpaca',
     status: 'open',
-    externalOrderId: { $nin: [null, ''] }
+    $or: [
+      { externalOrderId: { $exists: true, $nin: [null, ''] } },
+      { clientOrderId: { $exists: true, $nin: [null, ''] } }
+    ]
   }).sort({ updatedAt: 1 }).limit(Math.min(Math.max(Number(limit) || 50, 1), 200));
 
   let updated = 0;
   const errors = [];
   for (const order of orders) {
     try {
-      await reconcileAlpacaPaperOrder(order, { now, readOrder });
-      updated += 1;
+      const result = await reconcileAlpacaPaperOrder(order, {
+        now,
+        readOrder,
+        readOrderByClientOrderId
+      });
+      if (result.ok) {
+        updated += 1;
+      } else {
+        errors.push({
+          orderId: String(order._id),
+          externalOrderId: order.externalOrderId,
+          clientOrderId: order.clientOrderId,
+          reason: result.reason,
+          message: result.error?.message || 'Alpaca paper order remains unresolved.'
+        });
+      }
     } catch (err) {
       errors.push({
         orderId: String(order._id),
         externalOrderId: order.externalOrderId,
+        clientOrderId: order.clientOrderId,
         message: err?.message || 'Could not reconcile Alpaca paper order.'
       });
     }
@@ -902,6 +1240,9 @@ async function createAttachedExitOrders({
 
 async function placeOrderUnlocked({
   accountId = ACCOUNT_ID,
+  idempotencyKey = null,
+  idempotencyFingerprint = null,
+  submissionLockOwner = null,
   symbol,
   side,
   qty,
@@ -1177,8 +1518,64 @@ async function placeOrderUnlocked({
   };
   let alpacaPaperOrder = null;
   let order = null;
+  let brokerAcknowledged = false;
+  let brokerOrderPersisted = false;
   const syncToAlpaca = shouldSyncPaperTradesToAlpaca();
-  if (syncToAlpaca) {
+  try {
+    if (syncToAlpaca) {
+    if (!submissionLockOwner) {
+      throw createPaperNotAttemptedError(
+        'The shared Alpaca-paper submission lock owner is missing.',
+        {
+          code: 'ALPACA_PAPER_SUBMISSION_LOCK_REQUIRED',
+          statusCode: 409,
+          submissionPhase: 'coordination'
+        }
+      );
+    }
+    const renewedLock = await runPaperCoordinationStep(
+      () => renewPaperAccountLock(
+        scopedAccountId,
+        submissionLockOwner,
+        new Date()
+      ),
+      {
+        message: 'The shared Alpaca-paper submission lease could not be verified before broker I/O.'
+      }
+    );
+    if (!renewedLock) {
+      throw createPaperNotAttemptedError(
+        'The shared Alpaca-paper submission lock expired before broker dispatch.',
+        {
+          code: 'ALPACA_PAPER_SUBMISSION_LOCK_LOST',
+          statusCode: 409,
+          submissionPhase: 'coordination'
+        }
+      );
+    }
+    const existingIdempotentOrder = await runPaperCoordinationStep(
+      () => findPaperOrderByIdempotencyKey(scopedAccountId, idempotencyKey),
+      {
+        message: 'The paper idempotency record could not be read before broker I/O.',
+        code: 'ALPACA_PAPER_IDEMPOTENCY_READ_FAILED',
+        submissionPhase: 'idempotency'
+      }
+    );
+    if (existingIdempotentOrder) {
+      return resolvePaperIdempotencyReplay(
+        existingIdempotentOrder,
+        idempotencyFingerprint
+      );
+    }
+    const unresolvedOrder = await runPaperCoordinationStep(
+      () => findUnresolvedAlpacaPaperOrder(scopedAccountId),
+      {
+        message: 'The Alpaca-paper unresolved-submission latch could not be read before broker I/O.'
+      }
+    );
+    if (unresolvedOrder) {
+      throw createPaperSubmissionFreezeError(unresolvedOrder);
+    }
     const clientOrderId = buildClientOrderId({
       origin,
       symbol: normalizedSymbol,
@@ -1190,16 +1587,101 @@ async function placeOrderUnlocked({
       takeProfitPrice: parsedTakeProfitPrice,
       stopLossPrice: parsedStopLossPrice
     });
-    order = await PaperOrder.create({
-      ...baseOrderPayload,
-      broker: 'alpaca',
-      clientOrderId,
-      brokerOrderStatus: 'pending_submit',
-      status: 'open',
-      fillPrice: null,
-      filledAt: null
-    });
     try {
+      order = await PaperOrder.create({
+        ...baseOrderPayload,
+        broker: 'alpaca',
+        clientOrderId,
+        idempotencyKey,
+        idempotencyFingerprint,
+        brokerOrderStatus: 'pending_submit',
+        submissionState: SUBMISSION_STATES.PENDING,
+        submissionAttemptCount: 1,
+        submissionLastAttemptAt: now,
+        submissionLastError: null,
+        status: 'open',
+        fillPrice: null,
+        filledAt: null
+      });
+    } catch (err) {
+      if (err?.code !== 11000 || !idempotencyKey) {
+        const persistenceError = createPaperNotAttemptedError(
+          'The durable Alpaca-paper submission attempt could not be created before broker I/O.',
+          {
+            code: 'ALPACA_PAPER_ATTEMPT_PERSIST_FAILED',
+            statusCode: 503,
+            submissionPhase: 'persistence'
+          }
+        );
+        persistenceError.cause = err;
+        throw persistenceError;
+      }
+      const existingOrder = await runPaperCoordinationStep(
+        () => findPaperOrderByIdempotencyKey(scopedAccountId, idempotencyKey),
+        {
+          message: 'The winning paper idempotency record could not be read after a duplicate-key race.',
+          code: 'ALPACA_PAPER_IDEMPOTENCY_READ_FAILED',
+          submissionPhase: 'idempotency'
+        }
+      );
+      if (!existingOrder) {
+        const persistenceError = createPaperNotAttemptedError(
+          'The durable paper idempotency winner was unavailable after a duplicate-key race.',
+          {
+            code: 'ALPACA_PAPER_IDEMPOTENCY_RACE_UNRESOLVED',
+            statusCode: 503,
+            submissionPhase: 'persistence'
+          }
+        );
+        persistenceError.cause = err;
+        throw persistenceError;
+      }
+      return resolvePaperIdempotencyReplay(existingOrder, idempotencyFingerprint);
+    }
+    try {
+      const dispatchLockRenewed = await runPaperCoordinationStep(
+        () => renewPaperAccountLock(
+          scopedAccountId,
+          submissionLockOwner,
+          new Date()
+        ),
+        {
+          message: 'The shared Alpaca-paper submission lease could not be verified immediately before broker I/O.'
+        }
+      );
+      if (!dispatchLockRenewed) {
+        throw createPaperNotAttemptedError(
+          'The shared Alpaca-paper submission lock expired before broker dispatch.',
+          {
+            code: 'ALPACA_PAPER_SUBMISSION_LOCK_LOST',
+            statusCode: 409,
+            submissionPhase: 'coordination'
+          }
+        );
+      }
+
+      const lateUnresolvedOrder = await runPaperCoordinationStep(
+        () => findUnresolvedAlpacaPaperOrder(
+          scopedAccountId,
+          { excludePaperOrderId: order._id }
+        ),
+        {
+          message: 'The final Alpaca-paper unresolved-submission latch could not be read before broker I/O.'
+        }
+      );
+      if (lateUnresolvedOrder) {
+        const lateGuardError = createPaperNotAttemptedError(
+          'A different Alpaca-paper submission became unresolved before broker dispatch.',
+          {
+            code: 'ALPACA_PAPER_SUBMISSION_LATE_UNRESOLVED',
+            statusCode: 409,
+            submissionPhase: 'account_freeze'
+          }
+        );
+        lateGuardError.blockingPaperOrder = lateUnresolvedOrder;
+        throw lateGuardError;
+      }
+
       alpacaPaperOrder = await submitAlpacaPaperOrder({
         symbol: normalizedSymbol,
         assetClass: normalizedAssetClass,
@@ -1218,30 +1700,103 @@ async function placeOrderUnlocked({
         pollStatusAttempts: 3,
         pollStatusDelayMs: 300
       });
+      brokerAcknowledged = true;
     } catch (err) {
       const rejectedReason = err.message || 'Alpaca paper order submission failed.';
+      const classifiedOutcome = classifySubmissionError(err);
+      const submissionOutcome = [
+        SUBMISSION_STATES.NOT_ATTEMPTED,
+        SUBMISSION_STATES.REJECTED
+      ].includes(classifiedOutcome)
+        ? classifiedOutcome
+        : SUBMISSION_STATES.UNKNOWN;
+      const brokerOrder = err.brokerOrder || null;
+
+      order.submissionState = submissionOutcome;
+      order.submissionLastError = err.submissionError || buildSubmissionErrorSnapshot(err);
+      order.brokerRequestId = err.brokerRequestId || order.submissionLastError?.brokerRequestId || null;
+      preserveCorrelatedPaperBrokerExternalOrderId(order, brokerOrder, clientOrderId);
+      if (submissionOutcome === SUBMISSION_STATES.UNKNOWN) {
+        order.status = 'open';
+        order.brokerOrderStatus = brokerOrder?.status || 'submit_unknown';
+        order.rejectedReason = null;
+        const unknown = err.code === SUBMIT_UNKNOWN
+          ? err
+          : createSubmitUnknownError(rejectedReason, {
+            clientOrderId,
+            payload: err.alpacaPayload || null,
+            brokerOrder,
+            cause: err
+          });
+        unknown.code = SUBMIT_UNKNOWN;
+        unknown.statusCode = 409;
+        unknown.submissionOutcome = SUBMISSION_STATES.UNKNOWN;
+        unknown.submissionPhase = err.submissionPhase || 'submit';
+        unknown.clientOrderId = clientOrderId;
+        unknown.paperOrderRecorded = true;
+        unknown.paperOrder = order;
+        unknown.brokerOrder = brokerOrder;
+        try {
+          await order.save();
+        } catch (persistenceError) {
+          unknown.persistenceError = persistenceError;
+        }
+        throw unknown;
+      }
+
+      err.statusCode = err.statusCode || 400;
+      err.submissionOutcome = submissionOutcome;
+      err.clientOrderId = clientOrderId;
+      err.paperOrderRecorded = true;
+      err.paperOrder = order;
+      if (submissionOutcome === SUBMISSION_STATES.NOT_ATTEMPTED) {
+        order.status = 'cancelled';
+        order.brokerOrderStatus = 'not_attempted';
+        order.submissionAttemptCount = 0;
+        order.submissionLastAttemptAt = null;
+        order.submissionLastReconciledAt = null;
+        order.externalOrderId = null;
+        order.fillPrice = null;
+        order.rejectedReason = null;
+        order.filledAt = null;
+        try {
+          await order.save();
+        } catch (persistenceError) {
+          err.persistenceError = persistenceError;
+        }
+        throw err;
+      }
+
       order.status = 'rejected';
       order.brokerOrderStatus = 'rejected';
       order.rejectedReason = rejectedReason;
-      await order.save();
-      await recordRejectedExecution({
-        broker: 'alpaca',
-        origin,
-        rejectedReason,
-        request: executionRequest
-      });
-      err.paperOrderRecorded = true;
-      err.paperOrder = order;
+      order.filledAt = null;
+      try {
+        await order.save();
+        await recordRejectedExecution({
+          broker: 'alpaca',
+          origin,
+          rejectedReason,
+          request: executionRequest
+        });
+      } catch (persistenceError) {
+        err.persistenceError = persistenceError;
+      }
       throw err;
     }
 
     const brokerOrder = alpacaPaperOrder?.order || {};
+    order.brokerRequestId = alpacaPaperOrder?.brokerRequestId || null;
     const localStatus = mapAlpacaPaperOrderStatus(brokerOrder);
     const brokerFillPrice = getAlpacaFillPrice(brokerOrder, fillPrice);
     const brokerFilledQty = getAlpacaFilledQty(brokerOrder, numericQty);
     order.externalOrderId = brokerOrder.id || null;
-    order.clientOrderId = brokerOrder.client_order_id || alpacaPaperOrder?.payload?.client_order_id || clientOrderId;
+    order.clientOrderId = clientOrderId;
     order.brokerOrderStatus = brokerOrder.status || null;
+    order.submissionState = localStatus === 'rejected'
+      ? SUBMISSION_STATES.REJECTED
+      : SUBMISSION_STATES.SUBMITTED;
+    order.submissionLastError = alpacaPaperOrder?.pollError || null;
     order.status = localStatus;
     order.fillPrice = localStatus === 'filled' ? brokerFillPrice : null;
     order.notional = localStatus === 'filled'
@@ -1254,6 +1809,7 @@ async function placeOrderUnlocked({
       order.rejectedReason = getAlpacaPaperRejectionReason(brokerOrder);
     }
     await order.save();
+    brokerOrderPersisted = true;
 
     if (localStatus === 'rejected') {
       const rejectedReason = order.rejectedReason || 'Alpaca rejected the paper order.';
@@ -1264,7 +1820,11 @@ async function placeOrderUnlocked({
         request: executionRequest
       });
       const err = new Error(rejectedReason);
+      err.code = 'ALPACA_PAPER_ORDER_REJECTED';
       err.statusCode = 400;
+      err.submissionAttempted = true;
+      err.submissionOutcome = SUBMISSION_STATES.REJECTED;
+      err.clientOrderId = order.clientOrderId;
       err.paperOrderRecorded = true;
       err.paperOrder = order;
       err.brokerOrder = brokerOrder;
@@ -1282,15 +1842,15 @@ async function placeOrderUnlocked({
         positions: updatedAccount.positions
       };
     }
-  } else {
-    order = await PaperOrder.create({
-      ...baseOrderPayload,
-      broker: 'paper',
-      status: 'filled',
-      fillPrice,
-      filledAt: now
-    });
-  }
+    } else {
+      order = await PaperOrder.create({
+        ...baseOrderPayload,
+        broker: 'paper',
+        status: 'filled',
+        fillPrice,
+        filledAt: now
+      });
+    }
 
   const executedQty = syncToAlpaca
     ? getAlpacaFilledQty(alpacaPaperOrder?.order || {}, numericQty)
@@ -1440,58 +2000,98 @@ async function placeOrderUnlocked({
     brokerOrder: alpacaPaperOrder?.order || null
   });
 
-  return {
-    order,
-    trade,
-    attachedOrders,
-    brokerOrder: alpacaPaperOrder?.order || null,
-    account: updatedAccount,
-    positions: updatedAccount.positions
-  };
-}
-
-async function acquirePaperAccountLock(accountId, owner, now = new Date()) {
-  try {
-    return await PaperAccountLock.findOneAndUpdate(
-      {
-        accountId,
-        $or: [
-          { lockedUntil: { $lte: now } },
-          { owner }
-        ]
-      },
-      {
-        $set: {
-          owner,
-          lockedUntil: new Date(now.getTime() + PAPER_ORDER_LOCK_MS)
-        }
-      },
-      { new: true, upsert: true, runValidators: true }
-    );
+    return {
+      order,
+      trade,
+      attachedOrders,
+      brokerOrder: alpacaPaperOrder?.order || null,
+      account: updatedAccount,
+      positions: updatedAccount.positions
+    };
   } catch (err) {
-    if (err?.code === 11000) return null;
+    if (syncToAlpaca && brokerAcknowledged && order && !err.paperOrderRecorded) {
+      markPaperOrderReconciliationRequired(err, {
+        order,
+        alpacaPaperOrder,
+        brokerOrderPersisted
+      });
+    }
     throw err;
   }
 }
 
+async function acquirePaperAccountLock(accountId, owner, now = new Date()) {
+  return acquireAlpacaPaperSubmissionLock(accountId, owner, now);
+}
+
 async function releasePaperAccountLock(accountId, owner) {
-  await PaperAccountLock.updateOne(
-    { accountId, owner },
-    { $set: { lockedUntil: new Date(0) } }
-  );
+  return releaseAlpacaPaperSubmissionLock(accountId, owner);
+}
+
+async function renewPaperAccountLock(accountId, owner, now = new Date()) {
+  return renewAlpacaPaperSubmissionLock(accountId, owner, now);
 }
 
 async function placeOrder(input = {}) {
   const accountId = normalizePaperAccountId(input.accountId);
+  const syncToAlpaca = shouldSyncPaperTradesToAlpaca();
+  const idempotencyKey = normalizePaperIdempotencyKey(input.idempotencyKey);
+  if (syncToAlpaca && !idempotencyKey) {
+    throw createPaperNotAttemptedError(
+      'Idempotency-Key is required for Alpaca-synced paper submissions.',
+      { code: 'IDEMPOTENCY_KEY_REQUIRED' }
+    );
+  }
+  const idempotencyFingerprint = syncToAlpaca
+    ? buildPaperOrderIdempotencyFingerprint(input)
+    : null;
   const owner = `paper-order:${accountId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-  const lock = await acquirePaperAccountLock(accountId, owner);
+  const lock = await runPaperCoordinationStep(
+    () => acquirePaperAccountLock(accountId, owner),
+    {
+      message: 'The shared Alpaca-paper submission lease could not be acquired before broker I/O.'
+    }
+  );
   if (!lock) {
-    const err = new Error('Another paper order is already being processed for this account. Retry after it completes.');
-    err.statusCode = 409;
-    throw err;
+    throw createPaperNotAttemptedError(
+      'Another paper order is already being processed for this account. Retry after it completes.',
+      {
+        code: 'ALPACA_PAPER_SUBMISSION_LOCKED',
+        statusCode: 409,
+        submissionPhase: 'coordination'
+      }
+    );
   }
   try {
-    return await placeOrderUnlocked({ ...input, accountId });
+    if (syncToAlpaca) {
+      const existingOrder = await runPaperCoordinationStep(
+        () => findPaperOrderByIdempotencyKey(accountId, idempotencyKey),
+        {
+          message: 'The paper idempotency record could not be read before broker I/O.',
+          code: 'ALPACA_PAPER_IDEMPOTENCY_READ_FAILED',
+          submissionPhase: 'idempotency'
+        }
+      );
+      if (existingOrder) {
+        return resolvePaperIdempotencyReplay(existingOrder, idempotencyFingerprint);
+      }
+      const unresolvedOrder = await runPaperCoordinationStep(
+        () => findUnresolvedAlpacaPaperOrder(accountId),
+        {
+          message: 'The Alpaca-paper unresolved-submission latch could not be read before broker I/O.'
+        }
+      );
+      if (unresolvedOrder) {
+        throw createPaperSubmissionFreezeError(unresolvedOrder);
+      }
+    }
+    return await placeOrderUnlocked({
+      ...input,
+      accountId,
+      idempotencyKey,
+      idempotencyFingerprint,
+      submissionLockOwner: owner
+    });
   } finally {
     await releasePaperAccountLock(accountId, owner).catch(() => {});
   }
@@ -1499,6 +2099,12 @@ async function placeOrder(input = {}) {
 
 async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejected') {
   try {
+    if (
+      payload.submissionOutcome !== SUBMISSION_STATES.REJECTED
+      || payload.submissionAttempted !== true
+    ) {
+      return null;
+    }
     const accountId = normalizePaperAccountId(payload.accountId);
     const now = new Date();
     let normalized = null;
@@ -1544,11 +2150,19 @@ async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejecte
       allowExtendedHours: payload.allowExtendedHours === true,
       metadata: payload.metadata || {},
       researchSnapshot: payload.metadata?.researchSnapshot || payload.metadata?.research || null,
+      submissionState: SUBMISSION_STATES.REJECTED,
+      submissionAttemptCount: 1,
+      submissionLastAttemptAt: now,
+      submissionLastError: {
+        submissionOutcome: SUBMISSION_STATES.REJECTED,
+        submissionAttempted: true,
+        message: rejectedReason
+      },
       status: 'rejected',
       estimatedPrice: Number.isFinite(estimatedPrice) ? estimatedPrice : null,
       notional: Number.isFinite(notional) ? notional : null,
       rejectedReason,
-      filledAt: now
+      filledAt: null
     });
     await recordRejectedExecution({
       broker: 'paper',
@@ -1584,6 +2198,7 @@ async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejecte
 
 module.exports = {
   acquirePaperAccountLock,
+  buildPaperOrderIdempotencyFingerprint,
   getSettings,
   updateSettings,
   getTrades,
@@ -1593,16 +2208,21 @@ module.exports = {
   getEquityCurve,
   placeOrder,
   releasePaperAccountLock,
+  renewPaperAccountLock,
   recordRejectedOrder,
   createFilledTradeFromSyncedOrder,
   normalizeOrderInput,
+  preserveCorrelatedPaperBrokerExternalOrderId,
   enforceMarketHours,
   enforcePriceControls,
   shouldSubmitAlpacaAttachedExits,
   getAlpacaFillPrice,
   getAlpacaFilledQty,
   isTerminalAlpacaStatus,
+  isUnresolvedAlpacaPaperOrder,
+  markPaperOrderReconciliationRequired,
   mapAlpacaPaperOrderStatus,
+  findUnresolvedAlpacaPaperOrder,
   reconcileAlpacaPaperOrder,
   reconcileOpenAlpacaPaperOrders
 };

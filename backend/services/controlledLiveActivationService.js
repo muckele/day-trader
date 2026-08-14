@@ -76,6 +76,24 @@ function hasExplicitLiveCredentials(env = process.env) {
   );
 }
 
+function validateControlledLiveDeployment({ env = process.env } = {}) {
+  if (String(env.LIVE_TRADING_ENABLED || '').toLowerCase() !== 'true') {
+    return {
+      approved: false,
+      reasonCode: 'LIVE_DEPLOYMENT_FLAG_DISABLED',
+      message: 'The deployment live-trading flag is disabled.'
+    };
+  }
+  if (!hasExplicitLiveCredentials(env)) {
+    return {
+      approved: false,
+      reasonCode: 'LIVE_CREDENTIALS_NOT_CONFIGURED',
+      message: 'Explicit live-only Alpaca credentials are not configured.'
+    };
+  }
+  return { approved: true };
+}
+
 async function approveControlledLive({ userId, confirmation, limits, allowedSymbols, notes, now = new Date(), env = process.env } = {}, deps = {}) {
   if (confirmation !== LIVE_APPROVAL_CONFIRMATION) {
     const err = new Error('Exact controlled-live approval confirmation is required.');
@@ -170,12 +188,8 @@ async function activateControlledLive({ userId, confirmation, now = new Date(), 
 
 async function validateControlledLiveSubmission({ userId, orderInput, now = new Date(), env = process.env } = {}, deps = {}) {
   const fail = (reasonCode, message, metadata = {}) => ({ approved: false, reasonCode, message, metadata });
-  if (String(env.LIVE_TRADING_ENABLED || '').toLowerCase() !== 'true') {
-    return fail('LIVE_DEPLOYMENT_FLAG_DISABLED', 'The deployment live-trading flag is disabled.');
-  }
-  if (!hasExplicitLiveCredentials(env)) {
-    return fail('LIVE_CREDENTIALS_NOT_CONFIGURED', 'Explicit live-only Alpaca credentials are not configured.');
-  }
+  const deploymentGate = validateControlledLiveDeployment({ env });
+  if (!deploymentGate.approved) return fail(deploymentGate.reasonCode, deploymentGate.message);
   const Activation = deps.RoboLiveActivation || RoboLiveActivation;
   const Orders = deps.RoboTradeOrder || RoboTradeOrder;
   await enforceControlledLiveWatchdog({ userId, now }, deps);
@@ -289,7 +303,7 @@ async function recordControlledLiveOutcome({ activationId, liveOrderId = null, s
   const lifecycleStatus = failure
     ? 'failed'
     : (status === 'filled' ? 'filled' : (status === 'reconciled' ? 'reconciled' : 'broker_pending'));
-  return Model.findOneAndUpdate(
+  const activation = await Model.findOneAndUpdate(
     { _id: activationId },
     { $set: {
       lifecycleStatus,
@@ -299,6 +313,23 @@ async function recordControlledLiveOutcome({ activationId, liveOrderId = null, s
     } },
     { new: true }
   );
+  if (failure && activation?.userId) {
+    const Settings = deps.RoboSettings || RoboSettings;
+    if (typeof Settings?.updateOne === 'function') {
+      await Settings.updateOne(
+        { userId: activation.userId },
+        {
+          $set: {
+            enabled: false,
+            isEnabled: false,
+            pausedReason: `Controlled-live canary failed: ${status}.`
+          },
+          $inc: { controlGeneration: 1 }
+        }
+      );
+    }
+  }
+  return activation;
 }
 
 async function reviewControlledLiveCanary({ userId, confirmation, notes, now = new Date() } = {}, deps = {}) {
@@ -624,5 +655,6 @@ module.exports = {
   reviewControlledLiveCanary,
   revokeControlledLive,
   revalidateControlledLiveAttempt,
+  validateControlledLiveDeployment,
   validateControlledLiveSubmission
 };

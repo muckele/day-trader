@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { mapSettings } = require('../robotrader/settingsService');
 const {
+  adaptOrderForExistingPosition,
   adaptOrderForMarketSession,
   cleanupRoboAuditLogs,
   cleanupRoboTradeDecisions,
@@ -15,6 +16,11 @@ const {
   runWorkerTick
 } = require('../robotrader/worker');
 const { POLICY_VERSION } = require('../services/canonicalTradingPolicyService');
+const { SUBMISSION_STATES } = require('../services/submissionOutcomeService');
+const { createAlpacaBroker: createRealAlpacaBroker } = require('../robotrader/alpacaBroker');
+const {
+  findUnresolvedAlpacaPaperSubmission
+} = require('../services/alpacaPaperSubmissionGuardService');
 
 function chain(result) {
   return {
@@ -31,6 +37,12 @@ function createDeps({ approved = true } = {}) {
   const auditEvents = [];
   const brokerSubmissions = [];
   const deps = {
+    env: {
+      LIVE_TRADING_ENABLED: 'true',
+      APCA_LIVE_API_KEY_ID: 'explicit-live-key',
+      APCA_LIVE_API_SECRET_KEY: 'explicit-live-secret',
+      APCA_LIVE_BASE_URL: 'https://api.alpaca.markets'
+    },
     RoboSettings: {
       find: () => chain([{ userId: 'user-worker', isEnabled: true }]),
       updateOne: async () => ({ matchedCount: 1 })
@@ -115,6 +127,9 @@ function createDeps({ approved = true } = {}) {
       },
       updateMany: async () => ({ modifiedCount: 0 })
     },
+    PaperOrder: {
+      findOne: async () => null
+    },
     RoboAuditLog: {
       create: async payload => {
         auditEvents.push(payload);
@@ -142,6 +157,10 @@ function createDeps({ approved = true } = {}) {
     hasBrokerOperatorAccess: async () => true,
     updateRoboTraderSettings: async () => ({ isEnabled: false, enabled: false }),
     buildClientOrderId: () => 'daytrader-robotrader-AAPL-fixed',
+    acquireAlpacaPaperSubmissionLock: async (_accountId, owner) => ({ owner }),
+    releaseAlpacaPaperSubmissionLock: async () => ({ matchedCount: 1 }),
+    renewAlpacaPaperSubmissionLock: async () => true,
+    findUnresolvedAlpacaPaperSubmission,
     isAmbiguousSubmitError,
     buildResearchBatch: async () => [{
       symbol: 'AAPL',
@@ -224,6 +243,35 @@ function createDeps({ approved = true } = {}) {
   return { deps, createdDecisions, createdIntents, createdOrders, auditEvents, brokerSubmissions };
 }
 
+test('risk-reducing position exits are converted to simple orders before persistence', () => {
+  const adapted = adaptOrderForExistingPosition({
+    symbol: 'MSFT',
+    side: 'sell',
+    qty: 1,
+    orderType: 'market',
+    orderClass: 'bracket',
+    takeProfit: { limit_price: 390 },
+    stopLoss: { stop_price: 410 }
+  }, [{ symbol: 'MSFT', qty: 2 }]);
+
+  assert.equal(adapted.orderClass, 'simple');
+  assert.equal(adapted.takeProfit, null);
+  assert.equal(adapted.stopLoss, null);
+});
+
+test('short-entry bracket orders are not rewritten when no long position can be reduced', () => {
+  const original = {
+    symbol: 'MSFT',
+    side: 'sell',
+    qty: 1,
+    orderClass: 'bracket',
+    takeProfit: { limit_price: 390 },
+    stopLoss: { stop_price: 410 }
+  };
+
+  assert.equal(adaptOrderForExistingPosition(original, []).orderClass, 'bracket');
+});
+
 test('robotrader worker saves approved decisions and submitted orders', async () => {
   const context = createDeps({ approved: true });
   const result = await runRoboTraderForUser({ userId: 'user-worker', modeOverride: 'paper', runOnce: true }, context.deps);
@@ -242,6 +290,9 @@ test('robotrader worker saves approved decisions and submitted orders', async ()
   assert.equal(context.createdIntents[0].orderFingerprint, context.createdOrders[0].orderFingerprint);
   assert.equal(context.createdOrders[0].externalOrderId, 'alpaca-order-1');
   assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.SUBMITTED);
+  assert.equal(context.createdOrders[0].submissionAttemptCount, 1);
+  assert.ok(context.createdOrders[0].submissionLastAttemptAt);
   assert.equal(context.brokerSubmissions.length, 1);
   assert.equal(context.brokerSubmissions[0].clientOrderId, context.createdOrders[0].clientOrderId);
 });
@@ -313,7 +364,14 @@ test('robotrader worker keeps failed submissions reconcilable by client order id
     listOrders: async () => [],
     submitOrder: async input => {
       context.brokerSubmissions.push(input);
-      throw new Error('network timeout after submit');
+      const err = new Error('network timeout after submit');
+      err.code = 'ETIMEDOUT';
+      err.alpacaPayload = {
+        symbol: input.symbol,
+        client_order_id: input.clientOrderId,
+        qty: String(input.qty)
+      };
+      throw err;
     }
   });
 
@@ -323,7 +381,15 @@ test('robotrader worker keeps failed submissions reconcilable by client order id
   assert.equal(context.createdOrders.length, 1);
   assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
   assert.equal(context.createdOrders[0].status, 'pending_submit');
-  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_error_pending_reconciliation');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.UNKNOWN);
+  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_unknown');
+  assert.equal(context.createdOrders[0].rejectedAt, null);
+  assert.equal(context.createdOrders[0].submissionAttemptCount, 1);
+  assert.deepEqual(context.createdOrders[0].rawPayload, {
+    symbol: 'AAPL',
+    client_order_id: 'daytrader-robotrader-AAPL-fixed',
+    qty: '1'
+  });
   assert.equal(context.createdDecisions[0].status, 'error');
   assert.equal(context.brokerSubmissions[0].clientOrderId, context.createdOrders[0].clientOrderId);
   assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_order_submit_uncertain'), true);
@@ -361,8 +427,9 @@ test('robotrader worker marks explicit broker rejections terminal', async () => 
   assert.equal(context.createdOrders.length, 1);
   assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
   assert.equal(context.createdOrders[0].status, 'rejected');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.REJECTED);
   assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_rejected');
-  assert.equal(context.createdOrders[0].discrepancy, 'Alpaca 422: qty must be whole shares for advanced order class');
+  assert.equal(context.createdOrders[0].discrepancy, 'Broker 422: qty must be whole shares for advanced order class');
   assert.deepEqual(context.createdOrders[0].rawPayload, {
     symbol: 'AAPL',
     qty: '1.25',
@@ -374,9 +441,648 @@ test('robotrader worker marks explicit broker rejections terminal', async () => 
   });
   assert.ok(context.createdOrders[0].rejectedAt);
   assert.equal(context.createdDecisions[0].status, 'rejected');
-  assert.equal(context.createdDecisions[0].error, 'Alpaca 422: qty must be whole shares for advanced order class');
+  assert.equal(context.createdDecisions[0].error, 'Broker 422: qty must be whole shares for advanced order class');
   assert.equal(context.brokerSubmissions[0].clientOrderId, context.createdOrders[0].clientOrderId);
   assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_order_rejected'), true);
+});
+
+test('robotrader worker keeps Alpaca duplicate client identity errors unknown and reconcilable', async () => {
+  const context = createDeps({ approved: true });
+  const duplicate = new Error('Request failed with status code 422');
+  duplicate.response = {
+    status: 422,
+    data: {
+      code: 40010001,
+      message: 'client_order_id must be unique'
+    }
+  };
+  context.deps.createAlpacaBroker = () => ({
+    getAccount: async () => ({
+      buying_power: '10000',
+      equity: '10000',
+      last_equity: '10000',
+      status: 'ACTIVE'
+    }),
+    getClock: async () => ({ is_open: true }),
+    getPositions: async () => [],
+    listOrders: async () => [],
+    submitOrder: async input => {
+      context.brokerSubmissions.push(input);
+      duplicate.clientOrderId = input.clientOrderId;
+      duplicate.alpacaPayload = {
+        symbol: input.symbol,
+        client_order_id: input.clientOrderId,
+        qty: String(input.qty)
+      };
+      duplicate.submissionAttempted = true;
+      throw duplicate;
+    }
+  });
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
+  assert.equal(context.createdOrders[0].status, 'pending_submit');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.UNKNOWN);
+  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_unknown');
+  assert.equal(context.createdOrders[0].rejectedAt, null);
+  assert.equal(
+    context.auditEvents.some(event => event.eventType === 'robotrader_order_rejected'),
+    false
+  );
+  assert.equal(
+    context.auditEvents.some(event => event.eventType === 'robotrader_order_submit_uncertain'),
+    true
+  );
+});
+
+test('robotrader worker treats a conclusive rejected acknowledgement as confirmed rejection', async () => {
+  const context = createDeps({ approved: true });
+  const rejectedAt = '2026-07-13T14:00:01.000Z';
+  context.deps.createAlpacaBroker = () => ({
+    getAccount: async () => ({ buying_power: '10000', equity: '10000', last_equity: '10000', status: 'ACTIVE' }),
+    getClock: async () => ({ is_open: true }),
+    getPositions: async () => [],
+    listOrders: async () => [],
+    submitOrder: async input => {
+      context.brokerSubmissions.push(input);
+      return {
+        payload: { client_order_id: input.clientOrderId },
+        order: {
+          id: 'alpaca-rejected-ack-1',
+          client_order_id: input.clientOrderId,
+          status: 'rejected',
+          rejected_at: rejectedAt
+        }
+      };
+    }
+  });
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(context.createdOrders[0].externalOrderId, 'alpaca-rejected-ack-1');
+  assert.equal(context.createdOrders[0].status, 'rejected');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.REJECTED);
+  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_rejected');
+  assert.equal(context.createdOrders[0].rejectedAt, rejectedAt);
+  assert.equal(context.createdIntents[0].status, 'rejected');
+  assert.equal(context.createdDecisions[0].status, 'rejected');
+  assert.equal(
+    context.auditEvents.some(event => event.eventType === 'robotrader_order_rejected'),
+    true
+  );
+});
+
+test('robotrader worker freezes account submissions before minting an identity when an outcome is unresolved', async () => {
+  const context = createDeps({ approved: true });
+  let generatedClientOrderIds = 0;
+  let controlledLiveAttemptClaims = 0;
+  let unresolvedQuery = null;
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    controlGeneration: 0,
+    mode: 'live',
+    liveTradingExplicitlyEnabled: true,
+    approvalPolicy: { mode: 'autonomous', thresholdUsd: 0, requireExactOrderMatch: true },
+    allowedAssetClasses: ['stocks'],
+    allowedSymbols: ['AAPL'],
+    blockedSymbols: [],
+    maxTradeAmount: 1000,
+    maxPositionSize: 5000,
+    maxDailyLoss: 500,
+    maxOpenPositions: 5,
+    maxTradesPerDay: 3,
+    allowFractionalShares: true,
+    riskLevel: 'balanced'
+  });
+  context.deps.claimControlledLiveAttempt = async () => {
+    controlledLiveAttemptClaims += 1;
+    return { _id: 'must-not-be-claimed' };
+  };
+  context.deps.buildClientOrderId = () => {
+    generatedClientOrderIds += 1;
+    return 'must-not-be-generated';
+  };
+  context.deps.RoboTradeOrder.findOne = query => {
+    unresolvedQuery = query;
+    return {
+      select: () => ({
+        lean: async () => ({
+          _id: 'unknown-order-1',
+          clientOrderId: 'original-unknown-client-id',
+          status: 'pending_submit',
+          submissionState: SUBMISSION_STATES.UNKNOWN
+        })
+      })
+    };
+  };
+
+  const result = await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'live',
+    runOnce: true,
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(context.createdOrders.length, 0);
+  assert.equal(generatedClientOrderIds, 0);
+  assert.equal(controlledLiveAttemptClaims, 0);
+  assert.equal(unresolvedQuery.accountId, 'user:user-worker');
+  assert.equal(unresolvedQuery.environment, 'live');
+  assert.equal(
+    unresolvedQuery.$or.some(clause => clause.submissionState === SUBMISSION_STATES.PENDING),
+    true
+  );
+  assert.equal(
+    unresolvedQuery.$or.some(clause => clause.submissionState === SUBMISSION_STATES.UNKNOWN),
+    true
+  );
+  assert.equal(context.createdIntents[0].status, 'policy_blocked');
+  assert.equal(context.createdDecisions[0].status, 'rejected');
+  assert.equal(
+    context.auditEvents.some(event => (
+      event.eventType === 'robotrader_submission_unknown_blocked'
+      && event.payload.reasonCode === 'UNRESOLVED_SUBMIT_UNKNOWN'
+      && event.payload.pendingOrderId === null
+    )),
+    true
+  );
+});
+
+test('a manual PaperOrder unknown freezes the RoboTrader paper path under the shared account lease', async () => {
+  const context = createDeps({ approved: true });
+  let generatedClientOrderIds = 0;
+  let roboUnresolvedReads = 0;
+  const manualUnknown = {
+    _id: 'paper-order-manual-unknown',
+    accountId: 'user:user-worker',
+    broker: 'alpaca',
+    status: 'open',
+    submissionState: SUBMISSION_STATES.UNKNOWN,
+    clientOrderId: 'manual-client-original'
+  };
+  context.deps.PaperOrder.findOne = async () => manualUnknown;
+  context.deps.RoboTradeOrder.findOne = async () => {
+    roboUnresolvedReads += 1;
+    return null;
+  };
+  context.deps.buildClientOrderId = () => {
+    generatedClientOrderIds += 1;
+    return 'must-not-be-generated';
+  };
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(context.createdOrders.length, 0);
+  assert.equal(generatedClientOrderIds, 0);
+  assert.equal(roboUnresolvedReads, 0);
+  assert.equal(context.createdIntents[0].status, 'policy_blocked');
+  assert.equal(context.createdDecisions[0].status, 'rejected');
+  assert.equal(
+    context.auditEvents.some(event => (
+      event.eventType === 'robotrader_submission_unknown_blocked'
+      && event.payload.reasonCode === 'UNRESOLVED_SUBMIT_UNKNOWN'
+    )),
+    true
+  );
+});
+
+test('shared Alpaca-paper lock contention is not attempted and performs zero broker POSTs', async () => {
+  const context = createDeps({ approved: true });
+  let generatedClientOrderIds = 0;
+  context.deps.acquireAlpacaPaperSubmissionLock = async () => null;
+  context.deps.buildClientOrderId = () => {
+    generatedClientOrderIds += 1;
+    return 'must-not-be-generated';
+  };
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(context.createdOrders.length, 0);
+  assert.equal(generatedClientOrderIds, 0);
+  assert.equal(context.createdIntents[0].status, 'cancelled');
+  assert.equal(context.createdDecisions[0].status, 'cancelled');
+  assert.equal(
+    context.auditEvents.some(event => (
+      event.eventType === 'robotrader_submission_lock_blocked'
+      && event.payload.reasonCode === 'ALPACA_PAPER_SUBMISSION_LOCKED'
+    )),
+    true
+  );
+});
+
+test('robotrader worker rechecks the unresolved latch at dispatch and blocks a late race', async () => {
+  const context = createDeps({ approved: true });
+  let unresolvedReads = 0;
+  context.deps.RoboTradeOrder.findOne = async () => {
+    unresolvedReads += 1;
+    if (unresolvedReads === 1) return null;
+    return {
+      _id: 'late-unknown-order',
+      clientOrderId: 'late-unknown-client-id',
+      status: 'pending_submit',
+      submissionState: SUBMISSION_STATES.UNKNOWN
+    };
+  };
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(unresolvedReads, 2);
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(context.createdOrders.length, 1);
+  assert.equal(context.createdOrders[0].status, 'canceled');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.NOT_ATTEMPTED);
+  assert.equal(context.createdOrders[0].submissionAttemptCount, 0);
+  assert.equal(
+    context.auditEvents.some(event => (
+      event.eventType === 'robotrader_submission_unknown_blocked'
+      && event.payload.pendingOrderId === context.createdOrders[0]._id
+    )),
+    true
+  );
+});
+
+test('robotrader worker classifies a thrown final lease renewal as not attempted', async () => {
+  const context = createDeps({ approved: true });
+  let renewalCalls = 0;
+  context.deps.renewAlpacaPaperSubmissionLock = async () => {
+    renewalCalls += 1;
+    if (renewalCalls === 2) throw new Error('lock database unavailable');
+    return true;
+  };
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(renewalCalls, 2);
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(context.createdOrders.length, 1);
+  assert.equal(context.createdOrders[0].status, 'canceled');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.NOT_ATTEMPTED);
+  assert.equal(context.createdOrders[0].submissionAttemptCount, 0);
+  assert.equal(context.createdOrders[0].submissionLastAttemptAt, null);
+  assert.equal(context.createdOrders[0].submissionLastError.submissionAttempted, false);
+  assert.equal(
+    context.auditEvents.some(event => (
+      event.eventType === 'robotrader_submission_lock_blocked'
+      && event.payload.reasonCode === 'ALPACA_PAPER_SUBMISSION_COORDINATION_FAILED'
+    )),
+    true
+  );
+});
+
+test('robotrader worker classifies a thrown final unresolved query as not attempted', async () => {
+  const context = createDeps({ approved: true });
+  let unresolvedReads = 0;
+  context.deps.findUnresolvedAlpacaPaperSubmission = async () => {
+    unresolvedReads += 1;
+    if (unresolvedReads === 2) throw new Error('order database unavailable');
+    return null;
+  };
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(unresolvedReads, 2);
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(context.createdOrders.length, 1);
+  assert.equal(context.createdOrders[0].status, 'canceled');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.NOT_ATTEMPTED);
+  assert.equal(context.createdOrders[0].submissionAttemptCount, 0);
+  assert.equal(context.createdOrders[0].submissionLastAttemptAt, null);
+  assert.equal(context.createdOrders[0].submissionLastError.submissionAttempted, false);
+  assert.equal(
+    context.auditEvents.some(event => (
+      event.eventType === 'robotrader_submission_unknown_blocked'
+      && event.payload.reasonCode === 'SUBMISSION_COORDINATION_FAILED'
+    )),
+    true
+  );
+});
+
+test('robotrader worker treats a missing returned client identity as unknown', async () => {
+  const context = createDeps({ approved: true });
+  context.deps.createAlpacaBroker = () => ({
+    getAccount: async () => ({ buying_power: '10000', equity: '10000', last_equity: '10000', status: 'ACTIVE' }),
+    getClock: async () => ({ is_open: true }),
+    getPositions: async () => [],
+    listOrders: async () => [],
+    submitOrder: async input => {
+      context.brokerSubmissions.push(input);
+      return {
+        payload: { client_order_id: 'must-not-replace-persisted-id' },
+        order: {
+          id: 'alpaca-order-without-returned-client-id',
+          status: 'accepted'
+        }
+      };
+    }
+  });
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
+  assert.equal(context.createdOrders[0].externalOrderId, undefined);
+  assert.equal(context.createdOrders[0].status, 'pending_submit');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.UNKNOWN);
+  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_unknown');
+});
+
+test('robotrader worker treats a mismatched returned client identity as unknown', async () => {
+  const context = createDeps({ approved: true });
+  context.deps.createAlpacaBroker = () => ({
+    getAccount: async () => ({ buying_power: '10000', equity: '10000', last_equity: '10000', status: 'ACTIVE' }),
+    getClock: async () => ({ is_open: true }),
+    getPositions: async () => [],
+    listOrders: async () => [],
+    submitOrder: async input => {
+      context.brokerSubmissions.push(input);
+      return {
+        payload: { client_order_id: input.clientOrderId },
+        order: {
+          id: 'alpaca-order-wrong-client',
+          client_order_id: 'different-client-id',
+          status: 'accepted'
+        }
+      };
+    }
+  });
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
+  assert.equal(context.createdOrders[0].externalOrderId, undefined);
+  assert.equal(context.createdOrders[0].status, 'pending_submit');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.UNKNOWN);
+  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_unknown');
+});
+
+test('robotrader worker treats a malformed returned broker identity as unknown', async () => {
+  const context = createDeps({ approved: true });
+  context.deps.createAlpacaBroker = () => ({
+    getAccount: async () => ({ buying_power: '10000', equity: '10000', last_equity: '10000', status: 'ACTIVE' }),
+    getClock: async () => ({ is_open: true }),
+    getPositions: async () => [],
+    listOrders: async () => [],
+    submitOrder: async input => {
+      context.brokerSubmissions.push(input);
+      return {
+        payload: { client_order_id: input.clientOrderId },
+        order: {
+          id: { proxy: 'bad' },
+          client_order_id: input.clientOrderId,
+          status: 'accepted'
+        }
+      };
+    }
+  });
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
+  assert.equal(context.createdOrders[0].externalOrderId, undefined);
+  assert.equal(context.createdOrders[0].status, 'pending_submit');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.UNKNOWN);
+  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_unknown');
+});
+
+test('robotrader worker treats incomplete filled acknowledgement as unknown without a protective follow-on', async () => {
+  const context = createDeps({ approved: true });
+  let protectiveSubmissions = 0;
+  context.deps.submitProtectiveStopForEntry = async () => {
+    protectiveSubmissions += 1;
+  };
+  context.deps.createAlpacaBroker = () => ({
+    getAccount: async () => ({ buying_power: '10000', equity: '10000', last_equity: '10000', status: 'ACTIVE' }),
+    getClock: async () => ({ is_open: true }),
+    getPositions: async () => [],
+    listOrders: async () => [],
+    submitOrder: async input => {
+      context.brokerSubmissions.push(input);
+      return {
+        payload: { client_order_id: input.clientOrderId },
+        order: {
+          id: 'alpaca-incomplete-filled',
+          client_order_id: input.clientOrderId,
+          status: 'filled'
+        }
+      };
+    }
+  });
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(protectiveSubmissions, 0);
+  assert.equal(context.createdOrders[0].externalOrderId, undefined);
+  assert.equal(context.createdOrders[0].status, 'pending_submit');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.UNKNOWN);
+  assert.equal(context.createdOrders[0].filledQty, undefined);
+  assert.equal(context.createdOrders[0].filledAvgPrice, undefined);
+  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_unknown');
+});
+
+test('robotrader worker treats an inconclusive acknowledgement as submit unknown', async () => {
+  const context = createDeps({ approved: true });
+  context.deps.createAlpacaBroker = () => ({
+    getAccount: async () => ({ buying_power: '10000', equity: '10000', last_equity: '10000', status: 'ACTIVE' }),
+    getClock: async () => ({ is_open: true }),
+    getPositions: async () => [],
+    listOrders: async () => [],
+    submitOrder: async input => {
+      context.brokerSubmissions.push(input);
+      return {
+        payload: {
+          symbol: input.symbol,
+          client_order_id: input.clientOrderId,
+          qty: String(input.qty)
+        },
+        order: {
+          id: 'ack-with-invalid-status',
+          client_order_id: input.clientOrderId,
+          status: 'not-a-real-alpaca-status'
+        }
+      };
+    }
+  });
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(context.createdOrders[0].status, 'pending_submit');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.UNKNOWN);
+  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_unknown');
+  assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
+  assert.deepEqual(context.createdOrders[0].rawPayload, {
+    symbol: 'AAPL',
+    client_order_id: 'daytrader-robotrader-AAPL-fixed',
+    qty: '1'
+  });
+  assert.equal(context.createdOrders[0].rejectedAt, null);
+});
+
+test('robotrader worker resets attempt evidence when the real adapter proves no request began', async () => {
+  const context = createDeps({ approved: true });
+  let httpCalls = 0;
+  const preflightBroker = createRealAlpacaBroker({
+    mode: 'paper',
+    env: {
+      APCA_PAPER_BASE_URL: 'https://paper-api.alpaca.markets'
+    },
+    httpClient: async () => {
+      httpCalls += 1;
+      return { data: {} };
+    }
+  });
+  context.deps.createAlpacaBroker = () => ({
+    getAccount: async () => ({
+      buying_power: '10000',
+      equity: '10000',
+      last_equity: '10000',
+      status: 'ACTIVE'
+    }),
+    getClock: async () => ({ is_open: true }),
+    getPositions: async () => [],
+    listOrders: async () => [],
+    submitOrder: preflightBroker.submitOrder
+  });
+
+  await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    runOnce: true
+  }, context.deps);
+
+  assert.equal(httpCalls, 0);
+  assert.equal(context.createdOrders.length, 1);
+  assert.equal(context.createdOrders[0].status, 'canceled');
+  assert.equal(context.createdOrders[0].submissionState, SUBMISSION_STATES.NOT_ATTEMPTED);
+  assert.equal(context.createdOrders[0].submissionAttemptCount, 0);
+  assert.equal(context.createdOrders[0].submissionLastAttemptAt, null);
+  assert.equal(context.createdOrders[0].submittedAt, null);
+  assert.equal(context.createdOrders[0].filledAt, null);
+  assert.equal(context.createdOrders[0].rejectedAt, null);
+  assert.ok(context.createdOrders[0].canceledAt);
+});
+
+test('robotrader worker makes zero broker calls when durable attempt evidence cannot be saved', async () => {
+  const context = createDeps({ approved: true });
+  let pendingOrder = null;
+  context.deps.RoboTradeOrder.create = async payload => {
+    pendingOrder = {
+      _id: 'order-attempt-save-failure',
+      ...payload,
+      save: async () => {
+        throw new Error('durable attempt marker unavailable');
+      }
+    };
+    context.createdOrders.push(pendingOrder);
+    return pendingOrder;
+  };
+
+  await assert.rejects(
+    () => runRoboTraderForUser({
+      userId: 'user-worker',
+      modeOverride: 'paper',
+      runOnce: true
+    }, context.deps),
+    /durable attempt marker unavailable/
+  );
+
+  assert.equal(context.brokerSubmissions.length, 0);
+  assert.equal(pendingOrder.submissionState, SUBMISSION_STATES.PENDING);
+  assert.equal(pendingOrder.submissionAttemptCount, 1);
+});
+
+test('robotrader worker does not reclassify a post-acknowledgement save fault as a broker rejection', async () => {
+  const context = createDeps({ approved: true });
+  let pendingOrder = null;
+  let saveCount = 0;
+  context.deps.RoboTradeOrder.create = async payload => {
+    pendingOrder = {
+      _id: 'order-post-ack-save-failure',
+      ...payload,
+      save: async function save() {
+        saveCount += 1;
+        if (saveCount === 2) throw new Error('post-acknowledgement save failed');
+        return this;
+      }
+    };
+    context.createdOrders.push(pendingOrder);
+    return pendingOrder;
+  };
+
+  await assert.rejects(
+    () => runRoboTraderForUser({
+      userId: 'user-worker',
+      modeOverride: 'paper',
+      runOnce: true
+    }, context.deps),
+    /post-acknowledgement save failed/
+  );
+
+  assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(pendingOrder.status, 'accepted');
+  assert.equal(pendingOrder.submissionState, SUBMISSION_STATES.SUBMITTED);
+  assert.equal(pendingOrder.rejectedAt, null);
+  assert.equal(pendingOrder.reconciliationStatus, 'matched');
 });
 
 test('robotrader paper preview evaluates without saving or submitting orders', async () => {
@@ -391,6 +1097,169 @@ test('robotrader paper preview evaluates without saving or submitting orders', a
   assert.equal(context.createdOrders.length, 0);
   assert.equal(context.brokerSubmissions.length, 0);
   assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_preview_run'), true);
+});
+
+function configureFrozenPaperMvp(context) {
+  const parameterVersionId = '507f1f77bcf86cd799439011';
+  context.deps.env = {
+    LIVE_TRADING_ENABLED: 'false',
+    PAPER_MVP_PARAMETER_VERSION_ID: parameterVersionId
+  };
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    controlGeneration: 0,
+    mode: 'paper',
+    allowedAssetClasses: ['stocks'],
+    allowedSymbols: ['AAPL'],
+    blockedSymbols: [],
+    maxTradeAmount: 100,
+    maxPositionSize: 250,
+    maxDailyLoss: 50,
+    maxOpenPositions: 1,
+    maxTradesPerDay: 1,
+    allowFractionalShares: true,
+    riskLevel: 'balanced',
+    activeStrategyId: 'ROBO_TREND_FOLLOWING_V1',
+    activeParameterVersionId: parameterVersionId
+  });
+  context.deps.buildResearchBatch = async () => [{
+    symbol: 'AAPL',
+    assetClass: 'stocks',
+    price: 200,
+    quote: {
+      symbol: 'AAPL',
+      price: 200,
+      bidPrice: 199.95,
+      askPrice: 200.05,
+      timestamp: '2026-07-13T14:00:00.000Z',
+      source: 'alpaca',
+      isMock: false
+    },
+    indicators: { avgVolume20: 1000000 },
+    marketContext: {},
+    dataProvenance: { trustedForExecution: true, provider: 'alpaca', symbol: 'AAPL' }
+  }];
+  context.deps.evaluateResearchBatch = () => [{
+    symbol: 'AAPL',
+    assetClass: 'stocks',
+    action: 'buy',
+    confidenceScore: 80,
+    rewardRiskRatio: 2,
+    strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    parameterVersionId,
+    strategyName: 'Trend following',
+    reasoningSummary: 'Frozen test decision.',
+    recommendedOrder: {
+      symbol: 'AAPL',
+      assetClass: 'stocks',
+      side: 'buy',
+      orderType: 'market',
+      orderClass: 'simple',
+      timeInForce: 'day',
+      qty: 0.5,
+      estimatedNotional: 100
+    }
+  }];
+  context.deps.fetchQuotes = async () => [{
+    symbol: 'AAPL',
+    price: 200,
+    bidPrice: 199.95,
+    askPrice: 200.05,
+    timestamp: '2026-07-13T14:00:00.000Z',
+    source: 'alpaca',
+    isMock: false
+  }];
+  context.deps.getCurrentTime = () => new Date('2026-07-13T14:00:00.000Z');
+  return parameterVersionId;
+}
+
+test('paper MVP preview durably freezes one exact AAPL intent without broker POST', async () => {
+  const context = createDeps({ approved: true });
+  configureFrozenPaperMvp(context);
+  const result = await previewRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    persistIntent: true,
+    idempotencyKey: 'preview-1',
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.decisions[0].symbol, 'AAPL');
+  assert.equal(result.decisions[0].intentId, 'intent-1');
+  assert.equal(context.createdIntents.length, 1);
+  assert.equal(context.createdIntents[0].orderFingerprint, result.decisions[0].orderFingerprint);
+  assert.equal(context.createdIntents[0].marketDataProvenance.trustedForExecution, true);
+  assert.equal(context.brokerSubmissions.length, 0);
+});
+
+test('paper MVP explicitly submits the frozen intent once and safely replays the same idempotency key', async () => {
+  const context = createDeps({ approved: true });
+  configureFrozenPaperMvp(context);
+  const preview = await previewRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    persistIntent: true,
+    idempotencyKey: 'preview-2',
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+  const intentId = preview.decisions[0].intentId;
+
+  const first = await submitPaperIntentForUser({
+    userId: 'user-worker',
+    intentId,
+    idempotencyKey: 'submit-2',
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+  const replay = await submitPaperIntentForUser({
+    userId: 'user-worker',
+    intentId,
+    idempotencyKey: 'submit-2',
+    now: new Date('2026-07-13T14:00:01.000Z')
+  }, context.deps);
+
+  assert.equal(first.submitted, true);
+  assert.equal(replay.idempotentReplay, true);
+  assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
+});
+
+test('paper MVP idempotent replay reports an unresolved order without another broker POST', async () => {
+  const context = createDeps({ approved: true });
+  configureFrozenPaperMvp(context);
+  const preview = await previewRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'paper',
+    persistIntent: true,
+    idempotencyKey: 'preview-unknown-replay',
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+  const intentId = preview.decisions[0].intentId;
+
+  await submitPaperIntentForUser({
+    userId: 'user-worker',
+    intentId,
+    idempotencyKey: 'submit-unknown-replay',
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+  context.createdOrders[0].status = 'pending_submit';
+  context.createdOrders[0].submissionState = SUBMISSION_STATES.UNKNOWN;
+  context.createdIntents[0].status = 'submission_uncertain';
+
+  const replay = await submitPaperIntentForUser({
+    userId: 'user-worker',
+    intentId,
+    idempotencyKey: 'submit-unknown-replay',
+    now: new Date('2026-07-13T14:00:01.000Z')
+  }, context.deps);
+
+  assert.equal(replay.ok, false);
+  assert.equal(replay.submitted, false);
+  assert.equal(replay.idempotentReplay, true);
+  assert.equal(replay.reason, 'SUBMISSION_UNCERTAIN');
+  assert.equal(context.brokerSubmissions.length, 1);
 });
 
 test('robotrader worker saves rejected decisions without submitting orders', async () => {
@@ -588,6 +1457,124 @@ test('robotrader worker scopes recent orders to the active live environment', as
   assert.equal(context.brokerSubmissions.length, 0);
   assert.equal(context.createdDecisions[0].status, 'pending_manual_approval');
   assert.equal(context.createdIntents[0].status, 'awaiting_authorization');
+});
+
+test('live worker fails closed before broker access for a non-operator', async () => {
+  const context = createDeps({ approved: true });
+  let brokerCreated = false;
+  context.deps.hasBrokerOperatorAccess = async () => false;
+  context.deps.createAlpacaBroker = () => {
+    brokerCreated = true;
+    throw new Error('broker should not be created');
+  };
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    mode: 'live',
+    liveTradingExplicitlyEnabled: true,
+    allowedAssetClasses: ['stocks'],
+    allowedSymbols: ['AAPL']
+  });
+
+  const result = await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'live',
+    runOnce: true,
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'BROKER_OPERATOR_REQUIRED');
+  assert.equal(brokerCreated, false);
+  assert.equal(
+    context.auditEvents.some(event => event.eventType === 'robotrader_live_blocked'),
+    true
+  );
+});
+
+test('live worker fails closed before broker access when the deployment gate is disabled', async () => {
+  const context = createDeps({ approved: true });
+  let brokerCreated = false;
+  context.deps.env = {};
+  context.deps.createAlpacaBroker = () => {
+    brokerCreated = true;
+    throw new Error('broker should not be created');
+  };
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    mode: 'live',
+    liveTradingExplicitlyEnabled: true,
+    allowedAssetClasses: ['stocks'],
+    allowedSymbols: ['AAPL']
+  });
+
+  const result = await runRoboTraderForUser({
+    userId: 'user-worker',
+    modeOverride: 'live',
+    runOnce: true,
+    now: new Date('2026-07-13T14:00:00.000Z')
+  }, context.deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'LIVE_DEPLOYMENT_FLAG_DISABLED');
+  assert.equal(brokerCreated, false);
+});
+
+test('authorized live intent fails closed before loading the broker for a non-operator', async () => {
+  const context = createDeps({ approved: true });
+  let brokerCreated = false;
+  context.deps.hasBrokerOperatorAccess = async () => false;
+  context.deps.createAlpacaBroker = () => {
+    brokerCreated = true;
+    throw new Error('broker should not be created');
+  };
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    mode: 'live',
+    liveTradingExplicitlyEnabled: true
+  });
+
+  const result = await submitAuthorizedIntentForUser({
+    userId: 'user-worker',
+    intentId: 'intent-non-operator',
+    now: new Date('2026-07-13T14:01:00.000Z')
+  }, context.deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'BROKER_OPERATOR_REQUIRED');
+  assert.equal(brokerCreated, false);
+});
+
+test('authorized live intent fails closed before loading the broker when live credentials are absent', async () => {
+  const context = createDeps({ approved: true });
+  let brokerCreated = false;
+  context.deps.env = { LIVE_TRADING_ENABLED: 'true' };
+  context.deps.createAlpacaBroker = () => {
+    brokerCreated = true;
+    throw new Error('broker should not be created');
+  };
+  context.deps.getOrCreateRoboTraderSettings = async userId => ({
+    userId,
+    isEnabled: true,
+    enabled: true,
+    mode: 'live',
+    liveTradingExplicitlyEnabled: true
+  });
+
+  const result = await submitAuthorizedIntentForUser({
+    userId: 'user-worker',
+    intentId: 'intent-no-live-credentials',
+    now: new Date('2026-07-13T14:01:00.000Z')
+  }, context.deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'LIVE_CREDENTIALS_NOT_CONFIGURED');
+  assert.equal(brokerCreated, false);
 });
 
 test('live submission fails closed when the controlled-live boundary rejects it', async () => {
@@ -1058,130 +2045,4 @@ test('robotrader worker converts stock orders to valid extended-hours limit orde
   assert.equal(order.takeProfit, null);
   assert.equal(order.riskStopPrice, 190);
   assert.equal(order.requiresRegularSessionForProtection, true);
-});
-
-function configureFrozenPaperMvp(context) {
-  const parameterVersionId = '507f1f77bcf86cd799439011';
-  context.deps.env = {
-    LIVE_TRADING_ENABLED: 'false',
-    PAPER_MVP_PARAMETER_VERSION_ID: parameterVersionId
-  };
-  context.deps.getOrCreateRoboTraderSettings = async userId => ({
-    userId,
-    isEnabled: true,
-    enabled: true,
-    controlGeneration: 0,
-    mode: 'paper',
-    allowedAssetClasses: ['stocks'],
-    allowedSymbols: ['AAPL'],
-    blockedSymbols: [],
-    maxTradeAmount: 100,
-    maxPositionSize: 250,
-    maxDailyLoss: 50,
-    maxOpenPositions: 1,
-    maxTradesPerDay: 1,
-    allowFractionalShares: true,
-    riskLevel: 'balanced',
-    activeStrategyId: 'ROBO_TREND_FOLLOWING_V1',
-    activeParameterVersionId: parameterVersionId
-  });
-  context.deps.buildResearchBatch = async () => [{
-    symbol: 'AAPL',
-    assetClass: 'stocks',
-    price: 200,
-    quote: {
-      symbol: 'AAPL',
-      price: 200,
-      bidPrice: 199.95,
-      askPrice: 200.05,
-      timestamp: '2026-07-13T14:00:00.000Z',
-      source: 'alpaca',
-      isMock: false
-    },
-    indicators: { avgVolume20: 1000000 },
-    marketContext: {},
-    dataProvenance: { trustedForExecution: true, provider: 'alpaca', symbol: 'AAPL' }
-  }];
-  context.deps.evaluateResearchBatch = () => [{
-    symbol: 'AAPL',
-    assetClass: 'stocks',
-    action: 'buy',
-    confidenceScore: 80,
-    rewardRiskRatio: 2,
-    strategyId: 'ROBO_TREND_FOLLOWING_V1',
-    parameterVersionId,
-    strategyName: 'Trend following',
-    reasoningSummary: 'Frozen test decision.',
-    recommendedOrder: {
-      symbol: 'AAPL',
-      assetClass: 'stocks',
-      side: 'buy',
-      orderType: 'market',
-      orderClass: 'simple',
-      timeInForce: 'day',
-      qty: 0.5,
-      estimatedNotional: 100
-    }
-  }];
-  context.deps.fetchQuotes = async () => [{
-    symbol: 'AAPL',
-    price: 200,
-    bidPrice: 199.95,
-    askPrice: 200.05,
-    timestamp: '2026-07-13T14:00:00.000Z',
-    source: 'alpaca',
-    isMock: false
-  }];
-  context.deps.getCurrentTime = () => new Date('2026-07-13T14:00:00.000Z');
-}
-
-test('paper MVP preview durably freezes one exact AAPL intent without broker POST', async () => {
-  const context = createDeps({ approved: true });
-  configureFrozenPaperMvp(context);
-  const result = await previewRoboTraderForUser({
-    userId: 'user-worker',
-    modeOverride: 'paper',
-    persistIntent: true,
-    idempotencyKey: 'preview-1',
-    now: new Date('2026-07-13T14:00:00.000Z')
-  }, context.deps);
-
-  assert.equal(result.ok, true);
-  assert.equal(result.decisions[0].symbol, 'AAPL');
-  assert.equal(result.decisions[0].intentId, 'intent-1');
-  assert.equal(context.createdIntents.length, 1);
-  assert.equal(context.createdIntents[0].orderFingerprint, result.decisions[0].orderFingerprint);
-  assert.equal(context.createdIntents[0].marketDataProvenance.trustedForExecution, true);
-  assert.equal(context.brokerSubmissions.length, 0);
-});
-
-test('paper MVP explicitly submits the frozen intent once and replays its idempotency key', async () => {
-  const context = createDeps({ approved: true });
-  configureFrozenPaperMvp(context);
-  const preview = await previewRoboTraderForUser({
-    userId: 'user-worker',
-    modeOverride: 'paper',
-    persistIntent: true,
-    idempotencyKey: 'preview-2',
-    now: new Date('2026-07-13T14:00:00.000Z')
-  }, context.deps);
-  const intentId = preview.decisions[0].intentId;
-
-  const first = await submitPaperIntentForUser({
-    userId: 'user-worker',
-    intentId,
-    idempotencyKey: 'submit-2',
-    now: new Date('2026-07-13T14:00:00.000Z')
-  }, context.deps);
-  const replay = await submitPaperIntentForUser({
-    userId: 'user-worker',
-    intentId,
-    idempotencyKey: 'submit-2',
-    now: new Date('2026-07-13T14:00:01.000Z')
-  }, context.deps);
-
-  assert.equal(first.submitted, true);
-  assert.equal(replay.idempotentReplay, true);
-  assert.equal(context.brokerSubmissions.length, 1);
-  assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
 });

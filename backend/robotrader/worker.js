@@ -1,6 +1,7 @@
 const RoboSettings = require('../models/RoboSettings');
 const RoboTradeDecision = require('../models/RoboTradeDecision');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
+const PaperOrder = require('../models/PaperOrder');
 const RoboAuditLog = require('../models/RoboAuditLog');
 const RoboLock = require('../models/RoboLock');
 const OrderIntent = require('../models/OrderIntent');
@@ -14,6 +15,17 @@ const { getAccountIdForUser } = require('../utils/accountScope');
 const { isCryptoSymbol } = require('../services/marketData');
 const { fetchQuotes } = require('../services/marketData');
 const { buildClientOrderId } = require('../services/alpacaTradingClient');
+const {
+  SUBMISSION_STATES,
+  SUBMIT_UNKNOWN,
+  buildSubmissionErrorSnapshot,
+  classifySubmissionError,
+  createSubmitUnknownError,
+  getBrokerErrorMessage,
+  getSubmitErrorStatus,
+  hasConclusiveBrokerOrder,
+  isAmbiguousSubmitError
+} = require('../services/submissionOutcomeService');
 const {
   getOrCreateRoboTraderSettings,
   mapSettings,
@@ -41,12 +53,19 @@ const {
   claimControlledLiveAttempt,
   recordControlledLiveOutcome,
   revalidateControlledLiveAttempt,
+  validateControlledLiveDeployment,
   validateControlledLiveSubmission
 } = require('../services/controlledLiveActivationService');
 const {
   buildPortfolioRiskSnapshot,
   evaluateProjectedPortfolioRisk
 } = require('../services/portfolioRiskService');
+const {
+  acquireAlpacaPaperSubmissionLock,
+  findUnresolvedAlpacaPaperSubmission,
+  releaseAlpacaPaperSubmissionLock,
+  renewAlpacaPaperSubmissionLock
+} = require('../services/alpacaPaperSubmissionGuardService');
 const {
   assertPaperMvpConfiguration,
   buildPaperMvpSettings
@@ -93,6 +112,11 @@ function getRuntimeEnv(deps = {}) {
   return deps.env || process.env;
 }
 
+async function checkLiveDeploymentGate(deps = {}) {
+  const validator = deps.validateControlledLiveDeployment || validateControlledLiveDeployment;
+  return validator({ env: getRuntimeEnv(deps) });
+}
+
 function normalizeControlGeneration(value) {
   const generation = Math.floor(Number(value));
   return Number.isFinite(generation) && generation >= 0 ? generation : 0;
@@ -131,60 +155,6 @@ function buildDecisionIdempotencyKey({ userId, symbol, strategyId, now }) {
     String(strategyId || 'NO_STRATEGY'),
     minuteBucket(now)
   ].join(':');
-}
-
-function getSubmitErrorStatus(err = {}) {
-  const status = Number(err.status ?? err.response?.status ?? err.response?.statusCode);
-  return Number.isFinite(status) ? status : null;
-}
-
-function getBrokerErrorPayload(err = {}) {
-  const data = err.response?.data;
-  if (data && typeof data === 'object') return data;
-  if (typeof data === 'string' && data.trim()) return { message: data.trim() };
-  return null;
-}
-
-function getBrokerErrorMessage(err = {}) {
-  const payload = getBrokerErrorPayload(err);
-  const message = payload?.message
-    || payload?.error
-    || payload?.error_message
-    || payload?.detail
-    || err.message
-    || 'Alpaca order submission failed.';
-  const status = getSubmitErrorStatus(err);
-  return status && !String(message).includes(String(status))
-    ? `Alpaca ${status}: ${message}`
-    : String(message);
-}
-
-function buildBrokerErrorSnapshot(err = {}) {
-  return {
-    status: getSubmitErrorStatus(err),
-    code: err.code || err.response?.data?.code || null,
-    message: getBrokerErrorMessage(err),
-    data: getBrokerErrorPayload(err)
-  };
-}
-
-function isDuplicateClientOrderIdError(err = {}) {
-  const message = String(
-    err.response?.data?.message
-    || err.response?.data?.error
-    || err.message
-    || ''
-  ).toLowerCase();
-  return /client[_\s-]?order[_\s-]?id/.test(message)
-    && /(already|duplicate|exists|in use)/.test(message);
-}
-
-function isAmbiguousSubmitError(err = {}) {
-  if (isDuplicateClientOrderIdError(err)) return true;
-  const status = getSubmitErrorStatus(err);
-  if (status !== null) return status === 408 || status >= 500;
-  const code = String(err.code || '').toUpperCase();
-  return !code || ['ECONNABORTED', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE'].includes(code);
 }
 
 function normalizeCallerIdempotencyKey(value, fieldName = 'Idempotency-Key') {
@@ -504,6 +474,30 @@ function adaptOrderForMarketSession(orderInput = {}, {
     protectionBlockedReason: requiresRegularSessionForProtection
       ? 'Extended-hours automated stock entries are blocked because broker-attached stop-loss/take-profit protection is unavailable outside regular market hours.'
       : null
+  };
+}
+
+function adaptOrderForExistingPosition(orderInput = {}, positions = []) {
+  const symbol = normalizeSymbol(orderInput.symbol);
+  const side = String(orderInput.side || '').toLowerCase();
+  const qty = toFiniteNumber(orderInput.qty, 0);
+  const position = (positions || []).find(item => normalizeSymbol(item.symbol) === symbol);
+  const currentQty = toFiniteNumber(position?.qty, 0);
+  const closesLong = side === 'sell' && currentQty > 0 && qty > 0 && qty <= currentQty;
+  const coversShort = side === 'buy' && currentQty < 0 && qty > 0 && qty <= Math.abs(currentQty);
+  if (!closesLong && !coversShort) return orderInput;
+
+  return {
+    ...orderInput,
+    orderClass: 'simple',
+    takeProfit: null,
+    take_profit: null,
+    stopLoss: null,
+    stop_loss: null,
+    riskStopPrice: null,
+    risk_stop_price: null,
+    riskTakeProfitPrice: null,
+    risk_take_profit_price: null
   };
 }
 
@@ -843,6 +837,47 @@ async function setIntentLifecycle(intentDoc, status, update = {}) {
   if (typeof intentDoc.save === 'function') await intentDoc.save();
 }
 
+async function findUnresolvedSubmission({
+  accountId,
+  environment,
+  excludeOrderId = null,
+  excludeIntentId = null
+}, deps) {
+  if (
+    environment === 'paper'
+    && typeof deps.findUnresolvedAlpacaPaperSubmission === 'function'
+  ) {
+    const match = await deps.findUnresolvedAlpacaPaperSubmission({
+      accountId,
+      excludeRoboOrderId: excludeOrderId,
+      excludeIntentId
+    }, {
+      PaperOrderModel: deps.PaperOrder,
+      RoboTradeOrderModel: deps.RoboTradeOrder,
+      OrderIntentModel: deps.OrderIntent
+    });
+    return match?.order || null;
+  }
+  if (typeof deps.RoboTradeOrder?.findOne !== 'function') return null;
+  const queryFilter = {
+    accountId,
+    environment,
+    ...(excludeOrderId ? { _id: { $ne: excludeOrderId } } : {}),
+    $or: [
+      { submissionState: SUBMISSION_STATES.PENDING },
+      { submissionState: SUBMISSION_STATES.UNKNOWN },
+      { submissionState: { $exists: false }, status: 'pending_submit' },
+      { submissionState: null, status: 'pending_submit' }
+    ]
+  };
+  let query = deps.RoboTradeOrder.findOne(queryFilter);
+  if (typeof query?.select === 'function') {
+    query = query.select('_id clientOrderId submissionState status');
+  }
+  if (typeof query?.lean === 'function') query = query.lean();
+  return query;
+}
+
 async function findCleanupDecisionCandidates(query, batchSize, deps) {
   const result = deps.RoboTradeDecision.find(query)
     .sort({ _id: 1 })
@@ -938,7 +973,7 @@ async function cleanupRoboAuditLogs({
   };
 }
 
-async function submitApprovedOrder({
+async function submitApprovedOrderUnlocked({
   userId,
   accountId,
   environment,
@@ -949,6 +984,7 @@ async function submitApprovedOrder({
   broker,
   now,
   expectedControlGeneration,
+  submissionLockOwner = null,
   deps
 }) {
   let controlledLiveGuard = null;
@@ -963,7 +999,12 @@ async function submitApprovedOrder({
   };
   if (environment === 'live') {
     const guard = typeof deps.validateControlledLiveSubmission === 'function'
-      ? await deps.validateControlledLiveSubmission({ userId, orderInput, now }, deps)
+      ? await deps.validateControlledLiveSubmission({
+          userId,
+          orderInput,
+          now,
+          env: getRuntimeEnv(deps)
+        }, deps)
       : {
           approved: false,
           reasonCode: 'CONTROLLED_LIVE_GUARD_UNAVAILABLE',
@@ -996,6 +1037,19 @@ async function submitApprovedOrder({
     riskResult.submissionBlockReason = reasonCode;
     if (pendingOrder) {
       pendingOrder.status = 'canceled';
+      pendingOrder.submissionState = SUBMISSION_STATES.NOT_ATTEMPTED;
+      pendingOrder.submissionAttemptCount = 0;
+      pendingOrder.submissionLastAttemptAt = null;
+      pendingOrder.submissionLastError = {
+        submissionOutcome: SUBMISSION_STATES.NOT_ATTEMPTED,
+        submissionAttempted: false,
+        submissionPhase: 'coordination',
+        code: reasonCode,
+        message: reason
+      };
+      pendingOrder.submittedAt = null;
+      pendingOrder.filledAt = null;
+      pendingOrder.rejectedAt = null;
       pendingOrder.canceledAt = now;
       pendingOrder.reconciliationStatus = reasonCode.toLowerCase();
       pendingOrder.discrepancy = reason;
@@ -1018,11 +1072,38 @@ async function submitApprovedOrder({
       decisionId: String(decisionDoc._id),
       intentId: intentDoc?._id ? String(intentDoc._id) : null,
       pendingOrderId: pendingOrder?._id ? String(pendingOrder._id) : null,
+      reasonCode,
+      reason,
       expectedControlGeneration: normalizeControlGeneration(expectedControlGeneration),
       environment
     }, deps);
     return null;
   };
+
+  let unresolvedSubmission = null;
+  try {
+    unresolvedSubmission = await findUnresolvedSubmission({
+      accountId,
+      environment,
+      excludeIntentId: intentDoc?._id || null
+    }, deps);
+  } catch (err) {
+    return blockBeforeBrokerSubmission(null, {
+      reason: `The unresolved-submission latch could not be read before broker dispatch: ${err?.message || 'coordination failed'}`,
+      reasonCode: 'ALPACA_PAPER_SUBMISSION_COORDINATION_FAILED',
+      eventType: 'robotrader_submission_unknown_blocked'
+    });
+  }
+  if (unresolvedSubmission) {
+    const unresolvedClientOrderId = unresolvedSubmission.clientOrderId
+      ? ` (${unresolvedSubmission.clientOrderId})`
+      : '';
+    return blockBeforeBrokerSubmission(null, {
+      reason: `Broker submission is frozen until unresolved order identity${unresolvedClientOrderId} is reconciled.`,
+      reasonCode: 'UNRESOLVED_SUBMIT_UNKNOWN',
+      eventType: 'robotrader_submission_unknown_blocked'
+    });
+  }
 
   if (!await controlGenerationMatches(userId, expectedControlGeneration, deps)) {
     return blockBeforeBrokerSubmission(null);
@@ -1064,12 +1145,39 @@ async function submitApprovedOrder({
   if (!await controlGenerationMatches(userId, expectedControlGeneration, deps)) {
     return blockBeforeBrokerSubmission(null);
   }
+  if (environment === 'paper') {
+    let renewed = false;
+    try {
+      renewed = submissionLockOwner
+        && typeof deps.renewAlpacaPaperSubmissionLock === 'function'
+        && await deps.renewAlpacaPaperSubmissionLock(
+          accountId,
+          submissionLockOwner,
+          new Date()
+        );
+    } catch (err) {
+      return blockBeforeBrokerSubmission(null, {
+        reason: `The shared Alpaca-paper submission lease could not be verified before broker dispatch: ${err?.message || 'coordination failed'}`,
+        reasonCode: 'ALPACA_PAPER_SUBMISSION_COORDINATION_FAILED',
+        eventType: 'robotrader_submission_lock_blocked'
+      });
+    }
+    if (!renewed) {
+      return blockBeforeBrokerSubmission(null, {
+        reason: 'The shared Alpaca-paper submission lease was lost before the durable order identity was created.',
+        reasonCode: 'ALPACA_PAPER_SUBMISSION_LEASE_LOST',
+        eventType: 'robotrader_submission_lock_blocked'
+      });
+    }
+  }
   const clientOrderId = orderInput.clientOrderId || orderInput.client_order_id || deps.buildClientOrderId({
     origin: 'robotrader',
     symbol: orderInput.symbol,
     now
   });
-  const pendingOrder = await deps.RoboTradeOrder.create({
+  let pendingOrder = null;
+  try {
+    pendingOrder = await deps.RoboTradeOrder.create({
     userId,
     accountId,
     decisionId: decisionDoc._id,
@@ -1093,15 +1201,28 @@ async function submitApprovedOrder({
     riskTakeProfitPrice: orderInput.riskTakeProfitPrice,
     clientOrderId,
     status: 'pending_submit',
+    submissionState: SUBMISSION_STATES.PENDING,
+    submissionAttemptCount: 0,
+    submissionLastAttemptAt: null,
+    submissionLastError: null,
     reasoningSummary: decisionDoc.reasoningSummary,
     strategyId: decisionDoc.strategyId,
+    parameterVersionId: decisionDoc.parameterVersionId || null,
     riskChecks: riskResult.checks || [],
     executionQuality: intentDoc?.executionQuality || null,
+    marketDataProvenance: intentDoc?.marketDataProvenance || null,
     exposureSnapshotId: intentDoc?.exposureSnapshotId || null,
     liveActivationId: controlledLiveGuard?.activationId || null,
     policyVersion: riskResult.policyVersion || null,
-    orderFingerprint: riskResult.orderFingerprint || null
-  });
+      orderFingerprint: riskResult.orderFingerprint || null
+    });
+  } catch (err) {
+    return blockBeforeBrokerSubmission(null, {
+      reason: `The durable order identity could not be created before broker dispatch: ${err?.message || 'persistence failed'}`,
+      reasonCode: 'ALPACA_PAPER_ATTEMPT_PERSIST_FAILED',
+      eventType: 'robotrader_order_not_submitted'
+    });
+  }
 
   await setIntentLifecycle(intentDoc, 'submitting', {
     roboTradeOrderId: pendingOrder._id
@@ -1147,124 +1268,329 @@ async function submitApprovedOrder({
     }
   }
 
+  if (environment === 'paper') {
+    let renewed = false;
+    try {
+      renewed = submissionLockOwner
+        && typeof deps.renewAlpacaPaperSubmissionLock === 'function'
+        && await deps.renewAlpacaPaperSubmissionLock(
+          accountId,
+          submissionLockOwner,
+          new Date()
+        );
+    } catch (err) {
+      return blockBeforeBrokerSubmission(pendingOrder, {
+        reason: `The shared Alpaca-paper submission lease could not be verified before broker dispatch: ${err?.message || 'coordination failed'}`,
+        reasonCode: 'ALPACA_PAPER_SUBMISSION_COORDINATION_FAILED',
+        eventType: 'robotrader_submission_lock_blocked'
+      });
+    }
+    if (!renewed) {
+      return blockBeforeBrokerSubmission(pendingOrder, {
+        reason: 'The shared Alpaca-paper submission lease was lost before broker dispatch.',
+        reasonCode: 'ALPACA_PAPER_SUBMISSION_LEASE_LOST',
+        eventType: 'robotrader_submission_lock_blocked'
+      });
+    }
+  }
+
+  pendingOrder.submissionAttemptCount = 1;
+  pendingOrder.submissionLastAttemptAt = now;
+  pendingOrder.submissionLastError = null;
+  await pendingOrder.save();
+
+  let lateUnresolvedSubmission = null;
   try {
-    const result = await broker.submitOrder({
+    lateUnresolvedSubmission = await findUnresolvedSubmission({
+      accountId,
+      environment,
+      excludeOrderId: pendingOrder._id,
+      excludeIntentId: intentDoc?._id || null
+    }, deps);
+  } catch (err) {
+    return blockBeforeBrokerSubmission(pendingOrder, {
+      reason: `The final unresolved-submission latch could not be read before broker dispatch: ${err?.message || 'coordination failed'}`,
+      reasonCode: 'SUBMISSION_COORDINATION_FAILED',
+      eventType: 'robotrader_submission_unknown_blocked'
+    });
+  }
+  if (lateUnresolvedSubmission) {
+    const unresolvedClientOrderId = lateUnresolvedSubmission.clientOrderId
+      ? ` (${lateUnresolvedSubmission.clientOrderId})`
+      : '';
+    return blockBeforeBrokerSubmission(pendingOrder, {
+      reason: `Broker submission was stopped because unresolved order identity${unresolvedClientOrderId} appeared before dispatch.`,
+      reasonCode: 'UNRESOLVED_SUBMIT_UNKNOWN',
+      eventType: 'robotrader_submission_unknown_blocked'
+    });
+  }
+
+  let result = null;
+  let submitError = null;
+  try {
+    result = await broker.submitOrder({
       ...orderInput,
       clientOrderId: pendingOrder.clientOrderId
     });
-    const order = result.order || {};
-    pendingOrder.externalOrderId = order.id || null;
-    pendingOrder.clientOrderId = order.client_order_id || result.payload?.client_order_id || pendingOrder.clientOrderId;
-    pendingOrder.status = order.status || 'submitted';
-    pendingOrder.rawPayload = result.payload || {};
-    pendingOrder.alpacaResponse = order;
-    pendingOrder.submittedAt = order.submitted_at || now;
-    pendingOrder.filledQty = toFiniteNumber(order.filled_qty, null);
-    pendingOrder.filledAvgPrice = toFiniteNumber(order.filled_avg_price, null);
-    pendingOrder.filledAt = order.filled_at || null;
-    await pendingOrder.save();
-    if (controlledLiveGuard?.activationId) {
-      const brokerStatus = String(pendingOrder.status || '').toLowerCase();
-      const canaryOutcomeStatus = brokerStatus === 'filled'
-        ? 'filled'
-        : (brokerStatus === 'rejected'
-            ? 'rejected'
-            : (['canceled', 'cancelled', 'expired'].includes(brokerStatus) ? 'reconciled' : 'broker_pending'));
-      await recordOutcome({
-        activationId: controlledLiveGuard.activationId,
-        liveOrderId: pendingOrder._id,
-        status: canaryOutcomeStatus,
-        details: { brokerOrderId: pendingOrder.externalOrderId, brokerStatus: pendingOrder.status },
-        now
-      });
-    }
-    const lifecycle = mapBrokerOrderLifecycle(pendingOrder.status);
-    await setIntentLifecycle(intentDoc, lifecycle.intentStatus, {
-      roboTradeOrderId: pendingOrder._id
-    });
-    if (String(pendingOrder.status || '').toLowerCase() === 'filled' && typeof deps.submitProtectiveStopForEntry === 'function') {
-      try {
-        const positions = typeof broker.getPositions === 'function'
-          ? await broker.getPositions()
-          : [];
-        await deps.submitProtectiveStopForEntry(pendingOrder, { broker, positions, now }, deps);
-      } catch (err) {
-        if (controlledLiveGuard?.activationId) {
-          await recordOutcome({
-            activationId: controlledLiveGuard.activationId,
-            liveOrderId: pendingOrder._id,
-            status: 'protection_failed',
-            details: { reason: err?.message || 'Could not create protective stop.' },
-            now
-          });
-        }
-        await writeAudit(userId, 'robotrader_protective_stop_error', {
-          decisionId: String(decisionDoc._id),
-          parentOrderId: String(pendingOrder._id),
+    const acknowledgement = result?.order || {};
+    if (!hasConclusiveBrokerOrder(
+      acknowledgement,
+      pendingOrder.clientOrderId,
+      pendingOrder.qty,
+      pendingOrder.notional
+    )) {
+      throw createSubmitUnknownError(
+        'Alpaca returned an inconclusive order acknowledgement.',
+        {
           clientOrderId: pendingOrder.clientOrderId,
-          symbol: pendingOrder.symbol,
-          reason: err?.message || 'Could not create protective stop after immediate fill.',
-          environment
-        }, deps);
-      }
+          payload: result?.payload || {},
+          brokerOrder: acknowledgement
+        }
+      );
     }
-
-    decisionDoc.status = lifecycle.decisionStatus;
-    decisionDoc.alpacaResponse = order;
-    await decisionDoc.save();
-
-    await writeAudit(userId, 'robotrader_order_submitted', {
-      decisionId: String(decisionDoc._id),
-      orderId: pendingOrder.externalOrderId,
-      clientOrderId: pendingOrder.clientOrderId,
-      symbol: pendingOrder.symbol,
-      status: pendingOrder.status,
-      environment
-    }, deps);
-    return pendingOrder;
   } catch (err) {
-    const ambiguousSubmit = deps.isAmbiguousSubmitError(err);
-    const brokerError = buildBrokerErrorSnapshot(err);
+    if (!err.clientOrderId) err.clientOrderId = pendingOrder.clientOrderId;
+    submitError = err;
+  }
+
+  if (submitError) {
+    const classifiedState = classifySubmissionError(submitError);
+    const submissionState = [
+      SUBMISSION_STATES.REJECTED,
+      SUBMISSION_STATES.NOT_ATTEMPTED
+    ].includes(classifiedState)
+      ? classifiedState
+      : SUBMIT_UNKNOWN;
+    const brokerError = buildSubmissionErrorSnapshot(submitError);
     const brokerErrorMessage = brokerError.message || 'Alpaca order submission failed.';
-    pendingOrder.status = ambiguousSubmit ? 'pending_submit' : 'rejected';
+    const ambiguousSubmit = submissionState === SUBMIT_UNKNOWN;
+    const rejectedSubmit = submissionState === SUBMISSION_STATES.REJECTED;
+    const notAttempted = submissionState === SUBMISSION_STATES.NOT_ATTEMPTED;
+    pendingOrder.submissionState = submissionState;
+    pendingOrder.status = ambiguousSubmit
+      ? 'pending_submit'
+      : (rejectedSubmit ? 'rejected' : 'canceled');
     pendingOrder.reconciliationStatus = ambiguousSubmit
-      ? 'submit_error_pending_reconciliation'
-      : 'submit_rejected';
-    if (!ambiguousSubmit) pendingOrder.rejectedAt = now;
+      ? 'submit_unknown'
+      : (rejectedSubmit ? 'submit_rejected' : 'submit_not_attempted');
+    if (notAttempted) {
+      pendingOrder.submissionAttemptCount = 0;
+      pendingOrder.submissionLastAttemptAt = null;
+      pendingOrder.submittedAt = null;
+      pendingOrder.filledAt = null;
+    }
+    pendingOrder.rejectedAt = rejectedSubmit ? now : null;
+    pendingOrder.canceledAt = notAttempted ? now : null;
     pendingOrder.discrepancy = brokerErrorMessage;
-    pendingOrder.rawPayload = err.alpacaPayload || {};
-    pendingOrder.alpacaResponse = brokerError;
+    pendingOrder.rawPayload = submitError.alpacaPayload || {};
+    pendingOrder.alpacaResponse = {
+      ...brokerError,
+      brokerOrder: submitError.brokerOrder || null
+    };
+    pendingOrder.submissionLastError = brokerError;
+    pendingOrder.brokerRequestId = submitError.brokerRequestId || brokerError.brokerRequestId || null;
     await pendingOrder.save();
     if (controlledLiveGuard?.activationId) {
       await recordOutcome({
         activationId: controlledLiveGuard.activationId,
         liveOrderId: pendingOrder._id,
-        status: ambiguousSubmit ? 'submission_uncertain' : 'rejected',
+        status: ambiguousSubmit
+          ? 'submission_uncertain'
+          : (rejectedSubmit ? 'rejected' : 'not_attempted'),
         details: brokerError,
         now
       });
     }
-    await setIntentLifecycle(intentDoc, ambiguousSubmit ? 'submission_uncertain' : 'rejected', {
+    const intentStatus = ambiguousSubmit
+      ? 'submission_uncertain'
+      : (rejectedSubmit ? 'rejected' : 'cancelled');
+    await setIntentLifecycle(intentDoc, intentStatus, {
       roboTradeOrderId: pendingOrder._id,
       rejectionReason: brokerErrorMessage
     });
 
-    decisionDoc.status = ambiguousSubmit ? 'error' : 'rejected';
+    decisionDoc.status = ambiguousSubmit ? 'error' : (rejectedSubmit ? 'rejected' : 'cancelled');
     decisionDoc.error = brokerErrorMessage;
     decisionDoc.alpacaResponse = brokerError;
     await decisionDoc.save();
 
-    await writeAudit(userId, ambiguousSubmit ? 'robotrader_order_submit_uncertain' : 'robotrader_order_rejected', {
+    const eventType = ambiguousSubmit
+      ? 'robotrader_order_submit_uncertain'
+      : (rejectedSubmit ? 'robotrader_order_rejected' : 'robotrader_order_not_submitted');
+    await writeAudit(userId, eventType, {
       decisionId: String(decisionDoc._id),
       clientOrderId: pendingOrder.clientOrderId,
       symbol: pendingOrder.symbol,
       reason: brokerErrorMessage,
       status: brokerError.status,
+      submissionState,
       brokerError,
       ambiguousSubmit,
       environment
     }, deps);
     return pendingOrder;
+  }
+
+  const order = result.order || {};
+  const brokerRejected = String(order.status || '').toLowerCase() === 'rejected';
+  pendingOrder.externalOrderId = order.id || null;
+  pendingOrder.status = order.status || 'submitted';
+  pendingOrder.submissionState = brokerRejected
+    ? SUBMISSION_STATES.REJECTED
+    : SUBMISSION_STATES.SUBMITTED;
+  pendingOrder.submissionLastError = null;
+  pendingOrder.rawPayload = result.payload || {};
+  pendingOrder.alpacaResponse = order;
+  pendingOrder.brokerRequestId = result.brokerRequestId || null;
+  pendingOrder.brokerAccountId = result.paperBinding?.brokerAccountId || null;
+  pendingOrder.submittedAt = order.submitted_at || now;
+  pendingOrder.filledQty = toFiniteNumber(order.filled_qty, null);
+  pendingOrder.filledAvgPrice = toFiniteNumber(order.filled_avg_price, null);
+  pendingOrder.filledAt = order.filled_at || null;
+  pendingOrder.rejectedAt = brokerRejected ? (order.rejected_at || now) : null;
+  pendingOrder.reconciliationStatus = brokerRejected ? 'submit_rejected' : 'matched';
+  pendingOrder.discrepancy = brokerRejected ? 'Broker rejected the order.' : null;
+  await pendingOrder.save();
+  if (controlledLiveGuard?.activationId) {
+    const brokerStatus = String(pendingOrder.status || '').toLowerCase();
+    const canaryOutcomeStatus = brokerStatus === 'filled'
+      ? 'filled'
+      : (brokerStatus === 'rejected'
+          ? 'rejected'
+          : (['canceled', 'cancelled', 'expired'].includes(brokerStatus) ? 'reconciled' : 'broker_pending'));
+    await recordOutcome({
+      activationId: controlledLiveGuard.activationId,
+      liveOrderId: pendingOrder._id,
+      status: canaryOutcomeStatus,
+      details: { brokerOrderId: pendingOrder.externalOrderId, brokerStatus: pendingOrder.status },
+      now
+    });
+  }
+  const lifecycle = mapBrokerOrderLifecycle(pendingOrder.status);
+  await setIntentLifecycle(intentDoc, lifecycle.intentStatus, {
+    roboTradeOrderId: pendingOrder._id
+  });
+  if (String(pendingOrder.status || '').toLowerCase() === 'filled' && typeof deps.submitProtectiveStopForEntry === 'function') {
+    try {
+      const positions = typeof broker.getPositions === 'function'
+        ? await broker.getPositions()
+        : [];
+      await deps.submitProtectiveStopForEntry(pendingOrder, {
+        broker,
+        positions,
+        now,
+        submissionLockOwner
+      }, deps);
+    } catch (err) {
+      if (controlledLiveGuard?.activationId) {
+        await recordOutcome({
+          activationId: controlledLiveGuard.activationId,
+          liveOrderId: pendingOrder._id,
+          status: 'protection_failed',
+          details: { reason: err?.message || 'Could not create protective stop.' },
+          now
+        });
+      }
+      await writeAudit(userId, 'robotrader_protective_stop_error', {
+        decisionId: String(decisionDoc._id),
+        parentOrderId: String(pendingOrder._id),
+        clientOrderId: pendingOrder.clientOrderId,
+        symbol: pendingOrder.symbol,
+        reason: err?.message || 'Could not create protective stop after immediate fill.',
+        environment
+      }, deps);
+    }
+  }
+
+  decisionDoc.status = lifecycle.decisionStatus;
+  decisionDoc.alpacaResponse = order;
+  await decisionDoc.save();
+
+  await writeAudit(userId, brokerRejected
+    ? 'robotrader_order_rejected'
+    : 'robotrader_order_submitted', {
+    decisionId: String(decisionDoc._id),
+    orderId: pendingOrder.externalOrderId,
+    clientOrderId: pendingOrder.clientOrderId,
+    symbol: pendingOrder.symbol,
+    status: pendingOrder.status,
+    submissionState: pendingOrder.submissionState,
+    environment
+  }, deps);
+  return pendingOrder;
+}
+
+async function submitApprovedOrder(args) {
+  const {
+    accountId,
+    decisionDoc,
+    environment,
+    intentDoc,
+    riskResult,
+    userId,
+    deps
+  } = args;
+  if (environment !== 'paper') {
+    return submitApprovedOrderUnlocked(args);
+  }
+
+  const owner = [
+    'robotrader-submit',
+    String(accountId || 'default'),
+    String(decisionDoc?._id || 'decision'),
+    Date.now(),
+    Math.random().toString(36).slice(2)
+  ].join(':');
+
+  const blockPaperSubmissionWithoutAttempt = async ({
+    reason,
+    reasonCode
+  }) => {
+    riskResult.submissionBlockReason = reasonCode;
+    await setIntentLifecycle(intentDoc, 'cancelled', { rejectionReason: reason });
+    decisionDoc.status = 'cancelled';
+    decisionDoc.error = reason;
+    await decisionDoc.save();
+    await writeAudit(userId, 'robotrader_submission_lock_blocked', {
+      decisionId: String(decisionDoc._id),
+      intentId: intentDoc?._id ? String(intentDoc._id) : null,
+      accountId,
+      reasonCode,
+      reason,
+      submissionState: SUBMISSION_STATES.NOT_ATTEMPTED,
+      submissionAttempted: false,
+      environment
+    }, deps);
+    return null;
+  };
+
+  let lock = null;
+  try {
+    lock = typeof deps.acquireAlpacaPaperSubmissionLock === 'function'
+      ? await deps.acquireAlpacaPaperSubmissionLock(accountId, owner, new Date())
+      : null;
+  } catch (err) {
+    return blockPaperSubmissionWithoutAttempt({
+      reason: `The shared Alpaca-paper submission lease could not be acquired: ${err?.message || 'coordination failed'}`,
+      reasonCode: 'ALPACA_PAPER_SUBMISSION_COORDINATION_FAILED'
+    });
+  }
+  if (!lock) {
+    return blockPaperSubmissionWithoutAttempt({
+      reason: 'Another Alpaca-paper submission is already in progress for this account.',
+      reasonCode: 'ALPACA_PAPER_SUBMISSION_LOCKED'
+    });
+  }
+
+  try {
+    return await submitApprovedOrderUnlocked({
+      ...args,
+      submissionLockOwner: owner
+    });
+  } finally {
+    if (typeof deps.releaseAlpacaPaperSubmissionLock === 'function') {
+      await deps.releaseAlpacaPaperSubmissionLock(accountId, owner).catch(() => {});
+    }
   }
 }
 
@@ -1282,6 +1608,25 @@ async function submitAuthorizedIntentForUser({
   }
   if (settings.mode !== 'live' || !settings.liveTradingExplicitlyEnabled) {
     return { ok: false, submitted: false, reason: 'LIVE_TRADING_NOT_ENABLED' };
+  }
+  if (!(await hasBrokerOperatorAccess(userId, deps))) {
+    await writeAudit(userId, 'robotrader_live_blocked', {
+      reason: 'Live broker execution requires a configured broker operator.',
+      intentId: String(intentId),
+      at: now.toISOString()
+    }, deps);
+    return { ok: false, submitted: false, reason: 'BROKER_OPERATOR_REQUIRED' };
+  }
+
+  const deploymentGate = await checkLiveDeploymentGate(deps);
+  if (!deploymentGate.approved) {
+    await writeAudit(userId, 'robotrader_live_blocked', {
+      reason: deploymentGate.message,
+      reasonCode: deploymentGate.reasonCode,
+      intentId: String(intentId),
+      at: now.toISOString()
+    }, deps);
+    return { ok: false, submitted: false, reason: deploymentGate.reasonCode };
   }
 
   const lockOwner = `authorized-intent-${String(intentId)}-${now.getTime()}`;
@@ -1334,7 +1679,7 @@ async function submitAuthorizedIntentForUser({
       policyVersion: intentDoc.policyVersion,
       now
     });
-    const broker = deps.createAlpacaBroker({ mode: 'live' });
+    const broker = deps.createAlpacaBroker({ mode: 'live', env: getRuntimeEnv(deps) });
     const [account, positions, openOrders, marketClock, recentOrders, assetContext, quotes] = await Promise.all([
       broker.getAccount(),
       broker.getPositions(),
@@ -1564,6 +1909,26 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
     }, deps);
     return { ok: false, skipped: true, reason: 'LIVE_TRADING_NOT_ENABLED', runId };
   }
+  if (environment === 'live' && !(await hasBrokerOperatorAccess(userId, deps))) {
+    await writeAudit(userId, 'robotrader_live_blocked', {
+      reason: 'Live broker execution requires a configured broker operator.',
+      runId,
+      at: now.toISOString()
+    }, deps);
+    return { ok: false, skipped: true, reason: 'BROKER_OPERATOR_REQUIRED', runId };
+  }
+  if (environment === 'live') {
+    const deploymentGate = await checkLiveDeploymentGate(deps);
+    if (!deploymentGate.approved) {
+      await writeAudit(userId, 'robotrader_live_blocked', {
+        reason: deploymentGate.message,
+        reasonCode: deploymentGate.reasonCode,
+        runId,
+        at: now.toISOString()
+      }, deps);
+      return { ok: false, skipped: true, reason: deploymentGate.reasonCode, runId };
+    }
+  }
   if (environment === 'shadow' && settings.mode !== 'shadow') {
     return { ok: false, skipped: true, reason: 'SHADOW_MODE_NOT_ENABLED', runId };
   }
@@ -1594,7 +1959,10 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
     ? deps.startWorkerLockHeartbeat(userId, lockOwner, deps)
     : startWorkerLockHeartbeat(userId, lockOwner, deps);
   try {
-  const broker = deps.createAlpacaBroker({ mode: environment === 'live' ? 'live' : 'paper' });
+  const broker = deps.createAlpacaBroker({
+    mode: environment === 'live' ? 'live' : 'paper',
+    env: getRuntimeEnv(deps)
+  });
   let account = {};
   let positions = [];
   let openOrders = [];
@@ -1660,7 +2028,7 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
           estimatedNotional: 0
         };
     const orderInput = {
-      ...adaptOrderForMarketSession(baseOrderInput, {
+      ...adaptOrderForMarketSession(adaptOrderForExistingPosition(baseOrderInput, normalizedPositions), {
         settings,
         marketClock,
         research
@@ -2540,6 +2908,7 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
 
 const defaultDeps = {
   OrderIntent,
+  PaperOrder,
   RoboExposureSnapshot,
   RoboOperationalAlert,
   RoboLivePromotion,
@@ -2549,8 +2918,10 @@ const defaultDeps = {
   RoboAuditLog,
   RoboLock,
   User,
+  acquireAlpacaPaperSubmissionLock,
   acquireWorkerLock,
   adaptOrderForMarketSession,
+  adaptOrderForExistingPosition,
   buildResearchBatch,
   buildClientOrderId,
   createAlpacaBroker,
@@ -2558,6 +2929,7 @@ const defaultDeps = {
   claimControlledLiveAttempt,
   recordControlledLiveOutcome,
   revalidateControlledLiveAttempt,
+  validateControlledLiveDeployment,
   validateControlledLiveSubmission,
   claimTradeAuthorization,
   evaluateResearchBatch,
@@ -2565,6 +2937,7 @@ const defaultDeps = {
   evaluateExecutionQuality,
   evaluateRoboRisk,
   fetchQuotes,
+  findUnresolvedAlpacaPaperSubmission,
   findActiveTradeAuthorization,
   isAmbiguousSubmitError,
   submitProtectiveStopForEntry,
@@ -2572,7 +2945,9 @@ const defaultDeps = {
   getCurrentTime: () => new Date(),
   mapSettings,
   refreshWorkerLock,
+  releaseAlpacaPaperSubmissionLock,
   releaseWorkerLock,
+  renewAlpacaPaperSubmissionLock,
   startWorkerLockHeartbeat,
   updateRoboTraderSettings
 };
@@ -2586,6 +2961,7 @@ module.exports = {
   getSubmitErrorStatus,
   isAmbiguousSubmitError,
   acquireWorkerLock,
+  adaptOrderForExistingPosition,
   adaptOrderForMarketSession,
   emergencyStop,
   refreshWorkerLock,

@@ -1,8 +1,14 @@
 const axios = require('axios');
 const {
   DEFAULT_ALPACA_PAPER_BASE_URL,
+  MAX_ALPACA_CLIENT_ORDER_ID_LENGTH,
   isPaperTradingEndpoint
 } = require('../services/alpacaTradingClient');
+const {
+  SUBMISSION_STATES,
+  createSubmitUnknownError,
+  hasConclusiveBrokerOrder
+} = require('../services/submissionOutcomeService');
 const { buildRoboAlpacaOrderPayload } = require('./alpacaOrderBuilder');
 const {
   assertAlpacaPaperSubmissionBinding,
@@ -10,6 +16,7 @@ const {
 } = require('../services/alpacaPaperBindingService');
 
 const DEFAULT_ALPACA_LIVE_BASE_URL = 'https://api.alpaca.markets';
+const LIVE_ORDER_REPLACEMENT_DISABLED = 'LIVE_ORDER_REPLACEMENT_DISABLED';
 
 function firstValue(...values) {
   return values.find(value => value !== undefined && value !== null && value !== '');
@@ -53,13 +60,26 @@ function getAlpacaConfigForMode(mode = 'paper', env = process.env) {
   };
 }
 
-function assertConfig(config) {
+function isLocalTestEndpoint(baseUrl) {
+  try {
+    const parsed = new URL(baseUrl);
+    return parsed.protocol === 'http:' && ['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function assertConfig(config, { allowLocalPaperTestEndpoint = false } = {}) {
   if (!config.apiKey || !config.apiSecret) {
     const err = new Error(`Alpaca ${config.mode} credentials are not configured.`);
     err.code = 'ALPACA_NOT_CONFIGURED';
     throw err;
   }
-  if (config.mode === 'paper' && !isPaperTradingEndpoint(config.baseUrl)) {
+  if (
+    config.mode === 'paper'
+    && !isPaperTradingEndpoint(config.baseUrl)
+    && !(allowLocalPaperTestEndpoint && isLocalTestEndpoint(config.baseUrl))
+  ) {
     const err = new Error('Paper mode must use the Alpaca paper endpoint.');
     err.code = 'ALPACA_PAPER_ENDPOINT_REQUIRED';
     throw err;
@@ -78,6 +98,13 @@ function buildHeaders(config) {
   };
 }
 
+function extractBrokerRequestId(headers = {}) {
+  return headers['x-request-id']
+    || headers['apca-request-id']
+    || headers['request-id']
+    || null;
+}
+
 function toPositiveOrderString(value, fieldName) {
   if (value === undefined || value === null || value === '') return null;
   const numeric = Number(value);
@@ -87,6 +114,16 @@ function toPositiveOrderString(value, fieldName) {
     throw err;
   }
   return numeric.toString();
+}
+
+function assertOrderReplacementAllowed(mode = 'paper') {
+  if (mode !== 'live') return;
+  const err = new Error(
+    'Live order replacement is disabled until amendments use a new immutable, re-authorized intent.'
+  );
+  err.status = 409;
+  err.code = LIVE_ORDER_REPLACEMENT_DISABLED;
+  throw err;
 }
 
 function sanitizeReplacementPayload(payload = {}) {
@@ -121,8 +158,14 @@ function sanitizeReplacementPayload(payload = {}) {
   }
   if (clientOrderId !== undefined && clientOrderId !== null && clientOrderId !== '') {
     const normalizedClientOrderId = String(clientOrderId).trim();
-    if (!normalizedClientOrderId || normalizedClientOrderId.length > 128) {
-      const err = new Error('client_order_id must be 1 to 128 characters.');
+    if (
+      typeof clientOrderId !== 'string'
+      || normalizedClientOrderId !== clientOrderId
+      || normalizedClientOrderId.length > MAX_ALPACA_CLIENT_ORDER_ID_LENGTH
+    ) {
+      const err = new Error(
+        `client_order_id must be an exact string of 1 to ${MAX_ALPACA_CLIENT_ORDER_ID_LENGTH} characters.`
+      );
       err.status = 400;
       throw err;
     }
@@ -138,18 +181,52 @@ function sanitizeReplacementPayload(payload = {}) {
   return replacement;
 }
 
-function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.env } = {}) {
+function sanitizePositionClosePayload(payload = {}) {
+  const close = {};
+  const qty = toPositiveOrderString(payload.qty, 'qty');
+  const percentage = toPositiveOrderString(payload.percentage, 'percentage');
+  if (qty && percentage) {
+    const err = new Error('Use either qty or percentage when closing a position, not both.');
+    err.status = 400;
+    throw err;
+  }
+  if (percentage && Number(percentage) > 100) {
+    const err = new Error('percentage must be no greater than 100.');
+    err.status = 400;
+    throw err;
+  }
+  if (qty) close.qty = qty;
+  if (percentage) close.percentage = percentage;
+  return close;
+}
+
+function createAlpacaBroker({
+  mode = 'paper',
+  httpClient = axios,
+  env = process.env,
+  allowLocalPaperTestEndpoint = false,
+  requestTimeoutMs = 20000
+} = {}) {
   const config = getAlpacaConfigForMode(mode, env);
+  let lastBrokerRequestId = null;
   const request = async (method, path, data, options = {}) => {
-    assertConfig(config);
-    const response = await httpClient({
-      method,
-      url: `${config.baseUrl}${path}`,
-      data,
-      params: options.params,
-      headers: buildHeaders(config),
-      timeout: options.timeout || 20000
-    });
+    assertConfig(config, { allowLocalPaperTestEndpoint });
+    if (typeof options.onRequestAttempt === 'function') options.onRequestAttempt();
+    let response;
+    try {
+      response = await httpClient({
+        method,
+        url: `${config.baseUrl}${path}`,
+        data,
+        params: options.params,
+        headers: buildHeaders(config),
+        timeout: options.timeout || requestTimeoutMs
+      });
+    } catch (err) {
+      err.brokerRequestId = extractBrokerRequestId(err.response?.headers || {});
+      throw err;
+    }
+    lastBrokerRequestId = extractBrokerRequestId(response?.headers || {});
     return response?.data || {};
   };
 
@@ -168,26 +245,81 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
     }),
     cancelOrder: orderId => request('delete', `/v2/orders/${orderId}`),
     cancelAllOrders: () => request('delete', '/v2/orders'),
-    replaceOrder: (orderId, payload) => request('patch', `/v2/orders/${orderId}`, sanitizeReplacementPayload(payload)),
-    closePosition: (symbol, payload = {}) => request('delete', `/v2/positions/${encodeURIComponent(symbol)}`, payload),
+    replaceOrder: async (orderId, payload) => {
+      assertOrderReplacementAllowed(config.mode);
+      return request('patch', `/v2/orders/${orderId}`, sanitizeReplacementPayload(payload));
+    },
+    closePosition: (symbol, payload = {}) => request(
+      'delete',
+      `/v2/positions/${encodeURIComponent(symbol)}`,
+      null,
+      { params: sanitizePositionClosePayload(payload) }
+    ),
     submitOrder: async input => {
-      const built = buildRoboAlpacaOrderPayload(input);
-      let order = null;
+      let built;
       try {
-        const initialBinding = assertAlpacaPaperSubmissionBinding({ config, env });
+        built = buildRoboAlpacaOrderPayload(input);
+      } catch (err) {
+        err.submissionAttempted = false;
+        err.submissionOutcome = SUBMISSION_STATES.NOT_ATTEMPTED;
+        throw err;
+      }
+      let order = null;
+      let submissionAttempted = false;
+      try {
+        const initialBinding = assertAlpacaPaperSubmissionBinding({
+          config,
+          env,
+          allowLocalPaperTestEndpoint,
+          isLocalTestEndpoint
+        });
+        let binding = initialBinding;
         if (initialBinding.requiresAccountLookup) {
           const account = await request('get', '/v2/account');
-          assertAlpacaPaperSubmissionBinding({ config, env, account });
+          binding = assertAlpacaPaperSubmissionBinding({
+            config,
+            env,
+            account,
+            allowLocalPaperTestEndpoint,
+            isLocalTestEndpoint
+          });
         }
-        order = await request('post', '/v2/orders', built.payload);
+        order = await request('post', '/v2/orders', built.payload, {
+          onRequestAttempt: () => {
+            submissionAttempted = true;
+          }
+        });
       } catch (err) {
         err.alpacaPayload = built.payload;
+        err.clientOrderId = built.payload.client_order_id;
+        err.submissionAttempted = submissionAttempted;
+        if (!submissionAttempted) {
+          err.submissionOutcome = SUBMISSION_STATES.NOT_ATTEMPTED;
+        }
         throw err;
+      }
+      if (!hasConclusiveBrokerOrder(
+        order,
+        built.payload.client_order_id,
+        built.payload.qty,
+        built.payload.notional
+      )) {
+        const unknown = createSubmitUnknownError(
+          'Alpaca returned an inconclusive order acknowledgement.',
+          {
+            clientOrderId: built.payload.client_order_id,
+            payload: built.payload,
+            brokerOrder: order
+          }
+        );
+        unknown.brokerRequestId = lastBrokerRequestId;
+        throw unknown;
       }
       return {
         order,
         payload: built.payload,
         normalized: built.normalized,
+        brokerRequestId: lastBrokerRequestId,
         paperBinding: {
           environment: 'paper',
           endpoint: config.baseUrl,
@@ -200,7 +332,13 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
 
 module.exports = {
   DEFAULT_ALPACA_LIVE_BASE_URL,
+  LIVE_ORDER_REPLACEMENT_DISABLED,
+  assertConfig,
+  assertOrderReplacementAllowed,
   createAlpacaBroker,
+  extractBrokerRequestId,
   getAlpacaConfigForMode,
+  isLocalTestEndpoint,
+  sanitizePositionClosePayload,
   sanitizeReplacementPayload
 };

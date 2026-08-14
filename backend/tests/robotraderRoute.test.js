@@ -37,6 +37,15 @@ function createMockRes() {
   };
 }
 
+function allowBrokerOperator(t, usernames = 'matt') {
+  const previous = process.env.ROBOTRADER_OPERATOR_USERNAMES;
+  process.env.ROBOTRADER_OPERATOR_USERNAMES = usernames;
+  t.after(() => {
+    if (previous === undefined) delete process.env.ROBOTRADER_OPERATOR_USERNAMES;
+    else process.env.ROBOTRADER_OPERATOR_USERNAMES = previous;
+  });
+}
+
 test('Sprint 6 through 9 supervision, dossier, promotion, strategy, and discrepancy endpoints are registered', () => {
   getRouteHandler('/live-activation/heartbeat', 'post');
   getRouteHandler('/live-activation/dossier', 'get');
@@ -91,6 +100,32 @@ test('GET /robotrader/settings returns extended settings payload', async t => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.settings.mode, 'paper');
   assert.ok(res.body.capabilities.stocks);
+});
+
+test('PUT /robotrader/settings rejects live mode for a non-operator', async t => {
+  t.mock.method(User, 'findOne', async () => ({
+    _id: '507f1f77bcf86cd799439099',
+    username: 'non-operator'
+  }));
+  t.mock.method(RoboSettings, 'findOne', async () => ({
+    isEnabled: false,
+    mode: 'paper',
+    liveTradingExplicitlyEnabled: false,
+    allowedAssetClasses: ['stocks']
+  }));
+
+  const handler = getRouteHandler('/settings', 'put');
+  const req = {
+    user: { username: 'non-operator' },
+    body: { mode: 'live', liveTradingExplicitlyEnabled: true }
+  };
+  const res = createMockRes();
+  let nextErr = null;
+  await handler(req, res, err => { nextErr = err; });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 403);
+  assert.match(res.body.message, /broker-operator/i);
 });
 
 test('POST /robotrader/reconcile blocks requested live mode without explicit opt-in', async t => {
@@ -328,6 +363,7 @@ test('GET /robotrader/exposure scopes snapshot history by environment', async t 
 });
 
 test('GET /robotrader/reconciliation-status summarizes local order matching state', async t => {
+  allowBrokerOperator(t);
   t.mock.method(User, 'findOne', async () => ({ _id: '507f1f77bcf86cd799439013' }));
   t.mock.method(RoboSettings, 'findOne', () => ({
     sort: () => ({
@@ -415,6 +451,7 @@ test('GET /robotrader/reconciliation-status summarizes local order matching stat
 });
 
 test('POST /robotrader/reconciliation/archive-history archives terminal historical records only', async t => {
+  allowBrokerOperator(t);
   t.mock.method(User, 'findOne', async () => ({ _id: '507f1f77bcf86cd799439016' }));
   t.mock.method(RoboSettings, 'findOne', () => ({
     sort: () => ({
@@ -456,6 +493,206 @@ test('POST /robotrader/reconciliation/archive-history archives terminal historic
     Array.isArray(item.reconciliationStatus?.$in)
     && item.reconciliationStatus.$in.includes('orphan_alpaca_order')
   )));
+});
+
+test('non-operators cannot read or archive deployment-wide reconciliation orphans', async t => {
+  t.mock.method(User, 'findOne', async () => ({ _id: '507f1f77bcf86cd799439099' }));
+  t.mock.method(RoboSettings, 'findOne', () => ({
+    sort: () => ({ mode: 'paper', liveTradingExplicitlyEnabled: false, allowedAssetClasses: ['stocks'] })
+  }));
+  const findQueries = [];
+  const updateQueries = [];
+  t.mock.method(RoboTradeOrder, 'find', query => {
+    findQueries.push(query);
+    return { sort: () => ({ limit: () => ({ lean: async () => [] }) }) };
+  });
+  t.mock.method(RoboTradeOrder, 'countDocuments', async () => 0);
+  t.mock.method(RoboTradeOrder, 'updateMany', async query => {
+    updateQueries.push(query);
+    return { modifiedCount: 1 };
+  });
+  t.mock.method(RoboAuditLog, 'create', async payload => payload);
+
+  const statusRes = createMockRes();
+  await getRouteHandler('/reconciliation-status', 'get')(
+    { user: { username: 'ordinary-user' }, query: {} },
+    statusRes,
+    err => { throw err; }
+  );
+  assert.equal(statusRes.body.brokerOperator, false);
+  assert.equal(findQueries.length, 1);
+  assert.equal(findQueries[0].userId, '507f1f77bcf86cd799439099');
+
+  const archiveRes = createMockRes();
+  await getRouteHandler('/reconciliation/archive-history', 'post')(
+    { user: { username: 'ordinary-user' }, body: { environment: 'paper' } },
+    archiveRes,
+    err => { throw err; }
+  );
+  assert.equal(archiveRes.body.archivedOrphanOrders, 0);
+  assert.equal(updateQueries.length, 1);
+  assert.equal(updateQueries[0].userId, '507f1f77bcf86cd799439099');
+});
+
+test('deployment broker position close rejects non-operators before any broker call', async t => {
+  t.mock.method(User, 'findOne', async () => ({ _id: '507f1f77bcf86cd799439098' }));
+  const req = {
+    user: { username: 'ordinary-user' },
+    params: { symbol: 'AAPL' },
+    body: { environment: 'paper', confirmation: 'Close this broker position.' }
+  };
+  const res = createMockRes();
+  let nextErr = null;
+  await getRouteHandler('/positions/:symbol/close', 'post')(req, res, err => { nextErr = err; });
+  assert.equal(nextErr?.status, 403);
+  assert.equal(nextErr?.code, 'BROKER_OPERATOR_REQUIRED');
+});
+
+test('live order replacement is fail-closed before external id, operator, settings, payload, or mutation', async t => {
+  const userId = '507f1f77bcf86cd799439097';
+  const previousLiveFlag = process.env.LIVE_TRADING_ENABLED;
+  const previousOperators = process.env.ROBOTRADER_OPERATOR_USERNAMES;
+  let activeOrder = null;
+  let activeSettings = null;
+  let settingsReads = 0;
+  let saveCalls = 0;
+  let auditCalls = 0;
+
+  t.after(() => {
+    if (previousLiveFlag === undefined) delete process.env.LIVE_TRADING_ENABLED;
+    else process.env.LIVE_TRADING_ENABLED = previousLiveFlag;
+    if (previousOperators === undefined) delete process.env.ROBOTRADER_OPERATOR_USERNAMES;
+    else process.env.ROBOTRADER_OPERATOR_USERNAMES = previousOperators;
+  });
+  t.mock.method(User, 'findOne', async () => ({ _id: userId, username: 'matt' }));
+  t.mock.method(RoboTradeOrder, 'findOne', async query => {
+    assert.equal(query.userId, userId);
+    return activeOrder;
+  });
+  t.mock.method(RoboSettings, 'findOne', () => {
+    settingsReads += 1;
+    return { sort: async () => activeSettings };
+  });
+  t.mock.method(RoboAuditLog, 'create', async payload => {
+    auditCalls += 1;
+    return payload;
+  });
+
+  const cases = [
+    {
+      name: 'all legacy gates enabled with widening economics',
+      liveFlag: 'true',
+      operators: 'matt',
+      settings: { mode: 'live', liveTradingExplicitlyEnabled: true },
+      externalOrderId: 'alpaca-live-1',
+      body: {
+        qty: 100000,
+        limitPrice: 9999,
+        stopPrice: 0.01,
+        timeInForce: 'GTC',
+        clientOrderId: 'replacement-client-id'
+      }
+    },
+    {
+      name: 'deployment flag disabled with invalid payload',
+      liveFlag: 'false',
+      operators: 'matt',
+      settings: { mode: 'live', liveTradingExplicitlyEnabled: true },
+      externalOrderId: 'alpaca-live-2',
+      body: { qty: -1, trailPrice: 1, trailPercent: 2 }
+    },
+    {
+      name: 'non-operator and empty payload',
+      liveFlag: 'true',
+      operators: 'ordinary-user',
+      settings: { mode: 'live', liveTradingExplicitlyEnabled: true },
+      externalOrderId: 'alpaca-live-3',
+      body: {}
+    },
+    {
+      name: 'settings disabled and external order id missing',
+      liveFlag: 'true',
+      operators: 'matt',
+      settings: { mode: 'paper', liveTradingExplicitlyEnabled: false },
+      externalOrderId: null,
+      body: { symbol: 'MSFT', side: 'sell' }
+    }
+  ];
+  const handler = getRouteHandler('/orders/:orderId/replace', 'post');
+
+  for (const scenario of cases) {
+    process.env.LIVE_TRADING_ENABLED = scenario.liveFlag;
+    process.env.ROBOTRADER_OPERATOR_USERNAMES = scenario.operators;
+    activeSettings = scenario.settings;
+    activeOrder = {
+      environment: 'live',
+      externalOrderId: scenario.externalOrderId,
+      clientOrderId: 'original-client-id',
+      symbol: 'AAPL',
+      qty: 1,
+      limitPrice: 100,
+      stopPrice: 90,
+      timeInForce: 'day',
+      orderFingerprint: 'original-fingerprint',
+      status: 'accepted',
+      reconciliationStatus: 'matched',
+      lastReconciledAt: new Date('2026-01-02T03:04:05.000Z'),
+      alpacaResponse: { id: scenario.externalOrderId },
+      save: async function save() {
+        saveCalls += 1;
+        return this;
+      }
+    };
+    const originalState = {
+      externalOrderId: activeOrder.externalOrderId,
+      clientOrderId: activeOrder.clientOrderId,
+      qty: activeOrder.qty,
+      limitPrice: activeOrder.limitPrice,
+      stopPrice: activeOrder.stopPrice,
+      timeInForce: activeOrder.timeInForce,
+      orderFingerprint: activeOrder.orderFingerprint,
+      status: activeOrder.status,
+      reconciliationStatus: activeOrder.reconciliationStatus,
+      lastReconciledAt: activeOrder.lastReconciledAt,
+      alpacaResponse: activeOrder.alpacaResponse
+    };
+    const res = createMockRes();
+    let nextErr = null;
+
+    await handler(
+      {
+        user: { username: 'matt' },
+        params: { orderId: `local-${scenario.name}` },
+        body: scenario.body
+      },
+      res,
+      err => { nextErr = err; }
+    );
+
+    assert.equal(nextErr, null, scenario.name);
+    assert.equal(res.statusCode, 409, scenario.name);
+    assert.deepEqual(res.body, {
+      message: 'Live order replacement is disabled until amendments use a new immutable, re-authorized intent.',
+      code: 'LIVE_ORDER_REPLACEMENT_DISABLED'
+    }, scenario.name);
+    assert.deepEqual({
+      externalOrderId: activeOrder.externalOrderId,
+      clientOrderId: activeOrder.clientOrderId,
+      qty: activeOrder.qty,
+      limitPrice: activeOrder.limitPrice,
+      stopPrice: activeOrder.stopPrice,
+      timeInForce: activeOrder.timeInForce,
+      orderFingerprint: activeOrder.orderFingerprint,
+      status: activeOrder.status,
+      reconciliationStatus: activeOrder.reconciliationStatus,
+      lastReconciledAt: activeOrder.lastReconciledAt,
+      alpacaResponse: activeOrder.alpacaResponse
+    }, originalState, scenario.name);
+  }
+
+  assert.equal(settingsReads, 0);
+  assert.equal(saveCalls, 0);
+  assert.equal(auditCalls, 0);
 });
 
 test('GET /robotrader/decisions and orders scope list queries by environment', async t => {
@@ -618,4 +855,7 @@ test('GET /robotrader/performance scopes decisions and orders by environment', a
   assert.equal(decisionsQuery.environment, 'paper');
   assert.equal(ordersQuery.userId, '507f1f77bcf86cd799439015');
   assert.equal(ordersQuery.environment, 'paper');
+  assert.equal(res.body.brokerAccountRestricted, true);
+  assert.equal(res.body.account, null);
+  assert.deepEqual(res.body.positions, []);
 });

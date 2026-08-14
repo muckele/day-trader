@@ -1,4 +1,5 @@
 const {
+  assertAlpacaClientOrderId,
   buildClientOrderId,
   normalizeAlpacaSymbol
 } = require('../services/alpacaTradingClient');
@@ -22,10 +23,12 @@ function mapOrderFields(input, normalized) {
     side: normalized.side,
     type: normalized.orderType,
     time_in_force: normalized.timeInForce,
-    client_order_id: input.clientOrderId || input.client_order_id || buildClientOrderId({
-      origin: 'robotrader',
-      symbol: input.symbol
-    })
+    client_order_id: assertAlpacaClientOrderId(
+      input.clientOrderId || input.client_order_id || buildClientOrderId({
+        origin: 'robotrader',
+        symbol: input.symbol
+      })
+    )
   };
 
   if (normalized.orderClass !== 'simple') payload.order_class = normalized.orderClass;

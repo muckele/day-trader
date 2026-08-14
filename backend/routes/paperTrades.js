@@ -3,6 +3,13 @@ const auth = require('../middleware/auth');
 const requireMongo = require('../middleware/requireMongo');
 const paperBroker = require('../paper/paperBrokerClient');
 const { getRequestAccountId } = require('../utils/accountScope');
+const { SUBMIT_UNKNOWN } = require('../services/submissionOutcomeService');
+
+function getIdempotencyKey(req) {
+  return req.get?.('Idempotency-Key')
+    || req.headers?.['idempotency-key']
+    || null;
+}
 
 router.use(requireMongo);
 router.use(auth);
@@ -34,6 +41,7 @@ router.post('/order', async (req, res) => {
     const resolvedOrigin = origin || (strategyId ? 'trade_plan' : 'manual');
     const result = await paperBroker.placeOrder({
       accountId,
+      idempotencyKey: getIdempotencyKey(req),
       symbol,
       side,
       qty,
@@ -56,17 +64,22 @@ router.post('/order', async (req, res) => {
     });
     res.json(result);
   } catch (err) {
-    const payload = req.body || {};
-    if (!err.paperOrderRecorded) {
-      await paperBroker.recordRejectedOrder({
-        ...payload,
-        accountId,
-        origin: payload.origin || (payload.strategyId ? 'trade_plan' : 'manual'),
-        metadata: payload.metadata || {}
-      }, err.message).catch(() => {});
-    }
-    res.status(err.statusCode || 400).json({
+    const isSubmitUnknown = err.code === SUBMIT_UNKNOWN
+      || err.submissionOutcome === SUBMIT_UNKNOWN;
+    res.status(isSubmitUnknown ? 409 : (err.statusCode || 400)).json({
       error: err.message,
+      code: isSubmitUnknown ? SUBMIT_UNKNOWN : (err.code || undefined),
+      submissionState: isSubmitUnknown ? SUBMIT_UNKNOWN : (err.submissionOutcome || undefined),
+      submissionPhase: err.submissionPhase || undefined,
+      submissionAttempted: typeof err.submissionAttempted === 'boolean'
+        ? err.submissionAttempted
+        : undefined,
+      reconciliationRequired: err.reconciliationRequired === true || undefined,
+      brokerOrderPersisted: typeof err.brokerOrderPersisted === 'boolean'
+        ? err.brokerOrderPersisted
+        : undefined,
+      idempotentReplay: err.idempotentReplay === true || undefined,
+      clientOrderId: err.clientOrderId || err.paperOrder?.clientOrderId || undefined,
       order: err.paperOrder || undefined,
       brokerOrder: err.brokerOrder || undefined
     });
