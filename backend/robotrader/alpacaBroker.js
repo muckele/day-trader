@@ -4,6 +4,10 @@ const {
   isPaperTradingEndpoint
 } = require('../services/alpacaTradingClient');
 const { buildRoboAlpacaOrderPayload } = require('./alpacaOrderBuilder');
+const {
+  assertAlpacaPaperSubmissionBinding,
+  isReleaseEnvironment
+} = require('../services/alpacaPaperBindingService');
 
 const DEFAULT_ALPACA_LIVE_BASE_URL = 'https://api.alpaca.markets';
 
@@ -19,15 +23,16 @@ function getAlpacaConfigForMode(mode = 'paper', env = process.env) {
       baseUrl: String(firstValue(
         env.APCA_LIVE_BASE_URL,
         env.ALPACA_LIVE_BASE_URL,
-        env.ALPACA_BASE_URL,
-        env.APCA_BASE_URL,
         DEFAULT_ALPACA_LIVE_BASE_URL
       )).replace(/\/v2\/?$/, '').replace(/\/$/, ''),
-      apiKey: firstValue(env.APCA_LIVE_API_KEY_ID, env.ALPACA_LIVE_API_KEY, env.ALPACA_API_KEY) || '',
-      apiSecret: firstValue(env.APCA_LIVE_API_SECRET_KEY, env.ALPACA_LIVE_API_SECRET, env.ALPACA_API_SECRET) || ''
+      apiKey: firstValue(env.APCA_LIVE_API_KEY_ID, env.ALPACA_LIVE_API_KEY) || '',
+      apiSecret: firstValue(env.APCA_LIVE_API_SECRET_KEY, env.ALPACA_LIVE_API_SECRET) || ''
     };
   }
 
+  const explicitApiKey = firstValue(env.APCA_PAPER_API_KEY_ID, env.ALPACA_PAPER_API_KEY) || '';
+  const explicitApiSecret = firstValue(env.APCA_PAPER_API_SECRET_KEY, env.ALPACA_PAPER_API_SECRET) || '';
+  const allowGenericLocalCredentials = !isReleaseEnvironment(env);
   return {
     mode: 'paper',
     baseUrl: String(firstValue(
@@ -37,20 +42,14 @@ function getAlpacaConfigForMode(mode = 'paper', env = process.env) {
       env.ALPACA_BASE_URL,
       DEFAULT_ALPACA_PAPER_BASE_URL
     )).replace(/\/v2\/?$/, '').replace(/\/$/, ''),
-    apiKey: firstValue(
-      env.APCA_PAPER_API_KEY_ID,
-      env.ALPACA_PAPER_API_KEY,
-      env.BROKER_API_KEY,
-      env.APCA_API_KEY_ID,
-      env.ALPACA_API_KEY
-    ) || '',
-    apiSecret: firstValue(
-      env.APCA_PAPER_API_SECRET_KEY,
-      env.ALPACA_PAPER_API_SECRET,
-      env.BROKER_API_SECRET,
-      env.APCA_API_SECRET_KEY,
-      env.ALPACA_API_SECRET
-    ) || ''
+    apiKey: explicitApiKey || (allowGenericLocalCredentials
+      ? firstValue(env.BROKER_API_KEY, env.APCA_API_KEY_ID, env.ALPACA_API_KEY) || ''
+      : ''),
+    apiSecret: explicitApiSecret || (allowGenericLocalCredentials
+      ? firstValue(env.BROKER_API_SECRET, env.APCA_API_SECRET_KEY, env.ALPACA_API_SECRET) || ''
+      : ''),
+    credentialSource: explicitApiKey && explicitApiSecret ? 'paper_explicit' : 'generic_local',
+    expectedAccountId: firstValue(env.APCA_PAPER_ACCOUNT_ID, env.ALPACA_PAPER_ACCOUNT_ID) || null
   };
 }
 
@@ -175,6 +174,11 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
       const built = buildRoboAlpacaOrderPayload(input);
       let order = null;
       try {
+        const initialBinding = assertAlpacaPaperSubmissionBinding({ config, env });
+        if (initialBinding.requiresAccountLookup) {
+          const account = await request('get', '/v2/account');
+          assertAlpacaPaperSubmissionBinding({ config, env, account });
+        }
         order = await request('post', '/v2/orders', built.payload);
       } catch (err) {
         err.alpacaPayload = built.payload;
@@ -183,7 +187,12 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
       return {
         order,
         payload: built.payload,
-        normalized: built.normalized
+        normalized: built.normalized,
+        paperBinding: {
+          environment: 'paper',
+          endpoint: config.baseUrl,
+          brokerAccountId: config.expectedAccountId || null
+        }
       };
     }
   };

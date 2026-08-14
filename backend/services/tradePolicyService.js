@@ -2,10 +2,9 @@ const { classifyInstrumentPolicy, getTradingConfig } = require('../config/tradin
 const { getFeatureFlagsSnapshot } = require('./featureFlagService');
 const { getRiskLimitsSnapshot } = require('./riskConfigService');
 const { getStrategyDefinition } = require('./strategyRegistry');
+const { isPaperTradingEndpoint } = require('./alpacaPaperBindingService');
 
-function looksLikePaperEndpoint(baseUrl) {
-  return String(baseUrl || '').toLowerCase().includes('paper-api.alpaca.markets');
-}
+const looksLikePaperEndpoint = isPaperTradingEndpoint;
 
 function toFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);

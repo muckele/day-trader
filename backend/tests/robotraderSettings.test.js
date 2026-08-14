@@ -137,6 +137,24 @@ test('robotrader settings normalizes symbols and asset classes', () => {
   assert.deepEqual(update.blockedSymbols, ['GME', 'TSLA']);
 });
 
+test('robotrader settings validates versioned strategy bindings', () => {
+  const update = sanitizeSettingsUpdate({
+    activeStrategyId: 'robo_trend_following_v1',
+    activeParameterVersionId: '507f1f77bcf86cd799439011'
+  });
+
+  assert.equal(update.activeStrategyId, 'ROBO_TREND_FOLLOWING_V1');
+  assert.equal(update.activeParameterVersionId, '507f1f77bcf86cd799439011');
+  assert.throws(
+    () => sanitizeSettingsUpdate({ activeStrategyId: 'SMA_CROSS' }),
+    /versioned canonical RoboTrader strategy/
+  );
+  assert.throws(
+    () => sanitizeSettingsUpdate({ activeParameterVersionId: 'not-an-object-id' }),
+    /valid strategy parameter-version id/
+  );
+});
+
 test('robotrader settings sanitizes boolean string values', () => {
   const update = sanitizeSettingsUpdate({
     allowShortSelling: 'false',

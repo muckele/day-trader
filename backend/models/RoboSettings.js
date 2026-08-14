@@ -52,6 +52,8 @@ const roboSettingsSchema = new mongoose.Schema(
     },
     allowedSymbols: { type: [String], default: [] },
     blockedSymbols: { type: [String], default: [] },
+    activeStrategyId: { type: String, default: null, index: true },
+    activeParameterVersionId: { type: mongoose.Schema.Types.ObjectId, ref: 'StrategyParameterVersion', default: null, index: true },
     maxTradeAmount: { type: Number, default: 1000 },
     maxPositionSize: { type: Number, default: 5000 },
     maxDailyLoss: { type: Number, default: 500 },

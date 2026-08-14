@@ -1,4 +1,7 @@
 const RoboSettings = require('../models/RoboSettings');
+const StrategyParameterVersion = require('../models/StrategyParameterVersion');
+const User = require('../models/User');
+const { getAccountIdForUser } = require('../utils/accountScope');
 const {
   APPROVAL_MODES,
   normalizeApprovalPolicy
@@ -16,6 +19,8 @@ const DEFAULT_ROBOTRADER_SETTINGS = Object.freeze({
   allowedAssetClasses: ['stocks'],
   allowedSymbols: [],
   blockedSymbols: [],
+  activeStrategyId: null,
+  activeParameterVersionId: null,
   maxTradeAmount: 1000,
   maxPositionSize: 5000,
   maxDailyLoss: 500,
@@ -92,6 +97,16 @@ function normalizeRiskLevel(value) {
   return 'balanced';
 }
 
+function normalizeStrategyId(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+  return /^ROBO_[A-Z0-9_]+_V[0-9]+$/.test(normalized) ? normalized : null;
+}
+
+function normalizeParameterVersionId(value) {
+  const normalized = String(value || '').trim();
+  return /^[a-f0-9]{24}$/i.test(normalized) ? normalized : null;
+}
+
 function normalizeMode(value) {
   const normalized = String(value || '').trim().toLowerCase();
   if (normalized === 'live') return 'live';
@@ -165,6 +180,8 @@ function mapSettings(settingsDoc) {
     allowedAssetClasses: normalizeAssetClasses(doc.allowedAssetClasses),
     allowedSymbols: normalizeSymbolList(doc.allowedSymbols),
     blockedSymbols: normalizeSymbolList(doc.blockedSymbols),
+    activeStrategyId: normalizeStrategyId(doc.activeStrategyId),
+    activeParameterVersionId: normalizeParameterVersionId(doc.activeParameterVersionId),
     maxTradeAmount: toNonNegativeNumber(doc.maxTradeAmount, DEFAULT_ROBOTRADER_SETTINGS.maxTradeAmount),
     maxPositionSize: toNonNegativeNumber(doc.maxPositionSize, DEFAULT_ROBOTRADER_SETTINGS.maxPositionSize),
     maxDailyLoss: toNonNegativeNumber(doc.maxDailyLoss, DEFAULT_ROBOTRADER_SETTINGS.maxDailyLoss),
@@ -248,6 +265,22 @@ function sanitizeSettingsUpdate(input = {}, current = {}) {
   if (input.allowedAssetClasses !== undefined) update.allowedAssetClasses = normalizeAssetClasses(input.allowedAssetClasses);
   if (input.allowedSymbols !== undefined) update.allowedSymbols = normalizeSymbolList(input.allowedSymbols);
   if (input.blockedSymbols !== undefined) update.blockedSymbols = normalizeSymbolList(input.blockedSymbols);
+  if (input.activeStrategyId !== undefined) {
+    update.activeStrategyId = normalizeStrategyId(input.activeStrategyId);
+    if (String(input.activeStrategyId || '').trim() && !update.activeStrategyId) {
+      const err = new Error('activeStrategyId must identify a versioned canonical RoboTrader strategy.');
+      err.status = 400;
+      throw err;
+    }
+  }
+  if (input.activeParameterVersionId !== undefined) {
+    update.activeParameterVersionId = normalizeParameterVersionId(input.activeParameterVersionId);
+    if (String(input.activeParameterVersionId || '').trim() && !update.activeParameterVersionId) {
+      const err = new Error('activeParameterVersionId must be a valid strategy parameter-version id.');
+      err.status = 400;
+      throw err;
+    }
+  }
   if (input.maxTradeAmount !== undefined) update.maxTradeAmount = toNonNegativeNumber(input.maxTradeAmount);
   if (input.maxPositionSize !== undefined) update.maxPositionSize = toNonNegativeNumber(input.maxPositionSize);
   if (input.maxDailyLoss !== undefined) update.maxDailyLoss = toNonNegativeNumber(input.maxDailyLoss);
@@ -335,6 +368,35 @@ async function getOrCreateRoboTraderSettings(userId) {
 async function updateRoboTraderSettings(userId, input = {}) {
   const settings = await getOrCreateRoboTraderSettings(userId);
   const sanitized = sanitizeSettingsUpdate(input, settings);
+  const activeStrategyId = sanitized.activeStrategyId !== undefined
+    ? sanitized.activeStrategyId
+    : normalizeStrategyId(settings.activeStrategyId);
+  const activeParameterVersionId = sanitized.activeParameterVersionId !== undefined
+    ? sanitized.activeParameterVersionId
+    : normalizeParameterVersionId(settings.activeParameterVersionId);
+  if (Boolean(activeStrategyId) !== Boolean(activeParameterVersionId)) {
+    const err = new Error('activeStrategyId and activeParameterVersionId must be configured or cleared together.');
+    err.status = 400;
+    throw err;
+  }
+  if (activeStrategyId && activeParameterVersionId) {
+    const userQuery = User.findById(userId);
+    const user = typeof userQuery?.lean === 'function' ? await userQuery.lean() : await userQuery;
+    const accountId = user ? getAccountIdForUser(user) : null;
+    const versionQuery = StrategyParameterVersion.findOne({
+      _id: activeParameterVersionId,
+      strategyId: activeStrategyId,
+      accountId
+    });
+    const version = typeof versionQuery?.lean === 'function'
+      ? await versionQuery.lean()
+      : await versionQuery;
+    if (!version) {
+      const err = new Error('The selected parameter version does not belong to the selected strategy.');
+      err.status = 400;
+      throw err;
+    }
+  }
   return RoboSettings.findOneAndUpdate(
     { userId },
     {
@@ -359,6 +421,8 @@ module.exports = {
   normalizeAssetClass,
   normalizeAssetClasses,
   normalizeMode,
+  normalizeParameterVersionId,
+  normalizeStrategyId,
   normalizeSymbol,
   normalizeSymbolList,
   sanitizeSettingsUpdate,
