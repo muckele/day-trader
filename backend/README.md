@@ -4,7 +4,7 @@
 
 ```bash
 cp .env.example .env
-npm install
+npm ci
 npm start
 ```
 
@@ -26,7 +26,13 @@ MONGO_PREFER_LOCAL=true
 
 ```bash
 npm test
+npm run test:integration:mongo
+npm run test:integration:fake-broker
 ```
+
+The real-Mongo command starts and removes an isolated temporary replica set. The
+fake-broker command binds a synthetic Alpaca-compatible server to loopback only. No
+command contacts an external broker.
 
 ## Mongo / Atlas Connectivity Check
 
@@ -53,6 +59,13 @@ npm run smoke:api
 npm run smoke:api -- --base-url https://<backend>.fly.dev
 ```
 
+For a self-contained local acceptance run, start a temporary Mongo/backend, invoke
+the exact smoke command, and clean up both processes with:
+
+```bash
+npm run smoke:isolated
+```
+
 For local dev, you can also force-kill stale `:4000` listeners, restart backend, and verify Robo run-once routes in one step:
 
 ```bash
@@ -67,13 +80,11 @@ npm run verify:local
 
 The smoke script validates these checks:
 
-- `/health` (includes `services.mongo`)
-- `/api/market/intraday/AAPL`
-- `/api/market/historical/AAPL`
-- `/api/company/AAPL`
-- `/api/analyze/AAPL`
-- `/api/recommendations/AAPL`
-- `POST /api/robo/run-once` returns `401` (route exists and auth is enforced)
+- `/health` liveness plus sanitized service/version/source-commit/build metadata
+- `/ready` returns 200 only when MongoDB/indexes, scheduler, and scheduled reconciliation are current (or intentionally disabled for an isolated staging deployment)
+- AAPL quote provider/timestamp/symbol/environment/simulated provenance
+- authentication enforcement for settings, frozen preview, exact-intent submit,
+  reconciliation, and Emergency Stop
 
 ## Robo Trader
 
@@ -124,14 +135,21 @@ API endpoints:
 - `POST /api/robotrader/intents/:intentId/authorize`
 - `POST /api/robotrader/intents/:intentId/submit`
 - `POST /api/robotrader/intents/:intentId/revoke`
+- `POST /api/robotrader/paper-intents/:intentId/submit` (Paper MVP exact frozen
+  intent; requires the single operator and `Idempotency-Key`)
 - `GET /api/robotrader/exposure?environment=paper|shadow|live`
 - `GET /api/robotrader/orders`
 - `POST /api/robotrader/orders/:orderId/cancel`
-- `POST /api/robotrader/orders/:orderId/replace`
+- `POST /api/robotrader/orders/:orderId/replace` (paper/non-live order maintenance
+  only; live requests return HTTP `409` with
+  `LIVE_ORDER_REPLACEMENT_DISABLED` pending an immutable re-authorization lifecycle)
 - `POST /api/robotrader/positions/:symbol/close`
 - `GET /api/robotrader/performance`
 - `GET /api/robotrader/audit`
-- `POST /api/robotrader/run-once-paper`
+- `POST /api/robotrader/preview-paper` (Paper MVP preview persists an immutable AAPL
+  intent when supplied an `Idempotency-Key`)
+- `POST /api/robotrader/run-once-paper` (disabled with HTTP `409`
+  `FROZEN_PAPER_INTENT_REQUIRED`; use preview then exact-intent submit)
 - `POST /api/robotrader/run-once-shadow`
 - `POST /api/robotrader/reconcile`
 
@@ -144,7 +162,8 @@ Execution quality endpoint:
 Core:
 
 - `MONGO_LOCAL_URI` (default local dev URI: `mongodb://127.0.0.1:27017/daytrader`)
-- `MONGO_PREFER_LOCAL` (default `true` outside production; set `false` to try Atlas first)
+- `MONGO_PREFER_LOCAL` (default `true` outside production; changes ordering only when remote development is explicitly allowed)
+- `MONGO_ALLOW_REMOTE_DEV` (default `false`; remote Mongo targets are ignored outside production unless this is explicitly `true`)
 - `MONGO_URI`
 - `MONGO_URI_DIRECT` (optional fallback non-SRV URI if your network blocks SRV DNS lookups)
 - `MONGO_DNS_SERVERS` (optional comma-separated DNS servers for SRV lookups, e.g. `8.8.8.8,1.1.1.1`)
@@ -152,13 +171,17 @@ Core:
 - `MONGO_RETRY_MS` (optional, default `10000`; retry delay when Mongo is unavailable)
 - `MONGO_SERVER_SELECTION_TIMEOUT_MS` (optional, default `5000`; Mongo connect timeout per attempt)
 - `JWT_SECRET`
-- `APCA_API_KEY_ID`
-- `APCA_API_SECRET_KEY`
-- `APCA_BASE_URL` (use `https://paper-api.alpaca.markets` for paper trading)
+- `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`, `APCA_BASE_URL` (local-development
+  aliases only; staging/production paper submission never falls back to these)
 - `APCA_DATA_URL`
 - `APCA_DATA_FEED` (recommended: `iex`)
 - `APP_PAPER_TRADES_SYNC_TO_ALPACA` (`true` to submit app paper trades to Alpaca paper before recording the local paper ledger)
 - `PAPER_TRADING_ENABLED` (default `true`)
+- When Alpaca paper synchronization is enabled, both paper-order POST routes require
+  an opaque `Idempotency-Key` header. The key is persisted with a canonical request
+  fingerprint; retrying the same request returns the original attempt, while reusing
+  the key for different economic order fields returns HTTP `409`
+  `IDEMPOTENCY_CONFLICT`.
 - `LIVE_TRADING_ENABLED` (default `false`)
 - `SHORT_SELLING_ENABLED` (default `false`)
 - `MARGIN_TRADING_ENABLED` (default `false`)
@@ -179,7 +202,7 @@ Robo Trader:
 - `ROBO_LEGACY_SCHEDULER_ENABLED` (`true` to explicitly allow the legacy Robo signal loop; default is disabled)
 - `ROBO_LEGACY_SCHEDULER_DISABLED` (`true` to force-disable the legacy Robo signal loop)
 - `ROBO_ALLOW_DUAL_AUTOMATION` (`true` to intentionally run both legacy Robo and the Phase 1 RoboTrader worker; default is never both)
-- `ROBO_EXECUTION_BACKEND` (`paper` default; set `alpaca` to send Robo orders to Alpaca `/v2/orders`)
+- `ROBO_EXECUTION_BACKEND` (`paper` default; legacy `alpaca` execution now fails closed with `LEGACY_ALPACA_EXECUTION_DISABLED`, and Alpaca submissions must use a controlled broker worker)
 - `ROBO_SIGNAL_SYMBOL` (placeholder scheduler symbol, default `AAPL`)
 - `ROBO_SIGNAL_UNIVERSE` (comma-separated symbols for multi-symbol Robo selection, e.g. `AAPL,MSFT,SPY,TLT,AGG`)
 - `ROBO_SIGNAL_QTY` (default `1`)
@@ -190,7 +213,8 @@ Robo Trader:
 - `ROBO_SIGNAL_RECENT_WINDOW_LIMIT` (default `20`; max recent executions inspected for rotation)
 - `ROBO_TARGET_NOTIONAL` (optional; if set, auto-derives quantity from notional/price)
 - `ROBO_FALLBACK_EMAIL` (optional fallback recipient)
-- `ROBO_SIGNAL_RETENTION_DAYS` (default `90`; cleanup age for idempotency records)
+- `ROBO_CLEANUP_ENABLED` (`true` to enable destructive retention cleanup; disabled by default and never runs on the startup tick)
+- `ROBO_SIGNAL_RETENTION_DAYS` (default `90`; cleanup age for idempotency records when cleanup is enabled)
 - `ROBO_SIGNAL_CLEANUP_INTERVAL_MS` (default `21600000` = 6 hours)
 - `ROBOTRADER_DECISION_RETENTION_DAYS` (default `3`; cleanup age for old RoboTrader decisions that are not linked to submitted/filled orders)
 - `ROBOTRADER_DECISION_CLEANUP_BATCH_SIZE` (default `1000`; max stale decisions evaluated per cleanup page)
@@ -219,8 +243,23 @@ Mongo storage maintenance:
 - `ROBOTRADER_LIVE_RECONCILIATION_DISABLED` (`true` to force scheduled live reconciliation off; paper reconciliation is still controlled by `ROBOTRADER_RECONCILIATION_DISABLED`)
 - `ROBOTRADER_SYMBOL_UNIVERSE` (optional comma-separated symbols for the Phase 1 worker)
 - `ROBOTRADER_MAX_SYMBOLS_PER_RUN` (default `5`)
-- `APCA_PAPER_BASE_URL`, `APCA_PAPER_API_KEY_ID`, `APCA_PAPER_API_SECRET_KEY` (optional paper-specific Alpaca credentials; falls back to existing `APCA_*`)
+- `APCA_PAPER_BASE_URL`, `APCA_PAPER_API_KEY_ID`,
+  `APCA_PAPER_API_SECRET_KEY`, `APCA_PAPER_ACCOUNT_ID` (required explicit binding
+  for every staging/production paper submission; the endpoint must be paper, the
+  live flag must be false, and `/v2/account` must match the expected account before
+  POST)
+- `PAPER_MVP_PARAMETER_VERSION_ID` (optional locally; when set, the active AAPL
+  `ROBO_TREND_FOLLOWING_V1` parameter version must match exactly)
+- `PRIVATE_REGISTRATION_ENABLED` (production default `false`; when deliberately
+  `true`, registration also requires `PRIVATE_REGISTRATION_TOKEN` and exactly one
+  configured operator username)
+- `RELEASE_COMMIT`, `BUILD_ID` (sanitized artifact provenance surfaced by `/health`
+  and `/ready`; set these from the exact committed source during deployment)
 - `APCA_LIVE_BASE_URL`, `APCA_LIVE_API_KEY_ID`, `APCA_LIVE_API_SECRET_KEY` (explicit live credentials; scheduled live reconciliation will not run without them, and live mode remains disabled unless user settings explicitly opt in)
+- `ROBOTRADER_OPERATOR_USERNAMES`, `ROBOTRADER_OPERATOR_USER_IDS` (comma-separated allowlists for deployment-wide Alpaca account reads, unattributed reconciliation records, and broker position closes; empty means no user has operator access)
+- `ROBOTRADER_SCHEDULER_STALE_MS` (default `180000`; `/ready` fails after the scheduler exceeds this age)
+- `ROBOTRADER_RECONCILIATION_STALE_MS` (default `720000`; `/ready` fails after successful reconciliation exceeds this age)
+- `RUNTIME_READINESS_STARTUP_GRACE_MS` (default `20000`; bounded readiness grace while the first scheduler/reconciliation tick starts)
 
 Paper trading + risk:
 
