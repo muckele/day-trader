@@ -11,7 +11,7 @@ export default function AppLayout({ children }) {
         <TopBar />
         <div className="max-w-7xl mx-auto px-4 py-6 flex gap-6">
           <SideNav />
-          <main className="flex-1 pb-24 lg:pb-8">{children}</main>
+          <main className="min-w-0 flex-1 pb-24 lg:pb-8">{children}</main>
         </div>
         <footer className="text-xs text-[#8ba09f] text-center py-6 pb-24 lg:pb-6 tracking-wide">
           Educational purposes only. Not financial advice.

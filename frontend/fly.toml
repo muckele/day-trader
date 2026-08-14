@@ -5,6 +5,7 @@ primary_region = "ord"
   dockerfile = "Dockerfile"
   [build.args]
     VITE_API_URL = "https://day-trader-backend.fly.dev"
+    VITE_REGISTRATION_ENABLED = "false"
 
 [env]
   NODE_ENV = "production"
@@ -16,3 +17,10 @@ primary_region = "ord"
   auto_start_machines = true
   min_machines_running = 0
   processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/"

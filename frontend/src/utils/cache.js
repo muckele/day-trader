@@ -13,3 +13,7 @@ export function getCache(key) {
 export function setCache(key, value, ttlMs) {
   cache.set(key, { value, expiresAt: Date.now() + ttlMs });
 }
+
+export function clearCache() {
+  cache.clear();
+}

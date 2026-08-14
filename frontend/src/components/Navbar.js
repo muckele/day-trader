@@ -1,18 +1,20 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { emitToast } from '../utils/toast';
 
 export default function Navbar() {
+  const registrationEnabled = import.meta.env.DEV || import.meta.env.VITE_REGISTRATION_ENABLED === 'true';
   const navigate = useNavigate();
   const { isAuthenticated, signOut } = useAuth();
 
   const handleSignOut = async () => {
     try {
       await signOut();
+      navigate('/login');
     } catch (err) {
       console.error('Logout log failed:', err);
-    } finally {
-      navigate('/login');
+      emitToast({ type: 'error', message: 'Sign out failed. Your session is still active; please retry.' });
     }
   };
 
@@ -41,7 +43,7 @@ export default function Navbar() {
           ) : (
             <>
               <Link to="/login" className="hover:text-gray-900">Log In</Link>
-              <Link to="/register" className="hover:text-gray-900">Sign Up</Link>
+              {registrationEnabled && <Link to="/register" className="hover:text-gray-900">Sign Up</Link>}
             </>
           )}
         </div>

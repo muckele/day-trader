@@ -7,6 +7,7 @@ import Skeleton from '../components/ui/Skeleton';
 import { getCache, setCache } from '../utils/cache';
 import { getApiError } from '../utils/api';
 import { emitToast } from '../utils/toast';
+import { useAuth } from '../context/AuthContext';
 
 function formatTime(value) {
   if (!value) return '--';
@@ -23,6 +24,7 @@ function orderTimestamp(order) {
 }
 
 export default function Activity() {
+  const { user } = useAuth();
   const [orders, setOrders] = useState([]);
   const [trades, setTrades] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -38,8 +40,9 @@ export default function Activity() {
       setLoading(true);
       setError('');
       try {
-        const cachedOrders = getCache('paper-orders');
-        const cachedTrades = getCache('paper-trades');
+        const cacheScope = user?.id || 'unknown';
+        const cachedOrders = getCache(`paper-orders:${cacheScope}`);
+        const cachedTrades = getCache(`paper-trades:${cacheScope}`);
         if (cachedOrders) setOrders(cachedOrders);
         if (cachedTrades) setTrades(cachedTrades);
 
@@ -49,8 +52,8 @@ export default function Activity() {
         ]);
         setOrders(ordersRes.data || []);
         setTrades(tradesRes.data || []);
-        setCache('paper-orders', ordersRes.data || [], 8 * 1000);
-        setCache('paper-trades', tradesRes.data || [], 8 * 1000);
+        setCache(`paper-orders:${cacheScope}`, ordersRes.data || [], 8 * 1000);
+        setCache(`paper-trades:${cacheScope}`, tradesRes.data || [], 8 * 1000);
       } catch (err) {
         const message = getApiError(err);
         setError(message);
@@ -65,7 +68,7 @@ export default function Activity() {
     };
 
     fetchData();
-  }, [reloadKey]);
+  }, [reloadKey, user?.id]);
 
   const handleRetry = () => {
     setReloadKey(prev => prev + 1);

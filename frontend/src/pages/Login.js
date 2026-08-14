@@ -8,6 +8,7 @@ import { getApiError } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
+  const registrationEnabled = import.meta.env.DEV || import.meta.env.VITE_REGISTRATION_ENABLED === 'true';
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -52,12 +53,14 @@ export default function Login() {
           />
           <Button type="submit">Log In</Button>
         </form>
-        <p className="mt-4 text-center text-sm text-slate-500">
-          Don&apos;t have an account?{' '}
-          <Link to="/register" className="text-slate-900 dark:text-white underline">
-            Sign up
-          </Link>
-        </p>
+        {registrationEnabled ? (
+          <p className="mt-4 text-center text-sm text-slate-500">
+            Don&apos;t have an account?{' '}
+            <Link to="/register" className="text-slate-900 dark:text-white underline">Sign up</Link>
+          </p>
+        ) : (
+          <p className="mt-4 text-center text-sm text-slate-500">Private operator access only.</p>
+        )}
       </Card>
     </div>
   );

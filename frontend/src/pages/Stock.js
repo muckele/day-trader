@@ -17,6 +17,7 @@ import { getCache, setCache } from '../utils/cache';
 import { getApiError } from '../utils/api';
 import { emitToast } from '../utils/toast';
 import { useMarketStatus } from '../hooks/useMarketStatus';
+import { useAuth } from '../context/AuthContext';
 
 function looksCryptoSymbol(value) {
   const symbol = String(value || '').toUpperCase();
@@ -31,6 +32,7 @@ function formatOrderPrice(value) {
 
 export default function Stock() {
   const { symbol } = useParams();
+  const { user } = useAuth();
   const [intraday,   setIntraday]  = useState([]);
   const [historical, setHistorical]= useState([]);
   const [company,    setCompany]   = useState(null);
@@ -74,6 +76,8 @@ export default function Stock() {
   }, [symbol]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
     const fetchWithCache = async (key, ttl, fetcher) => {
       const cached = getCache(key);
       if (cached) return cached;
@@ -97,17 +101,17 @@ export default function Stock() {
           fetchWithCache(
             `intraday:${symbol}`,
             60 * 1000,
-            () => axios.get(`/api/market/intraday/${symbol}`).then(res => res.data)
+            () => axios.get(`/api/market/intraday/${symbol}`, { signal: controller.signal }).then(res => res.data)
           ),
           fetchWithCache(
             `historical:${symbol}`,
             5 * 60 * 1000,
-            () => axios.get(`/api/market/historical/${symbol}`).then(res => res.data)
+            () => axios.get(`/api/market/historical/${symbol}`, { signal: controller.signal }).then(res => res.data)
           ),
           fetchWithCache(
             `company:${symbol}`,
             5 * 60 * 1000,
-            () => axios.get(`/api/company/${symbol}`).then(res => res.data)
+            () => axios.get(`/api/company/${symbol}`, { signal: controller.signal }).then(res => res.data)
           ).catch(() => ({
             company: {
               symbol: symbol.toUpperCase(),
@@ -126,19 +130,21 @@ export default function Stock() {
           fetchWithCache(
             `recommendation:${symbol}`,
             60 * 1000,
-            () => axios.get(`/api/recommendations/${symbol}`).then(res => res.data)
+            () => axios.get(`/api/recommendations/${symbol}`, { signal: controller.signal }).then(res => res.data)
           ),
           fetchWithCache(
-            'paper-settings',
+            `paper-settings:${user?.id || 'unknown'}`,
             10 * 1000,
-            () => axios.get('/api/paper-trades/settings').then(res => res.data)
+            () => axios.get('/api/paper-trades/settings', { signal: controller.signal }).then(res => res.data)
           ),
           fetchWithCache(
-            'paper-account',
+            `paper-account:${user?.id || 'unknown'}`,
             5 * 1000,
-            () => axios.get('/api/paper-trades/account').then(res => res.data)
+            () => axios.get('/api/paper-trades/account', { signal: controller.signal }).then(res => res.data)
           )
         ]);
+
+        if (cancelled) return;
 
         setIntraday(intradayData);
         setHistorical(historicalData);
@@ -150,6 +156,7 @@ export default function Stock() {
         setAccount(accountData);
         setError('');
       } catch (err) {
+        if (cancelled || err?.code === 'ERR_CANCELED') return;
         const message = getApiError(err);
         setError(message);
         emitToast({
@@ -158,13 +165,19 @@ export default function Stock() {
           action: { label: 'Retry', onClick: () => setReloadKey(prev => prev + 1) }
         });
       } finally {
-        setLoading(false);
-        setChartLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setChartLoading(false);
+        }
       }
     };
 
     fetchData();
-  }, [symbol, reloadKey]);
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [symbol, reloadKey, user?.id]);
 
   useEffect(() => {
     let cancelled = false;

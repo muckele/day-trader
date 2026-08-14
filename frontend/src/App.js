@@ -1,23 +1,25 @@
 // src/App.js
-import React from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import React, { lazy, Suspense } from 'react';
+import { BrowserRouter, Navigate, Routes, Route } from 'react-router-dom';
 import AppLayout from './components/layout/AppLayout';
-import Register from './pages/Register';
-import Home from './pages/Home';
-import Stock from './pages/Stock';
-import Login from './pages/Login';
 import PrivateRoute from './components/PrivateRoute';
-import Portfolio from './pages/Portfolio';
-import Activity from './pages/Activity';
-import Discover from './pages/Discover';
-import Analytics from './pages/Analytics';
-import TradePlan from './pages/TradePlan';
-import RoboTrader from './pages/RoboTrader';
-import TradingSystem from './pages/TradingSystem';
-import Research from './pages/Research';
 import { AuthProvider } from './context/AuthContext';
 
+const Register = lazy(() => import('./pages/Register'));
+const Home = lazy(() => import('./pages/Home'));
+const Stock = lazy(() => import('./pages/Stock'));
+const Login = lazy(() => import('./pages/Login'));
+const Portfolio = lazy(() => import('./pages/Portfolio'));
+const Activity = lazy(() => import('./pages/Activity'));
+const Discover = lazy(() => import('./pages/Discover'));
+const Analytics = lazy(() => import('./pages/Analytics'));
+const TradePlan = lazy(() => import('./pages/TradePlan'));
+const RoboTrader = lazy(() => import('./pages/RoboTrader'));
+const TradingSystem = lazy(() => import('./pages/TradingSystem'));
+const Research = lazy(() => import('./pages/Research'));
+
 export default function App() {
+  const registrationEnabled = import.meta.env.DEV || import.meta.env.VITE_REGISTRATION_ENABLED === 'true';
   return (
     <BrowserRouter
       future={{
@@ -27,10 +29,11 @@ export default function App() {
     >
       <AuthProvider>
         <AppLayout>
-          <Routes>
+          <Suspense fallback={<div className="p-6 text-sm text-[#8ba09f]">Loading page...</div>}>
+            <Routes>
             {/* Public route */}
             <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
+            <Route path="/register" element={registrationEnabled ? <Register /> : <Navigate to="/login" replace />} />
 
             {/* Protected routes */}
             <Route
@@ -129,7 +132,8 @@ export default function App() {
                 </PrivateRoute>
               }
             />
-          </Routes>
+            </Routes>
+          </Suspense>
         </AppLayout>
       </AuthProvider>
     </BrowserRouter>

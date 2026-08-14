@@ -2,6 +2,7 @@ import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import Button from '../ui/Button';
 import { useAuth } from '../../context/AuthContext';
+import { emitToast } from '../../utils/toast';
 
 const links = [
   { to: '/watchlist', label: 'Watchlist' },
@@ -22,10 +23,10 @@ export default function SideNav() {
   const handleSignOut = async () => {
     try {
       await signOut();
+      navigate('/login');
     } catch (err) {
       console.error('Logout log failed:', err);
-    } finally {
-      navigate('/login');
+      emitToast({ type: 'error', message: 'Sign out failed. Your session is still active; please retry.' });
     }
   };
 

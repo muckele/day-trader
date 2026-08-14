@@ -18,6 +18,8 @@ const defaultSettings = {
   allowedAssetClasses: ['stocks'],
   allowedSymbols: [],
   blockedSymbols: [],
+  activeStrategyId: null,
+  activeParameterVersionId: null,
   maxTradeAmount: 1000,
   maxPositionSize: 5000,
   maxDailyLoss: 500,
@@ -70,7 +72,7 @@ const RISK_PRESETS = [
       approvalPolicy: { ...defaultSettings.approvalPolicy },
       riskLevel: 'conservative',
       allowedAssetClasses: ['stocks'],
-      allowedSymbols: ['AAPL', 'MSFT', 'SPY'],
+      allowedSymbols: ['AAPL'],
       blockedSymbols: ['TSLA', 'GME'],
       allowShortSelling: false,
       allowFractionalShares: true,
@@ -296,6 +298,10 @@ export default function RoboTrader() {
   const [reconciliation, setReconciliation] = useState(null);
   const [preview, setPreview] = useState(null);
   const [previewing, setPreviewing] = useState(false);
+  const [submittingPaper, setSubmittingPaper] = useState(false);
+  const [paperSubmitKey, setPaperSubmitKey] = useState(null);
+  const [paperSubmission, setPaperSubmission] = useState(null);
+  const [cancellingOrderId, setCancellingOrderId] = useState(null);
   const [reconciling, setReconciling] = useState(false);
   const [archivingHistory, setArchivingHistory] = useState(false);
   const [decisionDetail, setDecisionDetail] = useState(null);
@@ -558,32 +564,6 @@ export default function RoboTrader() {
     }
   };
 
-  const handleRunOnce = async () => {
-    if (!settings.isEnabled) {
-      setError('Enable RoboTrader before running a paper test.');
-      setSuccess('');
-      return;
-    }
-    if (settings.mode !== 'paper') {
-      setError('Run Once Paper is only available while the dashboard is in paper mode.');
-      setSuccess('');
-      return;
-    }
-
-    setRunningNow(true);
-    setError('');
-    setSuccess('');
-    try {
-      await axios.put('/api/robotrader/settings', buildSettingsPayload());
-      const res = await axios.post('/api/robotrader/run-once-paper');
-      await refreshAfterAction(`Paper run completed: ${res.data?.result?.runId || 'run saved'}.`);
-    } catch (err) {
-      setError(getApiError(err));
-    } finally {
-      setRunningNow(false);
-    }
-  };
-
   const handleRunShadow = async () => {
     if (!settings.isEnabled || settings.mode !== 'shadow') {
       setError('Enable RoboTrader in shadow mode before running a shadow-live evaluation.');
@@ -798,21 +778,50 @@ export default function RoboTrader() {
     setError('');
     setSuccess('');
     try {
-      const payload = buildSettingsPayload();
-      const res = await axios.post('/api/robotrader/preview-paper', {
-        settings: {
-          ...payload,
-          mode: 'paper',
-          liveTradingExplicitlyEnabled: false
-        }
+      const previewKey = window.crypto?.randomUUID?.()
+        || `preview-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const res = await axios.post('/api/robotrader/preview-paper', {}, {
+        headers: { 'Idempotency-Key': previewKey }
       });
       setPreview(res.data?.preview || null);
-      setSuccess(`Paper preview completed: ${res.data?.preview?.runId || 'no trade submitted'}.`);
+      setPaperSubmitKey(null);
+      setPaperSubmission(null);
+      setSuccess(`Frozen paper preview completed: ${res.data?.preview?.runId || 'no eligible intent'}. No order was submitted.`);
       await loadAll();
     } catch (err) {
       setError(getApiError(err));
     } finally {
       setPreviewing(false);
+    }
+  };
+
+  const handleSubmitFrozenPaper = async () => {
+    const intent = preview?.decisions?.find(item => item.wouldSubmit && item.intentId);
+    if (!intent) {
+      setError('Preview a policy-approved frozen AAPL intent before submitting.');
+      return;
+    }
+    const submitKey = paperSubmitKey || window.crypto?.randomUUID?.()
+      || `submit-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setPaperSubmitKey(submitKey);
+    setSubmittingPaper(true);
+    setError('');
+    setSuccess('');
+    try {
+      const res = await axios.post(
+        `/api/robotrader/paper-intents/${intent.intentId}/submit`,
+        {},
+        { headers: { 'Idempotency-Key': submitKey } }
+      );
+      setPaperSubmission(res.data || null);
+      await refreshAfterAction(
+        `Paper intent submitted with original client identity ${res.data?.order?.clientOrderId || 'recorded locally'}.`
+      );
+    } catch (err) {
+      setPaperSubmission(err.response?.data?.result || null);
+      setError(getApiError(err));
+    } finally {
+      setSubmittingPaper(false);
     }
   };
 
@@ -827,6 +836,24 @@ export default function RoboTrader() {
       setError(getApiError(err));
     } finally {
       setReconciling(false);
+    }
+  };
+
+  const handleCancelPaperOrder = async order => {
+    const confirmed = window.confirm(
+      `Cancel the locally owned ${order.symbol || ''} paper order using its original correlation identity?`
+    );
+    if (!confirmed) return;
+    setCancellingOrderId(order._id);
+    setError('');
+    setSuccess('');
+    try {
+      await axios.post(`/api/robotrader/orders/${order._id}/cancel`);
+      await refreshAfterAction('Paper order cancellation requested and recorded for reconciliation.');
+    } catch (err) {
+      setError(getApiError(err));
+    } finally {
+      setCancellingOrderId(null);
     }
   };
 
@@ -909,9 +936,15 @@ export default function RoboTrader() {
 
   const enabledVariant = settings.isEnabled ? 'success' : 'neutral';
   const modeVariant = settings.mode === 'live' ? 'danger' : settings.mode === 'shadow' ? 'warning' : 'solid';
-  const canRunPaper = settings.isEnabled && settings.mode === 'paper' && !saving && !runningNow;
   const canRunShadow = settings.isEnabled && settings.mode === 'shadow' && !saving && !runningNow;
   const canPreviewPaper = settings.mode === 'paper' && !saving && !previewing;
+  const frozenPaperIntent = preview?.decisions?.find(item => item.wouldSubmit && item.intentId) || null;
+  const paperProvenance = frozenPaperIntent?.researchSummary?.dataProvenance || null;
+  const canSubmitFrozenPaper = Boolean(
+    frozenPaperIntent
+    && paperProvenance?.trustedForExecution === true
+    && !submittingPaper
+  );
 
   return (
     <div className="space-y-6">
@@ -976,9 +1009,6 @@ export default function RoboTrader() {
           <Button variant="secondary" onClick={handlePreviewPaper} disabled={!canPreviewPaper}>
             {previewing ? 'Previewing...' : 'Preview Paper Run'}
           </Button>
-          <Button variant="secondary" onClick={handleRunOnce} disabled={!canRunPaper}>
-            {runningNow ? 'Running...' : 'Run Once Paper'}
-          </Button>
           <Button variant="secondary" onClick={handleRunShadow} disabled={!canRunShadow}>
             {runningNow ? 'Running...' : 'Run Once Shadow'}
           </Button>
@@ -986,6 +1016,98 @@ export default function RoboTrader() {
             {stopping ? 'Stopping...' : 'Emergency Stop'}
           </Button>
         </div>
+      </Card>
+
+      <Card className="p-5 md:p-6" variant="elevated">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="max-w-3xl">
+            <p className="rt-eyebrow">Primary Paper MVP Path</p>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <h2 className="rt-section-title">Frozen AAPL paper intent</h2>
+              <Badge variant="solid">Paper</Badge>
+              <Badge variant="neutral">AAPL only</Badge>
+              <Badge variant="neutral">ROBO_TREND_FOLLOWING_V1</Badge>
+            </div>
+            <p className="mt-2 text-sm text-[#8ba09f]">
+              Preview creates a durable intent but performs no order POST. Submit revalidates the exact fingerprint with fresh Alpaca data and a stable idempotency key. Paper fills do not model every live execution effect.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={handlePreviewPaper} disabled={!canPreviewPaper}>
+              {previewing ? 'Freezing Preview...' : '1. Preview & Freeze'}
+            </Button>
+            <Button onClick={handleSubmitFrozenPaper} disabled={!canSubmitFrozenPaper}>
+              {submittingPaper ? 'Submitting...' : '2. Submit Exact Intent'}
+            </Button>
+            <Button variant="secondary" onClick={handleReconcilePaper} disabled={reconciling}>
+              {reconciling ? 'Reconciling...' : '3. Reconcile'}
+            </Button>
+          </div>
+        </div>
+
+        {!settings.activeParameterVersionId && (
+          <div className="mt-4 rounded-lg border border-[#6f531d] bg-[#221a0e] px-4 py-3 text-sm text-[#ffd77a]" role="status">
+            Select and save one existing parameter version before previewing the frozen strategy.
+          </div>
+        )}
+
+        <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <div className="rt-panel p-4">
+            <p className="rt-label">Exact intent</p>
+            {frozenPaperIntent ? (
+              <div className="mt-2 space-y-2 text-sm">
+                <p className="font-semibold text-[#edf5f4]">{formatOrderSummary({ ...frozenPaperIntent.recommendedOrder, symbol: 'AAPL' })}</p>
+                <p className="break-all text-xs text-[#8ba09f]">Fingerprint: {frozenPaperIntent.orderFingerprint}</p>
+                <p className="text-xs text-[#8ba09f]">Intent: {frozenPaperIntent.intentId}</p>
+              </div>
+            ) : <p className="mt-2 text-sm text-[#8ba09f]">No frozen, submittable intent yet.</p>}
+          </div>
+
+          <div className="rt-panel p-4">
+            <p className="rt-label">Market-data provenance</p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Badge variant={paperProvenance?.trustedForExecution ? 'success' : 'danger'}>
+                {paperProvenance?.trustedForExecution ? 'Trusted for execution' : 'Unavailable / blocked'}
+              </Badge>
+              <Badge variant={paperProvenance?.simulated ? 'danger' : 'neutral'}>
+                {paperProvenance?.simulated ? 'SIMULATED' : (paperProvenance?.provider || 'No provider')}
+              </Badge>
+            </div>
+            <p className="mt-2 text-xs text-[#8ba09f]">
+              Symbol {paperProvenance?.symbol || '--'} · provider time {formatDateTime(paperProvenance?.timestamp)} · age {paperProvenance?.ageSeconds ?? '--'}s · environment {paperProvenance?.environment || 'paper'}
+            </p>
+          </div>
+
+          <div className="rt-panel p-4">
+            <p className="rt-label">Submission state</p>
+            <div className="mt-2 flex items-center gap-2">
+              <Badge variant={statusVariant(paperSubmission?.order?.status || frozenPaperIntent?.status)}>
+                {paperSubmission?.reason || paperSubmission?.order?.status || frozenPaperIntent?.status || 'Not submitted'}
+              </Badge>
+            </div>
+            <p className="mt-2 text-xs text-[#8ba09f]">
+              {paperSubmission?.order?.clientOrderId
+                ? `Correlation: ${paperSubmission.order.clientOrderId}`
+                : 'The same submit key is retained after an error so a retry cannot create a second POST.'}
+            </p>
+          </div>
+        </div>
+
+        {frozenPaperIntent && (
+          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+            {[...(frozenPaperIntent.riskChecks || []), ...(frozenPaperIntent.executionQuality?.checks || [])].map((check, index) => (
+              <div key={`${check.name || check.key || 'check'}-${index}`} className="rt-panel-muted flex items-start gap-3 px-3 py-2 text-xs">
+                <Badge variant={check.passed ? 'success' : 'danger'}>{check.passed ? 'PASS' : 'BLOCK'}</Badge>
+                <span className="text-[#c5d3d2]">{check.message || check.detail || check.name || check.key}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {!canSubmitFrozenPaper && frozenPaperIntent && (
+          <p className="mt-4 text-sm text-[#ffd77a]" role="status">
+            Submit is disabled until all policy, provenance, sizing, risk, and execution checks pass.
+          </p>
+        )}
       </Card>
 
       <Card className="p-5 md:p-6">
@@ -1015,7 +1137,9 @@ export default function RoboTrader() {
               </Badge>
             </div>
             <p className="mt-2 text-sm text-[#8ba09f]">
-              {health?.alpaca?.paper?.connected
+              {health?.alpaca?.paper?.restricted
+                ? 'Deployment broker health is operator-only.'
+                : health?.alpaca?.paper?.connected
                 ? `${health.alpaca.paper.accountStatus || 'account'} / ${formatMoney(health.alpaca.paper.buyingPower)} buying power`
                 : (health?.alpaca?.paper?.error || 'Paper account not checked')}
             </p>
@@ -1076,7 +1200,7 @@ export default function RoboTrader() {
           <div className="mt-4 flex flex-col gap-3 rounded-lg border border-[#28464c] bg-[#0b1517] px-4 py-3 md:flex-row md:items-center md:justify-between">
             <div>
               <p className="text-sm font-bold text-[#edf5f4]">Safe paper test mode</p>
-              <p className="mt-1 text-xs text-[#8ba09f]">Paper only, stocks only, max $100, one position, one trade per day, AAPL/MSFT/SPY universe.</p>
+              <p className="mt-1 text-xs text-[#8ba09f]">Paper only, stocks only, max $100, one position, one trade per day, AAPL-only first cohort.</p>
             </div>
             <Button variant="secondary" size="sm" onClick={() => applyPreset(RISK_PRESETS[0])}>
               Apply Safe Test
@@ -1182,6 +1306,26 @@ export default function RoboTrader() {
                 placeholder="TSLA, GME"
                 className="rt-field mt-2"
               />
+            </label>
+            <label className="rt-panel p-4">
+              <span className="rt-label">Frozen Strategy ID</span>
+              <input
+                value={settings.activeStrategyId || ''}
+                onChange={event => updateSetting('activeStrategyId', event.target.value || null)}
+                placeholder="ROBO_TREND_FOLLOWING_V1"
+                className="rt-field mt-2"
+              />
+              <span className="mt-2 block text-xs text-[#8ba09f]">Paper and shadow evidence qualifies only when one canonical strategy is frozen.</span>
+            </label>
+            <label className="rt-panel p-4">
+              <span className="rt-label">Frozen Parameter Version ID</span>
+              <input
+                value={settings.activeParameterVersionId || ''}
+                onChange={event => updateSetting('activeParameterVersionId', event.target.value || null)}
+                placeholder="MongoDB parameter-version id"
+                className="rt-field mt-2"
+              />
+              <span className="mt-2 block text-xs text-[#8ba09f]">This must be the exact account-scoped version used by every intended-symbol walk-forward run.</span>
             </label>
           </div>
         </Card>
@@ -1542,10 +1686,34 @@ export default function RoboTrader() {
             Symbols: {(liveActivation.activation.allowedSymbols || []).join(', ') || '--'} · Per order {formatMoney(liveActivation.activation.limits?.maxOrderNotionalUsd)} · Daily {liveActivation.activation.limits?.maxDailyOrders} order(s) / {formatMoney(liveActivation.activation.limits?.maxDailyCumulativeNotionalUsd)} · Attempt slot {liveActivation.activation.attemptsUsed || 0}/1 · Lifecycle {liveActivation.activation.lifecycleStatus || 'armed'} · Expires {formatDateTime(liveActivation.activation.activationExpiresAt || liveActivation.activation.approvalExpiresAt)} · Supervision deadline {formatDateTime(liveActivation.activation.supervisionDeadlineAt)} · Dossier {liveActivation.activation.dossierHash ? liveActivation.activation.dossierHash.slice(0, 12) + '…' : 'not sealed'}
           </div>
         )}
+        <div className="mt-4 rounded-lg border border-[#28464c] bg-[#0b1517] p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-bold text-[#edf5f4]">Pre-funds evidence</p>
+              <p className="mt-1 text-xs text-[#8ba09f]">
+                Current approved shadow candidates, walk-forward validation, and comparable paper fills must all pass for the intended symbols.
+              </p>
+            </div>
+            <Badge variant={liveActivation?.preLiveEvidence?.passed ? 'success' : 'warning'}>
+              {liveActivation?.preLiveEvidence?.passed ? 'Pass' : 'Blocked'}
+            </Badge>
+          </div>
+          <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+            {(liveActivation?.preLiveEvidence?.gates || []).map(gate => (
+              <div key={gate.key} className="flex items-start justify-between gap-3 rounded-md border border-[#28464c] px-3 py-2">
+                <div>
+                  <p className="text-xs font-semibold text-[#edf5f4]">{gate.key.replaceAll('_', ' ')}</p>
+                  <p className="mt-1 text-xs text-[#8ba09f]">{gate.detail}</p>
+                </div>
+                <Badge variant={gate.passed ? 'success' : 'warning'}>{gate.passed ? 'pass' : 'blocked'}</Badge>
+              </div>
+            ))}
+          </div>
+        </div>
         <div className="mt-5 flex flex-wrap gap-2">
           <Button
             variant="secondary"
-            disabled={saving || !readiness?.technicalReady || liveActivation?.activation?.status === 'active'}
+            disabled={saving || !readiness?.technicalReady || !liveActivation?.preLiveEvidence?.passed || liveActivation?.activation?.status === 'active'}
             onClick={() => handleControlledLiveAction('approval')}
           >
             Approve Canary Snapshot
@@ -1588,6 +1756,9 @@ export default function RoboTrader() {
         </div>
         {!readiness?.technicalReady && (
           <p className="mt-3 text-xs text-[#ffd77a]">Sprint 3 readiness is not complete, so controlled-live approval remains locked.</p>
+        )}
+        {readiness?.technicalReady && !liveActivation?.preLiveEvidence?.passed && (
+          <p className="mt-3 text-xs text-[#ffd77a]">Pre-funds shadow, walk-forward, or paper-execution evidence is incomplete, so controlled-live approval remains locked.</p>
         )}
       </Card>
 
@@ -1963,11 +2134,15 @@ export default function RoboTrader() {
               <p className="rt-eyebrow">Portfolio</p>
               <h2 className="rt-section-title mt-1">Current positions</h2>
             </div>
-            <Badge variant="neutral">{(performance?.positions || []).length} positions</Badge>
+            <Badge variant="neutral">
+              {performance?.brokerAccountRestricted ? 'Operator only' : `${(performance?.positions || []).length} positions`}
+            </Badge>
           </div>
 
           <div className="mt-5 overflow-x-auto">
-            {(performance?.positions || []).length ? (
+            {performance?.brokerAccountRestricted ? (
+              <EmptyState>Deployment broker positions are visible only to an allowlisted operator.</EmptyState>
+            ) : (performance?.positions || []).length ? (
               <table className="rt-table">
                 <thead>
                   <tr>
@@ -2017,6 +2192,7 @@ export default function RoboTrader() {
                     <th>Status</th>
                     <th>Type</th>
                     <th>Client ID</th>
+                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2036,6 +2212,18 @@ export default function RoboTrader() {
                       </td>
                       <td>{order.orderType || '--'} / {order.timeInForce || '--'}</td>
                       <td className="max-w-[14rem] truncate">{order.clientOrderId || order.externalOrderId || '--'}</td>
+                      <td>
+                        {!['filled', 'rejected', 'canceled', 'cancelled', 'expired'].includes(normalizeStatus(order.status)) ? (
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            disabled={cancellingOrderId === order._id}
+                            onClick={() => handleCancelPaperOrder(order)}
+                          >
+                            {cancellingOrderId === order._id ? 'Canceling...' : 'Cancel'}
+                          </Button>
+                        ) : <span className="text-xs text-[#8ba09f]">Terminal</span>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

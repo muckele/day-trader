@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 import { useNavigate, useParams } from 'react-router-dom';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
@@ -105,6 +106,7 @@ function Metric({ label, value, accent = false }) {
 }
 
 export default function Research() {
+  const { user } = useAuth();
   const { symbol: routeSymbol } = useParams();
   const navigate = useNavigate();
   const stockRequestIdRef = useRef(0);
@@ -154,7 +156,7 @@ export default function Research() {
     let cancelled = false;
     const fetchDashboard = async () => {
       setLoadingDashboard(true);
-      const cacheKey = `research-dashboard:${DEFAULT_SYMBOLS.join(',')}`;
+      const cacheKey = `research-dashboard:${user?.id || 'unknown'}:${DEFAULT_SYMBOLS.join(',')}`;
       const cached = getCache(cacheKey);
       if (cached) {
         setDashboard(cached);
@@ -177,14 +179,14 @@ export default function Research() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [user?.id]);
 
   const fetchStock = async symbol => {
     const requestId = stockRequestIdRef.current + 1;
     stockRequestIdRef.current = requestId;
     setLoadingStock(true);
     setError('');
-    const cacheKey = `research-stock:${symbol}`;
+    const cacheKey = `research-stock:${user?.id || 'unknown'}:${symbol}`;
     const cached = getCache(cacheKey);
     if (cached && stockRequestIdRef.current === requestId) {
       setStock(cached);

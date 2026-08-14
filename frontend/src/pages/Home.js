@@ -1,6 +1,7 @@
 // src/pages/Home.js
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
 import Card from '../components/ui/Card';
@@ -30,6 +31,8 @@ const WATCHLIST_UNIVERSE = [
 ];
 
 export default function Home() {
+  const { user } = useAuth();
+  const preferenceScope = user?.id || 'unknown';
   const [trades, setTrades]   = useState([]);
   const [marketStatus, setMarketStatus] = useState('CLOSED');
   const [nextOpen, setNextOpen] = useState(null);
@@ -112,10 +115,10 @@ export default function Home() {
         const res = await axios.get('/api/watchlist/default');
         const list = res.data || [];
         setWatchlist(list);
-        const stored = JSON.parse(localStorage.getItem('watchlistSymbols') || 'null');
+        const stored = JSON.parse(localStorage.getItem(`watchlistSymbols:${preferenceScope}`) || 'null');
         const symbols = stored && stored.length ? stored : list.map(item => item.symbol);
         setWatchlistSymbols(symbols);
-        const pinned = JSON.parse(localStorage.getItem('watchlistPinned') || '[]');
+        const pinned = JSON.parse(localStorage.getItem(`watchlistPinned:${preferenceScope}`) || '[]');
         setPinnedSymbols(pinned);
       } catch (err) {
         const message = getApiError(err);
@@ -131,19 +134,19 @@ export default function Home() {
     };
 
     fetchWatchlist();
-  }, [watchlistRefresh]);
+  }, [watchlistRefresh, preferenceScope]);
 
   useEffect(() => {
     if (watchlistSymbols.length) {
-      localStorage.setItem('watchlistSymbols', JSON.stringify(watchlistSymbols));
+      localStorage.setItem(`watchlistSymbols:${preferenceScope}`, JSON.stringify(watchlistSymbols));
     } else {
-      localStorage.removeItem('watchlistSymbols');
+      localStorage.removeItem(`watchlistSymbols:${preferenceScope}`);
     }
-  }, [watchlistSymbols]);
+  }, [preferenceScope, watchlistSymbols]);
 
   useEffect(() => {
-    localStorage.setItem('watchlistPinned', JSON.stringify(pinnedSymbols));
-  }, [pinnedSymbols]);
+    localStorage.setItem(`watchlistPinned:${preferenceScope}`, JSON.stringify(pinnedSymbols));
+  }, [pinnedSymbols, preferenceScope]);
 
   useEffect(() => {
     const fetchMarketData = async () => {
@@ -230,6 +233,11 @@ export default function Home() {
     return [...pinned, ...rest];
   }, [pinnedSymbols, watchlistSymbols]);
 
+  const hasSimulatedQuotes = useMemo(
+    () => Object.values(quotes).some(quote => quote?.isMock === true || quote?.source === 'mock'),
+    [quotes]
+  );
+
   const watchlistRows = useMemo(() => {
     if (watchlistLoading) {
       return Array.from({ length: 8 }).map((_, idx) => (
@@ -275,7 +283,10 @@ export default function Home() {
           className="group grid grid-cols-[1fr_auto_auto] items-center gap-3 py-3 px-2 rounded-lg border border-transparent hover:border-[#31444b] hover:bg-[#172126] transition cursor-pointer"
         >
           <div>
-            <p className="text-sm font-bold tracking-wide text-[#edf5f4]">{item.symbol}</p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-bold tracking-wide text-[#edf5f4]">{item.symbol}</p>
+              {(quote.isMock === true || quote.source === 'mock') && <Badge variant="danger">SIMULATED</Badge>}
+            </div>
             <p className="text-xs text-[#8ba09f]">{item.name}</p>
           </div>
           <div className="h-10 w-24">
@@ -422,6 +433,15 @@ export default function Home() {
           {marketStatus === 'OPEN' ? 'OPEN' : 'CLOSED'}
         </Badge>
       </Card>
+
+      {hasSimulatedQuotes && (
+        <Card className="p-4 border-[#6a2b3a] bg-[#211116]" role="status">
+          <p className="text-sm font-semibold text-[#ffb5c2]">SIMULATED MARKET DATA</p>
+          <p className="mt-1 text-xs text-[#d8a8b1]">
+            One or more watchlist values are local UI-development data. Simulated values cannot create, size, price, recommend, or submit an Alpaca paper order.
+          </p>
+        </Card>
+      )}
 
       {recommendationWarning && (
         <Card className="p-4 border-[#4b3f1e] bg-[#2b2615]">

@@ -9,6 +9,7 @@ import Skeleton from '../components/ui/Skeleton';
 import { getCache, setCache } from '../utils/cache';
 import { getApiError } from '../utils/api';
 import { emitToast } from '../utils/toast';
+import { useAuth } from '../context/AuthContext';
 
 function formatCurrency(value) {
   if (value === null || value === undefined) return '--';
@@ -17,6 +18,7 @@ function formatCurrency(value) {
 
 export default function Portfolio() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [account, setAccount] = useState(null);
   const [equity, setEquity] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -28,8 +30,9 @@ export default function Portfolio() {
       setLoading(true);
       setError('');
       try {
-        const cachedAccount = getCache('paper-account');
-        const cachedEquity = getCache('paper-equity');
+        const cacheScope = user?.id || 'unknown';
+        const cachedAccount = getCache(`paper-account:${cacheScope}`);
+        const cachedEquity = getCache(`paper-equity:${cacheScope}`);
         if (cachedAccount) setAccount(cachedAccount);
         if (cachedEquity) setEquity(cachedEquity);
 
@@ -39,8 +42,8 @@ export default function Portfolio() {
         ]);
         setAccount(accountRes.data);
         setEquity(equityRes.data || []);
-        setCache('paper-account', accountRes.data, 8 * 1000);
-        setCache('paper-equity', equityRes.data || [], 10 * 1000);
+        setCache(`paper-account:${cacheScope}`, accountRes.data, 8 * 1000);
+        setCache(`paper-equity:${cacheScope}`, equityRes.data || [], 10 * 1000);
       } catch (err) {
         const message = getApiError(err);
         setError(message);
@@ -55,7 +58,7 @@ export default function Portfolio() {
     };
 
     fetchData();
-  }, [reloadKey]);
+  }, [reloadKey, user?.id]);
 
   const handleRetry = () => {
     setReloadKey(prev => prev + 1);

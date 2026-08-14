@@ -1,17 +1,22 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
+import { clearCache } from '../utils/cache';
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [status, setStatus] = useState('checking');
+  const identityRef = useRef(null);
 
   const refreshAuth = useCallback(async () => {
     setStatus('checking');
     try {
       const res = await axios.get('/api/me');
       const currentUser = res.data.user || null;
+      const nextIdentity = currentUser?.id || null;
+      if (identityRef.current && identityRef.current !== nextIdentity) clearCache();
+      identityRef.current = nextIdentity;
       setUser(currentUser);
       setStatus(currentUser ? 'authenticated' : 'anonymous');
       return currentUser;
@@ -23,13 +28,12 @@ export function AuthProvider({ children }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    try {
-      await axios.post('/api/logout');
-    } finally {
-      localStorage.removeItem('token');
-      setUser(null);
-      setStatus('anonymous');
-    }
+    await axios.post('/api/logout');
+    clearCache();
+    identityRef.current = null;
+    localStorage.removeItem('token');
+    setUser(null);
+    setStatus('anonymous');
   }, []);
 
   useEffect(() => {

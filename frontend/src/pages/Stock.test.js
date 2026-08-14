@@ -1,6 +1,6 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import Stock from './Stock';
 import { emitToast } from '../utils/toast';
@@ -13,6 +13,10 @@ vi.mock('../hooks/useMarketStatus', () => ({
     nextClose: null,
     countdown: ''
   })
+}));
+
+vi.mock('../context/AuthContext', () => ({
+  useAuth: () => ({ user: { id: 'test-user' } })
 }));
 
 vi.mock('../utils/cache', () => ({
@@ -117,6 +121,11 @@ function renderStockPage() {
   );
 }
 
+function NavigateToMsft() {
+  const navigate = useNavigate();
+  return <button type="button" onClick={() => navigate('/stock/MSFT')}>Open MSFT</button>;
+}
+
 describe('Stock page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -189,5 +198,46 @@ describe('Stock page', () => {
     await waitFor(() => {
       expect(emitToast).not.toHaveBeenCalled();
     });
+  });
+
+  test('ignores a stale response after navigating to another symbol', async () => {
+    let resolveAaplIntraday;
+    const aaplIntraday = new Promise(resolve => { resolveAaplIntraday = resolve; });
+    axios.get.mockImplementation(url => {
+      if (url === '/api/market/intraday/AAPL') return aaplIntraday;
+      if (url === '/api/market/intraday/MSFT') return Promise.resolve({ data: buildIntradayBars() });
+      if (url.startsWith('/api/market/historical/')) return Promise.resolve({ data: buildHistoricalBars() });
+      if (url === '/api/company/AAPL') return Promise.resolve({ data: { company: { symbol: 'AAPL', name: 'Apple Inc.' }, stats: {} } });
+      if (url === '/api/company/MSFT') return Promise.resolve({ data: { company: { symbol: 'MSFT', name: 'Microsoft Corp.' }, stats: {} } });
+      if (url.startsWith('/api/recommendations/')) return Promise.resolve({ data: { recommendations: [] } });
+      if (url === '/api/paper-trades/settings') return Promise.resolve({ data: {} });
+      if (url === '/api/paper-trades/account') return Promise.resolve({ data: { positions: [] } });
+      if (url.startsWith('/api/analyze/')) return Promise.resolve({ data: { ok: false, message: 'Unavailable' } });
+      return Promise.reject(new Error(`Unhandled GET ${url}`));
+    });
+
+    render(
+      <MemoryRouter
+        initialEntries={['/stock/AAPL']}
+        future={{
+          v7_startTransition: true,
+          v7_relativeSplatPath: true
+        }}
+      >
+        <NavigateToMsft />
+        <Routes><Route path="/stock/:symbol" element={<Stock />} /></Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith(
+      '/api/market/intraday/AAPL',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    ));
+    fireEvent.click(screen.getByRole('button', { name: 'Open MSFT' }));
+    expect(await screen.findByRole('heading', { name: /microsoft corp\./i })).toBeInTheDocument();
+
+    resolveAaplIntraday({ data: buildIntradayBars() });
+    await waitFor(() => expect(screen.getByRole('heading', { name: /microsoft corp\./i })).toBeInTheDocument());
+    expect(screen.queryByRole('heading', { name: /apple inc\./i })).not.toBeInTheDocument();
   });
 });
