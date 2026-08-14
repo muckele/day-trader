@@ -5,6 +5,7 @@ const tradeLogic = require('../tradeLogic');
 const PaperJournalEntry = require('../models/PaperJournalEntry');
 const PaperTrade = require('../models/PaperTrade');
 const TradePlan = require('../models/TradePlan');
+const ResearchAlert = require('../models/ResearchAlert');
 
 function createMockRes() {
   return {
@@ -151,6 +152,76 @@ test('journal search escapes regex metacharacters and caps length', async t => {
     query: { search: 'x'.repeat(81) }
   }, longRes);
   assert.equal(longRes.statusCode, 400);
+});
+
+test('journal writes reject invalid ids and oversized user content before persistence', async t => {
+  const journalRouter = loadRoute('../routes/journal');
+  const handler = getRouteHandler(journalRouter, '/:tradeId', 'put');
+  let persisted = false;
+  t.mock.method(PaperJournalEntry, 'findOneAndUpdate', async () => {
+    persisted = true;
+    return {};
+  });
+
+  const invalidIdRes = createMockRes();
+  await handler({
+    params: { tradeId: 'not-an-object-id' },
+    body: {},
+    user: { username: 'alice' }
+  }, invalidIdRes);
+  assert.equal(invalidIdRes.statusCode, 400);
+
+  const oversizedRes = createMockRes();
+  await handler({
+    params: { tradeId: '507f1f77bcf86cd799439011' },
+    body: { thesis: 'x'.repeat(5001) },
+    user: { username: 'alice' }
+  }, oversizedRes);
+  assert.equal(oversizedRes.statusCode, 400);
+  assert.match(oversizedRes.body.error, /thesis is limited/);
+  assert.equal(persisted, false);
+});
+
+test('backtest routes reject invalid symbols and date ranges before creating a run', async () => {
+  const backtestRouter = loadRoute('../routes/backtest');
+  const handler = getRouteHandler(backtestRouter, '/', 'post');
+  const invalidSymbolRes = createMockRes();
+
+  await handler({
+    body: { symbol: 'bad symbol!', strategyId: 'SMA_CROSS' },
+    user: { username: 'alice' }
+  }, invalidSymbolRes);
+  assert.equal(invalidSymbolRes.statusCode, 400);
+  assert.equal(invalidSymbolRes.body.error, 'Invalid symbol.');
+
+  const invertedDateRes = createMockRes();
+  await handler({
+    body: { symbol: 'AAPL', strategyId: 'SMA_CROSS', start: '2026-02-01', end: '2026-01-01' },
+    user: { username: 'alice' }
+  }, invertedDateRes);
+  assert.equal(invertedDateRes.statusCode, 400);
+  assert.match(invertedDateRes.body.error, /start must be on or before end/);
+});
+
+test('research alert updates reject non-numeric thresholds before persistence', async t => {
+  const researchRouter = loadRoute('../routes/research');
+  const handler = getRouteHandler(researchRouter, '/alerts/:alertId', 'patch');
+  let persisted = false;
+  t.mock.method(ResearchAlert, 'findOneAndUpdate', async () => {
+    persisted = true;
+    return {};
+  });
+  const res = createMockRes();
+
+  await handler({
+    params: { alertId: '507f1f77bcf86cd799439011' },
+    body: { threshold: 'not-a-number' },
+    user: { username: 'alice' }
+  }, res, err => { throw err; });
+
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.message, /positive number/);
+  assert.equal(persisted, false);
 });
 
 test('trade plan history clamps day range and caps provider symbol fanout', async t => {

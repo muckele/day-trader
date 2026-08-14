@@ -136,6 +136,31 @@ test('ensureStrategyTelemetryIndexes drops legacy global indexes and creates sco
   ]);
 });
 
+test('strategy index bootstrap accepts missing collections on a brand-new database', async () => {
+  const createModel = modelName => ({
+    modelName,
+    find: () => createFindChain([]),
+    bulkWrite: async () => {},
+    createIndexes: async () => {},
+    collection: {
+      dropIndex: async () => {
+        const err = new Error(`ns not found fresh_database.${modelName.toLowerCase()}`);
+        err.code = 26;
+        throw err;
+      }
+    }
+  });
+  const result = await ensureStrategyTelemetryIndexes({
+    logger: { error: () => {} },
+    StrategyParameterVersionModel: createModel('StrategyParameterVersion'),
+    StrategyRunModel: createModel('StrategyRun'),
+    UserModel: { find: () => createFindChain([]) }
+  });
+
+  assert.equal(result[0].ok, true);
+  assert.deepEqual(result[0].migrated.droppedIndexes, []);
+});
+
 test('backfillRecommendationSnapshots adds unique legacy keys and TTL dates', async () => {
   const operations = [];
   const RecommendationSnapshotModel = {

@@ -8,6 +8,7 @@ const {
   normalizeCryptoProviderSymbol
 } = require('../services/marketData');
 const { getMarketStatus } = require('../utils/marketStatus');
+const { normalizeMarketSymbol } = require('../utils/marketSymbol');
 
 const router = express.Router();
 
@@ -35,12 +36,6 @@ function missingCredentials() {
 const MAX_QUOTE_SYMBOLS = 50;
 const ALLOWED_SPARKLINE_RANGES = new Set(['1D', '1W', '1M']);
 const ALLOWED_BARS_TIMEFRAMES = new Set(['1Min', '5Min', '15Min', '1Hour', '1Day']);
-
-function normalizeMarketSymbol(value) {
-  const symbol = String(value || '').trim().toUpperCase();
-  if (!symbol || symbol.length > 20 || !/^[A-Z0-9./_-]+$/.test(symbol)) return '';
-  return symbol;
-}
 
 function parsePositiveInt(value, { fallback, min = 1, max }) {
   const parsed = Math.floor(Number(value));
@@ -98,7 +93,7 @@ router.get('/intraday/:symbol', async (req, res) => {
     if (err?.code === 'DATA_UNAVAILABLE') {
       return res.json([]);
     }
-    res.status(500).json({ error: err.message || 'Failed to fetch intraday data' });
+    res.status(500).json({ error: 'Failed to fetch intraday data' });
   }
 });
 
@@ -149,7 +144,7 @@ router.get('/historical/:symbol', async (req, res) => {
     if (err?.code === 'DATA_UNAVAILABLE') {
       return res.json([]);
     }
-    res.status(500).json({ error: err.message || 'Failed to fetch historical data' });
+    res.status(500).json({ error: 'Failed to fetch historical data' });
   }
 });
 

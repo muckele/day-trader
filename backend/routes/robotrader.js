@@ -97,6 +97,7 @@ function sensitiveRateLimit({ windowMs = 60 * 1000, max = 20 } = {}) {
     windowMs,
     max,
     keyPrefix: 'robotrader-sensitive',
+    distributed: true,
     message: 'Too many RoboTrader requests. Try again shortly.'
   });
 }

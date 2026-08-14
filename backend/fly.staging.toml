@@ -1,0 +1,34 @@
+app = "day-trader-backend-staging"
+primary_region = "ord"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  ROBOTRADER_DEPLOYMENT_ENV = "staging"
+  PORT = "8080"
+  LIVE_TRADING_ENABLED = "false"
+  ROBO_KILL_SWITCH = "false"
+  ROBO_SCHEDULER_DISABLED = "true"
+  ROBOTRADER_WORKER_DISABLED = "true"
+  ROBOTRADER_LIVE_RECONCILIATION_DISABLED = "true"
+  ROBO_CLEANUP_ENABLED = "false"
+  APP_PAPER_TRADES_SYNC_TO_ALPACA = "true"
+  APCA_PAPER_BASE_URL = "https://paper-api.alpaca.markets"
+  PRIVATE_REGISTRATION_ENABLED = "false"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/ready"

@@ -5,6 +5,7 @@ const OrderIntent = require('../models/OrderIntent');
 const PaperOrder = require('../models/PaperOrder');
 const PaperTrade = require('../models/PaperTrade');
 const PaperAccountLock = require('../models/PaperAccountLock');
+const RateLimitBucket = require('../models/RateLimitBucket');
 const RecommendationSnapshot = require('../models/RecommendationSnapshot');
 const RoboAuditLog = require('../models/RoboAuditLog');
 const RoboCanaryDossier = require('../models/RoboCanaryDossier');
@@ -34,6 +35,7 @@ const TRADING_INDEX_MODELS = [
   PaperAccountLock,
   PaperOrder,
   PaperTrade,
+  RateLimitBucket,
   RoboAuditLog,
   RoboCanaryDossier,
   RoboExposureSnapshot,
@@ -177,7 +179,11 @@ async function dropIndexIfExists(model, name, logger = console) {
     return true;
   } catch (err) {
     const message = String(err?.message || '');
-    if (err?.code === 27 || /index not found|index does not exist/i.test(message)) {
+    if (
+      err?.code === 27
+      || err?.code === 26
+      || /index not found|index does not exist|namespace not found|ns not found/i.test(message)
+    ) {
       return false;
     }
     logger.error(`[indexes] ${model.modelName || 'model'} legacy index drop failed:`, message || err);
@@ -292,7 +298,7 @@ async function ensureRoboAuditLogIndexes({
 } = {}) {
   const desiredTtlSeconds = typeof RoboAuditLogModel.getRoboAuditLogTtlSeconds === 'function'
     ? RoboAuditLogModel.getRoboAuditLogTtlSeconds(env)
-    : 7 * 24 * 60 * 60;
+    : 90 * 24 * 60 * 60;
   try {
     const collection = RoboAuditLogModel.collection;
     const indexes = typeof collection?.indexes === 'function'

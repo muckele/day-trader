@@ -35,6 +35,7 @@ const MONGO_DNS_SERVERS = String(process.env.MONGO_DNS_SERVERS || '')
   .filter(Boolean);
 let mongoConnectInFlight = false;
 let mongoReconnectTimer = null;
+let shuttingDown = false;
 
 mongoose.set('bufferCommands', false);
 mongoose.set('bufferTimeoutMS', 0);
@@ -93,6 +94,7 @@ function getMongoTroubleshootingHint(err) {
 }
 
 function scheduleMongoReconnect() {
+  if (shuttingDown) return;
   if (mongoReconnectTimer) return;
   mongoReconnectTimer = setTimeout(() => {
     mongoReconnectTimer = null;
@@ -203,10 +205,9 @@ mongoose.connection.on('error', err => {
   mongoState.markMongoFailed(err, getMongoTroubleshootingHint(err));
 });
 
-connectMongo();
-
 // 3. Import dependencies
 const express   = require('express');
+const crypto    = require('crypto');
 const cors      = require('cors');
 const axios     = require('axios');
 const { ensureSlowBufferCompat } = require('./utils/nodeCompat');
@@ -224,12 +225,25 @@ const { getRecommendations, fetchIntraday } = require('./tradeLogic');
 const auth                = require('./middleware/auth');      // ← imported
 const { getJwtSecret }    = require('./middleware/auth');
 const debugRoutes         = require('./routes/debug');
-const { startRoboScheduler } = require('./services/roboScheduler');
+const { startRoboScheduler, getSchedulerStatus } = require('./services/roboScheduler');
+const { buildRuntimeReadiness } = require('./services/runtimeReadinessService');
+const { getReleaseMetadata } = require('./services/releaseMetadataService');
 
 // 5. Create the Express app
 const app = express();
 
 // 6. Global middleware
+app.use((req, res, next) => {
+  const requestId = String(req.headers['x-request-id'] || '').trim().slice(0, 128)
+    || crypto.randomUUID();
+  req.requestId = requestId;
+  res.setHeader('X-Request-Id', requestId);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  next();
+});
 app.use(express.json());
 const isProduction = process.env.NODE_ENV === 'production';
 if (isProduction && !process.env.JWT_SECRET) {
@@ -237,6 +251,10 @@ if (isProduction && !process.env.JWT_SECRET) {
 }
 if (isProduction) {
   app.set('trust proxy', 1);
+  app.use((_req, res, next) => {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    next();
+  });
 }
 const configuredOrigins = (process.env.FRONTEND_ORIGIN || '')
   .split(',')
@@ -271,6 +289,7 @@ const authRateLimit = createRateLimit({
   windowMs: 15 * 60 * 1000,
   max: Number(process.env.AUTH_RATE_LIMIT_PER_WINDOW || 20),
   keyPrefix: 'auth',
+  distributed: true,
   message: 'Too many authentication attempts. Try again shortly.'
 });
 
@@ -330,6 +349,24 @@ app.use('/api/recommendations', publicDataRateLimit, require('./routes/recommend
 app.post('/api/register', authRateLimit, requireMongo, async (req, res, next) => {
   try {
     const { username, password, email } = req.body;
+    if (isProduction) {
+      const registrationEnabled = String(process.env.PRIVATE_REGISTRATION_ENABLED || '').trim().toLowerCase() === 'true';
+      if (!registrationEnabled) {
+        return res.status(404).json({ message: 'Registration is unavailable.' });
+      }
+      const expectedToken = String(process.env.PRIVATE_REGISTRATION_TOKEN || '');
+      const suppliedToken = String(req.get('X-Registration-Token') || '');
+      const expectedOperator = String(process.env.ROBOTRADER_OPERATOR_USERNAMES || '').trim().toLowerCase();
+      const tokenMatches = expectedToken.length > 0
+        && suppliedToken.length === expectedToken.length
+        && crypto.timingSafeEqual(Buffer.from(suppliedToken), Buffer.from(expectedToken));
+      if (!tokenMatches || !expectedOperator || expectedOperator.includes(',')) {
+        return res.status(403).json({ message: 'Private operator registration is not authorized.' });
+      }
+      if (normalizeUsername(username).toLowerCase() !== expectedOperator) {
+        return res.status(403).json({ message: 'Private operator registration is not authorized.' });
+      }
+    }
     const validation = validateCredentials({ username, password, email, requireEmail: true });
     if (validation.errors.length) {
       return res.status(400).json({ message: validation.errors[0], errors: validation.errors });
@@ -418,9 +455,21 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     asOf: new Date().toISOString(),
+    release: getReleaseMetadata(),
     services: {
       mongo: mongoState.getMongoServiceState()
     }
+  });
+});
+
+app.get('/ready', (req, res) => {
+  const readiness = buildRuntimeReadiness({
+    mongoState,
+    scheduler: getSchedulerStatus()
+  });
+  res.status(readiness.ready ? 200 : 503).json({
+    ...readiness,
+    release: getReleaseMetadata()
   });
 });
 
@@ -458,12 +507,73 @@ app.use((err, req, res, next) => {
     return res.status(503).json(mongoState.createMongoUnavailablePayload());
   }
 
-  res.status(500).json({ message });
+  const requestedStatus = Number(err?.status || err?.statusCode);
+  const status = Number.isInteger(requestedStatus) && requestedStatus >= 400 && requestedStatus < 500
+    ? requestedStatus
+    : 500;
+  const publicMessage = status < 500 || !isProduction
+    ? message
+    : 'Unexpected server error';
+  res.status(status).json({
+    message: publicMessage,
+    code: status < 500 ? String(err?.code || 'REQUEST_REJECTED') : 'INTERNAL_SERVER_ERROR',
+    requestId: req.requestId
+  });
 });
 
 // ─── 13. START SERVER ───────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, '0.0.0.0', () =>
-  console.log(`Day Trader API listening on http://0.0.0.0:${PORT}`)
-);
-startRoboScheduler();
+let httpServer = null;
+let stopScheduler = () => {};
+
+function startServer() {
+  if (httpServer) return httpServer;
+  shuttingDown = false;
+  void connectMongo();
+  httpServer = app.listen(PORT, '0.0.0.0', () =>
+    console.log(`Day Trader API listening on http://0.0.0.0:${PORT}`)
+  );
+  stopScheduler = startRoboScheduler();
+  return httpServer;
+}
+
+async function stopServer() {
+  shuttingDown = true;
+  if (mongoReconnectTimer) {
+    clearTimeout(mongoReconnectTimer);
+    mongoReconnectTimer = null;
+  }
+  stopScheduler();
+  stopScheduler = () => {};
+  if (httpServer) {
+    const server = httpServer;
+    httpServer = null;
+    await new Promise((resolve, reject) => {
+      server.close(err => (err ? reject(err) : resolve()));
+    });
+  }
+  if (mongoose.connection.readyState !== 0) {
+    await mongoose.disconnect();
+  }
+}
+
+if (require.main === module) {
+  startServer();
+  const shutdown = signal => {
+    stopServer()
+      .then(() => process.exit(0))
+      .catch(err => {
+        console.error(`Failed to stop cleanly after ${signal}:`, err?.message || err);
+        process.exit(1);
+      });
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
+}
+
+module.exports = {
+  app,
+  connectMongo,
+  startServer,
+  stopServer
+};

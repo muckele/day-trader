@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const DEFAULT_ROBO_AUDIT_LOG_RETENTION_DAYS = 7;
+const DEFAULT_ROBO_AUDIT_LOG_RETENTION_DAYS = 90;
 const DAY_SECONDS = 24 * 60 * 60;
 
 function getRoboAuditLogRetentionDays(env = process.env) {

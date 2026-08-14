@@ -34,7 +34,7 @@ router.use(auth);
 
 function parseSymbols(value, fallback = []) {
   const source = Array.isArray(value) ? value : String(value || '').split(',');
-  const symbols = [...new Set(source.map(normalizeSymbol).filter(Boolean))];
+  const symbols = [...new Set(source.map(normalizeSymbol).filter(Boolean))].slice(0, 60);
   return symbols.length ? symbols : fallback;
 }
 
@@ -501,7 +501,13 @@ router.patch('/alerts/:alertId', async (req, res, next) => {
     const accountId = getRequestAccountId(req);
     const update = {};
     if (req.body?.isActive !== undefined) update.isActive = Boolean(req.body.isActive);
-    if (req.body?.threshold !== undefined) update.threshold = req.body.threshold === '' ? null : Number(req.body.threshold);
+    if (req.body?.threshold !== undefined) {
+      const threshold = req.body.threshold === '' ? null : Number(req.body.threshold);
+      if (threshold !== null && (!Number.isFinite(threshold) || threshold <= 0)) {
+        return res.status(400).json({ message: 'threshold must be a positive number or empty.' });
+      }
+      update.threshold = threshold;
+    }
     if (req.body?.keyword !== undefined) update.keyword = String(req.body.keyword || '').trim().slice(0, 80);
     if (req.body?.message !== undefined) update.message = String(req.body.message || '').trim().slice(0, 240);
     const alert = await ResearchAlert.findOneAndUpdate(

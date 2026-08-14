@@ -2,6 +2,7 @@ const router = require('express').Router();
 const { fetchDaily } = require('../tradeLogic');
 const auth = require('../middleware/auth');
 const requireMongo = require('../middleware/requireMongo');
+const { createRateLimit } = require('../middleware/rateLimit');
 const {
   DEFAULT_MAX_TRADE_AMOUNT,
   DEFAULT_SLIPPAGE_BPS,
@@ -11,6 +12,7 @@ const {
 const { getStrategy, STRATEGIES } = require('../signal/strategies');
 const { createStrategyRun, finalizeStrategyRun } = require('../services/strategyRunService');
 const { getRequestAccountId } = require('../utils/accountScope');
+const { normalizeIsoDate, normalizeMarketSymbol } = require('../utils/marketSymbol');
 const {
   DEFAULT_STEP_BARS,
   DEFAULT_TEST_BARS,
@@ -26,6 +28,25 @@ router.get('/strategies', (req, res) => {
 
 router.use(requireMongo);
 router.use(auth);
+router.use(createRateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyPrefix: 'backtest',
+  distributed: true,
+  message: 'Too many backtest requests. Try again later.'
+}));
+
+function validateBacktestInput({ symbol, start, end }) {
+  const normalizedSymbol = normalizeMarketSymbol(symbol);
+  const normalizedStart = normalizeIsoDate(start);
+  const normalizedEnd = normalizeIsoDate(end);
+  if (!normalizedSymbol) return { error: 'Invalid symbol.' };
+  if (normalizedStart === '' || normalizedEnd === '') return { error: 'start and end must use YYYY-MM-DD.' };
+  if (normalizedStart && normalizedEnd && normalizedStart > normalizedEnd) {
+    return { error: 'start must be on or before end.' };
+  }
+  return { symbol: normalizedSymbol, start: normalizedStart, end: normalizedEnd };
+}
 
 router.post('/walk-forward', async (req, res) => {
   let strategyRun = null;
@@ -43,6 +64,11 @@ router.post('/walk-forward', async (req, res) => {
     if (!symbol || !strategyId) {
       return res.status(400).json({ error: 'symbol and strategyId are required.' });
     }
+    const validated = validateBacktestInput({ symbol, start, end });
+    if (validated.error) return res.status(400).json({ error: validated.error });
+    const normalizedSymbol = validated.symbol;
+    const normalizedStart = validated.start;
+    const normalizedEnd = validated.end;
     const strategy = getStrategy(strategyId);
     if (!strategy || !String(strategyId).startsWith('ROBO_')) {
       return res.status(400).json({ error: 'A canonical RoboTrader strategyId is required.' });
@@ -50,8 +76,8 @@ router.post('/walk-forward', async (req, res) => {
     const normalizedWalkForward = normalizeWalkForwardParameters({ trainBars, testBars, stepBars });
     const parameters = {
       validationType: 'walk_forward',
-      start: start || null,
-      end: end || null,
+      start: normalizedStart,
+      end: normalizedEnd,
       timeframe: '1D',
       assumptions: {
         startingEquity: DEFAULT_STARTING_EQUITY,
@@ -68,23 +94,23 @@ router.post('/walk-forward', async (req, res) => {
       strategyName: strategy.name,
       runType: 'backtest',
       mode: 'simulation',
-      symbol: symbol.toUpperCase(),
-      universe: [symbol.toUpperCase()],
+      symbol: normalizedSymbol,
+      universe: [normalizedSymbol],
       parameters,
       source: 'backtest',
-      summary: { symbol: symbol.toUpperCase(), validationType: 'walk_forward' },
+      summary: { symbol: normalizedSymbol, validationType: 'walk_forward' },
       context: { accountId, route: '/api/backtest/walk-forward' }
     });
-    const bars = (await fetchDaily(symbol.toUpperCase())).filter(bar => {
+    const bars = (await fetchDaily(normalizedSymbol)).filter(bar => {
       const date = new Date(bar.t).toISOString().slice(0, 10);
-      return (!start || date >= start) && (!end || date <= end);
+      return (!normalizedStart || date >= normalizedStart) && (!normalizedEnd || date <= normalizedEnd);
     });
     const result = runWalkForwardValidation({ bars, strategyId, ...normalizedWalkForward });
     if (result.metrics.windowCount < MIN_WALK_FORWARD_WINDOWS) {
       await finalizeStrategyRun(strategyRun, {
         status: 'failed',
         metrics: result.metrics,
-        summary: { symbol: symbol.toUpperCase(), validationType: 'walk_forward', reason: 'INSUFFICIENT_WINDOWS' },
+        summary: { symbol: normalizedSymbol, validationType: 'walk_forward', reason: 'INSUFFICIENT_WINDOWS' },
         result
       });
       return res.status(400).json({ error: 'Not enough daily bars for three walk-forward windows.', result });
@@ -93,21 +119,21 @@ router.post('/walk-forward', async (req, res) => {
       status: 'completed',
       metrics: result.metrics,
       summary: {
-        symbol: symbol.toUpperCase(),
+        symbol: normalizedSymbol,
         strategyId,
         validationType: 'walk_forward',
         passed: result.passed
       },
       result
     });
-    res.json({ symbol: symbol.toUpperCase(), strategy, ...result });
+    res.json({ symbol: normalizedSymbol, strategy, ...result });
   } catch (err) {
     await finalizeStrategyRun(strategyRun, {
       status: 'failed',
       error: err.message,
       summary: { validationType: 'walk_forward', reason: 'WALK_FORWARD_ERROR' }
     });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Walk-forward backtest failed.' });
   }
 });
 
@@ -119,6 +145,11 @@ router.post('/', async (req, res) => {
     if (!symbol || !strategyId) {
       return res.status(400).json({ error: 'symbol and strategyId are required.' });
     }
+    const validated = validateBacktestInput({ symbol, start, end });
+    if (validated.error) return res.status(400).json({ error: validated.error });
+    const normalizedSymbol = validated.symbol;
+    const normalizedStart = validated.start;
+    const normalizedEnd = validated.end;
     if (timeframe && timeframe !== '1D') {
       return res.status(400).json({ error: 'Only 1D timeframe is supported for now.' });
     }
@@ -134,11 +165,11 @@ router.post('/', async (req, res) => {
       strategyName: strategy.name,
       runType: 'backtest',
       mode: 'simulation',
-      symbol: symbol.toUpperCase(),
-      universe: [symbol.toUpperCase()],
+      symbol: normalizedSymbol,
+      universe: [normalizedSymbol],
       parameters: {
-        start: start || null,
-        end: end || null,
+        start: normalizedStart,
+        end: normalizedEnd,
         timeframe: timeframe || '1D',
         assumptions: {
           startingEquity: DEFAULT_STARTING_EQUITY,
@@ -150,7 +181,7 @@ router.post('/', async (req, res) => {
       },
       source: 'backtest',
       summary: {
-        symbol: symbol.toUpperCase()
+        symbol: normalizedSymbol
       },
       context: {
         accountId,
@@ -158,18 +189,18 @@ router.post('/', async (req, res) => {
       }
     });
 
-    const bars = await fetchDaily(symbol.toUpperCase());
+    const bars = await fetchDaily(normalizedSymbol);
     const filtered = bars.filter(bar => {
       const date = new Date(bar.t).toISOString().slice(0, 10);
-      if (start && date < start) return false;
-      if (end && date > end) return false;
+      if (normalizedStart && date < normalizedStart) return false;
+      if (normalizedEnd && date > normalizedEnd) return false;
       return true;
     });
 
     if (filtered.length < 50) {
       await finalizeStrategyRun(strategyRun, {
         status: 'failed',
-        summary: { symbol: symbol.toUpperCase(), reason: 'NOT_ENOUGH_DATA' },
+        summary: { symbol: normalizedSymbol, reason: 'NOT_ENOUGH_DATA' },
         error: 'Not enough data for backtest.'
       });
       return res.status(400).json({ error: 'Not enough data for backtest.' });
@@ -185,17 +216,17 @@ router.post('/', async (req, res) => {
         maxDrawdown: results.maxDrawdown
       },
       summary: {
-        symbol: symbol.toUpperCase(),
+        symbol: normalizedSymbol,
         strategyId
       },
       result: results
     });
     res.json({
-      symbol: symbol.toUpperCase(),
+      symbol: normalizedSymbol,
       strategy,
       timeframe: timeframe || '1D',
-      start,
-      end,
+      start: normalizedStart,
+      end: normalizedEnd,
       ...results
     });
   } catch (err) {
@@ -206,7 +237,7 @@ router.post('/', async (req, res) => {
         reason: 'BACKTEST_ERROR'
       }
     });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Backtest failed.' });
   }
 });
 

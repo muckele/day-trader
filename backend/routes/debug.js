@@ -8,11 +8,13 @@
 const router = require('express').Router();
 const auth = require('../middleware/auth');
 const tradeLogic = require('../tradeLogic');
+const { normalizeMarketSymbol } = require('../utils/marketSymbol');
 
 router.use(auth);
 
 router.get('/bars/:symbol', async (req, res, next) => {
-  const symbol = req.params.symbol.toUpperCase();
+  const symbol = normalizeMarketSymbol(req.params.symbol);
+  if (!symbol) return res.status(400).json({ error: 'Invalid symbol.' });
   try {
     const fetched = await tradeLogic.fetchDaily(symbol);
     const bars = Array.isArray(fetched) ? fetched : [];

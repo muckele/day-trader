@@ -6,7 +6,7 @@ const {
   buildMongoConnectionTargets
 } = require('../utils/mongoConnectionConfig');
 
-test('buildMongoConnectionTargets prefers local Mongo first in development', () => {
+test('buildMongoConnectionTargets ignores remote Mongo targets in development by default', () => {
   const config = buildMongoConnectionTargets({
     NODE_ENV: 'development',
     MONGO_URI: 'mongodb+srv://user:pass@atlas.example/daytrader',
@@ -16,9 +16,10 @@ test('buildMongoConnectionTargets prefers local Mongo first in development', () 
 
   assert.equal(config.isProduction, false);
   assert.equal(config.preferLocal, true);
+  assert.equal(config.allowRemoteDevelopment, false);
   assert.deepEqual(
     config.targets.map(target => target.label),
-    ['MONGO_LOCAL_URI', 'MONGO_URI', 'MONGO_URI_DIRECT']
+    ['MONGO_LOCAL_URI']
   );
 });
 
@@ -37,14 +38,16 @@ test('buildMongoConnectionTargets excludes local Mongo in production by default'
   );
 });
 
-test('buildMongoConnectionTargets can place local Mongo after Atlas when preferred off in development', () => {
+test('buildMongoConnectionTargets permits remote development only with explicit opt-in', () => {
   const config = buildMongoConnectionTargets({
     NODE_ENV: 'development',
     MONGO_PREFER_LOCAL: 'false',
+    MONGO_ALLOW_REMOTE_DEV: 'true',
     MONGO_URI: 'mongodb+srv://user:pass@atlas.example/daytrader'
   });
 
   assert.equal(config.preferLocal, false);
+  assert.equal(config.allowRemoteDevelopment, true);
   assert.deepEqual(
     config.targets.map(target => target.label),
     ['MONGO_URI', 'MONGO_LOCAL_URI']

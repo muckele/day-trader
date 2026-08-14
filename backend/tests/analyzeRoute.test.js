@@ -79,3 +79,20 @@ test('analyze route returns 200 ok:false for NO_DATA', async t => {
   assert.equal(res.body.error, 'NO_DATA');
   assert.equal(res.body.analysis, null);
 });
+
+test('analyze route rejects invalid symbols before analysis work', async t => {
+  let called = false;
+  t.mock.method(analysisEngine, 'analyzeDeterministic', async () => {
+    called = true;
+    return {};
+  });
+  const res = createMockRes();
+
+  await getAnalyzeHandler()({ params: { symbol: 'bad symbol!' }, query: {} }, res, err => {
+    throw err;
+  });
+
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.error, 'Invalid symbol.');
+  assert.equal(called, false);
+});

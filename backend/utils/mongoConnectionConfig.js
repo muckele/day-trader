@@ -12,6 +12,7 @@ function buildMongoConnectionTargets(env = process.env) {
   const nodeEnv = String(env.NODE_ENV || 'development').trim().toLowerCase();
   const isProduction = nodeEnv === 'production';
   const preferLocal = parseBoolean(env.MONGO_PREFER_LOCAL, !isProduction);
+  const allowRemoteDevelopment = parseBoolean(env.MONGO_ALLOW_REMOTE_DEV, false);
   const localUri = String(env.MONGO_LOCAL_URI || DEFAULT_LOCAL_MONGO_URI).trim();
   const atlasSrvUri = String(env.MONGO_URI || '').trim();
   const atlasDirectUri = String(env.MONGO_URI_DIRECT || '').trim();
@@ -22,11 +23,11 @@ function buildMongoConnectionTargets(env = process.env) {
     targets.push({ uri: localUri, label: 'MONGO_LOCAL_URI', type: 'local' });
   }
 
-  if (atlasSrvUri) {
+  if (atlasSrvUri && (isProduction || allowRemoteDevelopment)) {
     targets.push({ uri: atlasSrvUri, label: 'MONGO_URI', type: 'atlas-srv' });
   }
 
-  if (atlasDirectUri && atlasDirectUri !== atlasSrvUri) {
+  if (atlasDirectUri && atlasDirectUri !== atlasSrvUri && (isProduction || allowRemoteDevelopment)) {
     targets.push({ uri: atlasDirectUri, label: 'MONGO_URI_DIRECT', type: 'atlas-direct' });
   }
 
@@ -38,6 +39,7 @@ function buildMongoConnectionTargets(env = process.env) {
     nodeEnv,
     isProduction,
     preferLocal,
+    allowRemoteDevelopment,
     targets
   };
 }

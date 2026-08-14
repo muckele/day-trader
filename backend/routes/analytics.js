@@ -20,12 +20,23 @@ const {
 } = require('../analytics/analyticsUtils');
 const { buildSnapshot } = require('../analytics/snapshot');
 const { getRequestAccountId } = require('../utils/accountScope');
+const { normalizeMarketSymbol } = require('../utils/marketSymbol');
 
 router.use(requireMongo);
 router.use(auth);
 
 function sum(values) {
   return values.reduce((acc, value) => acc + value, 0);
+}
+
+function sanitizeCsvCell(value) {
+  if (typeof value !== 'string') return value;
+  return /^[\t\r ]*[=+\-@]/.test(value) ? `'${value}` : value;
+}
+
+function normalizeAnalyticsSymbol(value) {
+  if (!value) return '';
+  return normalizeMarketSymbol(value);
 }
 
 function profitFactor(trades) {
@@ -160,14 +171,19 @@ router.get('/summary', async (req, res, next) => {
   try {
     const accountId = getRequestAccountId(req);
     const { range = '30d', symbol = '', strategyId = '', regime = '' } = req.query;
+    const normalizedSymbol = normalizeAnalyticsSymbol(symbol);
+    if (symbol && !normalizedSymbol) return res.status(400).json({ error: 'Invalid symbol.' });
+    if (String(strategyId).length > 100 || String(regime).length > 40) {
+      return res.status(400).json({ error: 'Analytics filters are too long.' });
+    }
     const startDate = parseRange(range);
     const tradeQuery = { accountId };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
-    if (symbol) tradeQuery.symbol = symbol.toUpperCase();
+    if (normalizedSymbol) tradeQuery.symbol = normalizedSymbol;
     if (strategyId) tradeQuery.strategyId = strategyId;
 
     const trades = await PaperTrade.find(tradeQuery).sort({ filledAt: 1 }).lean();
-    const filtered = filterTrades(trades, { range, symbol, strategyId, regime });
+    const filtered = filterTrades(trades, { range, symbol: normalizedSymbol, strategyId, regime });
     const totalPnl = sum(filtered.map(trade => trade.realizedPnl));
     const wins = filtered.filter(trade => trade.realizedPnl > 0).length;
     const winRate = filtered.length ? Number(((wins / filtered.length) * 100).toFixed(2)) : 0;
@@ -309,13 +325,18 @@ router.get('/trades.csv', async (req, res, next) => {
   try {
     const accountId = getRequestAccountId(req);
     const { range = '30d', symbol = '', strategyId = '', regime = '' } = req.query;
+    const normalizedSymbol = normalizeAnalyticsSymbol(symbol);
+    if (symbol && !normalizedSymbol) return res.status(400).json({ error: 'Invalid symbol.' });
+    if (String(strategyId).length > 100 || String(regime).length > 40) {
+      return res.status(400).json({ error: 'Analytics filters are too long.' });
+    }
     const startDate = parseRange(range);
     const tradeQuery = { accountId };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
-    if (symbol) tradeQuery.symbol = symbol.toUpperCase();
+    if (normalizedSymbol) tradeQuery.symbol = normalizedSymbol;
     if (strategyId) tradeQuery.strategyId = strategyId;
     const trades = await PaperTrade.find(tradeQuery).sort({ filledAt: 1 }).lean();
-    const filtered = filterTrades(trades, { range, symbol, strategyId, regime });
+    const filtered = filterTrades(trades, { range, symbol: normalizedSymbol, strategyId, regime });
 
     const rows = filtered.map(trade => ({
       filledAt: new Date(trade.filledAt).toISOString(),
@@ -351,7 +372,7 @@ router.get('/trades.csv', async (req, res, next) => {
 
     const csvLines = [
       headers.join(','),
-      ...rows.map(row => headers.map(header => JSON.stringify(row[header] ?? '')).join(','))
+      ...rows.map(row => headers.map(header => JSON.stringify(sanitizeCsvCell(row[header] ?? ''))).join(','))
     ];
 
     res.setHeader('Content-Type', 'text/csv');
@@ -412,3 +433,4 @@ router.get('/execution-quality', async (req, res, next) => {
 });
 
 module.exports = router;
+module.exports.sanitizeCsvCell = sanitizeCsvCell;

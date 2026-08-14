@@ -1,0 +1,11 @@
+# Never send local credentials to any Docker or remote-builder context.
+.env
+.env.*
+**/.env
+**/.env.*
+
+.git
+**/node_modules
+**/dist
+**/test-results
+**/playwright-report

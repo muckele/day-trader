@@ -1,10 +1,12 @@
 // backend/routes/analyze.js
 const router = require('express').Router();
 const analysisEngine = require('../analysisEngine');
+const { normalizeMarketSymbol } = require('../utils/marketSymbol');
 
 router.get('/:symbol', async (req, res, next) => {
   try {
-    const sym = req.params.symbol.toUpperCase();
+    const sym = normalizeMarketSymbol(req.params.symbol);
+    if (!sym) return res.status(400).json({ error: 'Invalid symbol.' });
     const analysis = await analysisEngine.analyzeDeterministic({
       symbol: sym,
       strategyId: req.query?.strategyId || null,

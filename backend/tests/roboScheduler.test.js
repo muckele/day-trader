@@ -76,6 +76,7 @@ test('startRoboScheduler runs scheduler tick and retention cleanup', async t => 
       retentionDays: 7,
       decisionRetentionDays: 3,
       auditLogRetentionDays: 7,
+      cleanupEnabled: true,
       startupDelayMs: 0
     });
 

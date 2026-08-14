@@ -14,6 +14,7 @@ function sensitiveRateLimit({ windowMs = 60 * 1000, max = 12 } = {}) {
     windowMs,
     max,
     keyPrefix: 'robo-sensitive',
+    distributed: true,
     message: 'Too many Robo requests. Try again shortly.'
   });
 }

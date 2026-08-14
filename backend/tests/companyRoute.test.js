@@ -81,3 +81,18 @@ test('company route returns 404 when asset is not found', async t => {
   assert.equal(res.statusCode, 404);
   assert.deepEqual(res.body, { error: 'No asset found for XXXX' });
 });
+
+test('company route rejects invalid symbols before sending broker credentials', async t => {
+  let called = false;
+  t.mock.method(axios, 'get', async () => {
+    called = true;
+    return { data: {} };
+  });
+  const res = createMockRes();
+
+  await getCompanyHandler()({ params: { symbol: 'bad symbol!' } }, res);
+
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.error, 'Invalid symbol.');
+  assert.equal(called, false);
+});

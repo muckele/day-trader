@@ -30,6 +30,17 @@ function runLimiter(limiter, ip) {
   return { res, nextCalled };
 }
 
+async function runAsyncLimiter(limiter, ip) {
+  const res = createMockRes();
+  let nextCalled = false;
+  let nextError = null;
+  await limiter({ ip }, res, err => {
+    nextCalled = !err;
+    nextError = err || null;
+  });
+  return { res, nextCalled, nextError };
+}
+
 test('rate limiter prunes expired buckets on subsequent traffic', async () => {
   clearRateLimitBuckets();
   const limiter = createRateLimit({
@@ -63,4 +74,32 @@ test('rate limiter keeps bucket storage bounded', () => {
 
   assert.equal(_getRateLimitBucketCount(), 2);
   clearRateLimitBuckets();
+});
+
+test('distributed rate limiter uses the shared store and rejects after the shared maximum', async () => {
+  const responses = [null, { count: 1 }, { count: 2 }, null, null];
+  const calls = [];
+  const RateLimitBucketModel = {
+    findOneAndUpdate(query, update, options) {
+      calls.push({ query, update, options });
+      const value = responses.shift();
+      return { lean: async () => value };
+    }
+  };
+  const limiter = createRateLimit({
+    distributed: true,
+    isDistributedReady: () => true,
+    RateLimitBucketModel,
+    keyPrefix: 'shared-test',
+    windowMs: 60000,
+    max: 2
+  });
+
+  assert.equal((await runAsyncLimiter(limiter, '203.0.113.10')).nextCalled, true);
+  assert.equal((await runAsyncLimiter(limiter, '203.0.113.10')).nextCalled, true);
+  const blocked = await runAsyncLimiter(limiter, '203.0.113.10');
+  assert.equal(blocked.nextCalled, false);
+  assert.equal(blocked.nextError, null);
+  assert.equal(blocked.res.statusCode, 429);
+  assert.equal(calls.length, 5);
 });

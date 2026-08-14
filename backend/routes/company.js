@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const { normalizeMarketSymbol } = require('../utils/marketSymbol');
 const router = express.Router();
 
 const RAW_TRADING_URL =
@@ -38,7 +39,10 @@ router.get('/:symbol', async (req, res) => {
     });
   }
 
-  const symbol = req.params.symbol.toUpperCase();
+  const symbol = normalizeMarketSymbol(req.params.symbol);
+  if (!symbol) {
+    return res.status(400).json({ error: 'Invalid symbol.' });
+  }
 
   try {
     let asset = null;
@@ -48,7 +52,7 @@ router.get('/:symbol', async (req, res) => {
     for (const baseUrl of TRADING_BASE_URLS) {
       try {
         const resp = await axios.get(
-          `${baseUrl}/v2/assets/${symbol}`,
+          `${baseUrl}/v2/assets/${encodeURIComponent(symbol)}`,
           {
             headers: {
               'APCA-API-KEY-ID': API_KEY,

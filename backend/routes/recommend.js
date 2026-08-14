@@ -8,6 +8,7 @@ const { generateRecommendationLists } = require('../services/recommendationEngin
 const mongoState = require('../utils/mongoState');
 const requireMongo = require('../middleware/requireMongo');
 const auth = require('../middleware/auth');
+const { normalizeMarketSymbol } = require('../utils/marketSymbol');
 
 router.use(requireMongo);
 router.use(auth);
@@ -120,10 +121,12 @@ router.get('/', async (req, res, next) => {
 
 router.get('/:symbol', async (req, res, next) => {
   try {
+    const symbol = normalizeMarketSymbol(req.params.symbol);
+    if (!symbol) return res.status(400).json({ error: 'Invalid symbol.' });
     const status = getMarketStatus();
     const regime = await getTodayRegime();
     const recommendationSet = await generateRecommendationLists({
-      universe: [req.params.symbol.toUpperCase()],
+      universe: [symbol],
       regime,
       persist: false
     });

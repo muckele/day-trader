@@ -448,9 +448,9 @@ test('robotrader audit cleanup deletes old audit logs by retention cutoff', asyn
     now: new Date('2026-01-10T00:00:00.000Z')
   }, deps);
 
-  assert.equal(result.retentionDays, 7);
+  assert.equal(result.retentionDays, 90);
   assert.equal(result.deletedCount, 42);
-  assert.equal(deleteQueries[0].createdAt.$lt.toISOString(), '2026-01-03T00:00:00.000Z');
+  assert.equal(deleteQueries[0].createdAt.$lt.toISOString(), '2025-10-12T00:00:00.000Z');
 });
 
 test('robotrader worker tick finds enabled users', async () => {

@@ -22,8 +22,11 @@ const schedulerState = {
   lastLegacySchedulerAt: null,
   lastPhase1WorkerAt: null,
   lastReconciliationAt: null,
+  lastReconciliationSuccessAt: null,
+  lastReconciliationError: null,
   legacySchedulerEnabled: null,
-  phase1WorkerEnabled: null
+  phase1WorkerEnabled: null,
+  cleanupEnabled: false
 };
 
 function toFinitePositiveInt(value, fallback) {
@@ -102,6 +105,7 @@ function startRoboScheduler({
   retentionDays = process.env.ROBO_SIGNAL_RETENTION_DAYS,
   decisionRetentionDays = process.env.ROBOTRADER_DECISION_RETENTION_DAYS,
   auditLogRetentionDays = process.env.ROBOTRADER_AUDIT_LOG_RETENTION_DAYS,
+  cleanupEnabled = isEnvTrue(process.env.ROBO_CLEANUP_ENABLED),
   startupDelayMs = 5000,
   isDbReady = defaultIsDbReady,
   controlledLiveWatchdog = enforceControlledLiveWatchdog,
@@ -114,6 +118,7 @@ function startRoboScheduler({
   }
 
   schedulerState.enabled = true;
+  schedulerState.cleanupEnabled = cleanupEnabled === true;
   const tickEveryMs = toFinitePositiveInt(intervalMs, 60 * 1000);
   const cleanupEveryMs = toFinitePositiveInt(cleanupIntervalMs, 6 * 60 * 60 * 1000);
   const dbRequired = isSchedulerDbRequired();
@@ -122,7 +127,7 @@ function startRoboScheduler({
     toFinitePositiveInt(process.env.ROBO_SCHEDULER_SKIP_LOG_INTERVAL_MS, 60 * 1000)
   );
   let lastSkipLogAt = 0;
-  let lastCleanupAt = 0;
+  let lastCleanupAt = Date.now();
   let lastReconciliationAt = 0;
   let running = false;
   const tick = async () => {
@@ -168,7 +173,7 @@ function startRoboScheduler({
       schedulerState.lastSuccessAt = new Date();
       schedulerState.lastError = null;
       const nowMs = Date.now();
-      if ((nowMs - lastCleanupAt) >= cleanupEveryMs) {
+      if (cleanupEnabled === true && (nowMs - lastCleanupAt) >= cleanupEveryMs) {
         lastCleanupAt = nowMs;
         schedulerState.lastCleanupAt = new Date(nowMs);
         try {
@@ -207,11 +212,13 @@ function startRoboScheduler({
         lastReconciliationAt = nowMs;
         schedulerState.lastReconciliationAt = new Date(nowMs);
         try {
+          let reconciliationError = null;
           let reconciliationModes = ['paper'];
           try {
             reconciliationModes = await getScheduledReconciliationModes();
           } catch (err) {
             console.error('RoboTrader live reconciliation gate failed:', err.message);
+            reconciliationError = `Live reconciliation gate failed: ${err.message}`;
           }
 
           for (const mode of reconciliationModes) {
@@ -219,10 +226,18 @@ function startRoboScheduler({
               await roboReconciliation.reconcileRoboOrders({ mode });
             } catch (err) {
               console.error(`RoboTrader ${mode} reconciliation failed:`, err.message);
+              reconciliationError = `${mode} reconciliation failed: ${err.message}`;
             }
+          }
+          if (reconciliationError) {
+            schedulerState.lastReconciliationError = reconciliationError;
+          } else {
+            schedulerState.lastReconciliationSuccessAt = new Date();
+            schedulerState.lastReconciliationError = null;
           }
         } catch (err) {
           console.error('RoboTrader reconciliation failed:', err.message);
+          schedulerState.lastReconciliationError = err?.message || 'Unknown reconciliation error';
         }
       }
     } catch (err) {
@@ -262,8 +277,12 @@ function getSchedulerStatus() {
     lastLegacySchedulerAt: schedulerState.lastLegacySchedulerAt,
     lastPhase1WorkerAt: schedulerState.lastPhase1WorkerAt,
     lastReconciliationAt: schedulerState.lastReconciliationAt,
+    lastReconciliationSuccessAt: schedulerState.lastReconciliationSuccessAt,
+    lastReconciliationError: schedulerState.lastReconciliationError,
+    reconciliationEnabled: process.env.ROBOTRADER_RECONCILIATION_DISABLED !== 'true',
     legacySchedulerEnabled: schedulerState.legacySchedulerEnabled,
-    phase1WorkerEnabled: schedulerState.phase1WorkerEnabled
+    phase1WorkerEnabled: schedulerState.phase1WorkerEnabled,
+    cleanupEnabled: schedulerState.cleanupEnabled
   };
 }
 

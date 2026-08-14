@@ -42,6 +42,8 @@ async function request(baseUrl, check) {
   const res = await axios({
     method,
     url,
+    data: check.data,
+    headers: check.headers,
     timeout: 20_000,
     validateStatus: () => true
   });
@@ -67,6 +69,30 @@ function validateHealth(payload) {
   assertShape(isObject(payload.services.mongo), '/health.services.mongo should be an object');
   assertShape(typeof payload.services.mongo.readyState === 'number',
     '/health.services.mongo.readyState should be a number');
+  assertShape(isObject(payload.release), '/health.release should be an object');
+  assertShape(typeof payload.release.sourceCommit === 'string', '/health.release.sourceCommit should be a string');
+}
+
+function validateReadiness(payload) {
+  assertShape(isObject(payload), '/ready should return an object');
+  assertShape(typeof payload.ready === 'boolean', '/ready.ready should be a boolean');
+  assertShape(isObject(payload.release), '/ready.release should be an object');
+  assertShape(Array.isArray(payload.checks), '/ready.checks should be an array');
+}
+
+function validateMarketDataProvenance(payload) {
+  assertShape(Array.isArray(payload) && payload.length === 1, 'market quotes should return one AAPL quote');
+  const quote = payload[0];
+  assertShape(quote.symbol === 'AAPL', 'quote symbol should exactly match AAPL');
+  assertShape(typeof quote.source === 'string', 'quote should include provider source');
+  assertShape(typeof quote.isMock === 'boolean', 'quote should explicitly identify simulated state');
+  assertShape(typeof quote.timestamp === 'string', 'quote should include a provider/generated timestamp');
+  if (quote.isMock) assertShape(quote.source === 'mock', 'simulated quote source must be mock');
+}
+
+function validateUnauthorized(payload) {
+  assertShape(isObject(payload), 'protected route should return JSON when unauthorized');
+  assertShape(typeof payload.message === 'string', 'unauthorized payload should include message');
 }
 
 function validateIntraday(payload) {
@@ -128,16 +154,51 @@ async function run() {
 
   const checks = [
     { name: 'health', path: '/health', validate: validateHealth, expectedStatuses: [200] },
-    { name: 'market-intraday', path: '/api/market/intraday/AAPL', validate: validateIntraday, expectedStatuses: [200] },
-    { name: 'market-historical', path: '/api/market/historical/AAPL', validate: validateHistorical, expectedStatuses: [200] },
-    { name: 'company', path: '/api/company/AAPL', validate: validateCompany, expectedStatuses: [200] },
-    { name: 'analyze', path: '/api/analyze/AAPL', validate: validateAnalyze, expectedStatuses: [200] },
-    { name: 'recommendations', path: '/api/recommendations/AAPL', validate: validateRecommendations, expectedStatuses: [200] },
+    { name: 'readiness', path: '/ready', validate: validateReadiness, expectedStatuses: [200, 503] },
     {
-      name: 'robo-run-once-route',
+      name: 'market-data-provenance',
       method: 'post',
-      path: '/api/robo/run-once',
-      validate: validateRoboRunOnceUnauthorized,
+      path: '/api/market/quotes',
+      data: { symbols: ['AAPL'] },
+      validate: validateMarketDataProvenance,
+      expectedStatuses: [200]
+    },
+    {
+      name: 'settings-auth-enforcement',
+      path: '/api/robotrader/settings',
+      validate: validateUnauthorized,
+      expectedStatuses: [401]
+    },
+    {
+      name: 'preview-auth-enforcement',
+      method: 'post',
+      path: '/api/robotrader/preview-paper',
+      headers: { 'Idempotency-Key': 'smoke-preview-no-auth' },
+      validate: validateUnauthorized,
+      expectedStatuses: [401]
+    },
+    {
+      name: 'submit-auth-enforcement',
+      method: 'post',
+      path: '/api/robotrader/paper-intents/507f1f77bcf86cd799439011/submit',
+      headers: { 'Idempotency-Key': 'smoke-submit-no-auth' },
+      validate: validateUnauthorized,
+      expectedStatuses: [401]
+    },
+    {
+      name: 'reconciliation-auth-enforcement',
+      method: 'post',
+      path: '/api/robotrader/reconcile',
+      data: { mode: 'paper' },
+      validate: validateUnauthorized,
+      expectedStatuses: [401]
+    },
+    {
+      name: 'emergency-stop-auth-enforcement',
+      method: 'post',
+      path: '/api/robotrader/emergency-stop',
+      data: { environment: 'paper', cancelOpenOrders: false },
+      validate: validateUnauthorized,
       expectedStatuses: [401]
     }
   ];

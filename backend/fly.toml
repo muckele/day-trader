@@ -2,9 +2,9 @@ app = "day-trader-backend"
 primary_region = "ord"
 
 # Recommended Fly secrets for this app (set via `fly secrets set ...`):
-# - APCA_API_KEY_ID
-# - APCA_API_SECRET_KEY
-# - APCA_BASE_URL=https://paper-api.alpaca.markets
+# - APCA_PAPER_API_KEY_ID
+# - APCA_PAPER_API_SECRET_KEY
+# - APCA_PAPER_ACCOUNT_ID
 # - APCA_DATA_URL
 # - APCA_DATA_FEED (example: iex)
 # - APP_PAPER_TRADES_SYNC_TO_ALPACA=true
@@ -18,7 +18,10 @@ primary_region = "ord"
 # - ROBO_SIGNAL_RETENTION_DAYS (example: 90)
 # - ROBO_SIGNAL_CLEANUP_INTERVAL_MS (example: 21600000)
 # - ROBOTRADER_DECISION_RETENTION_DAYS (default 3)
-# - ROBOTRADER_AUDIT_LOG_RETENTION_DAYS (default 7)
+# - ROBOTRADER_AUDIT_LOG_RETENTION_DAYS (default 90)
+# - ROBO_CLEANUP_ENABLED=true (only after retention policy review)
+# - ROBOTRADER_OPERATOR_USERNAMES / ROBOTRADER_OPERATOR_USER_IDS
+# - ROBOTRADER_ALERT_WEBHOOK_URL / ROBOTRADER_ALERT_WEBHOOK_BEARER_TOKEN
 # - SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM (if smtp provider)
 
 [build]
@@ -26,7 +29,11 @@ primary_region = "ord"
 
 [env]
   NODE_ENV = "production"
+  ROBOTRADER_DEPLOYMENT_ENV = "production"
   PORT = "8080"
+  LIVE_TRADING_ENABLED = "false"
+  APCA_PAPER_BASE_URL = "https://paper-api.alpaca.markets"
+  PRIVATE_REGISTRATION_ENABLED = "false"
 
 [http_service]
   internal_port = 8080
@@ -35,3 +42,10 @@ primary_region = "ord"
   auto_start_machines = true
   min_machines_running = 1
   processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/ready"
