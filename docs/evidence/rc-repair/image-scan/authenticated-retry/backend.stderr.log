@@ -1,0 +1,7 @@
+    i New version 1.24.0 available (installed version is 1.23.1) at https://github.com/docker/scout-cli
+    ...Storing image for indexing
+    ✓ Image stored for indexing
+    ...Indexing
+    ✓ Indexed 404 packages
+    ✗ Detected 19 vulnerable packages with a total of 65 vulnerabilities
+    ✓ Report written to docs/evidence/rc-repair/image-scan/authenticated-retry/backend.sarif.json

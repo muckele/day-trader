@@ -1,0 +1,412 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "fullName": "Docker Scout",
+          "informationUri": "https://docker.com/products/docker-scout",
+          "name": "docker scout",
+          "rules": [
+            {
+              "id": "CVE-2026-58055",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2026-58055"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2026-58055?s=alpine&n=nghttp2&ns=alpine&t=apk&osn=alpine&osv=3.24&vr=%3C1.70.0-r0",
+              "help": {
+                "text": "\n",
+                "markdown": "> \n\n|                                                                                 |\n|Package         pkg:apk/alpine/nghttp2@1.69.0-r0?os_name=alpine&os_version=3.24  |\n|Affected range  <1.70.0-r0                                                       |\n|Fixed version   1.70.0-r0                                                        |\n"
+              },
+              "properties": {
+                "affected_version": "<1.70.0-r0",
+                "cvssV3_severity": "UNSPECIFIED",
+                "fixed_version": "1.70.0-r0",
+                "purls": [
+                  "pkg:apk/alpine/nghttp2@1.69.0-r0?os_name=alpine&os_version=3.24"
+                ],
+                "security-severity": "3.1",
+                "tags": [
+                  "UNSPECIFIED"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2026-11979",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2026-11979"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2026-11979?s=alpine&n=libxml2&ns=alpine&t=apk&osn=alpine&osv=3.24&vr=%3C%3D2.13.9-r2",
+              "help": {
+                "text": "\n",
+                "markdown": "> \n\n|                                                                                 |\n|Package         pkg:apk/alpine/libxml2@2.13.9-r2?os_name=alpine&os_version=3.24  |\n|Affected range  <=2.13.9-r2                                                      |\n|Fixed version   not fixed                                                        |\n"
+              },
+              "properties": {
+                "affected_version": "<=2.13.9-r2",
+                "cvssV3_severity": "LOW",
+                "fixed_version": "not fixed",
+                "purls": [
+                  "pkg:apk/alpine/libxml2@2.13.9-r2?os_name=alpine&os_version=3.24"
+                ],
+                "security-severity": "1.8",
+                "tags": [
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2025-8732",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2025-8732"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2025-8732?s=alpine&n=libxml2&ns=alpine&t=apk&osn=alpine&osv=3.24&vr=%3C%3D2.13.9-r2",
+              "help": {
+                "text": "\n",
+                "markdown": "> \n\n|                                                                                 |\n|Package         pkg:apk/alpine/libxml2@2.13.9-r2?os_name=alpine&os_version=3.24  |\n|Affected range  <=2.13.9-r2                                                      |\n|Fixed version   not fixed                                                        |\n"
+              },
+              "properties": {
+                "affected_version": "<=2.13.9-r2",
+                "cvssV3_severity": "LOW",
+                "fixed_version": "not fixed",
+                "purls": [
+                  "pkg:apk/alpine/libxml2@2.13.9-r2?os_name=alpine&os_version=3.24"
+                ],
+                "security-severity": "1.9",
+                "tags": [
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2026-0989",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2026-0989"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2026-0989?s=alpine&n=libxml2&ns=alpine&t=apk&osn=alpine&osv=3.24&vr=%3C%3D2.13.9-r2",
+              "help": {
+                "text": "\n",
+                "markdown": "> \n\n|                                                                                 |\n|Package         pkg:apk/alpine/libxml2@2.13.9-r2?os_name=alpine&os_version=3.24  |\n|Affected range  <=2.13.9-r2                                                      |\n|Fixed version   not fixed                                                        |\n"
+              },
+              "properties": {
+                "affected_version": "<=2.13.9-r2",
+                "cvssV3_severity": "LOW",
+                "fixed_version": "not fixed",
+                "purls": [
+                  "pkg:apk/alpine/libxml2@2.13.9-r2?os_name=alpine&os_version=3.24"
+                ],
+                "security-severity": "3.7",
+                "tags": [
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2026-78409",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2026-78409"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2026-78409?s=alpine&n=util-linux&ns=alpine&t=apk&osn=alpine&osv=3.24&vr=%3C2.42.3-r0",
+              "help": {
+                "text": "\n",
+                "markdown": "> \n\n|                                                                                    |\n|Package         pkg:apk/alpine/util-linux@2.42.1-r0?os_name=alpine&os_version=3.24  |\n|Affected range  <2.42.3-r0                                                          |\n|Fixed version   2.42.3-r0                                                           |\n"
+              },
+              "properties": {
+                "affected_version": "<2.42.3-r0",
+                "cvssV3_severity": "HIGH",
+                "fixed_version": "2.42.3-r0",
+                "purls": [
+                  "pkg:apk/alpine/util-linux@2.42.1-r0?os_name=alpine&os_version=3.24"
+                ],
+                "security-severity": "7.0",
+                "tags": [
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2026-78410",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2026-78410"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2026-78410?s=alpine&n=util-linux&ns=alpine&t=apk&osn=alpine&osv=3.24&vr=%3C2.42.3-r0",
+              "help": {
+                "text": "\n",
+                "markdown": "> \n\n|                                                                                    |\n|Package         pkg:apk/alpine/util-linux@2.42.1-r0?os_name=alpine&os_version=3.24  |\n|Affected range  <2.42.3-r0                                                          |\n|Fixed version   2.42.3-r0                                                           |\n"
+              },
+              "properties": {
+                "affected_version": "<2.42.3-r0",
+                "cvssV3_severity": "HIGH",
+                "fixed_version": "2.42.3-r0",
+                "purls": [
+                  "pkg:apk/alpine/util-linux@2.42.1-r0?os_name=alpine&os_version=3.24"
+                ],
+                "security-severity": "7.8",
+                "tags": [
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2026-78408",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2026-78408"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2026-78408?s=alpine&n=util-linux&ns=alpine&t=apk&osn=alpine&osv=3.24&vr=%3C2.42.3-r1",
+              "help": {
+                "text": "\n",
+                "markdown": "> \n\n|                                                                                    |\n|Package         pkg:apk/alpine/util-linux@2.42.1-r0?os_name=alpine&os_version=3.24  |\n|Affected range  <2.42.3-r1                                                          |\n|Fixed version   2.42.3-r0                                                           |\n"
+              },
+              "properties": {
+                "affected_version": "<2.42.3-r1",
+                "cvssV3_severity": "HIGH",
+                "fixed_version": "2.42.3-r0",
+                "purls": [
+                  "pkg:apk/alpine/util-linux@2.42.1-r0?os_name=alpine&os_version=3.24"
+                ],
+                "security-severity": "7.9",
+                "tags": [
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2026-76642",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2026-76642"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2026-76642?s=alpine&n=util-linux&ns=alpine&t=apk&osn=alpine&osv=3.24&vr=%3C2.42.3-r0",
+              "help": {
+                "text": "\n",
+                "markdown": "> \n\n|                                                                                    |\n|Package         pkg:apk/alpine/util-linux@2.42.1-r0?os_name=alpine&os_version=3.24  |\n|Affected range  <2.42.3-r0                                                          |\n|Fixed version   2.42.3-r0                                                           |\n"
+              },
+              "properties": {
+                "affected_version": "<2.42.3-r0",
+                "cvssV3_severity": "HIGH",
+                "fixed_version": "2.42.3-r0",
+                "purls": [
+                  "pkg:apk/alpine/util-linux@2.42.1-r0?os_name=alpine&os_version=3.24"
+                ],
+                "security-severity": "8.5",
+                "tags": [
+                  "HIGH"
+                ]
+              }
+            }
+          ],
+          "version": "1.23.1"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CVE-2026-58055",
+          "ruleIndex": 0,
+          "kind": "fail",
+          "level": "none",
+          "message": {
+            "text": "Vulnerability    :CVE-2026-58055                                                   \nSeverity         :UNSPECIFIED                                                      \nPackage          :pkg:apk/alpine/nghttp2@1.69.0-r0?os_name=alpine&os_version=3.24  \nAffected range   :<1.70.0-r0                                                       \nFixed version    :1.70.0-r0                                                        \nEPSS Score       :0.002530                                                         \nEPSS Percentile  :0.168780                                                         \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/lib/apk/db/installed"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/lib/libnghttp2.so.14.29.4"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2026-11979",
+          "ruleIndex": 1,
+          "kind": "fail",
+          "level": "note",
+          "message": {
+            "text": "Vulnerability    :CVE-2026-11979                                                   \nSeverity         :LOW                                                              \nPackage          :pkg:apk/alpine/libxml2@2.13.9-r2?os_name=alpine&os_version=3.24  \nAffected range   :<=2.13.9-r2                                                      \nFixed version    :not fixed                                                        \nEPSS Score       :0.001480                                                         \nEPSS Percentile  :0.043550                                                         \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/lib/apk/db/installed"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/lib/libxml2.so.2.13.9"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2025-8732",
+          "ruleIndex": 2,
+          "kind": "fail",
+          "level": "note",
+          "message": {
+            "text": "Vulnerability    :CVE-2025-8732                                                    \nSeverity         :LOW                                                              \nPackage          :pkg:apk/alpine/libxml2@2.13.9-r2?os_name=alpine&os_version=3.24  \nAffected range   :<=2.13.9-r2                                                      \nFixed version    :not fixed                                                        \nEPSS Score       :0.002070                                                         \nEPSS Percentile  :0.109830                                                         \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/lib/apk/db/installed"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/lib/libxml2.so.2.13.9"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2026-0989",
+          "ruleIndex": 3,
+          "kind": "fail",
+          "level": "note",
+          "message": {
+            "text": "Vulnerability    :CVE-2026-0989                                                    \nSeverity         :LOW                                                              \nPackage          :pkg:apk/alpine/libxml2@2.13.9-r2?os_name=alpine&os_version=3.24  \nAffected range   :<=2.13.9-r2                                                      \nFixed version    :not fixed                                                        \nEPSS Score       :0.004980                                                         \nEPSS Percentile  :0.412110                                                         \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/lib/apk/db/installed"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/lib/libxml2.so.2.13.9"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2026-78409",
+          "ruleIndex": 4,
+          "kind": "fail",
+          "level": "error",
+          "message": {
+            "text": "Vulnerability    :CVE-2026-78409                                                      \nSeverity         :HIGH                                                                \nPackage          :pkg:apk/alpine/util-linux@2.42.1-r0?os_name=alpine&os_version=3.24  \nAffected range   :<2.42.3-r0                                                          \nFixed version    :2.42.3-r0                                                           \nEPSS Score       :0.001240                                                            \nEPSS Percentile  :0.024170                                                            \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/lib/apk/db/installed"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/lib/libuuid.so.1.3.0"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2026-78410",
+          "ruleIndex": 5,
+          "kind": "fail",
+          "level": "error",
+          "message": {
+            "text": "Vulnerability    :CVE-2026-78410                                                      \nSeverity         :HIGH                                                                \nPackage          :pkg:apk/alpine/util-linux@2.42.1-r0?os_name=alpine&os_version=3.24  \nAffected range   :<2.42.3-r0                                                          \nFixed version    :2.42.3-r0                                                           \nEPSS Score       :0.000960                                                            \nEPSS Percentile  :0.007650                                                            \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/lib/apk/db/installed"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/lib/libuuid.so.1.3.0"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2026-78408",
+          "ruleIndex": 6,
+          "kind": "fail",
+          "level": "error",
+          "message": {
+            "text": "Vulnerability    :CVE-2026-78408                                                      \nSeverity         :HIGH                                                                \nPackage          :pkg:apk/alpine/util-linux@2.42.1-r0?os_name=alpine&os_version=3.24  \nAffected range   :<2.42.3-r1                                                          \nFixed version    :2.42.3-r0                                                           \nEPSS Score       :0.001130                                                            \nEPSS Percentile  :0.015960                                                            \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/lib/apk/db/installed"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/lib/libuuid.so.1.3.0"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2026-76642",
+          "ruleIndex": 7,
+          "kind": "fail",
+          "level": "error",
+          "message": {
+            "text": "Vulnerability    :CVE-2026-76642                                                      \nSeverity         :HIGH                                                                \nPackage          :pkg:apk/alpine/util-linux@2.42.1-r0?os_name=alpine&os_version=3.24  \nAffected range   :<2.42.3-r0                                                          \nFixed version    :2.42.3-r0                                                           \nEPSS Score       :0.001760                                                            \nEPSS Percentile  :0.073020                                                            \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/lib/apk/db/installed"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/lib/libuuid.so.1.3.0"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

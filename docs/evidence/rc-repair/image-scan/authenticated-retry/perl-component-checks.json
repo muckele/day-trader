@@ -1,0 +1,40 @@
+[
+  {
+    "command": [
+      "docker",
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--read-only",
+      "--entrypoint",
+      "perl",
+      "sha256:125fd6abf409da48f5e8ed8b5301899dd8ded1708001300a993511293fda1186",
+      "-MFile::GlobMapper",
+      "-e",
+      "print \"module present\\n\""
+    ],
+    "exit": 2,
+    "stdout": "",
+    "stderr": "Can't locate File/GlobMapper.pm in @INC (you may need to install the File::GlobMapper module) (@INC contains: /etc/perl /usr/local/lib/aarch64-linux-gnu/perl/5.36.0 /usr/local/share/perl/5.36.0 /usr/lib/aarch64-linux-gnu/perl5/5.36 /usr/share/perl5 /usr/lib/aarch64-linux-gnu/perl-base /usr/lib/aarch64-linux-gnu/perl/5.36 /usr/share/perl/5.36 /usr/local/lib/site_perl).\nBEGIN failed--compilation aborted.\n"
+  },
+  {
+    "command": [
+      "docker",
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--read-only",
+      "--entrypoint",
+      "perl",
+      "sha256:125fd6abf409da48f5e8ed8b5301899dd8ded1708001300a993511293fda1186",
+      "-MIO::Uncompress::Unzip",
+      "-e",
+      "print \"module present\\n\""
+    ],
+    "exit": 2,
+    "stdout": "",
+    "stderr": "Can't locate IO/Uncompress/Unzip.pm in @INC (you may need to install the IO::Uncompress::Unzip module) (@INC contains: /etc/perl /usr/local/lib/aarch64-linux-gnu/perl/5.36.0 /usr/local/share/perl/5.36.0 /usr/lib/aarch64-linux-gnu/perl5/5.36 /usr/share/perl5 /usr/lib/aarch64-linux-gnu/perl-base /usr/lib/aarch64-linux-gnu/perl/5.36 /usr/share/perl/5.36 /usr/local/lib/site_perl).\nBEGIN failed--compilation aborted.\n"
+  }
+]

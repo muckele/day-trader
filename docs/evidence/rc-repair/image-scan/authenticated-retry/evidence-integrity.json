@@ -1,0 +1,27 @@
+{
+  "boundedSecretScanMatches": [],
+  "filesScanned": 20,
+  "hashes": {
+    "normalized-findings.json": "85bc00e573b4b0b47d0626c25034a64694a6e6b96cdd21a288dc59c7272a8155",
+    "frontend-execution.json": "41ac7a4ce0bafd4cc164942bf905ca470244b8f3b870adafe620708dfe3e2bda",
+    "summary.json": "72e57c9ee13135ab788e8adbeda6458e477b233228bd0629a5d81b02c2cef00e",
+    "frontend.sarif.json": "cc1097faa6f941889a103c9446c894fe69a2cee003a2b03452e2a8279996f88f",
+    "backend-execution.json": "b18860797926b82d36553aa5c08335c66da83e98f03440711f9ff9c6cfa6f0a6",
+    "application-exposure-search.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "frontend.stderr.log": "181a0ab68c9cbc189532902fa2e66a9c2f9cc888b5a1eda23fce097b85b79492",
+    "layer-locations.json": "3cdfc581156ee0a4d7e9047822fe009b03e614da3101e4b6d280a419e2b08419",
+    "local-exposure-checks.json": "254dd8944248cb13832ede02f2c1c83ba65ff05abdc537ae7ea7407ffed3ab15",
+    "backend.stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "official-source-review.json": "a3765ac75f62dfe412040db934c09785a1b69fbe908b0a951348ada33f826711",
+    "critical-high-dispositions.md": "fa30178ca743d865b372c40c8416a6fbdaae6668ed4547b9e106e3119edfc122",
+    "perl-component-checks.json": "81099602639beaab480eb453c32c9a9e65cf50990b10c4d7fecb1feac06bf426",
+    "frontend.stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scout-version.txt": "e8b5942a891ecce715542b5095d5a39c6b4fcadde25d34e58300912c6eeb1d63",
+    "frontend-findings.md": "f9a0f5fa9ca0f0a24f1888b4fc3fada5726b64403a2ecfdcd3fa8cebd9a01f6e",
+    "backend.stderr.log": "e2853a635d568bb224a5bdd503f4fe19626b54c1afc57795fc0677d210bc877f",
+    "critical-high-dispositions.json": "3d2593ba83669274301db26acb0722b91b88d27b2405c8e513818134a8b991d5",
+    "backend.sarif.json": "3dc6739b1b62fb116eafa309ae38db94c82a40d2ca8eebc3dc43f9970b127426",
+    "backend-findings.md": "0e306c8ad1649913cb6dc68e07359e3fbc113b3b3710ec412af1bbfc2c72f585"
+  },
+  "limitations": "Bounded recognizable token/private-key/JWT scan, not exhaustive; complete raw scanner advisory text intentionally preserved."
+}

@@ -310,7 +310,7 @@
   ],
   "actualProcessExit": 0,
   "combinedLocalRC": "NO-GO",
-  "blockingGate": "image CVE analysis incomplete: both explicitly authorized Scout attempts exited1 requesting Docker sign-in; no SARIF, severity counts unknown",
+  "blockingGate": "Image security acceptance: scans complete, backend residual/applicability findings require correction or explicit owner acceptance",
   "rc001": "repaired and verified",
   "rc002": "repaired and verified",
   "deterministicVerifierStatus": "VERIFIED RELEASE CANDIDATE",
@@ -326,5 +326,33 @@
     "candidateImages": "retained, not activated; CVE approval pending"
   },
   "operatorBrief": "untracked, nonempty, unchanged; excluded from commits",
-  "imageScanContinuation": "docs/evidence/rc-repair/image-scan/summary.json"
+  "imageScanContinuation": "docs/evidence/rc-repair/image-scan/authenticated-retry/summary.json",
+  "imageScanCounts": {
+    "backend": {
+      "counts": {
+        "CRITICAL": 2,
+        "HIGH": 14,
+        "MEDIUM": 14,
+        "LOW": 31,
+        "UNSPECIFIED": 4
+      },
+      "total": 65,
+      "uniqueCVEs": 65,
+      "exitCode": 2,
+      "analysisCompleted": true
+    },
+    "frontend": {
+      "counts": {
+        "CRITICAL": 0,
+        "HIGH": 4,
+        "MEDIUM": 0,
+        "LOW": 3,
+        "UNSPECIFIED": 1
+      },
+      "total": 8,
+      "uniqueCVEs": 8,
+      "exitCode": 2,
+      "analysisCompleted": true
+    }
+  }
 }

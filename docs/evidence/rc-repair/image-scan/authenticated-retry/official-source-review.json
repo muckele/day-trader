@@ -1,0 +1,45 @@
+{
+  "checkedAt": "2026-09-13T18:43:09.695429+00:00",
+  "officialSources": [
+    {
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-13221",
+      "observation": "Table calls Bookworm vulnerable but notes introduction5.37.10; installed5.36 applicability remains unresolved."
+    },
+    {
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-12087",
+      "observation": "Bookworm vulnerable; Socket upstream2.041 and other-release Perl fixes exist; no Bookworm fixed version listed."
+    },
+    {
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-85091",
+      "observation": "Version-description/Bookworm affected-table discrepancy retained."
+    },
+    {
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-86145",
+      "observation": "Bookworm security10.42-1+deb12u1 confirmed fixed."
+    },
+    {
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-48962",
+      "observation": "Perl source-package mapping; IO::Compress2.220 fixed; local component absence checked."
+    },
+    {
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-48959",
+      "observation": "ZIP named-member prerequisite and IO::Compress2.220 fix."
+    },
+    {
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-57432",
+      "observation": "Untrusted pack/unpack template prerequisite."
+    }
+  ],
+  "upstreamUtilLinuxAdvisories": [
+    "https://github.com/util-linux/util-linux/security/advisories/GHSA-8f2p-47x3-43mv",
+    "https://github.com/util-linux/util-linux/security/advisories/GHSA-rh77-686x-2f2m",
+    "https://github.com/util-linux/util-linux/security/advisories/GHSA-55fx-f4gg-cfhj",
+    "https://github.com/util-linux/util-linux/security/advisories/GHSA-m25x-3hj9-m26f"
+  ],
+  "npmReference": "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
+  "limitations": [
+    "CVE-2026-89161 direct Debian web open failed; its per-CVE fix retained as Scout-reported, common package correction corroborated by CVE-86145.",
+    "Three other npm minima are Scout advisory-data findings, not independently selected/tested replacement distributions.",
+    "No exploit testing or blanket not-affected conclusion."
+  ]
+}
