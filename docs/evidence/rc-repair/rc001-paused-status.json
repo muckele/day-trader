@@ -1,0 +1,50 @@
+{
+  "recordedAt": "2026-09-13T16:14:09.287173+00:00",
+  "scope": "stopStatus presentation only; claimDispatch logic unchanged",
+  "contract": "running only for enabled paper mode without persistent pause reason or future pause deadline. Paused enabled controls add paused:true, retain draining/stopped based on pending automated intents, and never claim permanent disable in UI. Expired pause without a persistent reason returns running.",
+  "runtime": {
+    "node": "24.19.0",
+    "npm": "11.17.0",
+    "nodeExecutable": "/Users/Matt/.nvm/versions/node/v24.19.0/bin/node"
+  },
+  "red": [
+    {
+      "command": "node --test backend/tests/dispatchStopStatus.test.js",
+      "exit": 1,
+      "passed": 2,
+      "failed": 3,
+      "log": "rc001-paused-status-red.log"
+    },
+    {
+      "command": "CI=true npm test --prefix frontend -- --watchAll=false --runInBand src/pages/RoboTraderStopStatus.test.js",
+      "exit": 1,
+      "passed": 4,
+      "failed": 2,
+      "log": "rc001-paused-ui-red.log"
+    }
+  ],
+  "green": [
+    {
+      "command": "node --test backend/tests/dispatchStopStatus.test.js backend/tests/robotraderStopStatusRoute.test.js backend/tests/robotraderRoute.test.js",
+      "exit": 0,
+      "passed": 20,
+      "failed": 0,
+      "skipped": 0,
+      "log": "rc001-paused-status-green.log"
+    },
+    {
+      "command": "CI=true npm test --prefix frontend -- --watchAll=false --runInBand src/pages/RoboTraderStopStatus.test.js src/pages/ReleaseScope.test.js",
+      "exit": 0,
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0,
+      "log": "rc001-paused-ui-green.log"
+    }
+  ],
+  "sha256": {
+    "backend/services/dispatchAuthorization.js": "2a5e8cd80a5c58168c34df2cb71c47e5b9a1a9e6a036c18909a7e40b3621f022",
+    "backend/tests/dispatchStopStatus.test.js": "197633fb1de878dfa07e2e46564bf1856b3f1fc7d861e3cd7412997c8efe9e8e",
+    "frontend/src/pages/RoboTrader.js": "c8382f4b08244e2507d233b3ce9d3ff046e3d84cfccf4eae6e5e4c095af8d082",
+    "frontend/src/pages/RoboTraderStopStatus.test.js": "fd8f42f7a485475f4c89952593f9636d9178a44684ec8105d8a4cd99dc7deb63"
+  }
+}

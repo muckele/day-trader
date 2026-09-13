@@ -1,0 +1,19 @@
+{
+  "recordedAt": "2026-09-13T16:19:34.924Z",
+  "runtime": "v24.19.0",
+  "executable": "/Users/Matt/.nvm/versions/node/v24.19.0/bin/node",
+  "sourceHead": "1972254bfcfd0b6ff724876cd0d2a2b15006ac26",
+  "workingTree": true,
+  "command": "node --test scripts/acceptance/rcExitDispatch.test.cjs > docs/evidence/rc-repair/rc001-exit-green.log 2>&1",
+  "files": {
+    "scripts/acceptance/rcExitDispatch.test.cjs": "9b62d79ad27153aa81c9a0b4a653e1285d4054d28d5b6c560dbb2611b4d40472",
+    "backend/services/dispatchAuthorization.js": "2a5e8cd80a5c58168c34df2cb71c47e5b9a1a9e6a036c18909a7e40b3621f022",
+    "backend/services/orderLifecycleService.js": "91294c02f1ff7db7f000d034e0016d0d918fb0ebc63fc6df48ea7d7a8b6247a8",
+    "backend/services/orderProtectionService.js": "8fb6d3d6e59338ee75e834c84c68d099a237e1869e53dd189093786646ab62e7",
+    "backend/services/positionCloseService.js": "a93665465af15243debd15037363f895c1d339973e727bdba10c9c0599910eec",
+    "scripts/acceptance/harness.cjs": "030987008c12ecc79627253918802ce529ba59dca5cbe51275dc8716646cf501",
+    "scripts/acceptance/provider.cjs": "d256a5a8f2f9fa81f4771974a235a0278a7ac233a7d6bb5a372928d2561c51f9",
+    "scripts/acceptance/transport.cjs": "66674658841e092694a5e30876d9bc042c9044757d0b62ee75bd54ce8c19ed99",
+    "scripts/acceptance/driver.cjs": "99775214c5ff464621441c11317737d674067273540d34ca6a9fa1524c5ac20a"
+  }
+}

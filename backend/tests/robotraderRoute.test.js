@@ -31,6 +31,7 @@ function createMockRes() {
 }
 
 test('GET /robotrader/settings returns extended settings payload', async t => {
+  t.mock.method(require('../services/dispatchAuthorization'), 'stopStatus', async () => ({ state: 'stopped', admissionsDisabled: true, unresolved: [] }));
   t.mock.method(User, 'findOne', async () => ({ _id: 'user-route-1' }));
   t.mock.method(RoboSettings, 'findOne', async () => ({
     isEnabled: false,

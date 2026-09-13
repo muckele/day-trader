@@ -117,8 +117,15 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
   const request = async (method, path, data, options = {}) => {
     assertConfig(config);
     if (method !== 'get' && httpClient === axios) executionReadiness.assertReady();
+    if (method !== 'get' && httpClient === axios && typeof options.authorize !== 'function') {
+      throw Object.assign(new Error('Canonical dispatch authorization is required.'), { code: 'DISPATCH_AUTHORIZATION_REQUIRED', beforeTransport: true });
+    }
     if (method !== 'get') await verifyPaperAccount(config, () => request('get', '/v2/account'));
     if (method !== 'get' && httpClient === axios) executionReadiness.assertReady();
+    if (method !== 'get' && options.authorize) await options.authorize({ method, path, payload: data });
+    // Local heartbeat failure after D leaves the claim unresolved, never definitely unsent.
+    // This synchronous check introduces no new awaited gap before the transport call.
+    if (method !== 'get') options.assertExecutor?.();
     const response = await httpClient({
       method,
       url: `${config.baseUrl}${path}`,
@@ -132,6 +139,7 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
   };
 
   return {
+    finalDispatchAuthorization: true,
     mode: config.mode,
     baseUrl: config.baseUrl,
     isConfigured: Boolean(config.apiKey && config.apiSecret && config.expectedAccountId && isPaperTradingEndpoint(config.baseUrl)),
@@ -145,15 +153,15 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
     getOrderByClientOrderId: clientOrderId => request('get', '/v2/orders:by_client_order_id', null, {
       params: { client_order_id: clientOrderId }
     }),
-    cancelOrder: orderId => request('delete', `/v2/orders/${encodeURIComponent(orderId)}`),
+    cancelOrder: (orderId, options) => request('delete', `/v2/orders/${encodeURIComponent(orderId)}`, undefined, options),
     cancelAllOrders: () => request('delete', '/v2/orders'),
-    replaceOrder: (orderId, payload) => request('patch', `/v2/orders/${encodeURIComponent(orderId)}`, sanitizeReplacementPayload(payload)),
+    replaceOrder: (orderId, payload, options) => request('patch', `/v2/orders/${encodeURIComponent(orderId)}`, sanitizeReplacementPayload(payload), options),
     closePosition: (symbol, payload = {}) => request('delete', `/v2/positions/${encodeURIComponent(symbol)}`, payload),
-    submitOrder: async input => {
+    submitOrder: async (input, options) => {
       const built = buildRoboAlpacaOrderPayload(input);
       let order = null;
       try {
-        order = await request('post', '/v2/orders', built.payload);
+        order = await request('post', '/v2/orders', built.payload, options);
       } catch (err) {
         err.alpacaPayload = built.payload;
         throw err;

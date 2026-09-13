@@ -1,0 +1,16 @@
+TAP version 13
+# RC002_PROCESS_RUNTIME {"node":"v20.20.2","executable":"/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node"}
+# Subtest: RC002-real-worker-lock-and-coverage
+ok 1 - RC002-real-worker-lock-and-coverage
+  ---
+  duration_ms: 3757.205708
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3880.151708

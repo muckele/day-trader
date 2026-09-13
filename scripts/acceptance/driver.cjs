@@ -11,8 +11,15 @@ async function main(){
  if(operation==='reconcile')result=await require('../../backend/robotrader/reconciliation').reconcileRoboOrders({userId:process.env.OWNER_USER_ID});
  else if(operation==='worker')result=await require('../../backend/robotrader/worker').runRoboTraderForUser({userId:process.env.OWNER_USER_ID});
  else if(operation==='emergency-stop')result=await require('../../backend/robotrader/worker').emergencyStop({userId:process.env.OWNER_USER_ID,cancelOpenOrders:true,environment:'paper'});
+ else if(operation==='retry-intent'){
+  const intent=await require('../../backend/models/OrderIntent').findOne({clientOrderId:process.env.RC_CLIENT_ORDER_ID}).lean();
+  if(!intent)throw new Error('Canonical intent required');
+  result=await require('../../backend/services/orderLifecycleService').getOrderLifecycle().submit({userId:process.env.OWNER_USER_ID,origin:intent.origin,idempotencyKey:intent.idempotencyKey,orderInput:intent.orderInput});
+ }
+ else if(operation==='manual-entry')result=await require('../../backend/services/orderLifecycleService').getOrderLifecycle().submit({userId:process.env.OWNER_USER_ID,origin:'manual',idempotencyKey:process.env.RC_MANUAL_KEY||'rc-manual',orderInput:{symbol:'AAPL',side:'buy',qty:1,orderType:'limit',limitPrice:100,timeInForce:'day'}});
+ else if(operation==='manual-reduce')result=await require('../../backend/services/orderLifecycleService').getOrderLifecycle().submit({userId:process.env.OWNER_USER_ID,origin:'manual',idempotencyKey:'rc-reduce',orderInput:{symbol:'AAPL',side:'sell',qty:1,orderType:'market',timeInForce:'day'}});
  else throw new Error('Unknown process operation');
  process.stdout.write('\nACCEPTANCE_RESULT '+JSON.stringify(result)+'\n');
- }finally{await mongoose.disconnect();}
+ }finally{await mongoose.disconnect();if(process.connected)process.disconnect();}
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

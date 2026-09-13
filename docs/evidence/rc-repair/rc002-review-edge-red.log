@@ -1,0 +1,87 @@
+RC002_PROVENANCE {"node":"v24.19.0","executable":"/Users/Matt/.nvm/versions/node/v24.19.0/bin/node","sourceRevision":"1972254bfcfd0b6ff724876cd0d2a2b15006ac26","lifecycleSha256":"e54f08dcb4ebdf32a535bf3f60dbd6de539290371022eb8e99134485a836b5f7","database":"mvp_test_rc002_9164119a44764c3a959072be3249ec87"}
+RC002_ORIGINAL_STATE {"brokerPosts":1,"holdings":[{"symbol":"AAPL","qty":"6","qty_available":"6","market_value":"60","current_price":"10"}],"intents":[{"_id":"6aa6c8a2fab28a3468e097bc","status":"filled","idempotencyKey":"fills-first","reservedCents":0,"filledQty":6},{"_id":"6aa6c8a2fab28a3468e09802","status":"rejected","idempotencyKey":"captured-earlier","reservedCents":0,"filledQty":0}],"fills":[{"_id":"6aa6c8a2fab28a3468e097e0","notionalCents":6000,"side":"buy","qty":6}],"capacity":{"_id":"6aa6c8a25f129b7a75c326c3","accountId":"rc002-fixture-paper","__v":0,"createdAt":"2026-09-13T16:00:34.580Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T16:00:34.668Z","version":4,"cashFloorCents":100000,"portfolioBaseline":{"quantities":{},"canonicalNet":{},"foreignState":"[]","observedAt":"2026-09-13T16:00:34.563Z"},"portfolioObservation":{"state":"reconciliation_required","quantities":{},"canonicalNet":{},"observedAt":"2026-09-13T16:00:34.563Z","version":1}},"buckets":[{"_id":"6aa6c8a25f129b7a75c326cc","key":"2026-09-13","accountId":"rc002-fixture-paper","period":"day","__v":0,"createdAt":"2026-09-13T16:00:34.596Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T16:00:34.634Z"},{"_id":"6aa6c8a25f129b7a75c326ce","key":"2026-09-07","accountId":"rc002-fixture-paper","period":"week","__v":0,"createdAt":"2026-09-13T16:00:34.598Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T16:00:34.636Z"},{"_id":"6aa6c8a25f129b7a75c326d0","key":"2026-09","accountId":"rc002-fixture-paper","period":"month","__v":0,"createdAt":"2026-09-13T16:00:34.599Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T16:00:34.637Z"}]}
+▶ RC002 required exposure regressions
+  ✔ RC002-original-race: captured empty snapshot cannot admit a second $60 into a $100 position (141.7525ms)
+  ✔ RC002-origin-manual-manual (90.668375ms)
+  ✔ RC002-origin-manual-robo (75.810458ms)
+  ✔ RC002-origin-robo-manual (86.567292ms)
+  ✔ RC002-origin-robo-robo (85.564292ms)
+  ✔ RC002-lag-full (154.292125ms)
+  ✔ RC002-lag-partial (214.299708ms)
+  ✔ RC002-terminal-cancel (244.093375ms)
+  ✔ RC002-terminal-expiry (154.091209ms)
+  ✔ RC002-headroom (158.891458ms)
+  ✔ RC002-symbol-slot (97.802083ms)
+  ✔ RC002-retry (53.485125ms)
+  ✔ RC002-replacement (194.416542ms)
+  ✔ RC002-fill-during-cancel (134.72ms)
+  ✔ RC002-external-conflict (55.410542ms)
+  ✔ RC002-close-headroom (142.552625ms)
+  ✔ RC002-protection-generations (242.888458ms)
+  ✔ RC002-invalid-observation (89.295125ms)
+  ✔ RC002-incomplete-discovery (71.965458ms)
+  ✖ RC002-bootstrap-uncovered (96.632167ms)
+  ✖ RC002-uningested-fill (113.6695ms)
+  ✖ RC002-stale-reducing-quantity (111.785417ms)
+✖ RC002 required exposure regressions (3137.42225ms)
+ℹ tests 23
+ℹ suites 0
+ℹ pass 19
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3323.619209
+
+✖ failing tests:
+
+test at backend/integration/rc002Exposure.mongo.test.js:273:13
+✖ RC002-bootstrap-uncovered (96.632167ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/integration/rc002Exposure.mongo.test.js:277:7)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/integration/rc002Exposure.mongo.test.js:273:5)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /reconciliation/,
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at backend/integration/rc002Exposure.mongo.test.js:280:13
+✖ RC002-uningested-fill (113.6695ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/integration/rc002Exposure.mongo.test.js:285:7)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/integration/rc002Exposure.mongo.test.js:280:5)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /reconciliation/,
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at backend/integration/rc002Exposure.mongo.test.js:290:13
+✖ RC002-stale-reducing-quantity (111.785417ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/integration/rc002Exposure.mongo.test.js:295:7)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/integration/rc002Exposure.mongo.test.js:290:5)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /available position/,
+    operator: 'rejects',
+    diff: 'simple'
+  }

@@ -1,0 +1,84 @@
+TAP version 13
+# Subtest: verification drops real credentials and scheduler activation
+ok 1 - verification drops real credentials and scheduler activation
+  ---
+  duration_ms: 1.151958
+  ...
+# Subtest: verification preserves failures and continues independent checks
+ok 2 - verification preserves failures and continues independent checks
+  ---
+  duration_ms: 0.542125
+  ...
+# Subtest: integration discovery runs each Mongo fixture in its own sequential check
+ok 3 - integration discovery runs each Mongo fixture in its own sequential check
+  ---
+  duration_ms: 0.333833
+  ...
+# Subtest: complete local Phase 3 gates permit candidate status without external acceptance
+ok 4 - complete local Phase 3 gates permit candidate status without external acceptance
+  ---
+  duration_ms: 1.253292
+  ...
+# Subtest: only explicit safe browser runtime paths survive environment scrubbing
+ok 5 - only explicit safe browser runtime paths survive environment scrubbing
+  ---
+  duration_ms: 0.090708
+  ...
+# Subtest: real process and browser-dependent acceptance run only after production frontend build
+ok 6 - real process and browser-dependent acceptance run only after production frontend build
+  ---
+  duration_ms: 0.317458
+  ...
+# Subtest: acceptance rejects zero tests, omitted summaries, skipped tests and flaky browser runs
+ok 7 - acceptance rejects zero tests, omitted summaries, skipped tests and flaky browser runs
+  ---
+  duration_ms: 0.471334
+  ...
+# Subtest: node acceptance requires consistent complete unique top-level TAP totals
+ok 8 - node acceptance requires consistent complete unique top-level TAP totals
+  ---
+  duration_ms: 0.099292
+  ...
+# Subtest: financial and SMTP gates cannot silently shrink to one parent test
+ok 9 - financial and SMTP gates cannot silently shrink to one parent test
+  ---
+  duration_ms: 0.138583
+  ...
+# Subtest: frontend release gate requires complete Jest totals without skipped tests
+ok 10 - frontend release gate requires complete Jest totals without skipped tests
+  ---
+  duration_ms: 0.327792
+  ...
+# Subtest: required RC scenario outcomes cannot be omitted or replaced by high aggregate totals
+ok 11 - required RC scenario outcomes cannot be omitted or replaced by high aggregate totals
+  ---
+  duration_ms: 0.342875
+  ...
+# Subtest: both RC suites and every critical scenario are mandatory release requirements
+ok 12 - both RC suites and every critical scenario are mandatory release requirements
+  ---
+  duration_ms: 11.358583
+  ...
+# Subtest: verification output directory can preserve historical evidence without changing gates
+not ok 13 - verification output directory can preserve historical evidence without changing gates
+  ---
+  duration_ms: 0.299834
+  location: '/Users/Matt/Projects/day-trader/scripts/tests/verify-mvp.test.mjs:142:1'
+  failureType: 'testCodeFailure'
+  error: 'resolveReportDirectory is not a function'
+  code: 'ERR_TEST_FAILURE'
+  name: 'TypeError'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/Matt/Projects/day-trader/scripts/tests/verify-mvp.test.mjs:144:16)
+    async Test.run (node:internal/test_runner/test:797:9)
+    async Test.processPendingSubtests (node:internal/test_runner/test:526:7)
+  ...
+1..13
+# tests 13
+# suites 0
+# pass 12
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 70.551875

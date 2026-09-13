@@ -1,0 +1,100 @@
+TAP version 13
+# Subtest: RC001-final-account-emergency-stop
+ok 1 - RC001-final-account-emergency-stop # SKIP test name does not match pattern
+  ---
+  duration_ms: 1.155667
+  ...
+# Subtest: RC001-final-account-disable
+ok 2 - RC001-final-account-disable # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.061458
+  ...
+# Subtest: RC001-final-account-lease-takeover
+ok 3 - RC001-final-account-lease-takeover # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.055334
+  ...
+# Subtest: RC001-final-account-lease-expiry
+ok 4 - RC001-final-account-lease-expiry # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.043792
+  ...
+# Subtest: RC001-claim-before-stop-resume
+ok 5 - RC001-claim-before-stop-resume # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.113583
+  ...
+# Subtest: RC001-claim-before-stop-process-death
+ok 6 - RC001-claim-before-stop-process-death # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.041
+  ...
+# Subtest: RC001-claim-before-stop-lease-takeover
+ok 7 - RC001-claim-before-stop-lease-takeover # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.036542
+  ...
+# Subtest: RC001-transmitted-acknowledge
+ok 8 - RC001-transmitted-acknowledge # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.042625
+  ...
+# Subtest: RC001-transmitted-accepted500
+ok 9 - RC001-transmitted-accepted500 # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.151042
+  ...
+# Subtest: RC001-disable-preserves-manual-protection-reduction
+ok 10 - RC001-disable-preserves-manual-protection-reduction # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.113625
+  ...
+# Subtest: RC001-final-account-heartbeat-loss
+not ok 11 - RC001-final-account-heartbeat-loss
+  ---
+  duration_ms: 1630.818
+  location: '/Users/Matt/Projects/day-trader/scripts/acceptance/rcDispatch.test.cjs:176:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    heartbeat loss must prohibit final claim: 
+    ACCEPTANCE_RESULT {"ok":true,"runId":"robotrader-6aa6c77cdfe6f761c0166586-20260913155541","environment":"paper","decisionsSaved":1,"submittedOrder":{"_id":"6aa6c77e5f129b7a75c2dfae","clientOrderId":"mvp-407af526718cc8b711701c3ec6c18a83b931bbad","__v":0,"accountId":"acceptance-paper","alpacaResponse":{"_id":"6aa6c77e99d37dbe299f99a8","accountId":"acceptance-paper","broker":"alpaca","intentId":"6aa6c77e99d37dbe299f997e","paperOrderId":null,"externalOrderId":"7dd2cc41-9cca-43a6-9ed5-24fd71b589d9","origin":"robotrader","symbol":"AAPL","assetClass":"equity","side":"buy","qty":7,"orderType":"limit","status":"new","executionSource":"alpaca-paper","clientOrderId":"mvp-407af526718cc8b711701c3ec6c18a83b931bbad","filledQty":0,"filledNotionalCents":0,"estimatedPrice":null,"fillPrice":null,"notional":null,"slippageBps":null,"fillLatencyMs":null,"rejectionReason":null,"filledAt":null,"submittedAt":"2026-09-13T15:55:42.119Z","createdAt":"2026-09-13T15:55:42.120Z","updatedAt":"2026-09-13T15:55:42.120Z","__v":0},"assetClass":"stocks","broker":"alpaca","canceledAt":null,"createdAt":"2026-09-13T15:55:42.129Z","decisionId":"6aa6c77d99d37dbe299f9977","discrepancy":null,"environment":"paper","executionSource":"alpaca-paper","exitReason":null,"externalOrderId":"7dd2cc41-9cca-43a6-9ed5-24fd71b589d9","filledAt":null,"filledAvgPrice":null,"filledQty":0,"intentId":"6aa6c77e99d37dbe299f997e","lastReconciledAt":null,"limitPrice":100.5,"notional":null,"orderClass":"simple","orderType":"limit","parentClientOrderId":null,"parentOrderId":null,"qty":7,"reasoningSummary":"Longer-term moving-average trend and recent momentum were evaluated.","reconciliationArchiveReason":null,"reconciliationArchivedAt":null,"reconciliationArchivedBy":null,"reconciliationStatus":"pending","rejectedAt":null,"riskChecks":[{"name":"robotrader_enabled","passed":true,"message":"RoboTrader is disabled.","severity":"warning"},{"name":"mode_allowed","passed":true,"message":"Live trading is disabled for this paper-only release.","severity":"warning"},{"name":"mode_match","passed":true,"message":"User is in paper/live mode mismatch.","severity":"warning"},{"name":"account_allowed","passed":true,"message":"Alpaca account is restricted.","severity":"warning"},{"name":"symbol_present","passed":true,"message":"Symbol is required.","severity":"warning"},{"name":"mvp_entry_scope","passed":true,"message":"Automated entries require long-only whole-share stocks or ordinary ETFs; fractional and notional automation is disabled.","severity":"warning"},{"name":"entry_session","passed":true,"message":"Automated entries require a verified open regular market session.","severity":"warning"},{"name":"entry_protection","passed":true,"message":"Automated entries require a valid managed stop on a capped whole-share entry or broker-attached protection.","severity":"warning"},{"name":"account_data_known","passed":true,"message":"Current equity, previous equity, cash, P&L, and positive entry value must be known.","severity":"warning"},{"name":"asset_lookup","passed":true,"message":"Alpaca asset metadata verified.","severity":"warning","metadata":{"symbol":"AAPL","assetClass":"stocks"}},{"name":"asset_tradable","passed":true,"message":"AAPL is not currently tradable on Alpaca.","severity":"warning","metadata":{"tradable":true,"status":"active"}},{"name":"asset_fractionable","passed":true,"message":"AAPL is not marked fractionable by Alpaca.","severity":"warning","metadata":{"fractionable":false}},{"name":"asset_shortable","passed":true,"message":"AAPL is not marked shortable by Alpaca.","severity":"warning","metadata":{"shortable":false}},{"name":"symbol_not_blocked","passed":true,"message":"AAPL is blocked by user settings.","severity":"warning"},{"name":"symbol_allowed","passed":true,"message":"AAPL is not in the allowed symbols list.","severity":"warning"},{"name":"asset_class_allowed","passed":true,"message":"stocks is not enabled in allowed asset classes.","severity":"warning"},{"name":"market_hours","passed":true,"message":"Market is closed and this order is not marked as a valid extended-hours order.","severity":"warning","metadata":{"marketIsOpen":true,"extendedHoursRequested":false}},{"name":"extended_hours_allowed","passed":true,"message":"Extended-hours trading is not enabled for this user.","severity":"warning"},{"name":"extended_hours_protection","passed":true,"message":"Extended-hours automated stock entries are blocked because broker-attached stop-loss/take-profit protection is unavailable outside regular market hours.","severity":"warning"},{"name":"crypto_enabled","passed":true,"message":"Crypto trading is not explicitly enabled for this user.","severity":"warning"},{"name":"options_enabled","passed":true,"message":"Options trading is not explicitly enabled for this user.","severity":"warning"},{"name":"short_allowed","passed":true,"message":"Short selling is not enabled for this user.","severity":"warning"},{"name":"fractional_short_allowed","passed":true,"message":"Alpaca does not support opening fractional short equity positions.","severity":"warning"},{"name":"order_capability","passed":true,"message":"Order capability allowed.","severity":"warning"},{"name":"daily_loss_limit","passed":true,"message":"Max daily loss is exceeded.","severity":"warning"},{"name":"trades_per_day","passed":true,"message":"Max trades per day is exceeded.","severity":"warning"},{"name":"open_positions","passed":true,"message":"Max open positions is exceeded.","severity":"warning"},{"name":"trade_amount","passed":true,"message":"Trade amount exceeds user max trade amount.","severity":"warning","metadata":{"estimatedNotional":703.5,"maxTradeAmount":1000}},{"name":"position_size","passed":true,"message":"Position size would exceed user limit.","severity":"warning","metadata":{"projectedPositionValue":703.5,"maxPositionSize":5000}},{"name":"buying_power","passed":true,"message":"Buying power is insufficient.","severity":"warning"},{"name":"duplicate_order","passed":true,"message":"Trade duplicates an existing open order.","severity":"warning"},{"name":"symbol_cooldown","passed":true,"message":"The same symbol was traded too recently.","severity":"warning"},{"name":"confidence","passed":true,"message":"Confidence score is below threshold.","severity":"warning","metadata":{"confidenceScore":75,"minimum":65}},{"name":"reward_risk","passed":true,"message":"Reward/risk ratio is below threshold.","severity":"warning","metadata":{"rewardRiskRatio":1.78,"minimum":1.5}},{"name":"stop_loss_required","passed":true,"message":"Required stop loss is missing.","severity":"warning"},{"name":"fractional_allowed","passed":true,"message":"Fractional share order is not allowed by user settings.","severity":"warning"},{"name":"manual_approval","passed":true,"message":"Manual approval threshold not triggered.","severity":"info"}],"riskStopPrice":98.8,"riskTakeProfitPrice":null,"side":"buy","status":"acknowledged","stopLoss":null,"stopPrice":null,"strategyId":"ROBO_TREND_FOLLOWING_V1","submittedAt":"2026-09-13T15:55:41.954Z","symbol":"AAPL","takeProfit":null,"timeInForce":"day","trailPercent":null,"trailPrice":null,"updatedAt":"2026-09-13T15:55:42.129Z","userId":"6aa6c77cdfe6f761c0166586"}}
+    
+    
+    1 !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    /Users/Matt/Projects/day-trader/scripts/acceptance/rcDispatch.test.cjs:185:10
+    process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    async fixture (/Users/Matt/Projects/day-trader/scripts/acceptance/rcDispatch.test.cjs:20:5)
+    async Test.run (node:internal/test_runner/test:797:9)
+    async Test.processPendingSubtests (node:internal/test_runner/test:526:7)
+  ...
+# Subtest: RC001-awaited-renewal-stop
+ok 12 - RC001-awaited-renewal-stop
+  ---
+  duration_ms: 1560.862916
+  ...
+# Subtest: RC001-awaited-renewal-reenable-generation
+ok 13 - RC001-awaited-renewal-reenable-generation
+  ---
+  duration_ms: 1845.118041
+  ...
+# Subtest: RC001-ambiguous-claim-commit
+ok 14 - RC001-ambiguous-claim-commit # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.106125
+  ...
+1..14
+# tests 14
+# suites 0
+# pass 2
+# fail 1
+# cancelled 0
+# skipped 11
+# todo 0
+# duration_ms 5254.827083

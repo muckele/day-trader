@@ -1,0 +1,15 @@
+TAP version 13
+# Subtest: historical non-owner session cannot access real owner APIs or mutate persisted/broker state
+ok 1 - historical non-owner session cannot access real owner APIs or mutate persisted/broker state
+  ---
+  duration_ms: 1119.715167
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1311.680458

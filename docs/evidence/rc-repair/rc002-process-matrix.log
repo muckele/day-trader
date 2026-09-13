@@ -1,0 +1,38 @@
+RC002_PROVENANCE {"node":"v24.19.0","executable":"/Users/Matt/.nvm/versions/node/v24.19.0/bin/node","sourceRevision":"1972254bfcfd0b6ff724876cd0d2a2b15006ac26","lifecycleSha256":"91294c02f1ff7db7f000d034e0016d0d918fb0ebc63fc6df48ea7d7a8b6247a8","database":"mvp_test_rc002_9072c08e54fe4b3ea772d943307ca738"}
+RC002_ORIGINAL_STATE {"brokerPosts":1,"holdings":[{"symbol":"AAPL","qty":"6","qty_available":"6","market_value":"60","current_price":"10"}],"intents":[{"_id":"6aa6c959632da325a253e9de","status":"filled","idempotencyKey":"fills-first","reservedCents":0,"filledQty":6},{"_id":"6aa6c959632da325a253ea24","status":"rejected","idempotencyKey":"captured-earlier","reservedCents":0,"filledQty":0}],"fills":[{"_id":"6aa6c959632da325a253ea02","notionalCents":6000,"side":"buy","qty":6}],"capacity":{"_id":"6aa6c9595f129b7a75c402e6","accountId":"rc002-fixture-paper","__v":0,"createdAt":"2026-09-13T16:03:37.376Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T16:03:37.663Z","version":4,"cashFloorCents":100000,"portfolioBaseline":{"quantities":{},"canonicalNet":{},"foreignState":"[]","observedAt":"2026-09-13T16:03:37.359Z"},"portfolioObservation":{"state":"reconciliation_required","quantities":{},"canonicalNet":{},"observedAt":"2026-09-13T16:03:37.359Z","version":1}},"buckets":[{"_id":"6aa6c9595f129b7a75c402fd","accountId":"rc002-fixture-paper","period":"day","key":"2026-09-13","__v":0,"createdAt":"2026-09-13T16:03:37.394Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T16:03:37.618Z"},{"_id":"6aa6c9595f129b7a75c40302","accountId":"rc002-fixture-paper","period":"week","key":"2026-09-07","__v":0,"createdAt":"2026-09-13T16:03:37.396Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T16:03:37.620Z"},{"_id":"6aa6c9595f129b7a75c40305","key":"2026-09","accountId":"rc002-fixture-paper","period":"month","__v":0,"createdAt":"2026-09-13T16:03:37.399Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T16:03:37.621Z"}]}
+▶ RC002 required exposure regressions
+  ✔ RC002-original-race: captured empty snapshot cannot admit a second $60 into a $100 position (368.763083ms)
+  ✔ RC002-origin-manual-manual (230.779417ms)
+  ✔ RC002-origin-manual-robo (114.70575ms)
+  ✔ RC002-origin-robo-manual (124.349041ms)
+  ✔ RC002-origin-robo-robo (75.873292ms)
+  ✔ RC002-lag-full (141.478042ms)
+  ✔ RC002-lag-partial (182.996125ms)
+  ✔ RC002-terminal-cancel (250.812167ms)
+  ✔ RC002-terminal-expiry (263.019416ms)
+  ✔ RC002-headroom (319.906542ms)
+  ✔ RC002-symbol-slot (195.857125ms)
+  ✔ RC002-retry (129.46575ms)
+  ✔ RC002-replacement (415.8425ms)
+  ✔ RC002-fill-during-cancel (264.406834ms)
+  ✔ RC002-external-conflict (92.959959ms)
+  ✔ RC002-close-headroom (249.16675ms)
+  ✔ RC002-protection-generations (356.014709ms)
+  ✔ RC002-invalid-observation (196.818833ms)
+  ✔ RC002-incomplete-discovery (93.894ms)
+  ✔ RC002-bootstrap-uncovered (109.013709ms)
+  ✔ RC002-uningested-fill (180.030042ms)
+  ✔ RC002-stale-reducing-quantity (100.0375ms)
+  ✔ RC002-reduce-while-disabled (70.657875ms)
+  ✔ RC002-emergency-supersedes-replacement (61.535583ms)
+✔ RC002 required exposure regressions (4968.716959ms)
+RC002_PROCESS_RUNTIME {"node":"v24.19.0","executable":"/Users/Matt/.nvm/versions/node/v24.19.0/bin/node"}
+✔ RC002-real-worker-lock-and-coverage (4718.090667ms)
+ℹ tests 26
+ℹ suites 0
+ℹ pass 26
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5114.013667

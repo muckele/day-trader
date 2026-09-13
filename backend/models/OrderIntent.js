@@ -25,6 +25,8 @@ const orderIntentSchema = new mongoose.Schema(
     orderInput: mongoose.Schema.Types.Mixed, periodKeys: mongoose.Schema.Types.Mixed,
     reservedCents: {type:Number,default:0}, filledQty:{type:Number,default:0}, filledNotionalCents:{type:Number,default:0},
     uncertainSince: Date, protectionState: mongoose.Schema.Types.Mixed, replacement: mongoose.Schema.Types.Mixed,
+    dispatchClaims: { type: mongoose.Schema.Types.Mixed, default: {} }, controlGeneration: Number,
+    stopCancelRequested: Boolean, stopCancelAttempted: Boolean,
     rejectionReason: { type: String, default: null },
     requestedAt: { type: Date, default: Date.now },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }

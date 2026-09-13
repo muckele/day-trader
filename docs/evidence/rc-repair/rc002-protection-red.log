@@ -1,0 +1,50 @@
+RC002_PROVENANCE {"node":"v24.19.0","executable":"/Users/Matt/.nvm/versions/node/v24.19.0/bin/node","sourceRevision":"1972254bfcfd0b6ff724876cd0d2a2b15006ac26","lifecycleSha256":"33dd03a40a45342804a45cefc854a11da20480d6315508e6e9cd38e0437bf9cf","database":"mvp_test_rc002_274cf9cb6f4c4834ae676a4f8bb0e178"}
+RC002_ORIGINAL_STATE {"brokerPosts":1,"holdings":[{"symbol":"AAPL","qty":"6","qty_available":"6","market_value":"60","current_price":"10"}],"intents":[{"_id":"6aa6c7ff6a32245ae8b099d9","status":"filled","idempotencyKey":"fills-first","reservedCents":0,"filledQty":6},{"_id":"6aa6c7ff6a32245ae8b09a1b","status":"rejected","idempotencyKey":"captured-earlier","reservedCents":0,"filledQty":0}],"fills":[{"_id":"6aa6c7ff6a32245ae8b099f9","notionalCents":6000,"side":"buy","qty":6}],"capacity":{"_id":"6aa6c7ff5f129b7a75c2eef9","accountId":"rc002-fixture-paper","__v":0,"createdAt":"2026-09-13T15:57:51.478Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T15:57:51.556Z","version":4,"cashFloorCents":100000,"portfolioBaseline":{"quantities":{},"canonicalNet":{},"foreignState":"[]","observedAt":"2026-09-13T15:57:51.468Z"},"portfolioObservation":{"state":"reconciliation_required","quantities":{},"canonicalNet":{},"observedAt":"2026-09-13T15:57:51.468Z","version":1}},"buckets":[{"_id":"6aa6c7ff5f129b7a75c2ef00","accountId":"rc002-fixture-paper","period":"day","key":"2026-09-13","__v":0,"createdAt":"2026-09-13T15:57:51.486Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T15:57:51.527Z"},{"_id":"6aa6c7ff5f129b7a75c2ef02","accountId":"rc002-fixture-paper","period":"week","key":"2026-09-07","__v":0,"createdAt":"2026-09-13T15:57:51.487Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T15:57:51.528Z"},{"_id":"6aa6c7ff5f129b7a75c2ef04","accountId":"rc002-fixture-paper","period":"month","key":"2026-09","__v":0,"createdAt":"2026-09-13T15:57:51.489Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T15:57:51.528Z"}]}
+▶ RC002 required exposure regressions
+  ✔ RC002-original-race: captured empty snapshot cannot admit a second $60 into a $100 position (115.5815ms)
+  ✔ RC002-origin-manual-manual (66.843292ms)
+  ✔ RC002-origin-manual-robo (66.614083ms)
+  ✔ RC002-origin-robo-manual (66.063375ms)
+  ✔ RC002-origin-robo-robo (78.561459ms)
+  ✔ RC002-lag-full (123.438458ms)
+  ✔ RC002-lag-partial (122.63125ms)
+  ✔ RC002-terminal-cancel (149.068958ms)
+  ✔ RC002-terminal-expiry (153.365584ms)
+  ✔ RC002-headroom (138.095708ms)
+  ✔ RC002-symbol-slot (80.914083ms)
+  ✔ RC002-retry (53.347041ms)
+  ✔ RC002-replacement (181.795875ms)
+  ✔ RC002-fill-during-cancel (124.673541ms)
+  ✔ RC002-external-conflict (53.083208ms)
+  ✔ RC002-close-headroom (134.506834ms)
+  ✖ RC002-protection-generations (107.465125ms)
+  ✔ RC002-invalid-observation (57.872583ms)
+  ✔ RC002-incomplete-discovery (50.525125ms)
+✖ RC002 required exposure regressions (2216.142375ms)
+ℹ tests 20
+ℹ suites 0
+ℹ pass 18
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2407.696542
+
+✖ failing tests:
+
+test at backend/integration/rc002Exposure.mongo.test.js:226:13
+✖ RC002-protection-generations (107.465125ms)
+  Error: Portfolio exposure requires reconciliation: protective execution identity mismatch
+      at unresolved (/Users/Matt/Projects/day-trader/backend/services/portfolioExposureService.js:10:45)
+      at Object.recordProtectionFill (/Users/Matt/Projects/day-trader/backend/services/portfolioExposureService.js:115:172)
+      at mark (/Users/Matt/Projects/day-trader/backend/services/orderProtectionService.js:27:49)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Object.reconcile (/Users/Matt/Projects/day-trader/backend/services/orderProtectionService.js:116:7)
+      at async TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/integration/rc002Exposure.mongo.test.js:247:25)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/integration/rc002Exposure.mongo.test.js:226:5)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    code: 'EXPOSURE_UNRESOLVED',
+    status: 409
+  }

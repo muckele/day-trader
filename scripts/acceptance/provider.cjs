@@ -55,13 +55,19 @@ function createProvider() {
       state.orders.push(order);
       if (state.mode === 'timeout') return req.socket.destroy();
       if (state.mode === 'accepted500') return reply({message:'Accepted response lost'},500);
+      if (state.holdPostResponse) {
+        state.postResponseHeld = { clientOrderId: order.client_order_id, orderId: order.id };
+        await new Promise(resolve => pendingHolds.push(resolve));
+        state.postResponseHeld = null;
+      }
       if (state.delayAckMs) await new Promise(resolve => setTimeout(resolve, state.delayAckMs));
       return reply(order);
     }
-    if (url.pathname === '/v2/orders' && req.method === 'GET') return reply(state.orders.filter(o=>url.searchParams.get('status')!=='open'||!terminal.has(o.status)));
-    if (url.pathname === '/v2/orders:by_client_order_id') { const o=state.orders.find(o=>o.client_order_id===url.searchParams.get('client_order_id')); return reply(o||{message:'Not found'},o?200:404); }
+    const visibleOrders = state.orders.filter(o => !(state.hideHeldOrder && state.postResponseHeld?.clientOrderId === o.client_order_id));
+    if (url.pathname === '/v2/orders' && req.method === 'GET') return reply(visibleOrders.filter(o=>url.searchParams.get('status')!=='open'||!terminal.has(o.status)));
+    if (url.pathname === '/v2/orders:by_client_order_id') { const o=visibleOrders.find(o=>o.client_order_id===url.searchParams.get('client_order_id')); return reply(o||{message:'Not found'},o?200:404); }
     if (url.pathname.startsWith('/v2/orders/')) {
-      const o = state.orders.find(o=>o.id===url.pathname.split('/').pop()); if (!o) return reply({message:'Not found'},404);
+      const o = visibleOrders.find(o=>o.id===url.pathname.split('/').pop()); if (!o) return reply({message:'Not found'},404);
       if(req.method==='DELETE'){if(state.cancelUncertain)return req.socket.destroy();o.status='canceled';return reply({});}
       if(req.method==='PATCH'){const next={...o,...data,id:randomUUID(),status:'new',replaces:o.id};o.status='replaced';o.replaced_by=next.id;state.orders.push(next);return reply(next);}
       return reply(o);

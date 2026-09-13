@@ -1,0 +1,135 @@
+TAP version 13
+# Subtest: RC001-final-account-emergency-stop
+ok 1 - RC001-final-account-emergency-stop # SKIP test name does not match pattern
+  ---
+  duration_ms: 1.256375
+  ...
+# Subtest: RC001-final-account-disable
+ok 2 - RC001-final-account-disable # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.055833
+  ...
+# Subtest: RC001-final-account-lease-takeover
+ok 3 - RC001-final-account-lease-takeover # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.046792
+  ...
+# Subtest: RC001-final-account-lease-expiry
+ok 4 - RC001-final-account-lease-expiry # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.049667
+  ...
+# Subtest: RC001-claim-before-stop-resume
+ok 5 - RC001-claim-before-stop-resume # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.302292
+  ...
+# Subtest: RC001-claim-before-stop-process-death
+ok 6 - RC001-claim-before-stop-process-death # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.045708
+  ...
+# Subtest: RC001-claim-before-stop-lease-takeover
+ok 7 - RC001-claim-before-stop-lease-takeover # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.052084
+  ...
+# Subtest: RC001-transmitted-acknowledge
+ok 8 - RC001-transmitted-acknowledge # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.043791
+  ...
+# Subtest: RC001-transmitted-accepted500
+ok 9 - RC001-transmitted-accepted500 # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.152458
+  ...
+# Subtest: RC001-disable-preserves-manual-protection-reduction
+ok 10 - RC001-disable-preserves-manual-protection-reduction # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.121167
+  ...
+# Subtest: RC001-final-account-heartbeat-loss
+ok 11 - RC001-final-account-heartbeat-loss # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.05175
+  ...
+# Subtest: RC001-awaited-renewal-stop
+ok 12 - RC001-awaited-renewal-stop # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.041292
+  ...
+# Subtest: RC001-awaited-renewal-reenable-generation
+ok 13 - RC001-awaited-renewal-reenable-generation # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.082292
+  ...
+# Subtest: RC001-ambiguous-claim-commit
+ok 14 - RC001-ambiguous-claim-commit # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.043042
+  ...
+# Subtest: RC001-protection-final-account-takeover
+ok 15 - RC001-protection-final-account-takeover # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.074291
+  ...
+# Subtest: RC001-protection-final-account-expiry
+ok 16 - RC001-protection-final-account-expiry # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.085916
+  ...
+# Subtest: RC001-reduction-final-account-takeover
+ok 17 - RC001-reduction-final-account-takeover # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.044458
+  ...
+# Subtest: RC001-reduction-final-account-expiry
+ok 18 - RC001-reduction-final-account-expiry # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.158
+  ...
+# Subtest: RC001-run-once-final-account-stop
+ok 19 - RC001-run-once-final-account-stop # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.12175
+  ...
+# Subtest: RC001-legacy-control-writer-generation
+ok 20 - RC001-legacy-control-writer-generation # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.039709
+  ...
+# Subtest: RC001-process-death-before-claim
+ok 21 - RC001-process-death-before-claim
+  ---
+  duration_ms: 2918.834167
+  ...
+# Subtest: RC001-process-death-after-acceptance-before-persistence
+ok 22 - RC001-process-death-after-acceptance-before-persistence
+  ---
+  duration_ms: 3494.619208
+  ...
+# Subtest: RC001-held-post-response-stop-then-fill
+ok 23 - RC001-held-post-response-stop-then-fill
+  ---
+  duration_ms: 3197.452417
+  ...
+# Subtest: RC001-dispatch-transaction-retry
+ok 24 - RC001-dispatch-transaction-retry
+  ---
+  duration_ms: 1590.724125
+  ...
+# Subtest: RC001-dispatch-transaction-abort
+ok 25 - RC001-dispatch-transaction-abort
+  ---
+  duration_ms: 1778.057459
+  ...
+1..25
+# tests 25
+# suites 0
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 20
+# todo 0
+# duration_ms 13240.161833

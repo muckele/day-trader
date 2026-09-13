@@ -23,12 +23,44 @@ export async function runChecks(checks, execute) {
 }
 
 const mongoMinimums = { 'mvpPersistence.test.js':4, 'orderLifecycle.mongo.test.js':16, 'orderLifecycle.faults.test.js':9, 'orderProtection.test.js':8, 'phase3Financial.mongo.test.js':17, 'phase3Smtp.mongo.test.js':4 };
+export const RC001_REQUIRED_SCENARIOS = [
+  'RC001-final-account-emergency-stop', 'RC001-final-account-disable',
+  'RC001-final-account-lease-takeover', 'RC001-final-account-lease-expiry',
+  'RC001-final-account-heartbeat-loss', 'RC001-awaited-renewal-stop',
+  'RC001-awaited-renewal-reenable-generation', 'RC001-claim-before-stop-resume',
+  'RC001-claim-before-stop-process-death', 'RC001-claim-before-stop-lease-takeover',
+  'RC001-transmitted-acknowledge', 'RC001-transmitted-accepted500',
+  'RC001-ambiguous-claim-commit', 'RC001-disable-preserves-manual-protection-reduction',
+  'RC001-protection-final-account-takeover', 'RC001-protection-final-account-expiry',
+  'RC001-reduction-final-account-takeover', 'RC001-reduction-final-account-expiry',
+  'RC001-run-once-final-account-stop', 'RC001-legacy-control-writer-generation',
+  'RC001-process-death-before-claim', 'RC001-process-death-after-acceptance-before-persistence',
+  'RC001-held-post-response-stop-then-fill', 'RC001-dispatch-transaction-retry', 'RC001-dispatch-transaction-abort'
+];
+export const RC001_EXIT_REQUIRED_SCENARIOS = [
+  'RC001-protection-cancel-final-account-takeover', 'RC001-protection-cancel-final-account-expiry',
+  'RC001-close-post-final-account-takeover', 'RC001-close-post-final-account-expiry',
+  'RC001-close-protection-cancel-final-account-takeover', 'RC001-close-protection-cancel-final-account-expiry',
+  'RC001-close-exit-cancel-final-account-takeover', 'RC001-close-exit-cancel-final-account-expiry',
+  'RC001-reducing-replacement-final-account-disable', 'RC001-reducing-replacement-final-account-emergency-stop'
+];
+export const RC002_REQUIRED_SCENARIOS = [
+  'RC002-original-race: captured empty snapshot cannot admit a second $60 into a $100 position',
+  'RC002-origin-manual-manual', 'RC002-origin-manual-robo', 'RC002-origin-robo-manual', 'RC002-origin-robo-robo',
+  'RC002-lag-full', 'RC002-lag-partial', 'RC002-terminal-cancel', 'RC002-terminal-expiry',
+  'RC002-headroom', 'RC002-symbol-slot', 'RC002-retry', 'RC002-replacement',
+  'RC002-fill-during-cancel', 'RC002-external-conflict', 'RC002-close-headroom',
+  'RC002-protection-generations', 'RC002-invalid-observation', 'RC002-incomplete-discovery',
+  'RC002-bootstrap-uncovered', 'RC002-uningested-fill', 'RC002-stale-reducing-quantity',
+  'RC002-reduce-while-disabled', 'RC002-emergency-supersedes-replacement'
+];
 export function buildMongoChecks(files) {
   return files.filter(name => name.endsWith('.test.js')).sort().map(name => ({
     name: name === 'mvpPersistence.test.js' ? 'mongo-integration' : `mongo-${name.replace(/\.test\.js$/, '')}`,
     command: process.execPath,
     args: ['--test', `backend/integration/${name}`],
-    summary: 'tap', minimumTests: mongoMinimums[name] || 1
+    summary: 'tap', minimumTests: mongoMinimums[name] || 1,
+    ...(name === 'rc002Exposure.mongo.test.js' ? { requiredScenarios: RC002_REQUIRED_SCENARIOS } : {})
   }));
 }
 
@@ -36,7 +68,8 @@ export const REQUIRED_LOCAL_GATES = [
   'runtime', 'backend-install', 'frontend-install', 'verification-tests', 'backend-tests',
   'mongo-integration', 'mongo-orderLifecycle.mongo', 'mongo-orderLifecycle.faults', 'mongo-orderProtection',
   'mongo-phase3Financial.mongo', 'mongo-phase3Admission.mongo', 'mongo-phase3Smtp.mongo', 'mongo-nonOwnerAuthorization.fullstack',
-  'frontend-tests', 'frontend-build', 'provider-contract', 'process-acceptance', 'browser-lifecycle', 'browser-core-screens'
+  'frontend-tests', 'frontend-build', 'provider-contract', 'process-acceptance', 'browser-lifecycle', 'browser-core-screens',
+  'rc-dispatch', 'mongo-rc002Exposure.mongo', 'rc-exposure-process', 'rc-exit-dispatch'
 ];
 export function buildRequiredAcceptance(checks) {
   return REQUIRED_LOCAL_GATES.map(name => {
@@ -74,8 +107,16 @@ export function validateAcceptanceExecution(check, output, report) {
   } else {
     passed=report?.stats?.expected;failed=report?.stats?.unexpected;skipped=report?.stats?.skipped;flaky=report?.stats?.flaky;
   }
-  const ok=totalsValid&&Number.isInteger(passed)&&passed>=check.minimumTests&&failed===0&&skipped===0&&flaky===0;
-  return {ok,passedTests:passed,failedTests:failed,skippedTests:skipped,flakyTests:flaky,...(!ok?{error:`Expected at least ${check.minimumTests} passing tests with no failures, skips, or flakes and a complete runner summary`}:{})};
+  const requiredScenarioResults = (check.requiredScenarios || []).map(name => {
+    // Actual TAP result records only: comments, diagnostics and inflated totals
+    // cannot substitute for an executed assertion-bearing required scenario.
+    const records = [...output.matchAll(/^\s*(not ok|ok) \d+ - (.+?)(?:\s+#\s+(SKIP|TODO)\b.*)?\s*$/gmi)]
+      .filter(match => match[2] === name);
+    return { name, passed: records.length === 1 && records[0][1] === 'ok' && !records[0][3] };
+  });
+  const scenariosValid = requiredScenarioResults.every(result => result.passed);
+  const ok=scenariosValid&&totalsValid&&Number.isInteger(passed)&&passed>=check.minimumTests&&failed===0&&skipped===0&&flaky===0;
+  return {ok,passedTests:passed,failedTests:failed,skippedTests:skipped,flakyTests:flaky,requiredScenarioResults,...(!ok?{error:`Expected every required scenario exactly once and at least ${check.minimumTests} passing tests with no failures, skips, or flakes and a complete runner summary`}:{})};
 }
 
 export function buildReleaseChecks({backendTests,integrationFiles}) {
@@ -94,12 +135,24 @@ export function buildReleaseChecks({backendTests,integrationFiles}) {
     ...browserMongo,
     {name:'provider-contract',command:process.execPath,args:['--test','scripts/acceptance/provider.test.cjs'],summary:'tap',minimumTests:1},
     {name:'process-acceptance',command:process.execPath,args:['--test','scripts/acceptance/process.test.cjs'],summary:'tap',minimumTests:9,timeoutMs:600000},
+    {name:'rc-dispatch',command:process.execPath,args:['--test','scripts/acceptance/rcDispatch.test.cjs'],summary:'tap',minimumTests:1,requiredScenarios:RC001_REQUIRED_SCENARIOS,timeoutMs:900000},
+    {name:'rc-exit-dispatch',command:process.execPath,args:['--test','scripts/acceptance/rcExitDispatch.test.cjs'],summary:'tap',minimumTests:1,requiredScenarios:RC001_EXIT_REQUIRED_SCENARIOS,timeoutMs:900000},
+    {name:'rc-exposure-process',command:process.execPath,args:['--test','scripts/acceptance/rc002.process.test.cjs'],summary:'tap',minimumTests:1,requiredScenarios:['RC002-real-worker-lock-and-coverage'],timeoutMs:180000},
     ...[['browser-lifecycle','browser.spec.cjs',14],['browser-core-screens','screens.spec.cjs',8]].map(([name,file,minimumTests])=>({name,command:process.execPath,args:['frontend/node_modules/@playwright/test/cli.js','test','--config=scripts/acceptance/playwright.config.cjs',file,'--reporter=list,json'],summary:'playwright',minimumTests,timeoutMs:900000}))
   ];
 }
 
+export function resolveReportDirectory(args = process.argv.slice(2), repositoryRoot = root) {
+  const positions = args.flatMap((argument, index) => argument === '--report-dir' ? [index] : []);
+  if (positions.length > 1) throw new Error('--report-dir may be specified only once.');
+  if (!positions.length) return path.join(repositoryRoot, 'docs/evidence/verification');
+  const directory = args[positions[0] + 1];
+  if (!directory || directory.startsWith('--')) throw new Error('--report-dir requires a directory.');
+  return path.resolve(repositoryRoot, directory);
+}
+
 async function main() {
-  const reportDir=path.join(root,'docs/evidence/verification');
+  const reportDir=resolveReportDirectory();
   await mkdir(reportDir,{recursive:true});
   const env=buildTestEnvironment();
   const backendTests=(await readdir(path.join(root,'backend/tests'))).filter(name=>name.endsWith('.test.js'));

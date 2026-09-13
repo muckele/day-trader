@@ -451,6 +451,9 @@ async function incrementUsageBuckets(userId, now, notional, deps = defaultDeps) 
 }
 
 async function updateCircuitFields(userId, patch, deps = defaultDeps) {
+  if (deps === defaultDeps) {
+    return require('../robotrader/settingsService').mutateRoboTraderSettings(userId, () => patch);
+  }
   if (!deps.RoboSettings?.updateOne) return;
   await deps.RoboSettings.updateOne(
     { userId },
@@ -1476,11 +1479,14 @@ async function runRoboTradeForUser({ userId, accountId = null, signal = null, no
 }
 
 async function updateSettingsForUser(userId, updates, deps = defaultDeps) {
-  const settings = await getOrCreateSettings(userId, deps);
+  let settings = await getOrCreateSettings(userId, deps);
   const currentEnabled = Boolean(settings.enabled);
   const sanitized = sanitizeSettingsUpdate(updates);
-  Object.assign(settings, sanitized);
-  await settings.save();
+  if (deps === defaultDeps) settings = await require('../robotrader/settingsService').updateRoboTraderSettings(userId, sanitized);
+  else {
+    Object.assign(settings, sanitized);
+    await settings.save();
+  }
 
   await writeAuditLog(userId, 'robo_settings_updated', {
     enabled: Boolean(settings.enabled),

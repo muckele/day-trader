@@ -1,0 +1,68 @@
+{
+  "reviewedHead": "1972254bfcfd0b6ff724876cd0d2a2b15006ac26",
+  "targetedRuntime": "v24.19.0",
+  "targetedExecutable": "/Users/Matt/.nvm/versions/node/v24.19.0/bin/node",
+  "sourceState": "uncommitted RC001 and RC002 repairs; use per-run lifecycle hash in logs",
+  "artifacts": [
+    {
+      "path": "docs/evidence/rc-repair/rc002-financial-matrix.log",
+      "bytes": 6922,
+      "sha256": "246947bb78bfbb5fd4e33e942a372d9a30081018b1b0018a2a3071e64d6503f6"
+    },
+    {
+      "path": "docs/evidence/rc-repair/rc002-protection-red.log",
+      "bytes": 4329,
+      "sha256": "c80a502b1ac519c23cab44b680352a3e303f8eb806656616e944b209e7b87c86"
+    },
+    {
+      "path": "docs/evidence/rc-repair/rc002-review-edge-red.log",
+      "bytes": 5861,
+      "sha256": "95b7c741d8e6f8c7c54f6d7ce4c400d535305c6fba6cb4074a31e5948fb3ade4"
+    },
+    {
+      "path": "docs/evidence/rc-repair/rc002-process-matrix.log",
+      "bytes": 3466,
+      "sha256": "84da6e3386e7ad1cb112d3a8e6ced37c1590d802ae0aef3efd6d7a0a0a49a7ba"
+    },
+    {
+      "path": "docs/evidence/rc-repair/rc002-first-green.log",
+      "bytes": 2295,
+      "sha256": "f51650d82e44a8a3a236ee83612704456aa2a0d216f23dd1d84b6f4d393cf296"
+    },
+    {
+      "path": "docs/evidence/rc-repair/rc002-matrix-first.log",
+      "bytes": 2910,
+      "sha256": "affef620736266976a3550ec6e868cd55f5b34e657089aed73a468edcf52e903"
+    },
+    {
+      "path": "docs/evidence/rc-repair/rc002-financial-green.log",
+      "bytes": 7069,
+      "sha256": "39a8b410a9e5e93bf9d68c32d6c372e95be373afc5fc9f24ac2a9242231db249"
+    },
+    {
+      "path": "docs/evidence/rc-repair/rc002-red.log",
+      "bytes": 3110,
+      "sha256": "e8039b363b559b7e16171ae7dace85ebabef826d65a7cd7caa2215e3e6f05745"
+    },
+    {
+      "path": "backend/services/portfolioExposureService.js",
+      "bytes": 10784,
+      "sha256": "8e9d321ca2d749ae7fc7979e539577c94c0b6472c9399eaccf2b63629322450b"
+    },
+    {
+      "path": "backend/integration/rc002Exposure.mongo.test.js",
+      "bytes": 22884,
+      "sha256": "4be4733329813df4e1a7ad6554820694a30c44250caf9d3474508882658d65c5"
+    },
+    {
+      "path": "scripts/acceptance/rc002.process.test.cjs",
+      "bytes": 3277,
+      "sha256": "9c5c40e1a5e7552698bb58407f86a61f5fe594e6913c846bc6ff1cd35076f895"
+    },
+    {
+      "path": "docs/evidence/rc-repair/rc002-repair.md",
+      "bytes": 8174,
+      "sha256": "a792e8c404eef9d0b45117ffb5a4521f1170458c6ed866eef6142fb591728f5c"
+    }
+  ]
+}

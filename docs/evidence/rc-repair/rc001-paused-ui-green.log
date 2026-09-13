@@ -1,0 +1,12 @@
+
+> frontend@0.1.0 test
+> react-scripts test --watchAll=false --runInBand src/pages/RoboTraderStopStatus.test.js src/pages/ReleaseScope.test.js
+
+PASS src/pages/RoboTraderStopStatus.test.js
+PASS src/pages/ReleaseScope.test.js
+
+Test Suites: 2 passed, 2 total
+Tests:       12 passed, 12 total
+Snapshots:   0 total
+Time:        2.178 s, estimated 4 s
+Ran all test suites matching /src\/pages\/RoboTraderStopStatus.test.js|src\/pages\/ReleaseScope.test.js/i.

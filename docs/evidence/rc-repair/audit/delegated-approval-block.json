@@ -1,0 +1,14 @@
+{
+  "observedAt": "2026-09-13T15:50:57.791297+00:00",
+  "status": "APPROVAL_REVIEW_REJECTED_BEFORE_EXECUTION",
+  "package": "backend",
+  "requestedCommand": "npm audit --json --ignore-scripts --package-lock-only --registry=https://registry.npmjs.org --userconfig=/dev/null --globalconfig=/dev/null --cache=/private/tmp/day-trader-rc-audit-cache",
+  "runtime": {
+    "node": "24.19.0",
+    "npm": "11.17.0",
+    "nodeExecutable": "/Users/Matt/.nvm/versions/node/v24.19.0/bin/node",
+    "npmExecutable": "/Users/Matt/.nvm/versions/node/v24.19.0/bin/npm"
+  },
+  "reason": "Automatic approval reviewer could not establish trusted authorization in the delegated transcript; the actual user request was omitted from its view. This is an authorization-context blocker, not an audit advisory result.",
+  "nextAction": "Parent task with the user authorization visible will evaluate the request; no equivalent frontend escalation attempted here."
+}

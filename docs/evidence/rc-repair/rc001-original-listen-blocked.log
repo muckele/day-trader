@@ -1,0 +1,42 @@
+{"startedAt": "2026-09-13T15:49:11.243683+00:00", "sourceRevision": "1972254bfcfd0b6ff724876cd0d2a2b15006ac26", "runtime": {"version": "v20.20.2", "executable": "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node"}, "command": ["/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node", "--test", "--test-name-pattern=RC001-final-account-emergency-stop", "scripts/acceptance/rcDispatch.test.cjs"], "cwd": "/Users/Matt/Projects/day-trader", "productionTrackedDiff": ""}
+TAP version 13
+# Subtest: RC001-final-account-emergency-stop
+not ok 1 - RC001-final-account-emergency-stop
+  ---
+  duration_ms: 3.742917
+  location: '/Users/Matt/Projects/day-trader/scripts/acceptance/rcDispatch.test.cjs:30:3'
+  failureType: 'uncaughtException'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:1886:21)
+    listenInCluster (node:net:1965:12)
+    doListen (node:net:2139:7)
+    process.processTicksAndRejections (node:internal/process/task_queues:83:21)
+  ...
+# Subtest: RC001-final-account-disable
+ok 2 - RC001-final-account-disable # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.141542
+  ...
+# Subtest: RC001-final-account-lease-takeover
+ok 3 - RC001-final-account-lease-takeover # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.052958
+  ...
+# Subtest: RC001-final-account-lease-expiry
+ok 4 - RC001-final-account-lease-expiry # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.049083
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 3
+# todo 0
+# duration_ms 257.517542
+
+EXIT_STATUS 1

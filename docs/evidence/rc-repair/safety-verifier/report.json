@@ -1,0 +1,821 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "runtime",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 39,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "-e",
+        "if (process.versions.node.split(\".\")[0] !== \"20\") { console.error(\"Required Node 20 to match Dockerfiles; got \" + process.version); process.exit(1); }"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/runtime.log",
+      "ok": true
+    },
+    {
+      "name": "backend-install",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1135,
+      "command": [
+        "npm",
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/backend-install.log",
+      "ok": true
+    },
+    {
+      "name": "frontend-install",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 7460,
+      "command": [
+        "npm",
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/frontend-install.log",
+      "ok": true
+    },
+    {
+      "name": "verification-tests",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 118,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "scripts/tests/verify-mvp.test.mjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/verification-tests.log",
+      "ok": true,
+      "passedTests": 13,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "backend-tests",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1997,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "tests/accountScope.test.js",
+        "tests/alpacaExecutionService.test.js",
+        "tests/alpacaPortfolio.test.js",
+        "tests/alpacaTradingClient.test.js",
+        "tests/analysisEngine.test.js",
+        "tests/analytics.test.js",
+        "tests/analyticsSnapshot.test.js",
+        "tests/analyzeRoute.test.js",
+        "tests/backtest.test.js",
+        "tests/brokerBoundarySafety.test.js",
+        "tests/companyRoute.test.js",
+        "tests/debugRoute.test.js",
+        "tests/errorResponse.test.js",
+        "tests/executionGate.test.js",
+        "tests/executionMarketStatus.test.js",
+        "tests/executionReadiness.test.js",
+        "tests/externalPaperAcceptance.test.js",
+        "tests/guardrails.test.js",
+        "tests/manualAlpacaDispatch.test.js",
+        "tests/marketQuoteProvenance.test.js",
+        "tests/marketRoute.test.js",
+        "tests/marketStatusSource.test.js",
+        "tests/mongoConnectionConfig.test.js",
+        "tests/mongoNetwork.test.js",
+        "tests/mongoState.test.js",
+        "tests/notificationRecovery.test.js",
+        "tests/orderLifecycle.financial.test.js",
+        "tests/ownerAccess.test.js",
+        "tests/ownerAuthRoutes.test.js",
+        "tests/ownerBootstrap.test.js",
+        "tests/paperBrokerClient.test.js",
+        "tests/paperMath.test.js",
+        "tests/privateRoutesAuth.test.js",
+        "tests/qualityGate.test.js",
+        "tests/rateLimit.test.js",
+        "tests/recommendRoute.test.js",
+        "tests/recommendationEngine.test.js",
+        "tests/recommendationSchema.test.js",
+        "tests/regimeDetector.test.js",
+        "tests/requireMongo.test.js",
+        "tests/researchIndexService.test.js",
+        "tests/researchService.test.js",
+        "tests/researchTradeWorkflowService.test.js",
+        "tests/riskEngine.test.js",
+        "tests/roboNotificationService.test.js",
+        "tests/roboRoute.test.js",
+        "tests/roboScheduler.test.js",
+        "tests/roboTraderEngine.test.js",
+        "tests/robotraderAlpacaBroker.test.js",
+        "tests/robotraderAlpacaCapabilities.test.js",
+        "tests/robotraderReconciliation.test.js",
+        "tests/robotraderRiskGate.test.js",
+        "tests/robotraderRoute.test.js",
+        "tests/robotraderSettings.test.js",
+        "tests/robotraderStopStatusRoute.test.js",
+        "tests/robotraderStrategyEngine.test.js",
+        "tests/robotraderWorker.test.js",
+        "tests/sessionCookie.test.js",
+        "tests/simulatorSeparation.test.js",
+        "tests/strategyRunService.test.js",
+        "tests/tradeLogic.test.js",
+        "tests/tradePlan.test.js",
+        "tests/tradeRoutes.test.js",
+        "tests/tradingConfig.test.js",
+        "tests/tradingIndexService.test.js",
+        "tests/tradingSystemRoute.test.js",
+        "tests/unsafeInputRoutes.test.js",
+        "tests/unsafeMethodOriginGuard.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/backend-tests.log",
+      "ok": true,
+      "passedTests": 383,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-integration",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 669,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/mvpPersistence.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/mongo-integration.log",
+      "ok": true,
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-orderLifecycle.faults",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1047,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/orderLifecycle.faults.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/mongo-orderLifecycle.faults.log",
+      "ok": true,
+      "passedTests": 9,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-orderLifecycle.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1770,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/orderLifecycle.mongo.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/mongo-orderLifecycle.mongo.log",
+      "ok": true,
+      "passedTests": 16,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-orderProtection",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 853,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/orderProtection.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/mongo-orderProtection.log",
+      "ok": true,
+      "passedTests": 8,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-phase3Financial.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1859,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/phase3Financial.mongo.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/mongo-phase3Financial.mongo.log",
+      "ok": true,
+      "passedTests": 17,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-phase3Smtp.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 3649,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/phase3Smtp.mongo.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/mongo-phase3Smtp.mongo.log",
+      "ok": true,
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-rc002Exposure.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 3846,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/rc002Exposure.mongo.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/mongo-rc002Exposure.mongo.log",
+      "ok": true,
+      "passedTests": 25,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "RC002-original-race: captured empty snapshot cannot admit a second $60 into a $100 position",
+          "passed": true
+        },
+        {
+          "name": "RC002-origin-manual-manual",
+          "passed": true
+        },
+        {
+          "name": "RC002-origin-manual-robo",
+          "passed": true
+        },
+        {
+          "name": "RC002-origin-robo-manual",
+          "passed": true
+        },
+        {
+          "name": "RC002-origin-robo-robo",
+          "passed": true
+        },
+        {
+          "name": "RC002-lag-full",
+          "passed": true
+        },
+        {
+          "name": "RC002-lag-partial",
+          "passed": true
+        },
+        {
+          "name": "RC002-terminal-cancel",
+          "passed": true
+        },
+        {
+          "name": "RC002-terminal-expiry",
+          "passed": true
+        },
+        {
+          "name": "RC002-headroom",
+          "passed": true
+        },
+        {
+          "name": "RC002-symbol-slot",
+          "passed": true
+        },
+        {
+          "name": "RC002-retry",
+          "passed": true
+        },
+        {
+          "name": "RC002-replacement",
+          "passed": true
+        },
+        {
+          "name": "RC002-fill-during-cancel",
+          "passed": true
+        },
+        {
+          "name": "RC002-external-conflict",
+          "passed": true
+        },
+        {
+          "name": "RC002-close-headroom",
+          "passed": true
+        },
+        {
+          "name": "RC002-protection-generations",
+          "passed": true
+        },
+        {
+          "name": "RC002-invalid-observation",
+          "passed": true
+        },
+        {
+          "name": "RC002-incomplete-discovery",
+          "passed": true
+        },
+        {
+          "name": "RC002-bootstrap-uncovered",
+          "passed": true
+        },
+        {
+          "name": "RC002-uningested-fill",
+          "passed": true
+        },
+        {
+          "name": "RC002-stale-reducing-quantity",
+          "passed": true
+        },
+        {
+          "name": "RC002-reduce-while-disabled",
+          "passed": true
+        },
+        {
+          "name": "RC002-emergency-supersedes-replacement",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "frontend-tests",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 3957,
+      "command": [
+        "npm",
+        "test",
+        "--",
+        "--watchAll=false",
+        "--runInBand"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/frontend-tests.log",
+      "ok": true,
+      "passedTests": 38,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "frontend-build",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 12092,
+      "command": [
+        "npm",
+        "run",
+        "build"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/frontend-build.log",
+      "ok": true
+    },
+    {
+      "name": "mongo-nonOwnerAuthorization.fullstack",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1399,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/nonOwnerAuthorization.fullstack.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/mongo-nonOwnerAuthorization.fullstack.log",
+      "ok": true,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-phase3Admission.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1357,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/phase3Admission.mongo.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/mongo-phase3Admission.mongo.log",
+      "ok": true,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "provider-contract",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 134,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "scripts/acceptance/provider.test.cjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/provider-contract.log",
+      "ok": true,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "process-acceptance",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 20186,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "scripts/acceptance/process.test.cjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/process-acceptance.log",
+      "ok": true,
+      "passedTests": 9,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "rc-dispatch",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 46751,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "scripts/acceptance/rcDispatch.test.cjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/rc-dispatch.log",
+      "ok": true,
+      "passedTests": 20,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "RC001-final-account-emergency-stop",
+          "passed": true
+        },
+        {
+          "name": "RC001-final-account-disable",
+          "passed": true
+        },
+        {
+          "name": "RC001-final-account-lease-takeover",
+          "passed": true
+        },
+        {
+          "name": "RC001-final-account-lease-expiry",
+          "passed": true
+        },
+        {
+          "name": "RC001-final-account-heartbeat-loss",
+          "passed": true
+        },
+        {
+          "name": "RC001-awaited-renewal-stop",
+          "passed": true
+        },
+        {
+          "name": "RC001-awaited-renewal-reenable-generation",
+          "passed": true
+        },
+        {
+          "name": "RC001-claim-before-stop-resume",
+          "passed": true
+        },
+        {
+          "name": "RC001-claim-before-stop-process-death",
+          "passed": true
+        },
+        {
+          "name": "RC001-claim-before-stop-lease-takeover",
+          "passed": true
+        },
+        {
+          "name": "RC001-transmitted-acknowledge",
+          "passed": true
+        },
+        {
+          "name": "RC001-transmitted-accepted500",
+          "passed": true
+        },
+        {
+          "name": "RC001-ambiguous-claim-commit",
+          "passed": true
+        },
+        {
+          "name": "RC001-disable-preserves-manual-protection-reduction",
+          "passed": true
+        },
+        {
+          "name": "RC001-protection-final-account-takeover",
+          "passed": true
+        },
+        {
+          "name": "RC001-protection-final-account-expiry",
+          "passed": true
+        },
+        {
+          "name": "RC001-reduction-final-account-takeover",
+          "passed": true
+        },
+        {
+          "name": "RC001-reduction-final-account-expiry",
+          "passed": true
+        },
+        {
+          "name": "RC001-run-once-final-account-stop",
+          "passed": true
+        },
+        {
+          "name": "RC001-legacy-control-writer-generation",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "rc-exposure-process",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 3909,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "scripts/acceptance/rc002.process.test.cjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/rc-exposure-process.log",
+      "ok": true,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "RC002-real-worker-lock-and-coverage",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "browser-lifecycle",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 43781,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "frontend/node_modules/@playwright/test/cli.js",
+        "test",
+        "--config=scripts/acceptance/playwright.config.cjs",
+        "browser.spec.cjs",
+        "--reporter=list,json"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/browser-lifecycle.log",
+      "ok": true,
+      "passedTests": 14,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "browser-core-screens",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 52888,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "frontend/node_modules/@playwright/test/cli.js",
+        "test",
+        "--config=scripts/acceptance/playwright.config.cjs",
+        "screens.spec.cjs",
+        "--reporter=list,json"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/safety-verifier/browser-core-screens.log",
+      "ok": true,
+      "passedTests": 8,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    }
+  ],
+  "requiredAcceptance": [
+    {
+      "name": "runtime",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "backend-install",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "frontend-install",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "verification-tests",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "backend-tests",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-integration",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-orderLifecycle.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-orderLifecycle.faults",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-orderProtection",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-phase3Financial.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-phase3Admission.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-phase3Smtp.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-nonOwnerAuthorization.fullstack",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "frontend-tests",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "frontend-build",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "provider-contract",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "process-acceptance",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "browser-lifecycle",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "browser-core-screens",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "rc-dispatch",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-rc002Exposure.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "rc-exposure-process",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    }
+  ],
+  "releaseCandidate": true,
+  "status": "VERIFIED RELEASE CANDIDATE",
+  "externalAcceptance": [
+    {
+      "name": "External Alpaca paper acceptance",
+      "status": "NOT RUN",
+      "reason": "Requires explicit operator authorization; the verifier uses only the controlled local provider"
+    },
+    {
+      "name": "External SMTP inbox receipt",
+      "status": "NOT RUN",
+      "reason": "Local SMTP acceptance proves the capture boundary, not external delivery or inbox receipt"
+    },
+    {
+      "name": "Deployed-environment and operational acceptance",
+      "status": "NOT RUN",
+      "reason": "No deployment is performed by this verifier"
+    }
+  ],
+  "generatedAt": "2026-09-13T16:10:30.635Z",
+  "runtime": "v20.20.2",
+  "deterministicChecksPass": true
+}

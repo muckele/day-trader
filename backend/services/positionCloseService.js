@@ -34,7 +34,7 @@ function createPositionCloseService({broker,ownerId,expectedAccountId,submit,rec
     try {
      result=await reconcile({intentId:existing._id});c.intentId=existing._id;
      if(now()>c.deadlineAt&&!terminal.has(result.intent.status)){
-      if(!c.exitCancelRequested){c.exitCancelRequested=true;await mark(c,'reconciliation_required','Close deadline exceeded; canceling only this close order before restoring protection.');await assertLease();result=await cancel({intentId:existing._id});}
+      if(!c.exitCancelRequested){c.exitCancelRequested=true;await mark(c,'reconciliation_required','Close deadline exceeded; canceling only this close order before restoring protection.');await assertLease();result=await cancel({intentId:existing._id,dispatchLease:assertLease.dispatchLease,assertExecutor:assertLease.assertExecutor});}
       if(!terminal.has(result.intent.status)){await mark(c,'reconciliation_required','Close cancellation remains unconfirmed; protection cannot safely overlap this exit.');return {...result,close:c};}
      }
      await mark(c,result.intent.status,result.intent.rejectionReason||null,!terminal.has(result.intent.status));return {...result,close:c};
@@ -57,7 +57,7 @@ function createPositionCloseService({broker,ownerId,expectedAccountId,submit,rec
      if(!o?.id||o.client_order_id!==record.clientOrderId||o.symbol!==symbol||o.side!=='sell'||o.type!=='stop')return mark(c,'cancel_uncertain','Protective broker order identity is unresolved.');
      if(!terminal.has(o.status)){
       let step=c.stops.find(s=>s.brokerOrderId===o.id);
-      if(!step){c.stops.push({brokerOrderId:o.id,clientOrderId:record.clientOrderId,cancelRequested:true});await mark(c,'cancel_pending');await assertLease();await broker.cancelOrder(o.id);}
+      if(!step){c.stops.push({brokerOrderId:o.id,clientOrderId:record.clientOrderId,cancelRequested:true});await mark(c,'cancel_pending');await assertLease();await broker.cancelOrder(o.id,{assertExecutor:assertLease.assertExecutor,authorize:({payload}={})=>require('./dispatchAuthorization').claimDispatch({Model:Protection,id:record._id,accountId:expectedAccountId,userId:ownerId,operation:`cancel:${o.id}`,payload:payload||{orderId:o.id},lease:assertLease.dispatchLease,assertExecutor:assertLease.assertExecutor})});}
       // DELETE acknowledgement never establishes cancellation. Poll the authoritative ID.
       const checked=await broker.getOrder(o.id);
       if(!checked||checked.id!==o.id||checked.client_order_id!==record.clientOrderId||!terminal.has(checked.status))return mark(c,'cancel_pending');

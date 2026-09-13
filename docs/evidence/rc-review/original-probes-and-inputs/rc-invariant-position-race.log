@@ -1,0 +1,35 @@
+First completed: filled held dollars: 60
+{
+  "secondStatus": "filled",
+  "brokerPosts": 2,
+  "heldShares": 12,
+  "heldMarketValue": 120,
+  "configuredMaxPosition": 100,
+  "capacity": {
+    "_id": "6aa6401b590e6a3f14684e3f",
+    "accountId": "rc-position-paper",
+    "__v": 0,
+    "createdAt": "2026-09-13T06:18:03.695Z",
+    "reservedCents": 0,
+    "spentCents": 12000,
+    "updatedAt": "2026-09-13T06:18:03.802Z",
+    "version": 6,
+    "cashFloorCents": 100000
+  },
+  "intents": [
+    {
+      "_id": "6aa6401b87cc2ce3568952c8",
+      "status": "filled",
+      "idempotencyKey": "first-fill",
+      "reservedCents": 0,
+      "filledQty": 6
+    },
+    {
+      "_id": "6aa6401b87cc2ce3568952f8",
+      "status": "filled",
+      "idempotencyKey": "older-position-snapshot",
+      "reservedCents": 0,
+      "filledQty": 6
+    }
+  ]
+}

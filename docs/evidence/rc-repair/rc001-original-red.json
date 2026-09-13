@@ -1,0 +1,16 @@
+{
+  "startedAt": "2026-09-13T15:49:53.007017+00:00",
+  "sourceRevision": "1972254bfcfd0b6ff724876cd0d2a2b15006ac26",
+  "runtime": {
+    "version": "v20.20.2",
+    "executable": "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node"
+  },
+  "command": [
+    "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+    "--test",
+    "scripts/acceptance/rcDispatch.test.cjs"
+  ],
+  "cwd": "/Users/Matt/Projects/day-trader",
+  "productionTrackedDiff": "",
+  "exitStatus": 1
+}

@@ -32,7 +32,8 @@ const roboSettingsSchema = new mongoose.Schema(
     weeklyLimit: { type: Number, default: 0 },
     monthlyLimit: { type: Number, default: 0 },
     failureStreak: { type: Number, default: 0 },
-    pausedUntil: { type: Date, default: null }
+    pausedUntil: { type: Date, default: null },
+    controlGeneration: { type: Number, default: 0 }
   },
   {
     timestamps: { createdAt: 'createdAt', updatedAt: 'updatedAt' }

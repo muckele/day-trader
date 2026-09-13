@@ -1,0 +1,28 @@
+✔ enabled automation with pausedReason blocks admissions while retaining unresolved identities (1.177084ms)
+✔ enabled automation with pausedUntil blocks admissions while retaining unresolved identities (0.44875ms)
+✔ paused automation can confirm an empty dispatch drain without claiming it was disabled (1.280125ms)
+✔ expired timestamp without a persistent reason allows current admissions (1.039917ms)
+✔ explicit disable remains a stop rather than a temporary pause (0.226916ms)
+✔ GET /robotrader/settings returns extended settings payload (1.555125ms)
+✔ POST /robotrader/reconcile blocks requested live mode without explicit opt-in (0.541584ms)
+✔ GET /robotrader/decisions/:decisionId returns decision detail with linked orders (0.49925ms)
+✔ GET /robotrader/reconciliation-status summarizes local order matching state (0.995083ms)
+✔ POST /robotrader/reconciliation/archive-history archives terminal historical records only (1.593833ms)
+✔ GET /robotrader/decisions and orders scope list queries by environment (0.385625ms)
+✔ POST /robotrader/run-once-paper requires RoboTrader to be enabled (0.1745ms)
+✔ GET /robotrader/performance blocks live account reads without explicit opt-in (0.336083ms)
+✔ GET /robotrader/performance scopes decisions and orders by environment (1.737792ms)
+✔ GET /settings preserves durable stop status in settings (89.304417ms)
+✔ PUT /settings preserves durable stop status in settings (0.658125ms)
+✔ POST /disable preserves durable stop status in settings (0.504167ms)
+✔ POST /enable preserves durable stop status in settings (0.4545ms)
+✔ POST /emergency-stop preserves durable stop status in settings (0.382ms)
+✔ settings refresh reports completed drain only from a new durable status observation (0.477375ms)
+ℹ tests 20
+ℹ suites 0
+ℹ pass 20
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 538.910875

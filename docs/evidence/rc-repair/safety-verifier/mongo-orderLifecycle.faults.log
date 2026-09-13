@@ -1,0 +1,56 @@
+TAP version 13
+# Subtest: real Mongo lifecycle fault boundaries
+    # Subtest: HTTP 500 after acceptance recovers same broker order across restart
+    ok 1 - HTTP 500 after acceptance recovers same broker order across restart
+      ---
+      duration_ms: 116.986625
+      ...
+    # Subtest: uncertainty window expiry requires reconciliation without releasing or reposting
+    ok 2 - uncertainty window expiry requires reconciliation without releasing or reposting
+      ---
+      duration_ms: 70.02825
+      ...
+    # Subtest: database intent failure prevents any broker submission
+    ok 3 - database intent failure prevents any broker submission
+      ---
+      duration_ms: 7.629
+      ...
+    # Subtest: replacement cannot increase exposure or mutate protective terms
+    ok 4 - replacement cannot increase exposure or mutate protective terms
+      ---
+      duration_ms: 194.996333
+      ...
+    # Subtest: accepted replacement retains reservation after downstream broker-context 403
+    ok 5 - accepted replacement retains reservation after downstream broker-context 403
+      ---
+      duration_ms: 121.92275
+      ...
+    # Subtest: low limit price cannot undervalue existing position for size limits
+    ok 6 - low limit price cannot undervalue existing position for size limits
+      ---
+      duration_ms: 29.618917
+      ...
+    # Subtest: manual entries block exactly at daily loss threshold
+    ok 7 - manual entries block exactly at daily loss threshold
+      ---
+      duration_ms: 12.452959
+      ...
+    # Subtest: fractional-cent broker average fills persist without duplicate spend
+    ok 8 - fractional-cent broker average fills persist without duplicate spend
+      ---
+      duration_ms: 76.188291
+      ...
+    1..8
+ok 1 - real Mongo lifecycle fault boundaries
+  ---
+  duration_ms: 872.8975
+  ...
+1..1
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1012.50925

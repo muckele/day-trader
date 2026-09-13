@@ -1,0 +1,28 @@
+RC002_PROVENANCE {"node":"v24.19.0","executable":"/Users/Matt/.nvm/versions/node/v24.19.0/bin/node","sourceRevision":"1972254bfcfd0b6ff724876cd0d2a2b15006ac26","lifecycleSha256":"d7e708b8cff34e0dd32ce3ea2d56e13608614bb397dfe15df1e5d9445de7b9ba","database":"mvp_test_rc002_801e92fa4f2c43c8b12f90fd59fd46b3"}
+RC002_ORIGINAL_STATE {"brokerPosts":1,"holdings":[{"symbol":"AAPL","qty":"6","qty_available":"6","market_value":"60","current_price":"10"}],"intents":[{"_id":"6aa6c7a458cf1da3b9738e4d","status":"filled","idempotencyKey":"fills-first","reservedCents":0,"filledQty":6},{"_id":"6aa6c7a458cf1da3b9738e8f","status":"rejected","idempotencyKey":"captured-earlier","reservedCents":0,"filledQty":0}],"fills":[{"_id":"6aa6c7a458cf1da3b9738e6d","notionalCents":6000,"side":"buy","qty":6}],"capacity":{"_id":"6aa6c7a45f129b7a75c2e596","accountId":"rc002-fixture-paper","__v":0,"createdAt":"2026-09-13T15:56:20.312Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T15:56:20.381Z","version":4,"cashFloorCents":100000,"portfolioBaseline":{"quantities":{},"canonicalNet":{},"foreignState":"[]","observedAt":"2026-09-13T15:56:20.304Z"},"portfolioObservation":{"state":"reconciliation_required","quantities":{},"canonicalNet":{},"observedAt":"2026-09-13T15:56:20.304Z","version":1}},"buckets":[{"_id":"6aa6c7a45f129b7a75c2e59d","key":"2026-09-13","period":"day","accountId":"rc002-fixture-paper","__v":0,"createdAt":"2026-09-13T15:56:20.320Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T15:56:20.352Z"},{"_id":"6aa6c7a45f129b7a75c2e59f","key":"2026-09-07","period":"week","accountId":"rc002-fixture-paper","__v":0,"createdAt":"2026-09-13T15:56:20.321Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T15:56:20.353Z"},{"_id":"6aa6c7a45f129b7a75c2e5a1","key":"2026-09","period":"month","accountId":"rc002-fixture-paper","__v":0,"createdAt":"2026-09-13T15:56:20.322Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T15:56:20.354Z"}]}
+▶ RC002 required exposure regressions
+  ✔ RC002-original-race: captured empty snapshot cannot admit a second $60 into a $100 position (106.261ms)
+  ✔ RC002-origin-manual-manual (77.260625ms)
+  ✔ RC002-origin-manual-robo (82.711959ms)
+  ✔ RC002-origin-robo-manual (83.265167ms)
+  ✔ RC002-origin-robo-robo (91.456834ms)
+  ✔ RC002-lag-full (112.790791ms)
+  ✔ RC002-lag-partial (101.417292ms)
+  ✔ RC002-terminal-cancel (158.86125ms)
+  ✔ RC002-terminal-expiry (130.56725ms)
+  ✔ RC002-headroom (154.041208ms)
+  ✔ RC002-symbol-slot (100.094125ms)
+  ✔ RC002-retry (57.391167ms)
+  ✔ RC002-replacement (201.618083ms)
+  ✔ RC002-fill-during-cancel (143.848917ms)
+  ✔ RC002-external-conflict (53.301125ms)
+  ✔ RC002-close-headroom (180.451ms)
+✔ RC002 required exposure regressions (2117.613959ms)
+ℹ tests 17
+ℹ suites 0
+ℹ pass 17
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2331.319083

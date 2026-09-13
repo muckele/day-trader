@@ -11,6 +11,7 @@ const schema = new mongoose.Schema({
   qty: { type: Number, default: 0 },
   confirmedQty: { type: Number, default: 0 },
   error: String,
-  brokerSnapshot: mongoose.Schema.Types.Mixed
+  brokerSnapshot: mongoose.Schema.Types.Mixed,
+  dispatchClaims: { type: mongoose.Schema.Types.Mixed, default: {} }
 }, { timestamps: true, optimisticConcurrency: true });
 module.exports = mongoose.model('OrderProtection', schema);

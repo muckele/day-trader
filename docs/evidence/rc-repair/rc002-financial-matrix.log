@@ -1,0 +1,76 @@
+▶ real Mongo lifecycle fault boundaries
+  ✔ HTTP 500 after acceptance recovers same broker order across restart (172.287917ms)
+  ✔ uncertainty window expiry requires reconciliation without releasing or reposting (90.45125ms)
+  ✔ database intent failure prevents any broker submission (13.360708ms)
+  ✔ replacement cannot increase exposure or mutate protective terms (298.615833ms)
+  ✔ accepted replacement retains reservation after downstream broker-context 403 (143.410125ms)
+  ✔ low limit price cannot undervalue existing position for size limits (43.282083ms)
+  ✔ manual entries block exactly at daily loss threshold (21.155584ms)
+  ✔ fractional-cent broker average fills persist without duplicate spend (135.483583ms)
+✔ real Mongo lifecycle fault boundaries (1449.165875ms)
+▶ real replica-set financial lifecycle
+  ✔ manual/manual, robo/robo and mixed races admit exactly one (402.343917ms)
+  ✔ duplicate concurrent submit and fingerprint conflict (78.697709ms)
+  ✔ accepted timeout misses and restart never resubmit (66.096625ms)
+  ✔ post-acceptance persistence failure recovers original (75.364ms)
+  ✔ partial fill duplicate/out-of-order then canceled releases only remainder (215.809416ms)
+  ✔ pre-submit control rejection releases reservation without POST (52.660333ms)
+  ✔ definitive rejected entry releases and 5xx replacement retains conservative capacity (208.205166ms)
+  ✔ replacement rejection keeps original live and retains original capacity (133.925625ms)
+  ✔ weekly and monthly limits bind concurrent requests independently (185.933ms)
+  ✔ old-period uncertainty remains counted in fresh day/week/month (61.671792ms)
+  ✔ reducing exit bypasses exhausted spending and daily loss thresholds (54.153917ms)
+  ✔ production factory requires positive complete risk settings by default (143.424ms)
+  ✔ uncertain, submitting and rejected local states have durable outbox events (79.091791ms)
+  ✔ final lease/control callback prevents POST after intervening protection check (41.319416ms)
+  ✔ partial fill replacement binds cumulative chain without double charging (128.516333ms)
+✔ real replica-set financial lifecycle (2458.557375ms)
+▶ Phase 3 real Mongo cash and coordinated closes
+  ✔ confirmed sale/deposit refresh preserves spending, repeated refresh never credits twice (329.749834ms)
+  ✔ unresolved entry blocks refresh and invalid/withdrawn cash prevents entry (119.938583ms)
+  ✔ close cancels only app stop, waits for terminal evidence, then sizes actual position (188.920041ms)
+  ✔ unrelated exit never canceled and blocks full close (32.095333ms)
+  ✔ concurrent close requests share protection lease and submit once (148.747084ms)
+  ✔ expired close relinquishes protection suppression and does not submit later (113.062292ms)
+  ✔ pending close blocks independent manual sell even after stops cancel (62.372917ms)
+  ✔ stale cash snapshot and external pending buy cannot refresh capacity (19.634084ms)
+  ✔ accepted close timeout survives service restart and never repeats POST (191.8265ms)
+  ✔ lease loss after stop discovery prevents broker cancellation (46.704792ms)
+  ✔ unknown stop identity fails safely without cancel or close writes (40.700625ms)
+  ✔ unfilled close deadline cancels its own exit and returns remaining position to protection (240.578667ms)
+  ✔ protective acceptance with lost broker ID is discovered through durable client identity (110.097708ms)
+  ✔ production admission refuses unready execution before any intent or protective mutation (39.318958ms)
+  ✔ bounded recovery does no broker work while idle and restores stops after expired close (189.686292ms)
+  ✔ protection restoration timeout stays scheduled and recovers accepted stop without duplication (203.480459ms)
+✔ Phase 3 real Mongo cash and coordinated closes (2567.873833ms)
+RC002_PROVENANCE {"node":"v24.19.0","executable":"/Users/Matt/.nvm/versions/node/v24.19.0/bin/node","sourceRevision":"1972254bfcfd0b6ff724876cd0d2a2b15006ac26","lifecycleSha256":"d75d23b714e514479f93fa4ae0d2a720062831dfc43033e742c47c989949d171","database":"mvp_test_rc002_240ac2ce38a241c8bf09f19744ab8a80"}
+RC002_ORIGINAL_STATE {"brokerPosts":1,"holdings":[{"symbol":"AAPL","qty":"6","qty_available":"6","market_value":"60","current_price":"10"}],"intents":[{"_id":"6aa6c826cd8d41336b0214f7","status":"filled","idempotencyKey":"fills-first","reservedCents":0,"filledQty":6},{"_id":"6aa6c826cd8d41336b02153d","status":"rejected","idempotencyKey":"captured-earlier","reservedCents":0,"filledQty":0}],"fills":[{"_id":"6aa6c826cd8d41336b02151a","notionalCents":6000,"side":"buy","qty":6}],"capacity":{"_id":"6aa6c8265f129b7a75c2fd1a","accountId":"rc002-fixture-paper","__v":0,"createdAt":"2026-09-13T15:58:30.768Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T15:58:30.922Z","version":4,"cashFloorCents":100000,"portfolioBaseline":{"quantities":{},"canonicalNet":{},"foreignState":"[]","observedAt":"2026-09-13T15:58:30.756Z"},"portfolioObservation":{"state":"reconciliation_required","quantities":{},"canonicalNet":{},"observedAt":"2026-09-13T15:58:30.756Z","version":1}},"buckets":[{"_id":"6aa6c8265f129b7a75c2fd30","key":"2026-09-13","accountId":"rc002-fixture-paper","period":"day","__v":0,"createdAt":"2026-09-13T15:58:30.784Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T15:58:30.863Z"},{"_id":"6aa6c8265f129b7a75c2fd38","key":"2026-09-07","accountId":"rc002-fixture-paper","period":"week","__v":0,"createdAt":"2026-09-13T15:58:30.785Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T15:58:30.866Z"},{"_id":"6aa6c8265f129b7a75c2fd3f","key":"2026-09","accountId":"rc002-fixture-paper","period":"month","__v":0,"createdAt":"2026-09-13T15:58:30.787Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T15:58:30.867Z"}]}
+▶ RC002 required exposure regressions
+  ✔ RC002-original-race: captured empty snapshot cannot admit a second $60 into a $100 position (207.483417ms)
+  ✔ RC002-origin-manual-manual (176.610792ms)
+  ✔ RC002-origin-manual-robo (151.050667ms)
+  ✔ RC002-origin-robo-manual (135.204875ms)
+  ✔ RC002-origin-robo-robo (126.200459ms)
+  ✔ RC002-lag-full (211.34625ms)
+  ✔ RC002-lag-partial (181.603084ms)
+  ✔ RC002-terminal-cancel (287.512959ms)
+  ✔ RC002-terminal-expiry (232.186ms)
+  ✔ RC002-headroom (203.598583ms)
+  ✔ RC002-symbol-slot (146.328708ms)
+  ✔ RC002-retry (59.872167ms)
+  ✔ RC002-replacement (227.534209ms)
+  ✔ RC002-fill-during-cancel (185.7365ms)
+  ✔ RC002-external-conflict (85.230291ms)
+  ✔ RC002-close-headroom (177.868416ms)
+  ✔ RC002-protection-generations (250.807667ms)
+  ✔ RC002-invalid-observation (77.96225ms)
+  ✔ RC002-incomplete-discovery (60.7655ms)
+✔ RC002 required exposure regressions (3812.773958ms)
+ℹ tests 62
+ℹ suites 0
+ℹ pass 62
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4057.552166

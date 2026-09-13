@@ -114,7 +114,8 @@ function mapSettings(settingsDoc) {
     pausedReason: doc.pausedReason || null,
     lastRunAt: doc.lastRunAt || null,
     createdAt: doc.createdAt || null,
-    updatedAt: doc.updatedAt || null
+    updatedAt: doc.updatedAt || null,
+    controlGeneration: doc.controlGeneration || 0
   };
 }
 
@@ -204,12 +205,28 @@ async function getOrCreateRoboTraderSettings(userId) {
   }
 }
 
-async function updateRoboTraderSettings(userId, input = {}) {
-  const settings = await getOrCreateRoboTraderSettings(userId);
-  const sanitized = sanitizeSettingsUpdate(input, settings);
-  Object.assign(settings, sanitized);
-  await settings.save();
-  return settings;
+async function updateRoboTraderSettings(userId, input = {}, { cancelEntries = false } = {}) {
+  return mutateRoboTraderSettings(userId, settings => sanitizeSettingsUpdate(input, settings), { cancelEntries });
+}
+
+// Internal control writers (including circuit transitions) use the same S boundary.
+// HTTP callers still pass through sanitizeSettingsUpdate above.
+async function mutateRoboTraderSettings(userId, update, { cancelEntries = false } = {}) {
+  await getOrCreateRoboTraderSettings(userId);
+  const accountId = process.env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID;
+  const session = await require('mongoose').startSession();
+  let settings;
+  try {
+    await session.withTransaction(async () => {
+      if (accountId) await require('../services/dispatchAuthorization').accountGate(accountId, session);
+      settings = await RoboSettings.findOne({ userId }).session(session);
+      Object.assign(settings, update(settings));
+      settings.controlGeneration = (settings.controlGeneration || 0) + 1;
+      await settings.save({ session });
+      if (cancelEntries && accountId) await require('../models/OrderIntent').updateMany({ accountId, userId: String(userId), executionSource: 'alpaca-paper', origin: /^robo/i, side: 'buy', status: { $nin: ['filled','canceled','cancelled','expired','rejected'] } }, { $set: { stopCancelRequested: true } }, { session });
+    });
+    return settings;
+  } finally { await session.endSession(); }
 }
 
 module.exports = {
@@ -223,5 +240,6 @@ module.exports = {
   normalizeSymbol,
   normalizeSymbolList,
   sanitizeSettingsUpdate,
+  mutateRoboTraderSettings,
   updateRoboTraderSettings
 };

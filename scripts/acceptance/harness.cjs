@@ -54,6 +54,17 @@ async function startHarness() {
  return {baseURL,provider,ownerId,otherId,mongoUri,env,child,get logs(){return logs;},
   advanceServerClock:offsetMs=>new Promise(resolve=>{child.once('message',resolve);child.send({type:'acceptance-clock',offsetMs});}),
   control:async body=>(await fetch(env.ACCEPTANCE_PROVIDER_URL+'/control',{method:'POST',body:JSON.stringify(body)})).json(),
+  spawn:(operation,extraEnv={})=>{
+   const processChild=spawn(process.execPath,['--require',path.join(__dirname,'transport.cjs'),path.join(__dirname,'driver.cjs'),operation],{cwd:root,env:{...env,...extraEnv},stdio:['ignore','pipe','pipe','ipc']});
+   workers.add(processChild);let output='';const messages=[];
+   processChild.on('message',message=>messages.push(message));
+   processChild.stdout.on('data',d=>output+=d);processChild.stderr.on('data',d=>output+=d);
+   const completed=new Promise(resolve=>{
+    processChild.once('error',error=>resolve({code:null,error:error.message,output}));
+    processChild.once('exit',(code,signal)=>{workers.delete(processChild);resolve({code,signal,output});});
+   });
+   return {child:processChild,messages,completed,send:message=>processChild.send(message),get output(){return output;}};
+  },
   run:operation=>new Promise((resolve,reject)=>{
    const processChild=spawn(process.execPath,['--require',path.join(__dirname,'transport.cjs'),path.join(__dirname,'driver.cjs'),operation],{cwd:root,env,stdio:['ignore','pipe','pipe']});
    workers.add(processChild);let output='';const timer=setTimeout(()=>processChild.kill('SIGKILL'),30000);

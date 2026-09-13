@@ -1,3 +1,5 @@
+> **2026-09-13 repair checkpoint: RC-001 and RC-002 repaired; NO-GO pending supported-runtime and Linux image acceptance.** Final safety verifier passed all23 required gates, exit0, with no skipped scenarios. This Node20 run preserves historical comparison and is not a supported-runtime release pass. See `docs/evidence/rc-repair/safety-final-verifier/report.json` and `docs/evidence/rc-repair/repair-decision.md`. The Phase3 GO statements below are historical; original19/19 reports remain unchanged.
+
 # MVP verification record — Phase 3
 
 Status: **VERIFIED RELEASE CANDIDATE — GO for the defined deterministic local owner-only Alpaca PAPER MVP.** Complete verifier exit: **0**. All **19 required gates passed** on one fresh run. This is not DEPLOYED PAPER MVP VERIFIED.

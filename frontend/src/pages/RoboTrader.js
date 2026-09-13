@@ -8,6 +8,21 @@ import { getApiError } from '../utils/api';
 
 const RISK_DISCLOSURE = 'RoboTrader uses automated trading rules and market data to identify potential opportunities. Trading involves risk, including possible loss of principal. Past performance does not guarantee future results.';
 
+function stopPresentation(status) {
+  if (status?.state === 'stopped' && status.admissionsDisabled === true && Array.isArray(status.unresolved) && status.unresolved.length === 0) {
+    if (status.paused) return { label: 'Automated entries paused', message: 'Earlier automated dispatches have drained; the pause still blocks new entries. Entries may resume when the pause ends.' };
+    return { label: 'Fully stopped', message: 'New automated entries are disabled. Earlier automated dispatches have drained.', confirmed: true };
+  }
+  if (status?.state === 'draining' && status.admissionsDisabled === true) {
+    if (status.paused) return { label: 'Paused — earlier dispatches unresolved', message: 'New automated entries are paused. Earlier requests may still reach the broker or require reconciliation; their original identities remain tracked.' };
+    return { label: 'Stopping — earlier dispatches unresolved', message: 'New automated entries are disabled. Earlier requests may still reach the broker or require reconciliation; their original identities remain tracked.' };
+  }
+  if (status?.state === 'running' && status.admissionsDisabled === false) {
+    return { label: 'Automated entries enabled', message: 'New automated requests remain subject to account and risk checks.' };
+  }
+  return { label: 'Stop status unavailable', message: 'The server has not confirmed whether earlier automated dispatches have drained.' };
+}
+
 const defaultSettings = {
   isEnabled: false,
   mode: 'paper',
@@ -295,6 +310,8 @@ export default function RoboTrader() {
   const [archivingHistory, setArchivingHistory] = useState(false);
   const [decisionDetail, setDecisionDetail] = useState(null);
   const [decisionDetailLoading, setDecisionDetailLoading] = useState(false);
+  const [refreshingStop, setRefreshingStop] = useState(false);
+  const [stopRefreshError, setStopRefreshError] = useState('');
 
   const loadAll = useCallback(async () => {
     const settingsRes = await axios.get('/api/robotrader/settings');
@@ -433,6 +450,29 @@ export default function RoboTrader() {
     setSuccess(message);
   };
 
+  const applyControlResponse = data => {
+    const controlSettings = data?.settings || {};
+    const status = data?.stopStatus || controlSettings.stopStatus;
+    setSettings(previous => ({ ...previous, ...controlSettings, ...releasedScope, stopStatus: status }));
+    setStopRefreshError('');
+    return status;
+  };
+
+  const handleRefreshStop = async () => {
+    setRefreshingStop(true);
+    setSuccess('');
+    try {
+      const response = await axios.get('/api/robotrader/settings');
+      const current = response.data?.settings || {};
+      setSettings(previous => ({ ...previous, isEnabled: current.isEnabled === true, enabled: current.enabled === true, stopStatus: current.stopStatus }));
+      setStopRefreshError('');
+    } catch (err) {
+      setStopRefreshError('Stop status refresh failed. The last reported state is shown; current completion is unconfirmed.');
+    } finally {
+      setRefreshingStop(false);
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setError('');
@@ -453,8 +493,9 @@ export default function RoboTrader() {
     setSuccess('');
     try {
       if (settings.isEnabled) {
-        await axios.post('/api/robotrader/disable', { reason: 'Disabled from dashboard.' });
-        await refreshAfterAction('RoboTrader disabled.');
+        const response = await axios.post('/api/robotrader/disable', { reason: 'Disabled from dashboard.' });
+        const status = applyControlResponse(response.data);
+        await refreshAfterAction(stopPresentation(status).message);
       } else {
         await axios.post('/api/robotrader/enable', buildSettingsPayload());
         await refreshAfterAction('RoboTrader enabled.');
@@ -578,8 +619,8 @@ export default function RoboTrader() {
     const environment = settings.mode === 'live' ? 'live' : 'paper';
     const shouldStop = window.confirm(
       environment === 'live'
-        ? 'Emergency stop will disable RoboTrader immediately. Live RoboTrader orders can be canceled if you confirm the next step.'
-        : 'Emergency stop will disable RoboTrader immediately.'
+        ? 'Emergency stop disables new automated entries. Earlier dispatches may still be in flight. You can request cancellation in the next step.'
+        : 'Emergency stop disables new automated entries. Earlier dispatches may still be in flight and require reconciliation.'
     );
     if (!shouldStop) return;
     const cancelOpenOrders = window.confirm(`Cancel open RoboTrader-created Alpaca ${environment} orders too?`);
@@ -587,8 +628,11 @@ export default function RoboTrader() {
     setError('');
     setSuccess('');
     try {
-      await axios.post('/api/robotrader/emergency-stop', { cancelOpenOrders, environment });
-      await refreshAfterAction('Emergency stop completed.');
+      const response = await axios.post('/api/robotrader/emergency-stop', { cancelOpenOrders, environment });
+      const status = applyControlResponse(response.data);
+      await refreshAfterAction(stopPresentation(status).confirmed
+        ? 'Emergency stop confirmed: earlier automated dispatches have drained.'
+        : stopPresentation(status).message);
     } catch (err) {
       setError(getApiError(err));
     } finally {
@@ -614,10 +658,11 @@ export default function RoboTrader() {
 
   const hasReconciliationCheck = Number.isFinite(Date.parse(health?.reconciliation?.lastReconciledAt));
   const positionsAvailable = Array.isArray(performance?.positions) && !performance?.brokerError;
-  const enabledVariant = settings.isEnabled ? 'success' : 'neutral';
+  const enabledVariant = settings.stopStatus?.paused ? 'warning' : settings.isEnabled ? 'success' : 'neutral';
   const modeVariant = settings.mode === 'live' ? 'danger' : 'solid';
-  const canRunPaper = settings.isEnabled && settings.mode === 'paper' && !saving && !runningNow;
+  const canRunPaper = settings.isEnabled && settings.stopStatus?.admissionsDisabled !== true && settings.mode === 'paper' && !saving && !runningNow;
   const canPreviewPaper = settings.mode === 'paper' && !saving && !previewing;
+  const stopView = stopPresentation(settings.stopStatus);
 
   return (
     <div className="space-y-6">
@@ -627,7 +672,7 @@ export default function RoboTrader() {
             <p className="rt-eyebrow">Automation Console</p>
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="rt-title">RoboTrader</h1>
-              <Badge variant={enabledVariant}>{settings.isEnabled ? 'Enabled' : 'Disabled'}</Badge>
+              <Badge variant={enabledVariant}>{settings.stopStatus?.paused ? 'Paused' : settings.isEnabled ? 'Enabled' : 'Disabled'}</Badge>
               <Badge variant={modeVariant}>{settings.mode === 'live' ? 'Live Mode' : 'Paper Mode'}</Badge>
             </div>
             <p className="rt-subtitle">{RISK_DISCLOSURE}</p>
@@ -669,6 +714,29 @@ export default function RoboTrader() {
             {success}
           </div>
         )}
+
+        <section aria-label="Automation stop status" className="mt-5 rounded-lg border border-[#304744] px-4 py-3 text-sm">
+          <p className="font-semibold" aria-live="polite">{stopView.label}</p>
+          <p className="mt-2 text-[#b2c6c1]">{stopView.message}</p>
+          {stopRefreshError && <p role="alert" className="mt-2 text-[#ffd77a]">{stopRefreshError}</p>}
+          {settings.stopStatus?.admissionsDisabled && <p className="mt-2 text-[#b2c6c1]">Reconciliation, protection, and authorized position reduction remain available. Existing holdings are not liquidated by disabling entries.</p>}
+          {Array.isArray(settings.stopStatus?.unresolved) && settings.stopStatus.unresolved.length > 0 && (
+            <div className="mt-3">
+              <p>{settings.stopStatus.unresolved.length} earlier automated request(s) unresolved:</p>
+              <ul className="mt-2 space-y-1">
+                {settings.stopStatus.unresolved.map(item => (
+                  <li key={item.intentId} className="break-all">
+                    <code>{item.clientOrderId || item.intentId}</code> — {item.status || 'unknown'}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-[#b2c6c1]">An unresolved request is not proof that the broker received it. Keep its identity for reconciliation.</p>
+            </div>
+          )}
+          <Button className="mt-3" variant="secondary" size="sm" onClick={handleRefreshStop} disabled={refreshingStop || stopping || saving}>
+            {refreshingStop ? 'Refreshing stop status...' : 'Refresh stop status'}
+          </Button>
+        </section>
 
         <div className="mt-6 flex flex-wrap gap-2">
           <Button onClick={handleToggleEnabled} disabled={saving} variant={settings.isEnabled ? 'secondary' : 'primary'}>

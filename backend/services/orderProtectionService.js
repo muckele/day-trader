@@ -4,6 +4,7 @@ const OrderProtection = require('../models/OrderProtection');
 const OrderProtectionLock = require('../models/OrderProtectionLock');
 const NotificationOutbox = require('../models/NotificationOutbox');
 const RoboAuditLog = require('../models/RoboAuditLog');
+const { claimDispatch } = require('./dispatchAuthorization');
 const TERMINAL = new Set(['filled', 'canceled', 'cancelled', 'expired', 'rejected']);
 function flattenOrders(orders = []) { return orders.flatMap(order => [order, ...flattenOrders(order.legs || [])]); }
 const ACTIVE = new Set(['new', 'accepted', 'partially_filled']);
@@ -24,6 +25,7 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
   async function mark(record, state, extra = {}) {
     Object.assign(record, extra, { state });
     await record.save();
+    await require('./portfolioExposureService').recordProtectionFill(record);
     await Intent.updateOne({ _id: record.intentId }, { $set: { protectionState: {
       status: state, confirmedQty: record.confirmedQty, clientOrderId: record.clientOrderId,
       brokerOrderId: record.brokerOrderId, error: record.error || null
@@ -57,12 +59,18 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
       ] }, { $set: { owner: token, expiresAt: new Date(Date.now() + 60000) } }, { upsert: true, new: true });
     } catch (error) { if (error.code === 11000) return { state: 'busy' }; throw error; }
     if (!lease) return { state: 'busy' };
+    let leaseLost = null;
+    const assertExecutor = () => { if (leaseLost) throw leaseLost; };
+    const dispatchLease = { type: 'exit', owner: token };
     const heartbeat = setInterval(() => {
       Lock.updateOne({ accountId: expectedAccountId, owner: token, expiresAt: { $gt: new Date() } },
-        { $set: { expiresAt: new Date(Date.now() + 60000) } }).catch(() => {});
+        { $set: { expiresAt: new Date(Date.now() + 60000) } }).then(result => {
+          if (result.matchedCount !== 1) leaseLost = new Error('Protection heartbeat lease lost.');
+        }).catch(error => { leaseLost = error; });
     }, 15000);
     heartbeat.unref?.();
     const assertLease = async () => {
+      assertExecutor();
       await identity();
       const held = await Lock.findOne({ accountId: expectedAccountId, owner: token, expiresAt: { $gt: new Date() } });
       if (!held) throw new Error('Protection lease lost.');
@@ -83,6 +91,7 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
           || current.type !== 'stop' || Number(current.stop_price) !== stopPrice) return mark(record, 'unprotected', { confirmedQty: 0, error: 'Protective broker identity or stop terms mismatch.' });
         record.brokerOrderId = current.id;
         record.brokerSnapshot = current;
+        await require('./portfolioExposureService').recordProtectionFill(record);
       }
       const [positions, openOrders] = await Promise.all([broker.getPositions(), broker.listOrders({ status: 'open', nested: true, limit: 500 })]);
       const position = (positions || []).find(p => p.symbol === intent.symbol);
@@ -101,7 +110,7 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
         if (record.state !== 'cancel_pending') {
           await mark(record, 'cancel_pending', { confirmedQty: 0 });
           await assertLease();
-          try { await broker.cancelOrder(current.id); }
+          try { await broker.cancelOrder(current.id, { assertExecutor, authorize: ({ payload } = {}) => claimDispatch({ Model: OrderProtection, id: record._id, accountId: expectedAccountId, userId: ownerId, operation: `cancel:${current.id}`, payload: payload || { orderId: current.id }, lease: dispatchLease, assertExecutor }) }); }
           catch (error) { await mark(record, 'cancel_pending', { error: error.message }); }
         }
         return record;
@@ -112,12 +121,13 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
       record.generation += 1;
       record.clientOrderId = protectionClientId(intentId, record.generation);
       record.brokerOrderId = null;
+      record.brokerSnapshot = null;
       await mark(record, 'submitting', { qty: desired, confirmedQty: 0, error: null });
       await assertLease();
       try {
         const result = await broker.submitOrder({ symbol: intent.symbol, assetClass: 'stocks', side: 'sell',
           orderType: 'stop', orderClass: 'simple', timeInForce: 'gtc', qty: desired,
-          stopPrice, clientOrderId: record.clientOrderId });
+          stopPrice, clientOrderId: record.clientOrderId }, { assertExecutor, authorize: ({ payload }) => claimDispatch({ Model: OrderProtection, id: record._id, accountId: expectedAccountId, userId: ownerId, operation: `submit:${record.clientOrderId}`, payload, lease: dispatchLease, assertExecutor }) });
         const order = result.order || result;
         const confirmed = order.id && order.client_order_id === record.clientOrderId && order.symbol === intent.symbol
           && order.side === 'sell' && order.type === 'stop' && Number(order.stop_price) === stopPrice
@@ -153,9 +163,13 @@ async function withProtectionAccountLock({ accountId, symbol, coordinatedClose =
     if (error.code === 11000) throw Object.assign(new Error('Account exit operation is already running.'), { status: 409, code: 'EXIT_BUSY' });
     throw error;
   }
+  let leaseLost = null;
+  const assertExecutor = () => { if (leaseLost) throw leaseLost; };
   const heartbeat = setInterval(() => {
     OrderProtectionLock.updateOne({ accountId, owner, expiresAt: { $gt: new Date() } },
-      { $set: { expiresAt: new Date(Date.now() + 60000) } }).catch(() => {});
+      { $set: { expiresAt: new Date(Date.now() + 60000) } }).then(result => {
+        if (result.matchedCount !== 1) leaseLost = new Error('Exit heartbeat lease lost.');
+      }).catch(error => { leaseLost = error; });
   }, 15000);
   heartbeat.unref?.();
   try {
@@ -163,9 +177,13 @@ async function withProtectionAccountLock({ accountId, symbol, coordinatedClose =
     const reserved = await OrderProtection.exists({ accountId, ...(symbol ? { symbol } : {}),
       $or: [{ confirmedQty: { $gt: 0 } }, { state: { $in: ['submitting', 'uncertain', 'cancel_pending'] } }] });
     if (reserved && !coordinatedClose) throw Object.assign(new Error('Protective orders reserve this position; reconcile or cancel the linked stop before another exit.'), { status: 409, code: 'EXIT_PROTECTION_RESERVED' });
-    return await fn(async () => {
+    const assertLease = async () => {
+      assertExecutor();
       if (!await OrderProtectionLock.exists({ accountId, owner, expiresAt: { $gt: new Date() } })) throw new Error('Exit lease lost.');
-    });
+    };
+    assertLease.dispatchLease = { type: 'exit', owner };
+    assertLease.assertExecutor = assertExecutor;
+    return await fn(assertLease);
   } finally {
     clearInterval(heartbeat);
     await OrderProtectionLock.updateOne({ accountId, owner }, { $set: { expiresAt: new Date(0) } });

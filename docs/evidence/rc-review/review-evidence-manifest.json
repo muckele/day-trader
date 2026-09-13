@@ -1,0 +1,48 @@
+{
+  "candidate": "1972254bfcfd0b6ff724876cd0d2a2b15006ac26",
+  "baseline": "0dcc4d0dad7f47768a5613573b0a828bda0667ff",
+  "briefIsOperatorAddedUntrackedDocumentation": true,
+  "files": [
+    {
+      "originalPath": "/Users/Matt/Projects/day-trader/docs/Day_Trader_Agentic_MVP_Master_Brief.md",
+      "preservedPath": "/private/tmp/day-trader-independent-1972254/preserved-review-inputs/Day_Trader_Agentic_MVP_Master_Brief.md",
+      "bytes": 22565,
+      "sha256": "6a757eee886ad3281ad003488ccea6d5e69498633160b4ce971216f9c6f14c83"
+    },
+    {
+      "originalPath": "/private/tmp/rc-invariant-account-race.cjs",
+      "preservedPath": "/private/tmp/day-trader-independent-1972254/preserved-review-inputs/rc-invariant-account-race.cjs",
+      "bytes": 1804,
+      "sha256": "e31f2748ef4e42f3eba948cc1a476452bc28fc081e01ce8b2c2f89d98ac6cbdc"
+    },
+    {
+      "originalPath": "/private/tmp/rc-invariant-position-race.cjs",
+      "preservedPath": "/private/tmp/day-trader-independent-1972254/preserved-review-inputs/rc-invariant-position-race.cjs",
+      "bytes": 2801,
+      "sha256": "4f7b27730889392fe9961ca810cc06d57d37ba96ae449a473ae90f3107d74323"
+    },
+    {
+      "originalPath": "/private/tmp/rc-invariant-baseline.log",
+      "preservedPath": "/private/tmp/day-trader-independent-1972254/preserved-review-inputs/rc-invariant-baseline.log",
+      "bytes": 9111,
+      "sha256": "a54e7ea651e32c0b09bf4747163736970e685a080a9c23a9ff2f86702ec91e4b"
+    },
+    {
+      "originalPath": "/private/tmp/rc-invariant-stop-race.log",
+      "preservedPath": "/private/tmp/day-trader-independent-1972254/preserved-review-inputs/rc-invariant-stop-race.log",
+      "bytes": 10012,
+      "sha256": "d0fd3d86b61017474e6906b1d8846bfd39fc82c8c9247c19138142566d69618d"
+    },
+    {
+      "originalPath": "/private/tmp/rc-invariant-position-race.log",
+      "preservedPath": "/private/tmp/day-trader-independent-1972254/preserved-review-inputs/rc-invariant-position-race.log",
+      "bytes": 830,
+      "sha256": "867d97bb57001a32fa902f0b03a55fbe948e302c9b83811501f5d9775d4f7fdc"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/report.json",
+      "bytes": 17308,
+      "sha256": "d54aa979e265881307490c58385e44e3f81a52ab2f1a547739f365eafbd1c5a1"
+    }
+  ]
+}

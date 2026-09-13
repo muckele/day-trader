@@ -1,0 +1,29 @@
+{
+  "performedAt": "2026-09-13T16:04:18.213776+00:00",
+  "runtime": "v24.19.0",
+  "nodeExecutable": "/Users/Matt/.nvm/versions/node/v24.19.0/bin/node",
+  "npmVersion": "11.17.0",
+  "npmExecutable": "/Users/Matt/.nvm/versions/node/v24.19.0/bin/npm",
+  "registry": "https://registry.npmjs.org",
+  "environment": "env -i PATH=/Users/Matt/.nvm/versions/node/v24.19.0/bin:/usr/local/bin:/usr/bin:/bin",
+  "command": "npm audit --json --ignore-scripts --package-lock-only --registry=https://registry.npmjs.org --userconfig=/private/tmp/day-trader-rc-audit-user.npmrc --globalconfig=/private/tmp/day-trader-rc-audit-global.npmrc --cache=/private/tmp/day-trader-rc-audit-cache",
+  "configuration": "Two distinct empty files; no application credentials or source sent. Prior /dev/null config collision failed locally before audit and is not a registry result. Delegated reviewer denial preserved; parent authorized invocation succeeded.",
+  "results": [
+    {
+      "cwd": "backend",
+      "exit": 0,
+      "findings": 0
+    },
+    {
+      "cwd": "frontend",
+      "exit": 1,
+      "findings": 57,
+      "severity": {
+        "low": 14,
+        "moderate": 15,
+        "high": 28,
+        "critical": 0
+      }
+    }
+  ]
+}

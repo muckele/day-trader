@@ -1,0 +1,125 @@
+TAP version 13
+# Subtest: RC001-final-account-emergency-stop
+ok 1 - RC001-final-account-emergency-stop # SKIP test name does not match pattern
+  ---
+  duration_ms: 1.343333
+  ...
+# Subtest: RC001-final-account-disable
+ok 2 - RC001-final-account-disable # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.064541
+  ...
+# Subtest: RC001-final-account-lease-takeover
+ok 3 - RC001-final-account-lease-takeover # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.046542
+  ...
+# Subtest: RC001-final-account-lease-expiry
+ok 4 - RC001-final-account-lease-expiry # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.044792
+  ...
+# Subtest: RC001-claim-before-stop-resume
+ok 5 - RC001-claim-before-stop-resume # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.346
+  ...
+# Subtest: RC001-claim-before-stop-process-death
+ok 6 - RC001-claim-before-stop-process-death # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.042958
+  ...
+# Subtest: RC001-claim-before-stop-lease-takeover
+ok 7 - RC001-claim-before-stop-lease-takeover # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.038417
+  ...
+# Subtest: RC001-transmitted-acknowledge
+ok 8 - RC001-transmitted-acknowledge # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.130458
+  ...
+# Subtest: RC001-transmitted-accepted500
+ok 9 - RC001-transmitted-accepted500 # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.152167
+  ...
+# Subtest: RC001-disable-preserves-manual-protection-reduction
+ok 10 - RC001-disable-preserves-manual-protection-reduction # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.119625
+  ...
+# Subtest: RC001-final-account-heartbeat-loss
+ok 11 - RC001-final-account-heartbeat-loss # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.051875
+  ...
+# Subtest: RC001-awaited-renewal-stop
+ok 12 - RC001-awaited-renewal-stop # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.047167
+  ...
+# Subtest: RC001-awaited-renewal-reenable-generation
+ok 13 - RC001-awaited-renewal-reenable-generation # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.080875
+  ...
+# Subtest: RC001-ambiguous-claim-commit
+ok 14 - RC001-ambiguous-claim-commit # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.037125
+  ...
+# Subtest: RC001-protection-final-account-takeover
+ok 15 - RC001-protection-final-account-takeover # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.086166
+  ...
+# Subtest: RC001-protection-final-account-expiry
+ok 16 - RC001-protection-final-account-expiry # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.080583
+  ...
+# Subtest: RC001-reduction-final-account-takeover
+ok 17 - RC001-reduction-final-account-takeover # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.041334
+  ...
+# Subtest: RC001-reduction-final-account-expiry
+ok 18 - RC001-reduction-final-account-expiry # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.152542
+  ...
+# Subtest: RC001-run-once-final-account-stop
+ok 19 - RC001-run-once-final-account-stop # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.0895
+  ...
+# Subtest: RC001-legacy-control-writer-generation
+not ok 20 - RC001-legacy-control-writer-generation
+  ---
+  duration_ms: 1764.508958
+  location: '/Users/Matt/Projects/day-trader/scripts/acceptance/rcDispatch.test.cjs:285:1'
+  failureType: 'testCodeFailure'
+  error: 'legacy disable must participate in durable control ordering, not bypass the generation transition'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    /Users/Matt/Projects/day-trader/scripts/acceptance/rcDispatch.test.cjs:295:10
+    process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    async fixture (/Users/Matt/Projects/day-trader/scripts/acceptance/rcDispatch.test.cjs:20:5)
+    async Test.run (node:internal/test_runner/test:797:9)
+    async Test.processPendingSubtests (node:internal/test_runner/test:526:7)
+  ...
+# {"beforeGeneration":0,"afterGeneration":0,"enabled":false,"isEnabled":false,"posts":0}
+1..20
+# tests 20
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 19
+# todo 0
+# duration_ms 2003.412584

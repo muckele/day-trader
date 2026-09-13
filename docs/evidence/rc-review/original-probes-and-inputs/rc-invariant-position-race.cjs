@@ -1,0 +1,20 @@
+const root='/Users/Matt/Projects/day-trader/backend';
+const mongoose=require(root+'/node_modules/mongoose');
+const {randomUUID}=require('node:crypto');
+const {createOrderLifecycle}=require(root+'/services/orderLifecycleService');
+const Intent=require(root+'/models/OrderIntent');const Capacity=require(root+'/models/AccountCapacity');
+const dbName='mvp_test_rc_position_'+randomUUID().replaceAll('-','');
+const uri=`mongodb://127.0.0.1:27189/${dbName}?replicaSet=mvp&directConnection=true`;
+const ownerId='507f1f77bcf86cd799439011';
+(async()=>{await mongoose.connect(uri,{serverSelectionTimeoutMS:5000});try{
+ await Promise.all(['OrderIntent','AccountCapacity','BrokerOrder','Fill','SpendingBucket','RoboAuditLog','NotificationOutbox'].map(name=>require(root+'/models/'+name).init()));
+ let held=0,posts=0,positionsReads=0,release,observed;const captured=new Promise(r=>observed=r);const releaseBarrier=new Promise(r=>release=r);
+ const broker={mode:'paper',getAccount:async()=>({id:'rc-position-paper',status:'ACTIVE',cash:String(1000-held*10),equity:'1000',last_equity:'1000'}),getAsset:async()=>({class:'us_equity',status:'active',tradable:true}),getPositions:async()=>{const snapshot=held?[{symbol:'AAPL',qty:String(held),market_value:String(held*10)}]:[];if(++positionsReads===1){observed();await releaseBarrier;}return snapshot;},submitOrder:async input=>{posts++;held+=input.qty;return {id:randomUUID(),client_order_id:input.clientOrderId,symbol:input.symbol,side:input.side,qty:String(input.qty),filled_qty:String(input.qty),filled_avg_price:'10',status:'filled'};}};
+ const settings={mode:'paper',dailyLimit:1000,weeklyLimit:2000,monthlyLimit:3000,maxTradeAmount:100,maxPositionSize:100,maxDailyLoss:100,maxOpenPositions:5,maxTradesPerDay:20};
+ const service=createOrderLifecycle({broker,ownerId,expectedAccountId:'rc-position-paper',strictRisk:true,loadSettings:async()=>settings});
+ const request=key=>({userId:ownerId,idempotencyKey:key,origin:'manual',orderInput:{symbol:'AAPL',side:'buy',qty:6,orderType:'limit',limitPrice:10}});
+ const olderSnapshot=service.submit(request('older-position-snapshot'));await captured;
+ const firstFill=await service.submit(request('first-fill'));console.log('First completed:',firstFill.intent.status,'held dollars:',held*10);
+ release();const result=await olderSnapshot;
+ console.log(JSON.stringify({secondStatus:result.intent.status,brokerPosts:posts,heldShares:held,heldMarketValue:held*10,configuredMaxPosition:settings.maxPositionSize,capacity:await Capacity.findOne().lean(),intents:await Intent.find().select('idempotencyKey status reservedCents filledQty').lean()},null,2));
+}finally{if(mongoose.connection.name===dbName)await mongoose.connection.dropDatabase();await mongoose.disconnect();}})().catch(e=>{console.error(e);process.exitCode=1;});

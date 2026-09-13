@@ -6,6 +6,7 @@ const User = require('../models/User');
 const RoboTradeDecision = require('../models/RoboTradeDecision');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
 const RoboAuditLog = require('../models/RoboAuditLog');
+const dispatchAuthorization = require('../services/dispatchAuthorization');
 const { ALPACA_CAPABILITY_MATRIX } = require('../robotrader/alpacaCapabilities');
 const { createAlpacaBroker } = require('../robotrader/alpacaBroker');
 const { reconcileRoboOrders } = require('../robotrader/reconciliation');
@@ -75,6 +76,10 @@ function buildOrderLookup(userId, orderId) {
 
 async function getMappedSettingsForUser(userId) {
   return mapSettings(await getOrCreateRoboTraderSettings(userId));
+}
+
+async function mapControlSettings(userId, settings) {
+  return { ...mapSettings(settings), stopStatus: await dispatchAuthorization.stopStatus(userId, settings) };
 }
 
 function ensureLiveTradingAllowed(settings, action = 'Live trading') {
@@ -236,7 +241,7 @@ router.get('/settings', async (req, res, next) => {
     if (!user) return res.status(401).json({ message: 'User not found.' });
     const settings = await getOrCreateRoboTraderSettings(user._id);
     res.json({
-      settings: mapSettings(settings),
+      settings: await mapControlSettings(user._id, settings),
       capabilities: ALPACA_CAPABILITY_MATRIX,
       liveConfirmationText: LIVE_CONFIRMATION_TEXT
     });
@@ -350,7 +355,7 @@ router.put('/settings', sensitiveRateLimit(), async (req, res, next) => {
         settings: mapSettings(settings)
       }
     });
-    res.json({ settings: mapSettings(settings) });
+    res.json({ settings: await mapControlSettings(user._id, settings) });
   } catch (err) {
     handleRouteError(err, res, next);
   }
@@ -371,7 +376,7 @@ router.post('/enable', sensitiveRateLimit(), async (req, res, next) => {
       eventType: 'robotrader_enabled',
       payload: { mode: settings.mode }
     });
-    res.json({ settings: mapSettings(settings) });
+    res.json({ settings: await mapControlSettings(user._id, settings) });
   } catch (err) {
     handleRouteError(err, res, next);
   }
@@ -391,7 +396,7 @@ router.post('/disable', sensitiveRateLimit(), async (req, res, next) => {
       eventType: 'robotrader_disabled',
       payload: { reason: settings.pausedReason || 'Disabled by user.' }
     });
-    res.json({ settings: mapSettings(settings) });
+    res.json({ settings: await mapControlSettings(user._id, settings) });
   } catch (err) {
     handleRouteError(err, res, next);
   }
@@ -406,7 +411,8 @@ router.post('/emergency-stop', sensitiveRateLimit({ max: 10 }), async (req, res,
       cancelOpenOrders: req.body?.cancelOpenOrders === true,
       environment: req.body?.environment === 'live' ? 'live' : 'paper'
     });
-    res.json(result);
+    const stopStatus = result.stopStatus || await dispatchAuthorization.stopStatus(user._id, result.settings);
+    res.json({ ...result, stopStatus, settings: { ...mapSettings(result.settings), stopStatus } });
   } catch (err) {
     next(err);
   }

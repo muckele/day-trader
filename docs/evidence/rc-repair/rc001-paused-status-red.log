@@ -1,0 +1,68 @@
+✖ enabled automation with pausedReason blocks admissions while retaining unresolved identities (0.982625ms)
+✖ enabled automation with pausedUntil blocks admissions while retaining unresolved identities (0.11675ms)
+✖ paused automation can confirm an empty dispatch drain without claiming it was disabled (0.190208ms)
+✔ expired timestamp without a persistent reason allows current admissions (0.3845ms)
+✔ explicit disable remains a stop rather than a temporary pause (0.137125ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 2
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 146.926917
+
+✖ failing tests:
+
+test at backend/tests/dispatchStopStatus.test.js:7:3
+✖ enabled automation with pausedReason blocks admissions while retaining unresolved identities (0.982625ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  false !== true
+  
+      at TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/tests/dispatchStopStatus.test.js:13:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at backend/tests/dispatchStopStatus.test.js:7:3
+✖ enabled automation with pausedUntil blocks admissions while retaining unresolved identities (0.11675ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  false !== true
+  
+      at TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/tests/dispatchStopStatus.test.js:13:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at backend/tests/dispatchStopStatus.test.js:20:1
+✖ paused automation can confirm an empty dispatch drain without claiming it was disabled (0.190208ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'running'
+  - 'stopped'
+  
+      at TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/tests/dispatchStopStatus.test.js:23:10)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'running',
+    expected: 'stopped',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

@@ -582,12 +582,12 @@ async function cleanupRoboAuditLogs({
 }
 
 async function submitApprovedOrder({ userId, accountId, environment, decisionDoc, orderInput,
-  riskResult, broker, now, beforeSubmit, deps }) {
+  riskResult, broker, now, beforeSubmit, dispatchContext, deps }) {
   const lifecycle = await (deps.getOrderLifecycle || require('../services/orderLifecycleService').getOrderLifecycle)({ broker });
   const result = await lifecycle.submit({
     userId: String(userId), origin: 'robotrader',
     idempotencyKey: decisionDoc.idempotencyKey || `robotrader-decision:${decisionDoc._id}`,
-    orderInput, beforeSubmit
+    orderInput, beforeSubmit, dispatchContext
   });
   const intent = result.intent;
   const order = result.order || {};
@@ -789,6 +789,7 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
       riskResult,
       broker,
       now,
+      dispatchContext: { lease: { type: 'worker', owner: lockOwner }, generation: settings.controlGeneration || 0, assertExecutor: () => stopLockHeartbeat.assertOwned?.() },
       beforeSubmit: async () => {
         const [latestAccount, latestPositions, latestOrders, latestClock] = await Promise.all([
           broker.getAccount(), broker.getPositions(), broker.listOrders({ status: 'open', limit: 100, nested: true }),
@@ -1047,7 +1048,7 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
     isEnabled: false,
     enabled: false,
     pausedReason: 'Emergency stop triggered.'
-  });
+  }, { cancelEntries: cancelOpenOrders });
   let canceled = [];
   const preservedOrders = [];
   let cancelErrors = [];
@@ -1125,7 +1126,10 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
             const lifecycle = await (deps.getOrderLifecycle || require('../services/orderLifecycleService').getOrderLifecycle)({ broker });
             await lifecycle.reconcile({ intentId: localOrder.intentId });
             await lifecycle.cancel({ intentId: localOrder.intentId });
-          } else await broker.cancelOrder(cancelTarget);
+          } else {
+            if (broker.finalDispatchAuthorization) throw new Error('Legacy projection lacks a canonical intent; cancellation requires ownership reconciliation.');
+            await broker.cancelOrder(cancelTarget);
+          }
           canceled.push(cancelTarget);
           if (externalOrderId) canceledExternalOrderIds.push(externalOrderId);
           if (clientOrderId) canceledClientOrderIds.push(clientOrderId);
@@ -1183,6 +1187,7 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
 
   return {
     settings: deps.mapSettings(settings),
+    ...(deps === defaultDeps ? { stopStatus: await require('../services/dispatchAuthorization').stopStatus(userId, settings) } : {}),
     canceledOrderIds: canceled,
     preservedOrders,
     unownedBrokerOrders,

@@ -1,0 +1,661 @@
+
+> frontend@0.1.0 test
+> react-scripts test --watchAll=false --runInBand src/pages/RoboTraderStopStatus.test.js
+
+FAIL src/pages/RoboTraderStopStatus.test.js
+  ✕ emergency response shows unresolved identity and never claims completion when refresh fails (1086 ms)
+  ✕ disable reports draining and a confirmed refresh can reach fully stopped (1056 ms)
+  ✕ disabled controls without stop evidence remain unconfirmed (1017 ms)
+  ✕ confirmed empty drain allows truthful emergency completion (1046 ms)
+
+  ● emergency response shows unresolved identity and never claims completion when refresh fails
+
+    Unable to find role="region" and name "Automation stop status"
+
+    Ignored nodes: comments, script, style
+    [36m<body>[39m
+      [36m<div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"space-y-6"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"rh-card rounded-lg bg-[#141d21] border border-[#33505a] shadow-[0_22px_52px_rgba(0,0,0,0.42)] p-5 md:p-6"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between"[39m
+            [36m>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"rt-page-header max-w-4xl"[39m
+              [36m>[39m
+                [36m<p[39m
+                  [33mclass[39m=[32m"rt-eyebrow"[39m
+                [36m>[39m
+                  [0mAutomation Console[0m
+                [36m</p>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"flex flex-wrap items-center gap-3"[39m
+                [36m>[39m
+                  [36m<h1[39m
+                    [33mclass[39m=[32m"rt-title"[39m
+                  [36m>[39m
+                    [0mRoboTrader[0m
+                  [36m</h1>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide bg-[#103827] text-[#77f0b2] border border-[#22694a]"[39m
+                  [36m>[39m
+                    [0mEnabled[0m
+                  [36m</span>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide bg-[#123323] text-[#8cf5bd] border border-[#26d07c]/55"[39m
+                  [36m>[39m
+                    [0mPaper Mode[0m
+                  [36m</span>[39m
+                [36m</div>[39m
+                [36m<p[39m
+                  [33mclass[39m=[32m"rt-subtitle"[39m
+                [36m>[39m
+                  [0mRoboTrader uses automated trading rules and market data to identify potential opportunities. Trading involves risk, including possible loss of principal. Past performance does not guarantee future results.[0m
+                [36m</p>[39m
+              [36m</div>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"grid min-w-full grid-cols-2 gap-3 sm:min-w-[32rem] sm:grid-cols-3 xl:min-w-[42rem] xl:grid-cols-5"[39m
+              [36m>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mLast Run[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-sm font-semibold text-[#edf5f4]"[39m
+                  [36m>[39m
+                    [0m--[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mActive Orders[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#edf5f4]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mPending Broker Confirmation[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#ffd77a]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mApproved[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#77f0b2]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mRejected[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#ffd77a]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+              [36m</div>[39m
+            [36m</div>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"mt-5 rounded-lg border border-[#6a2b3a] bg-[#211116] px-4 py-3 text-sm text-[#ffb5c2]"[39m
+            [36m>[39m
+              [0mRefresh unavailable[0m
+            [36m</div>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"mt-6 flex flex-wrap gap-2"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126] bg-[#172126] text-[#edf5f4] hover:bg-[#1d2a30] border border-[#33474f] text-sm px-4 py-2"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mDisable RoboTrader[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126] bg-[#172126] text-[#edf5f4] hover:bg-[#1d2a30] border border-[#33474f] text-sm px-4 py-2"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mSave Settings[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126] bg-[#172126] text-[#edf5f4] hover:bg-[#1d2a30] border border-[#33474f] text-sm px-4 py-2"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mPrevi...
+
+      23 |   render(<RoboTrader />);
+      24 |   fireEvent.click(await screen.findByRole('button', { name: 'Emergency Stop' }));
+    > 25 |   const panel = await screen.findByRole('region', { name: 'Automation stop status' });
+         |                              ^
+      26 |   await waitFor(() => expect(within(panel).getByText('mvp-original')).toBeInTheDocument());
+      27 |   expect(within(panel).getByText('Stopping — earlier dispatches unresolved')).toBeInTheDocument();
+      28 |   expect(screen.queryByText('Emergency stop completed.')).not.toBeInTheDocument();
+
+      at waitForWrapper (node_modules/@testing-library/dom/dist/wait-for.js:163:27)
+      at findByRole (node_modules/@testing-library/dom/dist/query-helpers.js:86:33)
+      at Object.<anonymous> (src/pages/RoboTraderStopStatus.test.js:25:30)
+
+  ● disable reports draining and a confirmed refresh can reach fully stopped
+
+    Unable to find an element with the text: Stopping — earlier dispatches unresolved. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+    Ignored nodes: comments, script, style
+    [36m<body>[39m
+      [36m<div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"space-y-6"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"rh-card rounded-lg bg-[#141d21] border border-[#33505a] shadow-[0_22px_52px_rgba(0,0,0,0.42)] p-5 md:p-6"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between"[39m
+            [36m>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"rt-page-header max-w-4xl"[39m
+              [36m>[39m
+                [36m<p[39m
+                  [33mclass[39m=[32m"rt-eyebrow"[39m
+                [36m>[39m
+                  [0mAutomation Console[0m
+                [36m</p>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"flex flex-wrap items-center gap-3"[39m
+                [36m>[39m
+                  [36m<h1[39m
+                    [33mclass[39m=[32m"rt-title"[39m
+                  [36m>[39m
+                    [0mRoboTrader[0m
+                  [36m</h1>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide bg-[#172126] text-[#b8c8c7] border border-[#33474f]"[39m
+                  [36m>[39m
+                    [0mDisabled[0m
+                  [36m</span>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide bg-[#123323] text-[#8cf5bd] border border-[#26d07c]/55"[39m
+                  [36m>[39m
+                    [0mPaper Mode[0m
+                  [36m</span>[39m
+                [36m</div>[39m
+                [36m<p[39m
+                  [33mclass[39m=[32m"rt-subtitle"[39m
+                [36m>[39m
+                  [0mRoboTrader uses automated trading rules and market data to identify potential opportunities. Trading involves risk, including possible loss of principal. Past performance does not guarantee future results.[0m
+                [36m</p>[39m
+              [36m</div>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"grid min-w-full grid-cols-2 gap-3 sm:min-w-[32rem] sm:grid-cols-3 xl:min-w-[42rem] xl:grid-cols-5"[39m
+              [36m>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mLast Run[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-sm font-semibold text-[#edf5f4]"[39m
+                  [36m>[39m
+                    [0m--[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mActive Orders[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#edf5f4]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mPending Broker Confirmation[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#ffd77a]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mApproved[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#77f0b2]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mRejected[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#ffd77a]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+              [36m</div>[39m
+            [36m</div>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"mt-5 rounded-lg border border-[#22694a] bg-[#10251c] px-4 py-3 text-sm text-[#8cf5bd]"[39m
+            [36m>[39m
+              [0mRoboTrader disabled.[0m
+            [36m</div>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"mt-6 flex flex-wrap gap-2"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126] bg-[#26d07c] text-[#06110d] hover:bg-[#35e08d] border border-[#52e8a1]/40 shadow-[0_10px_24px_rgba(38,208,124,0.16)] text-sm px-4 py-2"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mEnable RoboTrader[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126] bg-[#172126] text-[#edf5f4] hover:bg-[#1d2a30] border border-[#33474f] text-sm px-4 py-2"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mSave Settings[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126] bg-[#172126] text-[#edf5f4] hover:bg-[#1d2a30] border border-[#33474f] text-sm px-4 py-2"[39m
+                [33mtype[39m=[32m"button"[...
+
+      38 |   render(<RoboTrader />);
+      39 |   fireEvent.click(await screen.findByRole('button', { name: 'Disable RoboTrader' }));
+    > 40 |   await screen.findByText('Stopping — earlier dispatches unresolved');
+         |                ^
+      41 |   savedSettings = { ...savedSettings, stopStatus: stopped };
+      42 |   fireEvent.click(screen.getByRole('button', { name: 'Refresh stop status' }));
+      43 |   expect(await screen.findByText('Fully stopped')).toBeInTheDocument();
+
+      at waitForWrapper (node_modules/@testing-library/dom/dist/wait-for.js:163:27)
+      at findByText (node_modules/@testing-library/dom/dist/query-helpers.js:86:33)
+      at Object.<anonymous> (src/pages/RoboTraderStopStatus.test.js:40:16)
+
+  ● disabled controls without stop evidence remain unconfirmed
+
+    Unable to find an element with the text: Stop status unavailable. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+    Ignored nodes: comments, script, style
+    [36m<body>[39m
+      [36m<div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"space-y-6"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"rh-card rounded-lg bg-[#141d21] border border-[#33505a] shadow-[0_22px_52px_rgba(0,0,0,0.42)] p-5 md:p-6"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between"[39m
+            [36m>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"rt-page-header max-w-4xl"[39m
+              [36m>[39m
+                [36m<p[39m
+                  [33mclass[39m=[32m"rt-eyebrow"[39m
+                [36m>[39m
+                  [0mAutomation Console[0m
+                [36m</p>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"flex flex-wrap items-center gap-3"[39m
+                [36m>[39m
+                  [36m<h1[39m
+                    [33mclass[39m=[32m"rt-title"[39m
+                  [36m>[39m
+                    [0mRoboTrader[0m
+                  [36m</h1>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide bg-[#172126] text-[#b8c8c7] border border-[#33474f]"[39m
+                  [36m>[39m
+                    [0mDisabled[0m
+                  [36m</span>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide bg-[#123323] text-[#8cf5bd] border border-[#26d07c]/55"[39m
+                  [36m>[39m
+                    [0mPaper Mode[0m
+                  [36m</span>[39m
+                [36m</div>[39m
+                [36m<p[39m
+                  [33mclass[39m=[32m"rt-subtitle"[39m
+                [36m>[39m
+                  [0mRoboTrader uses automated trading rules and market data to identify potential opportunities. Trading involves risk, including possible loss of principal. Past performance does not guarantee future results.[0m
+                [36m</p>[39m
+              [36m</div>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"grid min-w-full grid-cols-2 gap-3 sm:min-w-[32rem] sm:grid-cols-3 xl:min-w-[42rem] xl:grid-cols-5"[39m
+              [36m>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mLast Run[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-sm font-semibold text-[#edf5f4]"[39m
+                  [36m>[39m
+                    [0m--[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mActive Orders[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#edf5f4]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mPending Broker Confirmation[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#ffd77a]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mApproved[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#77f0b2]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mRejected[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#ffd77a]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+              [36m</div>[39m
+            [36m</div>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"mt-6 flex flex-wrap gap-2"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126] bg-[#26d07c] text-[#06110d] hover:bg-[#35e08d] border border-[#52e8a1]/40 shadow-[0_10px_24px_rgba(38,208,124,0.16)] text-sm px-4 py-2"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mEnable RoboTrader[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126] bg-[#172126] text-[#edf5f4] hover:bg-[#1d2a30] border border-[#33474f] text-sm px-4 py-2"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mSave Settings[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126] bg-[#172126] text-[#edf5f4] hover:bg-[#1d2a30] border border-[#33474f] text-sm px-4 py-2"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mPreview Paper Run[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg f...
+
+      48 |   savedSettings = { isEnabled: false, mode: 'paper' };
+      49 |   render(<RoboTrader />);
+    > 50 |   expect(await screen.findByText('Stop status unavailable')).toBeInTheDocument();
+         |                       ^
+      51 |   expect(screen.queryByText('Fully stopped')).not.toBeInTheDocument();
+      52 | });
+      53 |
+
+      at waitForWrapper (node_modules/@testing-library/dom/dist/wait-for.js:163:27)
+      at findByText (node_modules/@testing-library/dom/dist/query-helpers.js:86:33)
+      at Object.<anonymous> (src/pages/RoboTraderStopStatus.test.js:50:23)
+      at TestScheduler.scheduleTests (node_modules/@jest/core/build/TestScheduler.js:333:13)
+      at runJest (node_modules/@jest/core/build/runJest.js:404:19)
+      at _run10000 (node_modules/@jest/core/build/cli/index.js:320:7)
+      at runCLI (node_modules/@jest/core/build/cli/index.js:173:3)
+
+  ● confirmed empty drain allows truthful emergency completion
+
+    Unable to find an element with the text: Emergency stop confirmed: earlier automated dispatches have drained.. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+    Ignored nodes: comments, script, style
+    [36m<body>[39m
+      [36m<div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"space-y-6"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"rh-card rounded-lg bg-[#141d21] border border-[#33505a] shadow-[0_22px_52px_rgba(0,0,0,0.42)] p-5 md:p-6"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between"[39m
+            [36m>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"rt-page-header max-w-4xl"[39m
+              [36m>[39m
+                [36m<p[39m
+                  [33mclass[39m=[32m"rt-eyebrow"[39m
+                [36m>[39m
+                  [0mAutomation Console[0m
+                [36m</p>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"flex flex-wrap items-center gap-3"[39m
+                [36m>[39m
+                  [36m<h1[39m
+                    [33mclass[39m=[32m"rt-title"[39m
+                  [36m>[39m
+                    [0mRoboTrader[0m
+                  [36m</h1>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide bg-[#172126] text-[#b8c8c7] border border-[#33474f]"[39m
+                  [36m>[39m
+                    [0mDisabled[0m
+                  [36m</span>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide bg-[#123323] text-[#8cf5bd] border border-[#26d07c]/55"[39m
+                  [36m>[39m
+                    [0mPaper Mode[0m
+                  [36m</span>[39m
+                [36m</div>[39m
+                [36m<p[39m
+                  [33mclass[39m=[32m"rt-subtitle"[39m
+                [36m>[39m
+                  [0mRoboTrader uses automated trading rules and market data to identify potential opportunities. Trading involves risk, including possible loss of principal. Past performance does not guarantee future results.[0m
+                [36m</p>[39m
+              [36m</div>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"grid min-w-full grid-cols-2 gap-3 sm:min-w-[32rem] sm:grid-cols-3 xl:min-w-[42rem] xl:grid-cols-5"[39m
+              [36m>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mLast Run[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-sm font-semibold text-[#edf5f4]"[39m
+                  [36m>[39m
+                    [0m--[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mActive Orders[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#edf5f4]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mPending Broker Confirmation[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#ffd77a]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mApproved[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#77f0b2]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"rt-metric"[39m
+                [36m>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"rt-label"[39m
+                  [36m>[39m
+                    [0mRejected[0m
+                  [36m</p>[39m
+                  [36m<p[39m
+                    [33mclass[39m=[32m"mt-2 text-2xl font-bold text-[#ffd77a]"[39m
+                  [36m>[39m
+                    [0m0[0m
+                  [36m</p>[39m
+                [36m</div>[39m
+              [36m</div>[39m
+            [36m</div>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"mt-5 rounded-lg border border-[#22694a] bg-[#10251c] px-4 py-3 text-sm text-[#8cf5bd]"[39m
+            [36m>[39m
+              [0mEmergency stop completed.[0m
+            [36m</div>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"mt-6 flex flex-wrap gap-2"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126] bg-[#26d07c] text-[#06110d] hover:bg-[#35e08d] border border-[#52e8a1]/40 shadow-[0_10px_24px_rgba(38,208,124,0.16)] text-sm px-4 py-2"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mEnable RoboTrader[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126] bg-[#172126] text-[#edf5f4] hover:bg-[#1d2a30] border border-[#33474f] text-sm px-4 py-2"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mSave Settings[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"rh-btn inline-flex min-h-[2.25rem] items-center justify-center rounded-lg font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#26d07c]/35 disabled:cursor-not-allowed disabled:border-[#33474f] disabled:bg-[#172126] disabled:text-[#6f8180] disabled:shadow-none disabled:hover:bg-[#172126] bg-[#172126] text-[#edf5f4] hover:bg-[#1d2a30] border border-[#33474f] text-sm px-4 py-2"[39m
+                [33mtype[39m=[32m"butt...
+
+      59 |   render(<RoboTrader />);
+      60 |   fireEvent.click(await screen.findByRole('button', { name: 'Emergency Stop' }));
+    > 61 |   expect(await screen.findByText('Emergency stop confirmed: earlier automated dispatches have drained.')).toBeInTheDocument();
+         |                       ^
+      62 |   expect(screen.getByText('Fully stopped')).toBeInTheDocument();
+      63 | });
+      64 |
+
+      at waitForWrapper (node_modules/@testing-library/dom/dist/wait-for.js:163:27)
+      at findByText (node_modules/@testing-library/dom/dist/query-helpers.js:86:33)
+      at Object.<anonymous> (src/pages/RoboTraderStopStatus.test.js:61:23)
+
+Test Suites: 1 failed, 1 total
+Tests:       4 failed, 4 total
+Snapshots:   0 total
+Time:        5.243 s
+Ran all test suites matching /src\/pages\/RoboTraderStopStatus.test.js/i.

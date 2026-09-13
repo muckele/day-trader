@@ -1,0 +1,12 @@
+{
+  "verifiedAt": "2026-09-13T16:07:22.514559+00:00",
+  "version": "24.21.0",
+  "artifact": "node-v24.21.0-darwin-arm64.tar.gz",
+  "downloadUrl": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
+  "checksumUrl": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
+  "expectedSha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+  "actualSha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+  "checksumsFileSha256": "f410428039e2c922a14058df067a4482691c9304a5c01a75847f9f3f2d3307f6",
+  "verification": "SHA-256 matched official HTTPS checksum list. GPG executable unavailable; detached signature not independently verified.",
+  "extractedPath": "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64"
+}

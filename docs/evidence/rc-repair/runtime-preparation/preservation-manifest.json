@@ -1,0 +1,36 @@
+{
+  "preservedAt": "2026-09-13T16:19:11.006148+00:00",
+  "scope": "Official runtime URLs, SHA256 and public image-manifest metadata only. No binaries, Docker configuration, environment files or credentials.",
+  "inspection": "Checked copied text for credential-bearing URLs, private-key markers, common GitHub/provider tokens and credential assignments; none found.",
+  "redactions": [],
+  "files": [
+    {
+      "originalPath": "/private/tmp/day-trader-rc-node24/download-provenance.json",
+      "preservedPath": "docs/evidence/rc-repair/runtime-preparation/download-provenance.json",
+      "bytes": 777,
+      "originalSha256": "634818acdd92e1d4c4877c04168a07083a560e599cb97aa29ff1aea44ed2d158",
+      "preservedSha256": "634818acdd92e1d4c4877c04168a07083a560e599cb97aa29ff1aea44ed2d158"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-rc-node24/SHASUMS256.txt",
+      "preservedPath": "docs/evidence/rc-repair/runtime-preparation/SHASUMS256.txt",
+      "bytes": 3171,
+      "originalSha256": "f410428039e2c922a14058df067a4482691c9304a5c01a75847f9f3f2d3307f6",
+      "preservedSha256": "f410428039e2c922a14058df067a4482691c9304a5c01a75847f9f3f2d3307f6"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-rc-node24/nginx-1.30.4-alpine-manifest.txt",
+      "preservedPath": "docs/evidence/rc-repair/runtime-preparation/nginx-1.30.4-alpine-manifest.txt",
+      "bytes": 11416,
+      "originalSha256": "37ee7dd08b1cf8a5f60d87a6ddc644f82699367d90be19d1820cc0be4dcc2fae",
+      "preservedSha256": "37ee7dd08b1cf8a5f60d87a6ddc644f82699367d90be19d1820cc0be4dcc2fae"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-rc-node24/node-24.21.0-bookworm-slim-manifest.txt",
+      "preservedPath": "docs/evidence/rc-repair/runtime-preparation/node-24.21.0-bookworm-slim-manifest.txt",
+      "bytes": 4456,
+      "originalSha256": "012523be3f137c59074b5788113634763428875c74a5f0fd234615fa2294fb73",
+      "preservedSha256": "012523be3f137c59074b5788113634763428875c74a5f0fd234615fa2294fb73"
+    }
+  ]
+}

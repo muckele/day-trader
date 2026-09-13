@@ -100,3 +100,51 @@ test('frontend release gate requires complete Jest totals without skipped tests'
  assert.equal(validateAcceptanceExecution(check,'Tests:       36 passed, 36 total\n').ok,true);
  for(const output of ['', 'Tests: 1 skipped, 36 passed, 37 total\n','Tests: 1 failed, 36 passed, 37 total\n'])assert.equal(validateAcceptanceExecution(check,output).ok,false);
 });
+
+test('required RC scenario outcomes cannot be omitted or replaced by high aggregate totals', async () => {
+  const { validateAcceptanceExecution } = await import('../verify-mvp.mjs');
+  const check = { minimumTests: 2, summary: 'tap', requiredScenarios: ['RC-test-first', 'RC-test-second'] };
+  const totals = '# tests 100\n# pass 100\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n';
+  const complete = 'ok 1 - RC-test-first\nok 2 - RC-test-second\n';
+  assert.equal(validateAcceptanceExecution(check, complete + totals).ok, true);
+  for (const results of [
+    'ok 1 - RC-test-first\n',
+    'ok 1 - RC-test-first\nok 2 - RC-unrelated\n',
+    'ok 1 - RC-test-first\nok 2 - RC-test-second # SKIP disabled\n',
+    'ok 1 - RC-test-first\nnot ok 2 - RC-test-second\n',
+    complete + 'ok 3 - RC-test-second\n',
+    'ok 1 - RC-test-first\n# ok 2 - RC-test-second\n',
+    'ok 1 - RC-test-first\nok 2 - RC-test-second # TODO later\n'
+  ]) assert.equal(validateAcceptanceExecution(check, results + totals).ok, false, results);
+});
+
+test('both RC suites and every critical scenario are mandatory release requirements', async () => {
+  const { buildReleaseChecks, REQUIRED_LOCAL_GATES, validateAcceptanceExecution, RC001_REQUIRED_SCENARIOS, RC002_REQUIRED_SCENARIOS } = await import('../verify-mvp.mjs');
+  const checks = buildReleaseChecks({ backendTests: [], integrationFiles: ['rc002Exposure.mongo.test.js'] });
+  for (const name of ['rc-dispatch', 'mongo-rc002Exposure.mongo', 'rc-exposure-process', 'rc-exit-dispatch']) {
+    assert.ok(REQUIRED_LOCAL_GATES.includes(name));
+    const check = checks.find(item => item.name === name);
+    assert.ok(check);
+    assert.ok(check.requiredScenarios.length > 0);
+    const totals = '# tests 1000\n# pass 1000\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n';
+    const records = check.requiredScenarios.map((scenario, index) => `ok ${index + 1} - ${scenario}\n`);
+    assert.equal(validateAcceptanceExecution(check, records.join('') + totals).ok, true);
+    for (let index = 0; index < records.length; index++) {
+      assert.equal(validateAcceptanceExecution(check, records.filter((_, n) => n !== index).join('') + totals).ok, false, check.requiredScenarios[index]);
+      assert.equal(validateAcceptanceExecution(check, records.map((record, n) => n === index ? record.trimEnd() + ' # SKIP omitted\n' : record).join('') + totals).ok, false);
+      assert.equal(validateAcceptanceExecution(check, records.map((record, n) => n === index ? 'not ' + record : record).join('') + totals).ok, false);
+    }
+  }
+  assert.ok(RC001_REQUIRED_SCENARIOS.includes('RC001-final-account-emergency-stop'));
+  assert.ok(RC002_REQUIRED_SCENARIOS.some(name => name.startsWith('RC002-original-race:')));
+});
+
+test('verification output directory can preserve historical evidence without changing gates', async () => {
+  const { resolveReportDirectory } = await import('../verify-mvp.mjs');
+  assert.equal(resolveReportDirectory([], '/test/repository'), '/test/repository/docs/evidence/verification');
+  assert.equal(resolveReportDirectory(['--report-dir', 'docs/evidence/rc-repair/safety-verifier'], '/test/repository'), '/test/repository/docs/evidence/rc-repair/safety-verifier');
+  assert.equal(resolveReportDirectory(['--checks-only', '--report-dir', '/private/tmp/isolated-report'], '/test/repository'), '/private/tmp/isolated-report');
+  assert.throws(() => resolveReportDirectory(['--report-dir'], '/test/repository'), /directory/i);
+  assert.throws(() => resolveReportDirectory(['--report-dir', '--checks-only'], '/test/repository'), /directory/i);
+  assert.throws(() => resolveReportDirectory(['--report-dir', 'a', '--report-dir', 'b'], '/test/repository'), /once/i);
+});

@@ -1,0 +1,55 @@
+TAP version 13
+# Subtest: real worker process abstains on flat provider research without fabricating execution
+ok 1 - real worker process abstains on flat provider research without fabricating execution
+  ---
+  duration_ms: 1461.947375
+  ...
+# Subtest: two real worker processes contend for one account and create one durable entry
+ok 2 - two real worker processes contend for one account and create one durable entry
+  ---
+  duration_ms: 1952.467958
+  ...
+# Subtest: disable while research is running prevents any broker POST in a separate worker process
+ok 3 - disable while research is running prevents any broker POST in a separate worker process
+  ---
+  duration_ms: 1949.589292
+  ...
+# Subtest: disable immediately before broker submission prevents any broker POST in a separate worker process
+ok 4 - disable immediately before broker submission prevents any broker POST in a separate worker process
+  ---
+  duration_ms: 2531.018708
+  ...
+# Subtest: worker lease loss after decision persistence prevents a broker POST across process boundary
+ok 5 - worker lease loss after decision persistence prevents a broker POST across process boundary
+  ---
+  duration_ms: 1722.647625
+  ...
+# Subtest: worker lease loss immediately before broker submission prevents a broker POST across process boundary
+ok 6 - worker lease loss immediately before broker submission prevents a broker POST across process boundary
+  ---
+  duration_ms: 1929.134625
+  ...
+# Subtest: emergency stop cancels only the owned acknowledged entry and reconciliation continues disabled
+ok 7 - emergency stop cancels only the owned acknowledged entry and reconciliation continues disabled
+  ---
+  duration_ms: 2648.653583
+  ...
+# Subtest: emergency stop cancels only the owned uncertain entry and reconciliation continues disabled
+ok 8 - emergency stop cancels only the owned uncertain entry and reconciliation continues disabled
+  ---
+  duration_ms: 2890.413167
+  ...
+# Subtest: owner browser enables then logs out and closes; independent worker persists entry visible after new login
+ok 9 - owner browser enables then logs out and closes; independent worker persists entry visible after new login
+  ---
+  duration_ms: 9915.216125
+  ...
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 27192.156959

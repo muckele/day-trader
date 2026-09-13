@@ -1,0 +1,23 @@
+✔ GET /robotrader/settings returns extended settings payload (1.075583ms)
+✔ POST /robotrader/reconcile blocks requested live mode without explicit opt-in (0.250834ms)
+✔ GET /robotrader/decisions/:decisionId returns decision detail with linked orders (0.238292ms)
+✔ GET /robotrader/reconciliation-status summarizes local order matching state (0.639834ms)
+✔ POST /robotrader/reconciliation/archive-history archives terminal historical records only (0.940458ms)
+✔ GET /robotrader/decisions and orders scope list queries by environment (0.284042ms)
+✔ POST /robotrader/run-once-paper requires RoboTrader to be enabled (0.127833ms)
+✔ GET /robotrader/performance blocks live account reads without explicit opt-in (0.1605ms)
+✔ GET /robotrader/performance scopes decisions and orders by environment (0.513333ms)
+✔ GET /settings preserves durable stop status in settings (51.681334ms)
+✔ PUT /settings preserves durable stop status in settings (0.494459ms)
+✔ POST /disable preserves durable stop status in settings (0.357666ms)
+✔ POST /enable preserves durable stop status in settings (0.316917ms)
+✔ POST /emergency-stop preserves durable stop status in settings (0.349042ms)
+✔ settings refresh reports completed drain only from a new durable status observation (0.374208ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 239.472833

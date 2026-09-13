@@ -1,3 +1,5 @@
+> **2026-09-13 repair checkpoint: RC-001 and RC-002 repaired; NO-GO pending supported-runtime and Linux image acceptance.** Final safety verifier passed all23 required gates, exit0, with no skipped scenarios. This Node20 run preserves historical comparison and is not a supported-runtime release pass. See `docs/evidence/rc-repair/safety-final-verifier/report.json` and `docs/evidence/rc-repair/repair-decision.md`. The Phase3 GO statements below are historical; original19/19 reports remain unchanged.
+
 # Owner-only paper MVP acceptance ledger — Phase 3
 
 **Final local decision: VERIFIED RELEASE CANDIDATE / GO.** All 19 required gates passed; complete verifier exit 0, with 22 browser tests and 9 process scenarios passing without skips or flakes.

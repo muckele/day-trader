@@ -1,0 +1,75 @@
+{
+  "recordedAt": "2026-09-13T16:02:45.553437+00:00",
+  "baseRevision": "1972254bfcfd0b6ff724876cd0d2a2b15006ac26",
+  "sourceState": "Uncommitted coordinated RC safety repair; file hashes identify this bounded API/UI change.",
+  "runtime": {
+    "node": "v24.19.0",
+    "npm": "11.17.0",
+    "nodeExecutable": "/Users/Matt/.nvm/versions/node/v24.19.0/bin/node",
+    "npmExecutable": "/Users/Matt/.nvm/versions/node/v24.19.0/bin/npm"
+  },
+  "runs": [
+    {
+      "command": "node --test backend/tests/robotraderStopStatusRoute.test.js",
+      "exit": 1,
+      "tests": 6,
+      "failed": 6,
+      "purpose": "Red: settings.stopStatus missing before route mapping.",
+      "log": "rc001-stop-api-red.log"
+    },
+    {
+      "command": "CI=true npm test --prefix frontend -- --watchAll=false --runInBand src/pages/RoboTraderStopStatus.test.js",
+      "exit": 1,
+      "tests": 4,
+      "failed": 4,
+      "purpose": "Red: no stop panel, unresolved state or evidence-based completion.",
+      "log": "rc001-stop-ui-red.log"
+    },
+    {
+      "command": "node --test backend/tests/robotraderStopStatusRoute.test.js backend/tests/robotraderRoute.test.js",
+      "exit": 0,
+      "tests": 15,
+      "failed": 0,
+      "skipped": 0,
+      "log": "rc001-stop-api-green.log"
+    },
+    {
+      "command": "CI=true npm test --prefix frontend -- --watchAll=false --runInBand src/pages/RoboTraderStopStatus.test.js src/pages/ReleaseScope.test.js",
+      "exit": 0,
+      "tests": 10,
+      "suites": 2,
+      "failed": 0,
+      "skipped": 0,
+      "log": "rc001-stop-ui-green.log"
+    },
+    {
+      "command": "node --test tests/*.test.js",
+      "cwd": "backend",
+      "exit": 0,
+      "tests": 383,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "log": "rc001-stop-backend-full.log"
+    }
+  ],
+  "limitations": [
+    "API presentation tests mock durable-status service responses; dispatch/stop transactional correctness is verified by separate RC suites.",
+    "UI tests use controlled API responses; full combined-candidate browser verification is a separate required gate.",
+    "This local runtime is preparation/safety evidence, not the later required Node24.21.0 runtime verification."
+  ],
+  "sha256": {
+    "backend/routes/robotrader.js": "e4d81e903b5d86e02a6a41aeae435af16ea12053f949da60eeb6cb411defa8d2",
+    "backend/tests/robotraderRoute.test.js": "03052865dfd63957e885d1e8bcd5d4ce8c91c7d8c9ac17d3b55a948315bc0948",
+    "backend/tests/robotraderStopStatusRoute.test.js": "96e0fbd2aafd47d7c1012fb05f76a0fdc080ac73b7f5cd5fe610585c4da275c1",
+    "frontend/src/pages/RoboTrader.js": "49bf24a6dbcbdfa922b052f18c5ca63a5c5989136c49ae014be54d12de73d904",
+    "frontend/src/pages/RoboTraderStopStatus.test.js": "f0091c6a2062a94bcad05e6fb6461e312fed74842a63bfcf56bf3c523207ca2b"
+  },
+  "logSha256": {
+    "rc001-stop-api-red.log": "94683fbf68adc06a671fbc583470337978b769b12ba50c5ed32f51e9662a9ecd",
+    "rc001-stop-ui-red.log": "c0ed23bc704b5b9e0e811d78be5048a5c989bd65393347e71662e1277a8e91a6",
+    "rc001-stop-api-green.log": "110f988888cbb2625e683b90201e624effc320534a3ef8f926e83bf1e0d674c1",
+    "rc001-stop-ui-green.log": "024f24ed31b14e761853815c131aa06edf6c28b2f2f9a626a4a68f852dec1336",
+    "rc001-stop-backend-full.log": "076c100005875b69794d516d6b1d5b258574c650d78320c5c8ed0a61c23126f0"
+  }
+}

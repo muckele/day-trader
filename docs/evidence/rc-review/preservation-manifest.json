@@ -1,0 +1,310 @@
+{
+  "preservedAt": "2026-09-13T15:49:27.259458+00:00",
+  "reviewedRevision": "1972254bfcfd0b6ff724876cd0d2a2b15006ac26",
+  "baseline": "0dcc4d0dad7f47768a5613573b0a828bda0667ff",
+  "copyPolicy": "Selected review reports, original probes, historical logs and verification results only; no source tree, dependencies, credentials, environment files or media copied. Originals unchanged.",
+  "secretInspection": "Pre-copy pattern scan for private keys, provider/GitHub/AWS tokens, JWT values and credential-bearing URLs; targeted credential/context review. No secret values found. Test provider IDs and disposable Mongo IDs are retained.",
+  "redactions": [],
+  "limitations": [
+    "Historical probe interpreter provenance is incomplete; do not attribute it to the Node20 full-verifier runtime.",
+    "Historical 19-gate report predates required RC scenarios and does not establish repaired safety or supported-runtime compatibility.",
+    "Original report links and probe absolute paths are intentionally preserved verbatim; use manifest mappings for durable evidence locations."
+  ],
+  "files": [
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/independent-release-review.md",
+      "preservedPath": "docs/evidence/rc-review/independent-release-review.md",
+      "bytes": 38840,
+      "originalSha256": "b951355e20b46caf8135842f2fb7b93d25b9dad15d62a95bd3009fbf9e77ba71",
+      "preservedSha256": "b951355e20b46caf8135842f2fb7b93d25b9dad15d62a95bd3009fbf9e77ba71"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/invariant-review.md",
+      "preservedPath": "docs/evidence/rc-review/invariant-review.md",
+      "bytes": 22515,
+      "originalSha256": "2314d556e7647e1b4b4d5e1f42e25ab27c01d1223c4fc08e6f2444ee82b0ea53",
+      "preservedSha256": "2314d556e7647e1b4b4d5e1f42e25ab27c01d1223c4fc08e6f2444ee82b0ea53"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/roadmap-review.md",
+      "preservedPath": "docs/evidence/rc-review/roadmap-review.md",
+      "bytes": 17387,
+      "originalSha256": "2278ee53fba31f60eb17524669ea08b5492c9aab6d79ec97519f27fcef29adf5",
+      "preservedSha256": "2278ee53fba31f60eb17524669ea08b5492c9aab6d79ec97519f27fcef29adf5"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/review-evidence-manifest.json",
+      "preservedPath": "docs/evidence/rc-review/review-evidence-manifest.json",
+      "bytes": 2311,
+      "originalSha256": "004788b13a6a3759c9c755d70cc5ffc190fcea90f6de52432c7e8fc566422892",
+      "preservedSha256": "004788b13a6a3759c9c755d70cc5ffc190fcea90f6de52432c7e8fc566422892"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/verification-console.log",
+      "preservedPath": "docs/evidence/rc-review/verification-console.log",
+      "bytes": 2624,
+      "originalSha256": "dbf5741d525bf17f5b1a71b0fc3e2575ac56775ad51a34b61689fe852cb3878e",
+      "preservedSha256": "dbf5741d525bf17f5b1a71b0fc3e2575ac56775ad51a34b61689fe852cb3878e"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/preserved-review-inputs/rc-invariant-account-race.cjs",
+      "preservedPath": "docs/evidence/rc-review/original-probes-and-inputs/rc-invariant-account-race.cjs",
+      "bytes": 1804,
+      "originalSha256": "e31f2748ef4e42f3eba948cc1a476452bc28fc081e01ce8b2c2f89d98ac6cbdc",
+      "preservedSha256": "e31f2748ef4e42f3eba948cc1a476452bc28fc081e01ce8b2c2f89d98ac6cbdc"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/preserved-review-inputs/rc-invariant-baseline.log",
+      "preservedPath": "docs/evidence/rc-review/original-probes-and-inputs/rc-invariant-baseline.log",
+      "bytes": 9111,
+      "originalSha256": "a54e7ea651e32c0b09bf4747163736970e685a080a9c23a9ff2f86702ec91e4b",
+      "preservedSha256": "a54e7ea651e32c0b09bf4747163736970e685a080a9c23a9ff2f86702ec91e4b"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/preserved-review-inputs/rc-invariant-position-race.cjs",
+      "preservedPath": "docs/evidence/rc-review/original-probes-and-inputs/rc-invariant-position-race.cjs",
+      "bytes": 2801,
+      "originalSha256": "4f7b27730889392fe9961ca810cc06d57d37ba96ae449a473ae90f3107d74323",
+      "preservedSha256": "4f7b27730889392fe9961ca810cc06d57d37ba96ae449a473ae90f3107d74323"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/preserved-review-inputs/rc-invariant-position-race.log",
+      "preservedPath": "docs/evidence/rc-review/original-probes-and-inputs/rc-invariant-position-race.log",
+      "bytes": 830,
+      "originalSha256": "867d97bb57001a32fa902f0b03a55fbe948e302c9b83811501f5d9775d4f7fdc",
+      "preservedSha256": "867d97bb57001a32fa902f0b03a55fbe948e302c9b83811501f5d9775d4f7fdc"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/preserved-review-inputs/rc-invariant-stop-race.log",
+      "preservedPath": "docs/evidence/rc-review/original-probes-and-inputs/rc-invariant-stop-race.log",
+      "bytes": 10012,
+      "originalSha256": "d0fd3d86b61017474e6906b1d8846bfd39fc82c8c9247c19138142566d69618d",
+      "preservedSha256": "d0fd3d86b61017474e6906b1d8846bfd39fc82c8c9247c19138142566d69618d"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/backend-install.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/backend-install.log",
+      "bytes": 122,
+      "originalSha256": "9d52cff241bbe20117b68edf4fa170751aa25069606103a77509df21fe50b919",
+      "preservedSha256": "9d52cff241bbe20117b68edf4fa170751aa25069606103a77509df21fe50b919"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/backend-tests.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/backend-tests.log",
+      "bytes": 71630,
+      "originalSha256": "2f8c06523776f9f7bd59cf525d9e4c9b926382884120f39acaf0ec1f829d7d74",
+      "preservedSha256": "2f8c06523776f9f7bd59cf525d9e4c9b926382884120f39acaf0ec1f829d7d74"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/browser-core-screens.json",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/browser-core-screens.json",
+      "bytes": 19847,
+      "originalSha256": "b1931f0dc82c815c204c38c6a25b2773b1b259ff0fffecb757fd910e66c57f46",
+      "preservedSha256": "b1931f0dc82c815c204c38c6a25b2773b1b259ff0fffecb757fd910e66c57f46"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/browser-core-screens.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/browser-core-screens.log",
+      "bytes": 1201,
+      "originalSha256": "17e10532572dcb3830cc5527b75bddbbc626e294856e0d1ac7aed8b88abfab3e",
+      "preservedSha256": "17e10532572dcb3830cc5527b75bddbbc626e294856e0d1ac7aed8b88abfab3e"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/browser-lifecycle.json",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/browser-lifecycle.json",
+      "bytes": 16636,
+      "originalSha256": "fa8b036aa1de198b0f3606cc1d653d4e297f6ae8a0f7b550727095fe7f5fef65",
+      "preservedSha256": "fa8b036aa1de198b0f3606cc1d653d4e297f6ae8a0f7b550727095fe7f5fef65"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/browser-lifecycle.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/browser-lifecycle.log",
+      "bytes": 2069,
+      "originalSha256": "890faeec92d18a75e783c78613cdf0a7b2e68c916a53ca3a810eb60521ef5a6c",
+      "preservedSha256": "890faeec92d18a75e783c78613cdf0a7b2e68c916a53ca3a810eb60521ef5a6c"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/frontend-build.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/frontend-build.log",
+      "bytes": 593,
+      "originalSha256": "0ccd3b7bb205f4bb873e8007e78a4afea9a4d676e683017ad38fffece04188d5",
+      "preservedSha256": "0ccd3b7bb205f4bb873e8007e78a4afea9a4d676e683017ad38fffece04188d5"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/frontend-install.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/frontend-install.log",
+      "bytes": 3835,
+      "originalSha256": "697c0139585324b1ab1e3934826338bf902517e05381d3a8378b98f18bba2096",
+      "preservedSha256": "697c0139585324b1ab1e3934826338bf902517e05381d3a8378b98f18bba2096"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/frontend-tests.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/frontend-tests.log",
+      "bytes": 677,
+      "originalSha256": "580da4ad075e859812b478f8fb5f678aa2d385fed795b3bdf2703dcfaed2511a",
+      "preservedSha256": "580da4ad075e859812b478f8fb5f678aa2d385fed795b3bdf2703dcfaed2511a"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/mongo-integration.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/mongo-integration.log",
+      "bytes": 976,
+      "originalSha256": "22e8d625c5411d904dc88a1c1b378d8a932eac5855cc29134230b3bc24bc34c4",
+      "preservedSha256": "22e8d625c5411d904dc88a1c1b378d8a932eac5855cc29134230b3bc24bc34c4"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/mongo-nonOwnerAuthorization.fullstack.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/mongo-nonOwnerAuthorization.fullstack.log",
+      "bytes": 361,
+      "originalSha256": "62ad616e2240c8e86db3baa6e39713c2600cde70870d1d8f730c48ef164b61ab",
+      "preservedSha256": "62ad616e2240c8e86db3baa6e39713c2600cde70870d1d8f730c48ef164b61ab"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/mongo-orderLifecycle.faults.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/mongo-orderLifecycle.faults.log",
+      "bytes": 1931,
+      "originalSha256": "340a1c89b01568c2008f363d4d14e0d140fac069de8a53795ecbf901a0cc1a15",
+      "preservedSha256": "340a1c89b01568c2008f363d4d14e0d140fac069de8a53795ecbf901a0cc1a15"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/mongo-orderLifecycle.mongo.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/mongo-orderLifecycle.mongo.log",
+      "bytes": 3399,
+      "originalSha256": "893c8a6eaf4bf4497eee06b19fe576c0a7410b1cae8e52f74d4de8e1cf06ce70",
+      "preservedSha256": "893c8a6eaf4bf4497eee06b19fe576c0a7410b1cae8e52f74d4de8e1cf06ce70"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/mongo-orderProtection.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/mongo-orderProtection.log",
+      "bytes": 1864,
+      "originalSha256": "58182c5220ca384f06ff9d39b515a71b552a18d8325c2e99d8475c11ee500940",
+      "preservedSha256": "58182c5220ca384f06ff9d39b515a71b552a18d8325c2e99d8475c11ee500940"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/mongo-phase3Admission.mongo.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/mongo-phase3Admission.mongo.log",
+      "bytes": 371,
+      "originalSha256": "0022c37b1b2b776bced06f0cbdab244c94243d6390ceedea7aee2835b04885de",
+      "preservedSha256": "0022c37b1b2b776bced06f0cbdab244c94243d6390ceedea7aee2835b04885de"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/mongo-phase3Financial.mongo.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/mongo-phase3Financial.mongo.log",
+      "bytes": 3941,
+      "originalSha256": "b37680f0df51e9972ae1e67cdcc7c70eefdd67e9eac0895bdcbf1c85a22e3dd6",
+      "preservedSha256": "b37680f0df51e9972ae1e67cdcc7c70eefdd67e9eac0895bdcbf1c85a22e3dd6"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/mongo-phase3Smtp.mongo.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/mongo-phase3Smtp.mongo.log",
+      "bytes": 1126,
+      "originalSha256": "ceae5d1550399d0d0ae8360888ce04aaf32de4cfc974cba894280f095c4ef634",
+      "preservedSha256": "ceae5d1550399d0d0ae8360888ce04aaf32de4cfc974cba894280f095c4ef634"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/process-acceptance.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/process-acceptance.log",
+      "bytes": 2310,
+      "originalSha256": "428c8e21415633795cabef40034fb6278afaf40d408ae810a8ec225ddbd7db49",
+      "preservedSha256": "428c8e21415633795cabef40034fb6278afaf40d408ae810a8ec225ddbd7db49"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/provider-contract.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/provider-contract.log",
+      "bytes": 336,
+      "originalSha256": "73231703bde10212e33aa7783e46e3d409293711ca7826533eb05b91c23bd1e1",
+      "preservedSha256": "73231703bde10212e33aa7783e46e3d409293711ca7826533eb05b91c23bd1e1"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/report.json",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/report.json",
+      "bytes": 17308,
+      "originalSha256": "d54aa979e265881307490c58385e44e3f81a52ab2f1a547739f365eafbd1c5a1",
+      "preservedSha256": "d54aa979e265881307490c58385e44e3f81a52ab2f1a547739f365eafbd1c5a1"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/report.md",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/report.md",
+      "bytes": 3016,
+      "originalSha256": "46d7dfb789a90b2ab86a0cd2f4a602d2dfdcbc3ce31bb146cacc913e03de3a93",
+      "preservedSha256": "46d7dfb789a90b2ab86a0cd2f4a602d2dfdcbc3ce31bb146cacc913e03de3a93"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/runtime.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/runtime.log",
+      "bytes": 0,
+      "originalSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "preservedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/source/docs/evidence/verification/verification-tests.log",
+      "preservedPath": "docs/evidence/rc-review/historical-node20-verification/verification-tests.log",
+      "bytes": 2140,
+      "originalSha256": "bbbb3f5c3cbab48d6f45afc844ff37931981a1fbfa60f5608668e52e41a1eadd",
+      "preservedSha256": "bbbb3f5c3cbab48d6f45afc844ff37931981a1fbfa60f5608668e52e41a1eadd"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/backend-audit-input-after.sha256",
+      "preservedPath": "docs/evidence/rc-review/historical-audit-attempts/backend-audit-input-after.sha256",
+      "bytes": 163,
+      "originalSha256": "63ca24cf7d552ff639e359b90caa24df5c65925805d9e9aee0b61dda4d5e4157",
+      "preservedSha256": "63ca24cf7d552ff639e359b90caa24df5c65925805d9e9aee0b61dda4d5e4157"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/backend-audit-input-before.sha256",
+      "preservedPath": "docs/evidence/rc-review/historical-audit-attempts/backend-audit-input-before.sha256",
+      "bytes": 163,
+      "originalSha256": "63ca24cf7d552ff639e359b90caa24df5c65925805d9e9aee0b61dda4d5e4157",
+      "preservedSha256": "63ca24cf7d552ff639e359b90caa24df5c65925805d9e9aee0b61dda4d5e4157"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/backend-fresh-audit.json",
+      "preservedPath": "docs/evidence/rc-review/historical-audit-attempts/backend-fresh-audit.json",
+      "bytes": 202,
+      "originalSha256": "abcf9a393d63fc0f7562b87bb163684d54549d4b96c7775e2ebc24f8633e15d6",
+      "preservedSha256": "abcf9a393d63fc0f7562b87bb163684d54549d4b96c7775e2ebc24f8633e15d6"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/backend-fresh-audit.stderr",
+      "preservedPath": "docs/evidence/rc-review/historical-audit-attempts/backend-fresh-audit.stderr",
+      "bytes": 384,
+      "originalSha256": "67038f7cdc8acfc6ff002adef2820a9ca2772c327aa3590ca5be7cb9bfd34dcd",
+      "preservedSha256": "67038f7cdc8acfc6ff002adef2820a9ca2772c327aa3590ca5be7cb9bfd34dcd"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/frontend-audit-input-after.sha256",
+      "preservedPath": "docs/evidence/rc-review/historical-audit-attempts/frontend-audit-input-after.sha256",
+      "bytes": 163,
+      "originalSha256": "0f82de305bcc6574569e56582788ca11ab2521dd7d77803a18407b06d24065cd",
+      "preservedSha256": "0f82de305bcc6574569e56582788ca11ab2521dd7d77803a18407b06d24065cd"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/frontend-audit-input-before.sha256",
+      "preservedPath": "docs/evidence/rc-review/historical-audit-attempts/frontend-audit-input-before.sha256",
+      "bytes": 163,
+      "originalSha256": "0f82de305bcc6574569e56582788ca11ab2521dd7d77803a18407b06d24065cd",
+      "preservedSha256": "0f82de305bcc6574569e56582788ca11ab2521dd7d77803a18407b06d24065cd"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/frontend-fresh-audit.json",
+      "preservedPath": "docs/evidence/rc-review/historical-audit-attempts/frontend-fresh-audit.json",
+      "bytes": 202,
+      "originalSha256": "abcf9a393d63fc0f7562b87bb163684d54549d4b96c7775e2ebc24f8633e15d6",
+      "preservedSha256": "abcf9a393d63fc0f7562b87bb163684d54549d4b96c7775e2ebc24f8633e15d6"
+    },
+    {
+      "originalPath": "/private/tmp/day-trader-independent-1972254/frontend-fresh-audit.stderr",
+      "preservedPath": "docs/evidence/rc-review/historical-audit-attempts/frontend-fresh-audit.stderr",
+      "bytes": 384,
+      "originalSha256": "67038f7cdc8acfc6ff002adef2820a9ca2772c327aa3590ca5be7cb9bfd34dcd",
+      "preservedSha256": "67038f7cdc8acfc6ff002adef2820a9ca2772c327aa3590ca5be7cb9bfd34dcd"
+    }
+  ],
+  "operatorDocumentExcluded": [
+    {
+      "originalPath": "/Users/Matt/Projects/day-trader/docs/Day_Trader_Agentic_MVP_Master_Brief.md",
+      "sha256": "6a757eee886ad3281ad003488ccea6d5e69498633160b4ce971216f9c6f14c83",
+      "bytes": 22565,
+      "policy": "Read from original checkout; preserve untracked operator documentation. No copy included in final commit."
+    }
+  ]
+}
