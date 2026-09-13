@@ -1,0 +1,9 @@
+{
+  "at": "2026-09-13T16:38:55.805906+00:00",
+  "status": "BLOCKED_BY_AUTOMATIC_APPROVAL_REVIEW",
+  "actionExecuted": false,
+  "action": "docker scout cves local://day-trader-rc-backend:node24 --exit-code --format sarif --output docs/evidence/rc-repair/runtime-containers/backend-cves.sarif.json",
+  "reason": "Although referenced locally, Docker Scout CVE analysis transmits package URLs and layer digests to Docker external CVE service. Automatic approval review determined the existing authorization for local image checks and trusted image/package downloads did not specifically authorize private image-derived metadata egress.",
+  "retainedBoundary": "No retry through alternative registry/proxy/transport/scanner. Frontend CVE request withheld for same reason. Local image configuration/startup/static-navigation checks continue. No image/source upload or scan metadata transfer occurred.",
+  "neededApproval": "Authorize only package URLs and layer digests from the two named locally built candidate images to Docker CVE service; no application source, .env, credentials, brokerage data, unrelated files, or image upload."
+}

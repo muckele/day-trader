@@ -1,0 +1,38 @@
+{
+  "nodeVersion": "24.21.0",
+  "npmVersion": "11.19.0",
+  "nodeExecutable": "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+  "npmExecutable": "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/lib/node_modules/npm/bin/npm-cli.js",
+  "registry": "https://registry.npmjs.org",
+  "command": "env -i PATH=/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin:/usr/local/bin:/usr/bin:/bin npm audit --json --ignore-scripts --package-lock-only --registry=https://registry.npmjs.org --userconfig=/private/tmp/day-trader-rc-audit-user.npmrc --globalconfig=/private/tmp/day-trader-rc-audit-global.npmrc --cache=/private/tmp/day-trader-rc-audit-cache",
+  "runs": [
+    {
+      "cwd": "/Users/Matt/Projects/day-trader/backend",
+      "exit": 0,
+      "findings": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      },
+      "responseSha256": "abdec7ed4f7c614c766ae370a5f9d94390990350b5f77b70eb885006c5ed6286",
+      "stderrBytes": 0
+    },
+    {
+      "cwd": "/Users/Matt/Projects/day-trader/frontend",
+      "exit": 1,
+      "findings": {
+        "info": 0,
+        "low": 14,
+        "moderate": 15,
+        "high": 28,
+        "critical": 0,
+        "total": 57
+      },
+      "responseSha256": "5dc1310279266f0cd4d96352f4fbe2dd6ac22da4857880cae0ea909554634a15",
+      "stderrBytes": 0
+    }
+  ]
+}

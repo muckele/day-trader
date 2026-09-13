@@ -1,0 +1,38 @@
+RC002_PROVENANCE {"node":"v24.21.0","executable":"/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node","sourceRevision":"d620aab5e56fdf41a986734bdf516ec028889f15","lifecycleSha256":"91294c02f1ff7db7f000d034e0016d0d918fb0ebc63fc6df48ea7d7a8b6247a8","database":"mvp_test_rc002_169da43a35684b7f9400090dc201685f"}
+RC002_ORIGINAL_STATE {"brokerPosts":1,"holdings":[{"symbol":"AAPL","qty":"6","qty_available":"6","market_value":"60","current_price":"10"}],"intents":[{"_id":"6aa6d0c33192d2e3157a58cb","status":"filled","idempotencyKey":"fills-first","reservedCents":0,"filledQty":6},{"_id":"6aa6d0c33192d2e3157a5911","status":"rejected","idempotencyKey":"captured-earlier","reservedCents":0,"filledQty":0}],"fills":[{"_id":"6aa6d0c33192d2e3157a58ef","notionalCents":6000,"side":"buy","qty":6}],"capacity":{"_id":"6aa6d0c35f129b7a75c82cc3","accountId":"rc002-fixture-paper","__v":0,"createdAt":"2026-09-13T16:35:15.467Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T16:35:15.525Z","version":4,"cashFloorCents":100000,"portfolioBaseline":{"quantities":{},"canonicalNet":{},"foreignState":"[]","observedAt":"2026-09-13T16:35:15.460Z"},"portfolioObservation":{"state":"reconciliation_required","quantities":{},"canonicalNet":{},"observedAt":"2026-09-13T16:35:15.460Z","version":1}},"buckets":[{"_id":"6aa6d0c35f129b7a75c82ccb","key":"2026-09-13","period":"day","accountId":"rc002-fixture-paper","__v":0,"createdAt":"2026-09-13T16:35:15.473Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T16:35:15.501Z"},{"_id":"6aa6d0c35f129b7a75c82cce","accountId":"rc002-fixture-paper","key":"2026-09-07","period":"week","__v":0,"createdAt":"2026-09-13T16:35:15.474Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T16:35:15.502Z"},{"_id":"6aa6d0c35f129b7a75c82cd0","accountId":"rc002-fixture-paper","key":"2026-09","period":"month","__v":0,"createdAt":"2026-09-13T16:35:15.475Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-13T16:35:15.503Z"}]}
+▶ RC002 required exposure regressions
+  ✔ RC002-original-race: captured empty snapshot cannot admit a second $60 into a $100 position (89.836958ms)
+  ✔ RC002-origin-manual-manual (64.426ms)
+  ✔ RC002-origin-manual-robo (56.435791ms)
+  ✔ RC002-origin-robo-manual (51.909709ms)
+  ✔ RC002-origin-robo-robo (49.524917ms)
+  ✔ RC002-lag-full (79.057917ms)
+  ✔ RC002-lag-partial (87.0415ms)
+  ✔ RC002-terminal-cancel (109.705792ms)
+  ✔ RC002-terminal-expiry (110.201208ms)
+  ✔ RC002-headroom (142.741291ms)
+  ✔ RC002-symbol-slot (85.36825ms)
+  ✔ RC002-retry (42.696875ms)
+  ✔ RC002-replacement (153.664625ms)
+  ✔ RC002-fill-during-cancel (129.242208ms)
+  ✔ RC002-external-conflict (45.173083ms)
+  ✔ RC002-close-headroom (119.0415ms)
+  ✔ RC002-protection-generations (222.534291ms)
+  ✔ RC002-invalid-observation (60.761458ms)
+  ✔ RC002-incomplete-discovery (39.500125ms)
+  ✔ RC002-bootstrap-uncovered (55.44975ms)
+  ✔ RC002-uningested-fill (102.012625ms)
+  ✔ RC002-stale-reducing-quantity (73.740291ms)
+  ✔ RC002-reduce-while-disabled (44.453834ms)
+  ✔ RC002-emergency-supersedes-replacement (50.690375ms)
+✔ RC002 required exposure regressions (2347.526833ms)
+ℹ tests 25
+ℹ suites 0
+ℹ pass 25
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2481.808583
+
+Acceptance summary rejected: Expected every required scenario exactly once and at least 1 passing tests with no failures, skips, or flakes and a complete runner summary

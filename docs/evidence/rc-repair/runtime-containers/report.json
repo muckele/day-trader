@@ -1,0 +1,361 @@
+{
+  "scope": "Disposable Linux containers, internal network, synthetic owner; no external brokerage/SMTP/inference",
+  "commands": [
+    {
+      "args": [
+        "docker",
+        "network",
+        "create",
+        "--internal",
+        "day-trader-rc-3bdbc472-net"
+      ],
+      "exit": 0,
+      "stdout": "f48ba4c1fc82f3d3e969c79ad3b140542c65832fbdd5a244e4ee00695ac2dc06\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        "day-trader-rc-3bdbc472-mongo",
+        "--network",
+        "day-trader-rc-3bdbc472-net",
+        "--tmpfs",
+        "/data/db",
+        "mongo:7",
+        "--replSet",
+        "mvp",
+        "--bind_ip_all"
+      ],
+      "exit": 0,
+      "stdout": "d0739f21a46310cf26c8d2f650fa9fb242a0bb40d0efe8b47443ab2d484744a8\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-3bdbc472-mongo",
+        "mongosh",
+        "--quiet",
+        "--eval",
+        "db.adminCommand({ping:1})"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": "MongoNetworkError: connect ECONNREFUSED 127.0.0.1:27017\n"
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-3bdbc472-mongo",
+        "mongosh",
+        "--quiet",
+        "--eval",
+        "db.adminCommand({ping:1})"
+      ],
+      "exit": 0,
+      "stdout": "{ ok: 1 }\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-3bdbc472-mongo",
+        "mongosh",
+        "--quiet",
+        "--eval",
+        "rs.initiate({_id:\"mvp\",members:[{_id:0,host:\"day-trader-rc-3bdbc472-mongo:27017\"}]})"
+      ],
+      "exit": 0,
+      "stdout": "{ ok: 1 }\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-3bdbc472-mongo",
+        "mongosh",
+        "--quiet",
+        "--eval",
+        "if (!db.hello().isWritablePrimary) quit(1)"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        "day-trader-rc-3bdbc472-backend",
+        "--network",
+        "day-trader-rc-3bdbc472-net",
+        "--env-file",
+        "/var/folders/yb/pb2pjqk93m5fnh09mvp_0y100000gn/T/rc-container-mua8ryh2.env",
+        "day-trader-rc-backend:node24"
+      ],
+      "exit": 0,
+      "stdout": "9007d1cc71b0bfc8c5f69b491eb184e93f60db0566c7591e5a2a6f45a7717ad8\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-3bdbc472-backend",
+        "node",
+        "-e",
+        "fetch('http://127.0.0.1:8080/health').then(async r=>{console.log(await r.text());process.exitCode=r.ok?0:1}).catch(()=>process.exitCode=1)"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-3bdbc472-backend",
+        "node",
+        "-e",
+        "fetch('http://127.0.0.1:8080/health').then(async r=>{console.log(await r.text());process.exitCode=r.ok?0:1}).catch(()=>process.exitCode=1)"
+      ],
+      "exit": 0,
+      "stdout": "{\"status\":\"ok\"}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "-i",
+        "day-trader-rc-3bdbc472-backend",
+        "node"
+      ],
+      "exit": 0,
+      "stdout": "{\"node\":\"v24.21.0\",\"execPath\":\"/usr/local/bin/node\",\"openssl\":\"3.5.8\",\"readiness\":{\"persistence\":{\"ready\":true,\"indexesReady\":true,\"writeReady\":true,\"checkedAt\":\"2026-09-13T16:45:41.114Z\"},\"executionEnvironment\":\"alpaca-paper\",\"releaseReady\":false,\"releaseBlockers\":[\"External paper-account and deployed-environment acceptance have not been recorded\"],\"notificationConfigured\":false,\"accountBindingConfigured\":true},\"unauthenticatedStatus\":401}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-3bdbc472-backend",
+        "npm",
+        "--version"
+      ],
+      "exit": 0,
+      "stdout": "11.19.0\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        "day-trader-rc-3bdbc472-frontend",
+        "--network",
+        "day-trader-rc-3bdbc472-net",
+        "day-trader-rc-frontend:node24"
+      ],
+      "exit": 0,
+      "stdout": "47a6b01fbed3a5b5c8d8a4985f2d10f27ec91a5b0852f86cc8218b680010b1b6\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-3bdbc472-frontend",
+        "nginx",
+        "-t"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "nginx: the configuration file /etc/nginx/nginx.conf syntax is ok\nnginx: configuration file /etc/nginx/nginx.conf test is successful\n"
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-3bdbc472-frontend",
+        "nginx",
+        "-v"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "nginx version: nginx/1.30.4\n"
+    },
+    {
+      "args": [
+        "docker",
+        "image",
+        "inspect",
+        "day-trader-rc-backend:node24"
+      ],
+      "exit": 0,
+      "stdout": "[\n    {\n        \"Id\": \"sha256:125fd6abf409da48f5e8ed8b5301899dd8ded1708001300a993511293fda1186\",\n        \"RepoTags\": [\n            \"day-trader-rc-backend:node24\"\n        ],\n        \"RepoDigests\": [],\n        \"Comment\": \"buildkit.dockerfile.v0\",\n        \"Created\": \"2026-09-13T16:35:11.531466503Z\",\n        \"Config\": {\n            \"ExposedPorts\": {\n                \"8080/tcp\": {}\n            },\n            \"Env\": [\n                \"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\",\n                \"NODE_VERSION=24.21.0\",\n                \"YARN_VERSION=1.22.22\",\n                \"NODE_ENV=production\"\n            ],\n            \"Entrypoint\": [\n                \"docker-entrypoint.sh\"\n            ],\n            \"Cmd\": [\n                \"node\",\n                \"server.js\"\n            ],\n            \"WorkingDir\": \"/app\",\n            \"ArgsEscaped\": true\n        },\n        \"Architecture\": \"arm64\",\n        \"Os\": \"linux\",\n        \"Size\": 282460446,\n        \"GraphDriver\": {\n            \"Data\": {\n                \"LowerDir\": \"/var/lib/docker/overlay2/5rriswagl0wczsdo8qe5152ox/diff:/var/lib/docker/overlay2/1pjpvxq0rirryqoyydy84scd2/diff:/var/lib/docker/overlay2/e0sff9lcmkg55xclughl0ab7f/diff:/var/lib/docker/overlay2/31a8aa7181bc2e7486a44790275de331ee65840599a40ebdcd2478233e3546b9/diff:/var/lib/docker/overlay2/6d916044b40335f6c64e674e505af142b974b6ccbc799e5076f1dd2a4bf7cb73/diff:/var/lib/docker/overlay2/8569cc9d1b73455313a5acb578807696379c9ad0bc5ddf9230d12f8dc76d93ff/diff:/var/lib/docker/overlay2/eb970b13f6692191045ac84d0a4af41f05ddc67f053d85bd4f5ebcf8e6f1d2c7/diff:/var/lib/docker/overlay2/4fa77d6f7bc0f2cdb3339f00986722694158eeaa0387205fc94d5e187abbb012/diff\",\n                \"MergedDir\": \"/var/lib/docker/overlay2/ggme2triuqjzwwcbkfoeuwl8l/merged\",\n                \"UpperDir\": \"/var/lib/docker/overlay2/ggme2triuqjzwwcbkfoeuwl8l/diff\",\n                \"WorkDir\": \"/var/lib/docker/overlay2/ggme2triuqjzwwcbkfoeuwl8l/work\"\n            },\n            \"Name\": \"overlay2\"\n        },\n        \"RootFS\": {\n            \"Type\": \"layers\",\n            \"Layers\": [\n                \"sha256:13a56b6535801be2adde694dabaf1c2df1d862a390661907dac821c42cd565cc\",\n                \"sha256:41e44bd596eb77861977399231c8075f0f25aed92a110f1b3b9ac4eedf821636\",\n                \"sha256:0dde8ff85f5f8ef28637238bf773b77a5702c09f2a5c5bf7717810ad03e30e60\",\n                \"sha256:333672ac957fc91eaa777994fc6710227f60ab7d875689f73f16f3bc9b4c510c\",\n                \"sha256:414600af71a50c6b37a8abb7a77129ba2e0e9d7d548461332e50f77d569f347a\",\n                \"sha256:4d642c5b9f39b0c28259944fb250dbb52eb6df3a90c1f293073d3a294b7e483b\",\n                \"sha256:6ad175d22417d1c2b448c2300a39c7fcf8e035f1809f4736529746904663ac18\",\n                \"sha256:50dd45193513f4420cfd213788ffd781e720f8d161c508c465b774546a5a56d8\",\n                \"sha256:46f794af9160a2119d873009be38207ab60289cd36dffaac7b56ef6786828176\"\n            ]\n        },\n        \"Metadata\": {\n            \"LastTagTime\": \"2026-09-13T16:35:11.762185587Z\"\n        }\n    }\n]\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "image",
+        "inspect",
+        "day-trader-rc-frontend:node24"
+      ],
+      "exit": 0,
+      "stdout": "[\n    {\n        \"Id\": \"sha256:2caf28ef5c5a8bcd558703034a8df1cb44b4fdd519b627ad3b6be7a36938fc19\",\n        \"RepoTags\": [\n            \"day-trader-rc-frontend:node24\"\n        ],\n        \"RepoDigests\": [],\n        \"Comment\": \"buildkit.dockerfile.v0\",\n        \"Created\": \"2026-09-13T16:35:53.964350051Z\",\n        \"Config\": {\n            \"ExposedPorts\": {\n                \"80/tcp\": {},\n                \"8080/tcp\": {}\n            },\n            \"Env\": [\n                \"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\",\n                \"NGINX_VERSION=1.30.4\",\n                \"PKG_RELEASE=1\",\n                \"DYNPKG_RELEASE=1\",\n                \"NJS_VERSION=1.0.1\",\n                \"NJS_RELEASE=1\",\n                \"ACME_VERSION=0.4.1\"\n            ],\n            \"Entrypoint\": [\n                \"/docker-entrypoint.sh\"\n            ],\n            \"Cmd\": [\n                \"nginx\",\n                \"-g\",\n                \"daemon off;\"\n            ],\n            \"WorkingDir\": \"/\",\n            \"Labels\": {\n                \"maintainer\": \"NGINX Docker Maintainers <docker-maint@nginx.com>\"\n            },\n            \"StopSignal\": \"SIGQUIT\",\n            \"ArgsEscaped\": true\n        },\n        \"Architecture\": \"arm64\",\n        \"Os\": \"linux\",\n        \"Size\": 72551979,\n        \"GraphDriver\": {\n            \"Data\": {\n                \"LowerDir\": \"/var/lib/docker/overlay2/rly7o5jbnfoe2ruz60ze9fj1j/diff:/var/lib/docker/overlay2/d74ec4517e87248752b54bc16b34356eb4bb91b994b065a5fc3f05c5851a0fb0/diff:/var/lib/docker/overlay2/78098e03f4762cbccb4ead885b85f8c266dbf3602ea8ad68244274a391a331ba/diff:/var/lib/docker/overlay2/cd77f042f11370aa07ce1c0dcc6c14cf025f2304223ea24f1e0fbb0021615738/diff:/var/lib/docker/overlay2/b2fb9a2d53039d495a8b416989aae189a55cd2c4cbeea1dc918dfdc8c44f5848/diff:/var/lib/docker/overlay2/076874e1fc6c670319f84af0119ac02d7ce2de5ea7da8c31563a978f883a0d8b/diff:/var/lib/docker/overlay2/0596e34e0b5c609d997dcc7e6f5cc15a1e7a7330e8d0e34450559ad7bf6d0fa6/diff:/var/lib/docker/overlay2/7aa8947c48cad918cf7f6aff7a5062ad6d5ca6a8335c0b17dfaaa8f8952970f5/diff:/var/lib/docker/overlay2/e171543f0a56a8764c9cfda96d4f9bd3d2102f26a4971a6454cf3852d5d3ec06/diff\",\n                \"MergedDir\": \"/var/lib/docker/overlay2/jelz7gc6orbb4cqi39tgvfz4m/merged\",\n                \"UpperDir\": \"/var/lib/docker/overlay2/jelz7gc6orbb4cqi39tgvfz4m/diff\",\n                \"WorkDir\": \"/var/lib/docker/overlay2/jelz7gc6orbb4cqi39tgvfz4m/work\"\n            },\n            \"Name\": \"overlay2\"\n        },\n        \"RootFS\": {\n            \"Type\": \"layers\",\n            \"Layers\": [\n                \"sha256:b2848c02ac6ff53d265469b5b30f649f335e546a83330cd8916d54e65e640409\",\n                \"sha256:8212bdb165b0586f391f54ffc70f14ae43e4393c3df2496e603141a5a60998d7\",\n                \"sha256:a59c8d557466fd8bbb7c64d9c1163c5f9606f90cc652509dd0166c84997ad8b6\",\n                \"sha256:2b61a5435ba9c5eb55533698219cc31dcdfe4bf7db34d41af4d66396c446561c\",\n                \"sha256:7d32403a892a9f50767259488f239390dd0389149f242d4eb410e45d4072c1cc\",\n                \"sha256:ba6a756d0c41d81b96946d639d99ab318be8c660541ae2abb2019755188936ad\",\n                \"sha256:1dd8012ac8ead4ae8f574d8699e550768dc84b5589c51a6cc54da23b66e79140\",\n                \"sha256:b7596e109f91f945955bdcc910f626eb94de28200fff0a05266f3a10431328cc\",\n                \"sha256:9ed605f97103437583d10d7f2be368fbc48b295de49522186d888ac654a38dea\",\n                \"sha256:dc2ddcf50253edc8612d72a88a3b0873c491f040c99e88f61f2c5d8c0f2dbfe2\"\n            ]\n        },\n        \"Metadata\": {\n            \"LastTagTime\": \"2026-09-13T16:35:53.982207343Z\"\n        }\n    }\n]\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "logs",
+        "day-trader-rc-3bdbc472-backend"
+      ],
+      "exit": 0,
+      "stdout": "\u2139\ufe0f MongoDB IP family preference set to IPv4.\nDay Trader API listening on http://0.0.0.0:8080\n\u2705 MongoDB connected\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "rm",
+        "-f",
+        "-v",
+        "day-trader-rc-3bdbc472-frontend"
+      ],
+      "exit": 0,
+      "stdout": "day-trader-rc-3bdbc472-frontend\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "rm",
+        "-f",
+        "-v",
+        "day-trader-rc-3bdbc472-backend"
+      ],
+      "exit": 0,
+      "stdout": "day-trader-rc-3bdbc472-backend\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "rm",
+        "-f",
+        "-v",
+        "day-trader-rc-3bdbc472-mongo"
+      ],
+      "exit": 0,
+      "stdout": "day-trader-rc-3bdbc472-mongo\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "network",
+        "rm",
+        "day-trader-rc-3bdbc472-net"
+      ],
+      "exit": 0,
+      "stdout": "day-trader-rc-3bdbc472-net\n",
+      "stderr": ""
+    }
+  ],
+  "navigationTransport": "Loopback-only HTTP bridge forwards each request via docker exec wget to actual isolated nginx HTTP; no external container network",
+  "staticNavigation": [
+    {
+      "route": "/",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/login",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/portfolio",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/activity",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/research",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/analytics",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/robotrader",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/trading-system",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/stock/AAPL",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    }
+  ],
+  "browserNavigation": {
+    "exit": 0,
+    "stdout": "{\"url\":\"http://127.0.0.1:63791/login\",\"status\":200,\"title\":\"DayTrader\",\"loginRendered\":true}\n",
+    "stderr": ""
+  },
+  "images": [
+    {
+      "tag": "day-trader-rc-backend:node24",
+      "id": "sha256:125fd6abf409da48f5e8ed8b5301899dd8ded1708001300a993511293fda1186",
+      "os": "linux",
+      "architecture": "arm64",
+      "created": "2026-09-13T16:35:11.531466503Z"
+    },
+    {
+      "tag": "day-trader-rc-frontend:node24",
+      "id": "sha256:2caf28ef5c5a8bcd558703034a8df1cb44b4fdd519b627ad3b6be7a36938fc19",
+      "os": "linux",
+      "architecture": "arm64",
+      "created": "2026-09-13T16:35:53.964350051Z"
+    }
+  ],
+  "ok": true,
+  "cleanupComplete": true
+}

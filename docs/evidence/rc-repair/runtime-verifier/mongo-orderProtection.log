@@ -1,0 +1,19 @@
+▶ durable partial-fill protection against real Mongo
+  ✔ 4 + 6 fills cancel-confirm-expand one stop; duplicate/concurrent reconcile does not duplicate (91.400125ms)
+  ✔ 4 + canceled remainder preserves four-share protection (29.966292ms)
+  ✔ accepted timeout, lookup miss and restart never duplicate; blocks new risk until confirmation (65.00775ms)
+  ✔ manual requested stop is maintained; held stop never counts as protected (51.072458ms)
+  ✔ manual exits share account lease and confirmed protective reservations (43.705584ms)
+  ✔ nested exits and pending manual sells cannot be oversubscribed by stops (49.505542ms)
+  ✔ reduced broker position caps the new exit and resizes existing exit (73.929ms)
+✔ durable partial-fill protection against real Mongo (745.479ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 881.365541
+
+Acceptance summary rejected: Expected every required scenario exactly once and at least 8 passing tests with no failures, skips, or flakes and a complete runner summary

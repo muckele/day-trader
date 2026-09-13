@@ -1,0 +1,230 @@
+{
+  "scope": "Disposable Linux containers, internal network, synthetic owner; no external brokerage/SMTP/inference",
+  "commands": [
+    {
+      "args": [
+        "docker",
+        "network",
+        "create",
+        "--internal",
+        "day-trader-rc-d07c5d45-net"
+      ],
+      "exit": 0,
+      "stdout": "5682b4ef12b96213b1cb32844b77f37d87f8c2112daf23e1da52e7fbffada04b\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        "day-trader-rc-d07c5d45-mongo",
+        "--network",
+        "day-trader-rc-d07c5d45-net",
+        "--tmpfs",
+        "/data/db",
+        "mongo:7",
+        "--replSet",
+        "mvp",
+        "--bind_ip_all"
+      ],
+      "exit": 0,
+      "stdout": "5c23a42da78f1ce19cace905ff314efea51b104bbac37b8cd61f64a9805ed9b6\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-d07c5d45-mongo",
+        "mongosh",
+        "--quiet",
+        "--eval",
+        "db.adminCommand({ping:1})"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": "MongoNetworkError: connect ECONNREFUSED 127.0.0.1:27017\n"
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-d07c5d45-mongo",
+        "mongosh",
+        "--quiet",
+        "--eval",
+        "db.adminCommand({ping:1})"
+      ],
+      "exit": 0,
+      "stdout": "{ ok: 1 }\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-d07c5d45-mongo",
+        "mongosh",
+        "--quiet",
+        "--eval",
+        "rs.initiate({_id:\"mvp\",members:[{_id:0,host:\"day-trader-rc-d07c5d45-mongo:27017\"}]})"
+      ],
+      "exit": 0,
+      "stdout": "{ ok: 1 }\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-d07c5d45-mongo",
+        "mongosh",
+        "--quiet",
+        "--eval",
+        "if (!db.hello().isWritablePrimary) quit(1)"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        "day-trader-rc-d07c5d45-backend",
+        "--network",
+        "day-trader-rc-d07c5d45-net",
+        "--env-file",
+        "/var/folders/yb/pb2pjqk93m5fnh09mvp_0y100000gn/T/rc-container-8bgw94s3.env",
+        "day-trader-rc-backend:node24"
+      ],
+      "exit": 0,
+      "stdout": "83feabb72668d63dc10cd5625153f626ef958554c30682e53cecbbc831f94c5f\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-d07c5d45-backend",
+        "node",
+        "-e",
+        "fetch('http://127.0.0.1:8080/health').then(async r=>{console.log(await r.text());process.exitCode=r.ok?0:1}).catch(()=>process.exitCode=1)"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-d07c5d45-backend",
+        "node",
+        "-e",
+        "fetch('http://127.0.0.1:8080/health').then(async r=>{console.log(await r.text());process.exitCode=r.ok?0:1}).catch(()=>process.exitCode=1)"
+      ],
+      "exit": 0,
+      "stdout": "{\"status\":\"ok\"}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "-i",
+        "day-trader-rc-d07c5d45-backend",
+        "node"
+      ],
+      "exit": 0,
+      "stdout": "{\"node\":\"v24.21.0\",\"execPath\":\"/usr/local/bin/node\",\"openssl\":\"3.5.8\",\"readiness\":{\"persistence\":{\"ready\":true,\"indexesReady\":true,\"writeReady\":true,\"checkedAt\":\"2026-09-13T16:37:39.145Z\"},\"executionEnvironment\":\"alpaca-paper\",\"releaseReady\":false,\"releaseBlockers\":[\"External paper-account and deployed-environment acceptance have not been recorded\"],\"notificationConfigured\":false,\"accountBindingConfigured\":true},\"unauthenticatedStatus\":401}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "exec",
+        "day-trader-rc-d07c5d45-backend",
+        "npm",
+        "--version"
+      ],
+      "exit": 0,
+      "stdout": "11.19.0\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        "day-trader-rc-d07c5d45-frontend",
+        "--network",
+        "day-trader-rc-d07c5d45-net",
+        "-p",
+        "127.0.0.1:62810:8080",
+        "day-trader-rc-frontend:node24"
+      ],
+      "exit": 0,
+      "stdout": "592ed16db6b210f53beda2ab41833bf278ce58b29d459eb0d8ee3750d890c302\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "rm",
+        "-f",
+        "-v",
+        "day-trader-rc-d07c5d45-frontend"
+      ],
+      "exit": 0,
+      "stdout": "day-trader-rc-d07c5d45-frontend\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "rm",
+        "-f",
+        "-v",
+        "day-trader-rc-d07c5d45-backend"
+      ],
+      "exit": 0,
+      "stdout": "day-trader-rc-d07c5d45-backend\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "rm",
+        "-f",
+        "-v",
+        "day-trader-rc-d07c5d45-mongo"
+      ],
+      "exit": 0,
+      "stdout": "day-trader-rc-d07c5d45-mongo\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "docker",
+        "network",
+        "rm",
+        "day-trader-rc-d07c5d45-net"
+      ],
+      "exit": 0,
+      "stdout": "day-trader-rc-d07c5d45-net\n",
+      "stderr": ""
+    }
+  ],
+  "ok": false,
+  "error": "<urlopen error [Errno 61] Connection refused>",
+  "cleanupComplete": true
+}

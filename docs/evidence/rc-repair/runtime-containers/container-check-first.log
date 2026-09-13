@@ -1,0 +1,6 @@
+{
+  "scope": "Disposable Linux containers, internal network, synthetic owner; no external brokerage/SMTP/inference",
+  "ok": false,
+  "error": "<urlopen error [Errno 61] Connection refused>",
+  "cleanupComplete": true
+}

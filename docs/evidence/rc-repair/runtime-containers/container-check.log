@@ -1,0 +1,83 @@
+{
+  "scope": "Disposable Linux containers, internal network, synthetic owner; no external brokerage/SMTP/inference",
+  "navigationTransport": "Loopback-only HTTP bridge forwards each request via docker exec wget to actual isolated nginx HTTP; no external container network",
+  "staticNavigation": [
+    {
+      "route": "/",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/login",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/portfolio",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/activity",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/research",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/analytics",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/robotrader",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/trading-system",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/stock/AAPL",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    }
+  ],
+  "browserNavigation": {
+    "exit": 0,
+    "stdout": "{\"url\":\"http://127.0.0.1:63791/login\",\"status\":200,\"title\":\"DayTrader\",\"loginRendered\":true}\n",
+    "stderr": ""
+  },
+  "images": [
+    {
+      "tag": "day-trader-rc-backend:node24",
+      "id": "sha256:125fd6abf409da48f5e8ed8b5301899dd8ded1708001300a993511293fda1186",
+      "os": "linux",
+      "architecture": "arm64",
+      "created": "2026-09-13T16:35:11.531466503Z"
+    },
+    {
+      "tag": "day-trader-rc-frontend:node24",
+      "id": "sha256:2caf28ef5c5a8bcd558703034a8df1cb44b4fdd519b627ad3b6be7a36938fc19",
+      "os": "linux",
+      "architecture": "arm64",
+      "created": "2026-09-13T16:35:53.964350051Z"
+    }
+  ],
+  "ok": true,
+  "cleanupComplete": true
+}

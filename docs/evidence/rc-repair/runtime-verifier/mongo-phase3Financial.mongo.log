@@ -1,0 +1,28 @@
+▶ Phase 3 real Mongo cash and coordinated closes
+  ✔ confirmed sale/deposit refresh preserves spending, repeated refresh never credits twice (135.495958ms)
+  ✔ unresolved entry blocks refresh and invalid/withdrawn cash prevents entry (43.732ms)
+  ✔ close cancels only app stop, waits for terminal evidence, then sizes actual position (99.819083ms)
+  ✔ unrelated exit never canceled and blocks full close (20.626959ms)
+  ✔ concurrent close requests share protection lease and submit once (77.653667ms)
+  ✔ expired close relinquishes protection suppression and does not submit later (72.430875ms)
+  ✔ pending close blocks independent manual sell even after stops cancel (37.919667ms)
+  ✔ stale cash snapshot and external pending buy cannot refresh capacity (9.5795ms)
+  ✔ accepted close timeout survives service restart and never repeats POST (353.149ms)
+  ✔ lease loss after stop discovery prevents broker cancellation (40.828375ms)
+  ✔ unknown stop identity fails safely without cancel or close writes (30.962833ms)
+  ✔ unfilled close deadline cancels its own exit and returns remaining position to protection (151.179625ms)
+  ✔ protective acceptance with lost broker ID is discovered through durable client identity (48.239375ms)
+  ✔ production admission refuses unready execution before any intent or protective mutation (28.600584ms)
+  ✔ bounded recovery does no broker work while idle and restores stops after expired close (127.441833ms)
+  ✔ protection restoration timeout stays scheduled and recovers accepted stop without duplication (117.288459ms)
+✔ Phase 3 real Mongo cash and coordinated closes (1658.130917ms)
+ℹ tests 17
+ℹ suites 0
+ℹ pass 17
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1796.78025
+
+Acceptance summary rejected: Expected every required scenario exactly once and at least 17 passing tests with no failures, skips, or flakes and a complete runner summary

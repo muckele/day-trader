@@ -1,0 +1,923 @@
+{
+  "ok": false,
+  "checks": [
+    {
+      "name": "runtime",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 151,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "/Users/Matt/Projects/day-trader/scripts/verify-runtime.mjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/runtime.log",
+      "ok": true
+    },
+    {
+      "name": "backend-install",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 776,
+      "command": [
+        "npm",
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/backend-install.log",
+      "ok": true
+    },
+    {
+      "name": "frontend-install",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 5681,
+      "command": [
+        "npm",
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/frontend-install.log",
+      "ok": true
+    },
+    {
+      "name": "verification-tests",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 236,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "scripts/tests/verify-mvp.test.mjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/verification-tests.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [],
+      "error": "Expected every required scenario exactly once and at least 10 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "backend-tests",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1547,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "tests/accountScope.test.js",
+        "tests/alpacaExecutionService.test.js",
+        "tests/alpacaPortfolio.test.js",
+        "tests/alpacaTradingClient.test.js",
+        "tests/analysisEngine.test.js",
+        "tests/analytics.test.js",
+        "tests/analyticsSnapshot.test.js",
+        "tests/analyzeRoute.test.js",
+        "tests/backtest.test.js",
+        "tests/brokerBoundarySafety.test.js",
+        "tests/companyRoute.test.js",
+        "tests/debugRoute.test.js",
+        "tests/dispatchStopStatus.test.js",
+        "tests/errorResponse.test.js",
+        "tests/executionGate.test.js",
+        "tests/executionMarketStatus.test.js",
+        "tests/executionReadiness.test.js",
+        "tests/externalPaperAcceptance.test.js",
+        "tests/guardrails.test.js",
+        "tests/manualAlpacaDispatch.test.js",
+        "tests/marketQuoteProvenance.test.js",
+        "tests/marketRoute.test.js",
+        "tests/marketStatusSource.test.js",
+        "tests/mongoConnectionConfig.test.js",
+        "tests/mongoNetwork.test.js",
+        "tests/mongoState.test.js",
+        "tests/notificationRecovery.test.js",
+        "tests/orderLifecycle.financial.test.js",
+        "tests/ownerAccess.test.js",
+        "tests/ownerAuthRoutes.test.js",
+        "tests/ownerBootstrap.test.js",
+        "tests/paperBrokerClient.test.js",
+        "tests/paperMath.test.js",
+        "tests/privateRoutesAuth.test.js",
+        "tests/qualityGate.test.js",
+        "tests/rateLimit.test.js",
+        "tests/recommendRoute.test.js",
+        "tests/recommendationEngine.test.js",
+        "tests/recommendationSchema.test.js",
+        "tests/regimeDetector.test.js",
+        "tests/requireMongo.test.js",
+        "tests/researchIndexService.test.js",
+        "tests/researchService.test.js",
+        "tests/researchTradeWorkflowService.test.js",
+        "tests/riskEngine.test.js",
+        "tests/roboNotificationService.test.js",
+        "tests/roboRoute.test.js",
+        "tests/roboScheduler.test.js",
+        "tests/roboTraderEngine.test.js",
+        "tests/robotraderAlpacaBroker.test.js",
+        "tests/robotraderAlpacaCapabilities.test.js",
+        "tests/robotraderReconciliation.test.js",
+        "tests/robotraderRiskGate.test.js",
+        "tests/robotraderRoute.test.js",
+        "tests/robotraderSettings.test.js",
+        "tests/robotraderStopStatusRoute.test.js",
+        "tests/robotraderStrategyEngine.test.js",
+        "tests/robotraderWorker.test.js",
+        "tests/sessionCookie.test.js",
+        "tests/simulatorSeparation.test.js",
+        "tests/strategyRunService.test.js",
+        "tests/tradeLogic.test.js",
+        "tests/tradePlan.test.js",
+        "tests/tradeRoutes.test.js",
+        "tests/tradingConfig.test.js",
+        "tests/tradingIndexService.test.js",
+        "tests/tradingSystemRoute.test.js",
+        "tests/unsafeInputRoutes.test.js",
+        "tests/unsafeMethodOriginGuard.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/backend-tests.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [],
+      "error": "Expected every required scenario exactly once and at least 369 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "mongo-integration",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 525,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/mvpPersistence.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/mongo-integration.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [],
+      "error": "Expected every required scenario exactly once and at least 4 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "mongo-orderLifecycle.faults",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 830,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/orderLifecycle.faults.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/mongo-orderLifecycle.faults.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [],
+      "error": "Expected every required scenario exactly once and at least 9 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "mongo-orderLifecycle.mongo",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1428,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/orderLifecycle.mongo.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/mongo-orderLifecycle.mongo.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [],
+      "error": "Expected every required scenario exactly once and at least 16 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "mongo-orderProtection",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 918,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/orderProtection.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/mongo-orderProtection.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [],
+      "error": "Expected every required scenario exactly once and at least 8 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "mongo-phase3Financial.mongo",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1833,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/phase3Financial.mongo.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/mongo-phase3Financial.mongo.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [],
+      "error": "Expected every required scenario exactly once and at least 17 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "mongo-phase3Smtp.mongo",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 2758,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/phase3Smtp.mongo.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/mongo-phase3Smtp.mongo.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [],
+      "error": "Expected every required scenario exactly once and at least 4 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "mongo-rc002Exposure.mongo",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 2516,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/rc002Exposure.mongo.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/mongo-rc002Exposure.mongo.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "RC002-original-race: captured empty snapshot cannot admit a second $60 into a $100 position",
+          "passed": false
+        },
+        {
+          "name": "RC002-origin-manual-manual",
+          "passed": false
+        },
+        {
+          "name": "RC002-origin-manual-robo",
+          "passed": false
+        },
+        {
+          "name": "RC002-origin-robo-manual",
+          "passed": false
+        },
+        {
+          "name": "RC002-origin-robo-robo",
+          "passed": false
+        },
+        {
+          "name": "RC002-lag-full",
+          "passed": false
+        },
+        {
+          "name": "RC002-lag-partial",
+          "passed": false
+        },
+        {
+          "name": "RC002-terminal-cancel",
+          "passed": false
+        },
+        {
+          "name": "RC002-terminal-expiry",
+          "passed": false
+        },
+        {
+          "name": "RC002-headroom",
+          "passed": false
+        },
+        {
+          "name": "RC002-symbol-slot",
+          "passed": false
+        },
+        {
+          "name": "RC002-retry",
+          "passed": false
+        },
+        {
+          "name": "RC002-replacement",
+          "passed": false
+        },
+        {
+          "name": "RC002-fill-during-cancel",
+          "passed": false
+        },
+        {
+          "name": "RC002-external-conflict",
+          "passed": false
+        },
+        {
+          "name": "RC002-close-headroom",
+          "passed": false
+        },
+        {
+          "name": "RC002-protection-generations",
+          "passed": false
+        },
+        {
+          "name": "RC002-invalid-observation",
+          "passed": false
+        },
+        {
+          "name": "RC002-incomplete-discovery",
+          "passed": false
+        },
+        {
+          "name": "RC002-bootstrap-uncovered",
+          "passed": false
+        },
+        {
+          "name": "RC002-uningested-fill",
+          "passed": false
+        },
+        {
+          "name": "RC002-stale-reducing-quantity",
+          "passed": false
+        },
+        {
+          "name": "RC002-reduce-while-disabled",
+          "passed": false
+        },
+        {
+          "name": "RC002-emergency-supersedes-replacement",
+          "passed": false
+        }
+      ],
+      "error": "Expected every required scenario exactly once and at least 1 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "frontend-tests",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 3815,
+      "command": [
+        "npm",
+        "test",
+        "--",
+        "--watchAll=false",
+        "--runInBand"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/frontend-tests.log",
+      "ok": true,
+      "passedTests": 40,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "frontend-build",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 8812,
+      "command": [
+        "npm",
+        "run",
+        "build"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/frontend-build.log",
+      "ok": true
+    },
+    {
+      "name": "mongo-nonOwnerAuthorization.fullstack",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1328,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/nonOwnerAuthorization.fullstack.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/mongo-nonOwnerAuthorization.fullstack.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [],
+      "error": "Expected every required scenario exactly once and at least 1 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "mongo-phase3Admission.mongo",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1439,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/phase3Admission.mongo.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/mongo-phase3Admission.mongo.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [],
+      "error": "Expected every required scenario exactly once and at least 1 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "provider-contract",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 132,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "scripts/acceptance/provider.test.cjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/provider-contract.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [],
+      "error": "Expected every required scenario exactly once and at least 1 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "process-acceptance",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 20624,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "scripts/acceptance/process.test.cjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/process-acceptance.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [],
+      "error": "Expected every required scenario exactly once and at least 9 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "rc-dispatch",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 47346,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "scripts/acceptance/rcDispatch.test.cjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/rc-dispatch.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "RC001-final-account-emergency-stop",
+          "passed": false
+        },
+        {
+          "name": "RC001-final-account-disable",
+          "passed": false
+        },
+        {
+          "name": "RC001-final-account-lease-takeover",
+          "passed": false
+        },
+        {
+          "name": "RC001-final-account-lease-expiry",
+          "passed": false
+        },
+        {
+          "name": "RC001-final-account-heartbeat-loss",
+          "passed": false
+        },
+        {
+          "name": "RC001-awaited-renewal-stop",
+          "passed": false
+        },
+        {
+          "name": "RC001-awaited-renewal-reenable-generation",
+          "passed": false
+        },
+        {
+          "name": "RC001-claim-before-stop-resume",
+          "passed": false
+        },
+        {
+          "name": "RC001-claim-before-stop-process-death",
+          "passed": false
+        },
+        {
+          "name": "RC001-claim-before-stop-lease-takeover",
+          "passed": false
+        },
+        {
+          "name": "RC001-transmitted-acknowledge",
+          "passed": false
+        },
+        {
+          "name": "RC001-transmitted-accepted500",
+          "passed": false
+        },
+        {
+          "name": "RC001-ambiguous-claim-commit",
+          "passed": false
+        },
+        {
+          "name": "RC001-disable-preserves-manual-protection-reduction",
+          "passed": false
+        },
+        {
+          "name": "RC001-protection-final-account-takeover",
+          "passed": false
+        },
+        {
+          "name": "RC001-protection-final-account-expiry",
+          "passed": false
+        },
+        {
+          "name": "RC001-reduction-final-account-takeover",
+          "passed": false
+        },
+        {
+          "name": "RC001-reduction-final-account-expiry",
+          "passed": false
+        },
+        {
+          "name": "RC001-run-once-final-account-stop",
+          "passed": false
+        },
+        {
+          "name": "RC001-legacy-control-writer-generation",
+          "passed": false
+        },
+        {
+          "name": "RC001-process-death-before-claim",
+          "passed": false
+        },
+        {
+          "name": "RC001-process-death-after-acceptance-before-persistence",
+          "passed": false
+        },
+        {
+          "name": "RC001-held-post-response-stop-then-fill",
+          "passed": false
+        },
+        {
+          "name": "RC001-dispatch-transaction-retry",
+          "passed": false
+        },
+        {
+          "name": "RC001-dispatch-transaction-abort",
+          "passed": false
+        }
+      ],
+      "error": "Expected every required scenario exactly once and at least 1 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "rc-exit-dispatch",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 17880,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "scripts/acceptance/rcExitDispatch.test.cjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/rc-exit-dispatch.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "RC001-protection-cancel-final-account-takeover",
+          "passed": false
+        },
+        {
+          "name": "RC001-protection-cancel-final-account-expiry",
+          "passed": false
+        },
+        {
+          "name": "RC001-close-post-final-account-takeover",
+          "passed": false
+        },
+        {
+          "name": "RC001-close-post-final-account-expiry",
+          "passed": false
+        },
+        {
+          "name": "RC001-close-protection-cancel-final-account-takeover",
+          "passed": false
+        },
+        {
+          "name": "RC001-close-protection-cancel-final-account-expiry",
+          "passed": false
+        },
+        {
+          "name": "RC001-close-exit-cancel-final-account-takeover",
+          "passed": false
+        },
+        {
+          "name": "RC001-close-exit-cancel-final-account-expiry",
+          "passed": false
+        },
+        {
+          "name": "RC001-reducing-replacement-final-account-disable",
+          "passed": false
+        },
+        {
+          "name": "RC001-reducing-replacement-final-account-emergency-stop",
+          "passed": false
+        }
+      ],
+      "error": "Expected every required scenario exactly once and at least 1 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "rc-exposure-process",
+      "code": 1,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 3253,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "scripts/acceptance/rc002.process.test.cjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/rc-exposure-process.log",
+      "ok": false,
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "RC002-real-worker-lock-and-coverage",
+          "passed": false
+        }
+      ],
+      "error": "Expected every required scenario exactly once and at least 1 passing tests with no failures, skips, or flakes and a complete runner summary"
+    },
+    {
+      "name": "browser-lifecycle",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 33137,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "frontend/node_modules/@playwright/test/cli.js",
+        "test",
+        "--config=scripts/acceptance/playwright.config.cjs",
+        "browser.spec.cjs",
+        "--reporter=list,json"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/browser-lifecycle.log",
+      "ok": true,
+      "passedTests": 14,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "browser-core-screens",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 48367,
+      "command": [
+        "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+        "frontend/node_modules/@playwright/test/cli.js",
+        "test",
+        "--config=scripts/acceptance/playwright.config.cjs",
+        "screens.spec.cjs",
+        "--reporter=list,json"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/runtime-verifier/browser-core-screens.log",
+      "ok": true,
+      "passedTests": 8,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    }
+  ],
+  "requiredAcceptance": [
+    {
+      "name": "runtime",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "backend-install",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "frontend-install",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "verification-tests",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "backend-tests",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "mongo-integration",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "mongo-orderLifecycle.mongo",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "mongo-orderLifecycle.faults",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "mongo-orderProtection",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "mongo-phase3Financial.mongo",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "mongo-phase3Admission.mongo",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "mongo-phase3Smtp.mongo",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "mongo-nonOwnerAuthorization.fullstack",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "frontend-tests",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "frontend-build",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "provider-contract",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "process-acceptance",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "browser-lifecycle",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "browser-core-screens",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "rc-dispatch",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "mongo-rc002Exposure.mongo",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "rc-exposure-process",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    },
+    {
+      "name": "rc-exit-dispatch",
+      "status": "BLOCKED",
+      "reason": "Required local check is missing, duplicated, incomplete, or failed"
+    }
+  ],
+  "releaseCandidate": false,
+  "status": "LOCAL RELEASE ACCEPTANCE INCOMPLETE",
+  "externalAcceptance": [
+    {
+      "name": "External Alpaca paper acceptance",
+      "status": "NOT RUN",
+      "reason": "Requires explicit operator authorization; the verifier uses only the controlled local provider"
+    },
+    {
+      "name": "External SMTP inbox receipt",
+      "status": "NOT RUN",
+      "reason": "Local SMTP acceptance proves the capture boundary, not external delivery or inbox receipt"
+    },
+    {
+      "name": "Deployed-environment and operational acceptance",
+      "status": "NOT RUN",
+      "reason": "No deployment is performed by this verifier"
+    }
+  ],
+  "generatedAt": "2026-09-13T16:38:23.773Z",
+  "runtime": "v24.21.0",
+  "deterministicChecksPass": false
+}

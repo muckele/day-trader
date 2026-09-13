@@ -1,6 +1,57 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildTestEnvironment, runChecks, buildMongoChecks } from '../verify-mvp.mjs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+test('runtime gate accepts the pinned supported runtime and records Node/npm executable provenance', async () => {
+  const { buildReleaseChecks } = await import('../verify-mvp.mjs');
+  const gate = buildReleaseChecks({ backendTests: [], integrationFiles: [] }).find(check => check.name === 'runtime');
+  const result = spawnSync(gate.command, gate.args, { encoding: 'utf8', env: process.env });
+  assert.equal(result.status, 0, result.stderr);
+  const proof = JSON.parse(result.stdout);
+  assert.equal(proof.nodeVersion, '24.21.0');
+  assert.equal(proof.npmVersion, '11.19.0');
+  assert.equal(proof.nodeExecutable, proof.nodeOnPathExecutable);
+  assert.equal(proof.npmNodeExecutable, proof.nodeExecutable);
+});
+
+test('runtime gate rejects a different npm executable even when its version text matches', async () => {
+  const { buildReleaseChecks } = await import('../verify-mvp.mjs');
+  const gate = buildReleaseChecks({ backendTests: [], integrationFiles: [] }).find(check => check.name === 'runtime');
+  const directory = mkdtempSync(path.join(tmpdir(), 'day-trader-runtime-gate-'));
+  try {
+    writeFileSync(path.join(directory, 'npm'), '#!/bin/sh\nprintf "11.19.0\\n"\n', { mode: 0o755 });
+    const result = spawnSync(gate.command, gate.args, { encoding: 'utf8', env: { ...process.env, PATH: directory + path.delimiter + process.env.PATH } });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /npm executable/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('every TAP acceptance gate emits actual TAP on the supported Node runtime', async () => {
+  const { buildReleaseChecks, validateAcceptanceExecution } = await import('../verify-mvp.mjs');
+  const directory = mkdtempSync(path.join(tmpdir(), 'day-trader-tap-protocol-'));
+  const fixture = path.join(directory, 'protocol.test.cjs');
+  const scenario = 'required runtime protocol assertion';
+  try {
+    writeFileSync(fixture, `const test = require('node:test'); const assert = require('node:assert/strict'); test('${scenario}', () => assert.equal(2 + 2, 4));\n`);
+    const gates = buildReleaseChecks({ backendTests: ['example.test.js'], integrationFiles: ['mvpPersistence.test.js', 'phase3Admission.mongo.test.js', 'rc002Exposure.mongo.test.js'] }).filter(check => check.summary === 'tap');
+    for (const gate of gates) {
+      // Exercise the real Node options from each gate without launching its application fixture.
+      const args = [...gate.args.filter(argument => argument.startsWith('--')), fixture];
+      const result = spawnSync(gate.command, args, { encoding: 'utf8', env: buildTestEnvironment(process.env) });
+      assert.equal(result.status, 0, `${gate.name}: ${result.stderr}`);
+      const check = { ...gate, minimumTests: 1, requiredScenarios: [scenario] };
+      assert.equal(validateAcceptanceExecution(check, result.stdout).ok, true, `${gate.name}: ${result.stdout}`);
+      assert.ok(gate.args.includes('--test-reporter=tap'), gate.name);
+      for (const replacement of ['ok 1 - another scenario', `not ok 1 - ${scenario}`, `ok 1 - ${scenario} # SKIP`]) {
+        assert.equal(validateAcceptanceExecution(check, result.stdout.replace(`ok 1 - ${scenario}`, replacement)).ok, false, `${gate.name}: ${replacement}`);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
 test('verification drops real credentials and scheduler activation', () => {
   const env = buildTestEnvironment({ PATH: '/bin', HOME: '/tmp', APCA_API_KEY_ID: 'real', SMTP_PASS: 'real', MONGO_URI: 'production', ROBO_SCHEDULER_DISABLED: 'false', NODE_OPTIONS: '--require evil' });
@@ -28,9 +79,9 @@ test('integration discovery runs each Mongo fixture in its own sequential check'
   const { buildMongoChecks } = await import('../verify-mvp.mjs');
   const checks = buildMongoChecks(['phase2Lifecycle.test.js', 'README.md', 'mvpPersistence.test.js', 'phase2Protection.test.js']);
   assert.deepEqual(checks.map(check => check.args), [
-    ['--test', 'backend/integration/mvpPersistence.test.js'],
-    ['--test', 'backend/integration/phase2Lifecycle.test.js'],
-    ['--test', 'backend/integration/phase2Protection.test.js']
+    ['--test', '--test-reporter=tap', 'backend/integration/mvpPersistence.test.js'],
+    ['--test', '--test-reporter=tap', 'backend/integration/phase2Lifecycle.test.js'],
+    ['--test', '--test-reporter=tap', 'backend/integration/phase2Protection.test.js']
   ]);
   assert.equal(new Set(checks.map(check => check.name)).size, 3);
 });

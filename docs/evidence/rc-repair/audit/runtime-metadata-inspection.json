@@ -1,0 +1,26 @@
+{
+  "sensitiveMetadataDetected": false,
+  "scope": "Package manifests unchanged except exact runtime engines; all resolved dependency URLs remain public registry.npmjs.org with no embedded credentials. No source/.env/credential files in audit inputs.",
+  "files": [
+    {
+      "path": "backend/package.json",
+      "sha256": "631edc8e29ef123712b41212b251308d9975fbac4c9d6e1999e4839c60760b3e",
+      "publicRegistryResolvedEntries": 0
+    },
+    {
+      "path": "backend/package-lock.json",
+      "sha256": "4c4dbbfdedd053bbda1033070a16dd3b1a46ae3bbc4090adbcac2cc1f3c24025",
+      "publicRegistryResolvedEntries": 132
+    },
+    {
+      "path": "frontend/package.json",
+      "sha256": "ad4b03be1896c34ca22730388791bd06210bfa03c8f1b93f5ff831fd40edbe8b",
+      "publicRegistryResolvedEntries": 0
+    },
+    {
+      "path": "frontend/package-lock.json",
+      "sha256": "fb33b2a92e5e1122026f2ba67e406a77db914df8090571cd21421c961d9bbae4",
+      "publicRegistryResolvedEntries": 1422
+    }
+  ]
+}

@@ -1,3 +1,7 @@
+## Final supported-runtime audit
+
+Fresh audits under Node 24.21.0 / bundled npm 11.19.0 completed against the authorized registry: backend exit 0, zero findings; frontend exit 1, 57 findings (28 high, 15 moderate, 14 low, zero critical). Both stderr files are empty. This is advisory output, not a network failure. Exact command, interpreter paths, response hashes and counts are in `runtime-execution.json`; raw results are `runtime-backend-audit.json` and `runtime-frontend-audit.json`. Dependency graphs are unchanged. The disposition below remains applicable; Node and nginx were separately updated, while image CVE analysis remains approval-blocked.
+
 # Fresh authorized dependency audits
 
 The parent task successfully ran fresh read-only package-lock audits against `https://registry.npmjs.org` after inspecting metadata and supplying isolated empty npm configuration files. This supersedes the delegated authorization-context failure; the failure artifact remains historical. Actual raw responses are `backend-audit.json` and `frontend-audit.json`; both stderr files are empty. Backend exit **0**, **0 findings**. Frontend exit **1**, **57 findings**: **28 high, 15 moderate, 14 low, 0 critical**. Exit 1 indicates advisory findings, not registry failure. The commands ran under Node **24.19.0**, npm **11.17.0**; this is audit provenance, not the later patched-runtime pass.

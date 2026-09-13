@@ -1,0 +1,25 @@
+✔ runtime gate accepts the pinned supported runtime and records Node/npm executable provenance (91.553166ms)
+✔ runtime gate rejects a different npm executable even when its version text matches (33.007083ms)
+✔ verification drops real credentials and scheduler activation (0.123708ms)
+✔ verification preserves failures and continues independent checks (0.712584ms)
+✔ integration discovery runs each Mongo fixture in its own sequential check (0.256417ms)
+✔ complete local Phase 3 gates permit candidate status without external acceptance (1.054041ms)
+✔ only explicit safe browser runtime paths survive environment scrubbing (0.09025ms)
+✔ real process and browser-dependent acceptance run only after production frontend build (0.225292ms)
+✔ acceptance rejects zero tests, omitted summaries, skipped tests and flaky browser runs (0.476167ms)
+✔ node acceptance requires consistent complete unique top-level TAP totals (0.147458ms)
+✔ financial and SMTP gates cannot silently shrink to one parent test (0.084375ms)
+✔ frontend release gate requires complete Jest totals without skipped tests (0.258292ms)
+✔ required RC scenario outcomes cannot be omitted or replaced by high aggregate totals (0.265083ms)
+✔ both RC suites and every critical scenario are mandatory release requirements (26.765542ms)
+✔ verification output directory can preserve historical evidence without changing gates (0.371ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 198.937416
+
+Acceptance summary rejected: Expected every required scenario exactly once and at least 10 passing tests with no failures, skips, or flakes and a complete runner summary

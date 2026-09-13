@@ -1,0 +1,73 @@
+{
+  "scope": "Local no-network package inventory and sensitive configuration filename check, not a CVE scan. No metadata transfer.",
+  "results": [
+    {
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--entrypoint",
+        "sh",
+        "day-trader-rc-backend:node24",
+        "-c",
+        "node --version && npm --version && dpkg-query -W"
+      ],
+      "exit": 0,
+      "stdout": "v24.21.0\n11.19.0\nadduser\t3.134\napt\t2.6.1\nbase-files\t12.4+deb12u15\nbase-passwd\t3.6.1\nbash\t5.2.15-2+b13\nbsdutils\t1:2.38.1-5+deb12u3\ncoreutils\t9.1-1\ndash\t0.5.12-2\ndebconf\t1.5.82\ndebian-archive-keyring\t2023.3+deb12u2\ndebianutils\t5.7-0.5~deb12u1\ndiffutils\t1:3.8-4\ndpkg\t1.21.23\ne2fsprogs\t1.47.0-2+b2\nfindutils\t4.9.0-4\ngcc-12-base:arm64\t12.2.0-14+deb12u1\ngpgv\t2.2.40-1.1+deb12u2\ngrep\t3.8-5\ngzip\t1.12-1\nhostname\t3.23+nmu1\ninit-system-helpers\t1.65.2+deb12u1\nlibacl1:arm64\t2.3.1-3\nlibapt-pkg6.0:arm64\t2.6.1\nlibattr1:arm64\t1:2.5.1-4\nlibaudit-common\t1:3.0.9-1\nlibaudit1:arm64\t1:3.0.9-1\nlibblkid1:arm64\t2.38.1-5+deb12u3\nlibbz2-1.0:arm64\t1.0.8-5+b1\nlibc-bin\t2.36-9+deb12u14\nlibc6:arm64\t2.36-9+deb12u14\nlibcap-ng0:arm64\t0.8.3-1+b3\nlibcap2:arm64\t1:2.66-4+deb12u3+b1\nlibcom-err2:arm64\t1.47.0-2+b2\nlibcrypt1:arm64\t1:4.4.33-2\nlibdb5.3:arm64\t5.3.28+dfsg2-1\nlibdebconfclient0:arm64\t0.270\nlibext2fs2:arm64\t1.47.0-2+b2\nlibffi8:arm64\t3.4.4-1\nlibgcc-s1:arm64\t12.2.0-14+deb12u1\nlibgcrypt20:arm64\t1.10.1-3+deb12u1\nlibgmp10:arm64\t2:6.2.1+dfsg1-1.1\nlibgnutls30:arm64\t3.7.9-2+deb12u7\nlibgpg-error0:arm64\t1.46-1\nlibhogweed6:arm64\t3.8.1-2\nlibidn2-0:arm64\t2.3.3-1+b1\nliblz4-1:arm64\t1.9.4-1\nliblzma5:arm64\t5.4.1-1+deb12u1\nlibmd0:arm64\t1.0.4-2\nlibmount1:arm64\t2.38.1-5+deb12u3\nlibnettle8:arm64\t3.8.1-2\nlibp11-kit0:arm64\t0.24.1-2\nlibpam-modules:arm64\t1.5.2-6+deb12u2\nlibpam-modules-bin\t1.5.2-6+deb12u2\nlibpam-runtime\t1.5.2-6+deb12u2\nlibpam0g:arm64\t1.5.2-6+deb12u2\nlibpcre2-8-0:arm64\t10.42-1\nlibseccomp2:arm64\t2.5.4-1+deb12u1\nlibselinux1:arm64\t3.4-1+b6\nlibsemanage-common\t3.4-1\nlibsemanage2:arm64\t3.4-1+b5\nlibsepol2:arm64\t3.4-2.1\nlibsmartcols1:arm64\t2.38.1-5+deb12u3\nlibss2:arm64\t1.47.0-2+b2\nlibstdc++6:arm64\t12.2.0-14+deb12u1\nlibsystemd0:arm64\t252.39-1~deb12u2\nlibtasn1-6:arm64\t4.19.0-2+deb12u1\nlibtinfo6:arm64\t6.4-4\nlibudev1:arm64\t252.39-1~deb12u2\nlibunistring2:arm64\t1.0-2\nlibuuid1:arm64\t2.38.1-5+deb12u3\nlibxxhash0:arm64\t0.8.1-1\nlibzstd1:arm64\t1.5.4+dfsg2-5\nlogin\t1:4.13+dfsg1-1+deb12u2\nlogsave\t1.47.0-2+b2\nmawk\t1.3.4.20200120-3.1\nmount\t2.38.1-5+deb12u3\nncurses-base\t6.4-4\nncurses-bin\t6.4-4\npasswd\t1:4.13+dfsg1-1+deb12u2\nperl-base\t5.36.0-7+deb12u3\nsed\t4.9-1+deb12u1\nsysvinit-utils\t3.06-4\ntar\t1.34+dfsg-1.2+deb12u1\ntzdata\t2026b-0+deb12u1\nusr-is-merged\t37~deb12u1\nutil-linux\t2.38.1-5+deb12u3\nutil-linux-extra\t2.38.1-5+deb12u3\nzlib1g:arm64\t1:1.2.13.dfsg-1\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--entrypoint",
+        "sh",
+        "day-trader-rc-frontend:node24",
+        "-c",
+        "nginx -v && apk info -v"
+      ],
+      "exit": 0,
+      "stdout": "alpine-baselayout-3.7.2-r1\nalpine-baselayout-data-3.7.2-r1\nalpine-keys-2.6-r0\nalpine-release-3.24.1-r0\naom-libs-3.14.1-r0\napk-tools-3.0.6-r0\nbrotli-libs-1.2.0-r1\nbusybox-1.37.0-r31\nbusybox-binsh-1.37.0-r31\nc-ares-1.34.8-r0\nca-certificates-20260611-r0\nca-certificates-bundle-20260611-r0\ncurl-8.22.0-r0\nfontconfig-2.17.1-r1\nfreetype-2.14.3-r0\ngeoip-1.6.12-r6\ngettext-envsubst-1.0-r0\nlibapk-3.0.6-r0\nlibavif-1.4.1-r0\nlibbsd-0.12.2-r0\nlibbz2-1.0.8-r6\nlibcrypto3-3.5.8-r0\nlibcurl-8.22.0-r0\nlibdav1d-1.5.3-r0\nlibedit-20260508.3.1-r1\nlibexpat-2.8.4-r0\nlibgcc-15.2.0-r5\nlibgd-2.3.3-r10\nlibice-1.1.2-r0\nlibidn2-2.3.8-r0\nlibintl-1.0-r0\nlibjpeg-turbo-3.1.3-r0\nlibmd-1.2.0-r0\nlibncursesw-6.6_p20260516-r0\nlibpng-1.6.58-r1\nlibpsl-0.21.5-r3\nlibsharpyuv-1.6.0-r0\nlibsm-1.2.6-r0\nlibssl3-3.5.8-r0\nlibstdc++-15.2.0-r5\nlibunistring-1.4.2-r0\nlibuuid-2.42.1-r0\nlibwebp-1.6.0-r0\nlibx11-1.8.13-r0\nlibxau-1.0.12-r0\nlibxcb-1.17.0-r2\nlibxdmcp-1.1.5-r1\nlibxext-1.3.7-r0\nlibxml2-2.13.9-r2\nlibxpm-3.5.19-r0\nlibxslt-1.1.43-r3\nlibxt-1.3.1-r0\nlibyuv-0.0.1928-r0\nmusl-1.2.6-r2\nmusl-utils-1.2.6-r2\nncurses-terminfo-base-6.6_p20260516-r0\nnghttp2-libs-1.69.0-r0\nnginx-1.30.4-r1\nnginx-module-acme-1.30.4.0.4.1-r1\nnginx-module-geoip-1.30.4-r1\nnginx-module-image-filter-1.30.4-r1\nnginx-module-njs-1.30.4.1.0.1-r1\nnginx-module-xslt-1.30.4-r1\npcre2-10.48-r0\nscanelf-1.3.9-r1\nssl_client-1.37.0-r31\ntiff-4.7.1-r0\ntzdata-2026c-r0\nxz-libs-5.8.3-r0\nzlib-1.3.2-r0\nzstd-libs-1.5.7-r2\n",
+      "stderr": "nginx version: nginx/1.30.4\nWARNING: opening from cache https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/APKINDEX.tar.gz: No such file or directory\nWARNING: opening from cache https://dl-cdn.alpinelinux.org/alpine/v3.24/community/aarch64/APKINDEX.tar.gz: No such file or directory\n"
+    },
+    {
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--entrypoint",
+        "sh",
+        "day-trader-rc-backend:node24",
+        "-c",
+        "find /app -name .env -o -name .env.local -o -name .npmrc"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--entrypoint",
+        "sh",
+        "day-trader-rc-frontend:node24",
+        "-c",
+        "find /usr/share/nginx/html -name .env -o -name .env.local -o -name .npmrc"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ]
+}

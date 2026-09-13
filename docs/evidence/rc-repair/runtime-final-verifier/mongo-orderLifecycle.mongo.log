@@ -1,0 +1,107 @@
+TAP version 13
+# Subtest: real replica-set financial lifecycle
+    # Subtest: manual/manual, robo/robo and mixed races admit exactly one
+    ok 1 - manual/manual, robo/robo and mixed races admit exactly one
+      ---
+      duration_ms: 162.509834
+      type: 'test'
+      ...
+    # Subtest: duplicate concurrent submit and fingerprint conflict
+    ok 2 - duplicate concurrent submit and fingerprint conflict
+      ---
+      duration_ms: 40.37425
+      type: 'test'
+      ...
+    # Subtest: accepted timeout misses and restart never resubmit
+    ok 3 - accepted timeout misses and restart never resubmit
+      ---
+      duration_ms: 29.612125
+      type: 'test'
+      ...
+    # Subtest: post-acceptance persistence failure recovers original
+    ok 4 - post-acceptance persistence failure recovers original
+      ---
+      duration_ms: 34.720417
+      type: 'test'
+      ...
+    # Subtest: partial fill duplicate/out-of-order then canceled releases only remainder
+    ok 5 - partial fill duplicate/out-of-order then canceled releases only remainder
+      ---
+      duration_ms: 126.036
+      type: 'test'
+      ...
+    # Subtest: pre-submit control rejection releases reservation without POST
+    ok 6 - pre-submit control rejection releases reservation without POST
+      ---
+      duration_ms: 24.107
+      type: 'test'
+      ...
+    # Subtest: definitive rejected entry releases and 5xx replacement retains conservative capacity
+    ok 7 - definitive rejected entry releases and 5xx replacement retains conservative capacity
+      ---
+      duration_ms: 92.693458
+      type: 'test'
+      ...
+    # Subtest: replacement rejection keeps original live and retains original capacity
+    ok 8 - replacement rejection keeps original live and retains original capacity
+      ---
+      duration_ms: 70.027375
+      type: 'test'
+      ...
+    # Subtest: weekly and monthly limits bind concurrent requests independently
+    ok 9 - weekly and monthly limits bind concurrent requests independently
+      ---
+      duration_ms: 71.054209
+      type: 'test'
+      ...
+    # Subtest: old-period uncertainty remains counted in fresh day/week/month
+    ok 10 - old-period uncertainty remains counted in fresh day/week/month
+      ---
+      duration_ms: 29.552375
+      type: 'test'
+      ...
+    # Subtest: reducing exit bypasses exhausted spending and daily loss thresholds
+    ok 11 - reducing exit bypasses exhausted spending and daily loss thresholds
+      ---
+      duration_ms: 25.927708
+      type: 'test'
+      ...
+    # Subtest: production factory requires positive complete risk settings by default
+    ok 12 - production factory requires positive complete risk settings by default
+      ---
+      duration_ms: 66.697625
+      type: 'test'
+      ...
+    # Subtest: uncertain, submitting and rejected local states have durable outbox events
+    ok 13 - uncertain, submitting and rejected local states have durable outbox events
+      ---
+      duration_ms: 49.690875
+      type: 'test'
+      ...
+    # Subtest: final lease/control callback prevents POST after intervening protection check
+    ok 14 - final lease/control callback prevents POST after intervening protection check
+      ---
+      duration_ms: 24.614875
+      type: 'test'
+      ...
+    # Subtest: partial fill replacement binds cumulative chain without double charging
+    ok 15 - partial fill replacement binds cumulative chain without double charging
+      ---
+      duration_ms: 100.569917
+      type: 'test'
+      ...
+    1..15
+ok 1 - real replica-set financial lifecycle
+  ---
+  duration_ms: 1167.893125
+  type: 'test'
+  ...
+1..1
+# tests 16
+# suites 0
+# pass 16
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1285.74275

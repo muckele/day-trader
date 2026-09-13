@@ -1,0 +1,12 @@
+RC002_PROCESS_RUNTIME {"node":"v24.21.0","executable":"/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node"}
+✔ RC002-real-worker-lock-and-coverage (3086.411958ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3216.079792
+
+Acceptance summary rejected: Expected every required scenario exactly once and at least 1 passing tests with no failures, skips, or flakes and a complete runner summary

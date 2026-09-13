@@ -58,7 +58,7 @@ export function buildMongoChecks(files) {
   return files.filter(name => name.endsWith('.test.js')).sort().map(name => ({
     name: name === 'mvpPersistence.test.js' ? 'mongo-integration' : `mongo-${name.replace(/\.test\.js$/, '')}`,
     command: process.execPath,
-    args: ['--test', `backend/integration/${name}`],
+    args: ['--test', '--test-reporter=tap', `backend/integration/${name}`],
     summary: 'tap', minimumTests: mongoMinimums[name] || 1,
     ...(name === 'rc002Exposure.mongo.test.js' ? { requiredScenarios: RC002_REQUIRED_SCENARIOS } : {})
   }));
@@ -125,19 +125,19 @@ export function buildReleaseChecks({backendTests,integrationFiles}) {
   const browserMongo = mongo.filter(needsFrontend);
   const regularMongo = mongo.filter(check => !needsFrontend(check));
   return [
-    { name:'runtime',command:process.execPath,args:['-e','if (process.versions.node.split(".")[0] !== "20") { console.error("Required Node 20 to match Dockerfiles; got " + process.version); process.exit(1); }'] },
+    { name:'runtime',command:process.execPath,args:[path.join(root,'scripts/verify-runtime.mjs')] },
     ...['backend','frontend'].map(dir=>({name:`${dir}-install`,command:'npm',args:['ci','--ignore-scripts','--no-audit','--no-fund'],cwd:path.join(root,dir)})),
-    {name:'verification-tests',command:process.execPath,args:['--test','scripts/tests/verify-mvp.test.mjs'],summary:'tap',minimumTests:10},
-    {name:'backend-tests',command:process.execPath,args:['--test',...backendTests.map(name=>`tests/${name}`)],cwd:path.join(root,'backend'),summary:'tap',minimumTests:369},
+    {name:'verification-tests',command:process.execPath,args:['--test','--test-reporter=tap','scripts/tests/verify-mvp.test.mjs'],summary:'tap',minimumTests:10},
+    {name:'backend-tests',command:process.execPath,args:['--test','--test-reporter=tap',...backendTests.map(name=>`tests/${name}`)],cwd:path.join(root,'backend'),summary:'tap',minimumTests:369},
     ...regularMongo,
     {name:'frontend-tests',command:'npm',args:['test','--','--watchAll=false','--runInBand'],cwd:path.join(root,'frontend'),summary:'jest',minimumTests:26},
     {name:'frontend-build',command:'npm',args:['run','build'],cwd:path.join(root,'frontend')},
     ...browserMongo,
-    {name:'provider-contract',command:process.execPath,args:['--test','scripts/acceptance/provider.test.cjs'],summary:'tap',minimumTests:1},
-    {name:'process-acceptance',command:process.execPath,args:['--test','scripts/acceptance/process.test.cjs'],summary:'tap',minimumTests:9,timeoutMs:600000},
-    {name:'rc-dispatch',command:process.execPath,args:['--test','scripts/acceptance/rcDispatch.test.cjs'],summary:'tap',minimumTests:1,requiredScenarios:RC001_REQUIRED_SCENARIOS,timeoutMs:900000},
-    {name:'rc-exit-dispatch',command:process.execPath,args:['--test','scripts/acceptance/rcExitDispatch.test.cjs'],summary:'tap',minimumTests:1,requiredScenarios:RC001_EXIT_REQUIRED_SCENARIOS,timeoutMs:900000},
-    {name:'rc-exposure-process',command:process.execPath,args:['--test','scripts/acceptance/rc002.process.test.cjs'],summary:'tap',minimumTests:1,requiredScenarios:['RC002-real-worker-lock-and-coverage'],timeoutMs:180000},
+    {name:'provider-contract',command:process.execPath,args:['--test','--test-reporter=tap','scripts/acceptance/provider.test.cjs'],summary:'tap',minimumTests:1},
+    {name:'process-acceptance',command:process.execPath,args:['--test','--test-reporter=tap','scripts/acceptance/process.test.cjs'],summary:'tap',minimumTests:9,timeoutMs:600000},
+    {name:'rc-dispatch',command:process.execPath,args:['--test','--test-reporter=tap','scripts/acceptance/rcDispatch.test.cjs'],summary:'tap',minimumTests:1,requiredScenarios:RC001_REQUIRED_SCENARIOS,timeoutMs:900000},
+    {name:'rc-exit-dispatch',command:process.execPath,args:['--test','--test-reporter=tap','scripts/acceptance/rcExitDispatch.test.cjs'],summary:'tap',minimumTests:1,requiredScenarios:RC001_EXIT_REQUIRED_SCENARIOS,timeoutMs:900000},
+    {name:'rc-exposure-process',command:process.execPath,args:['--test','--test-reporter=tap','scripts/acceptance/rc002.process.test.cjs'],summary:'tap',minimumTests:1,requiredScenarios:['RC002-real-worker-lock-and-coverage'],timeoutMs:180000},
     ...[['browser-lifecycle','browser.spec.cjs',14],['browser-core-screens','screens.spec.cjs',8]].map(([name,file,minimumTests])=>({name,command:process.execPath,args:['frontend/node_modules/@playwright/test/cli.js','test','--config=scripts/acceptance/playwright.config.cjs',file,'--reporter=list,json'],summary:'playwright',minimumTests,timeoutMs:900000}))
   ];
 }

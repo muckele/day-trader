@@ -1,0 +1,6 @@
+{
+  "scope": "Disposable Linux containers, internal network, synthetic owner; no external brokerage/SMTP/inference",
+  "ok": false,
+  "error": "'OpenerDirector' object has no attribute 'server'",
+  "cleanupComplete": true
+}

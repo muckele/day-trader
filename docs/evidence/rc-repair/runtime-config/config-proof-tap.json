@@ -1,0 +1,118 @@
+{
+  "checkedAt": "2026-09-13T16:44:56.882Z",
+  "baseline": "d620aab5e56fdf41a986734bdf516ec028889f15",
+  "head": "d620aab5e56fdf41a986734bdf516ec028889f15",
+  "runtime": {
+    "nodeVersion": "24.21.0",
+    "npmVersion": "11.19.0",
+    "nodeExecutable": "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+    "nodeOnPathExecutable": "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+    "npmExecutable": "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/lib/node_modules/npm/bin/npm-cli.js",
+    "npmNodeExecutable": "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+    "platform": "darwin",
+    "architecture": "arm64"
+  },
+  "mandatoryGateIds": [
+    "runtime",
+    "backend-install",
+    "frontend-install",
+    "verification-tests",
+    "backend-tests",
+    "mongo-integration",
+    "mongo-orderLifecycle.mongo",
+    "mongo-orderLifecycle.faults",
+    "mongo-orderProtection",
+    "mongo-phase3Financial.mongo",
+    "mongo-phase3Admission.mongo",
+    "mongo-phase3Smtp.mongo",
+    "mongo-nonOwnerAuthorization.fullstack",
+    "frontend-tests",
+    "frontend-build",
+    "provider-contract",
+    "process-acceptance",
+    "browser-lifecycle",
+    "browser-core-screens",
+    "rc-dispatch",
+    "mongo-rc002Exposure.mongo",
+    "rc-exposure-process",
+    "rc-exit-dispatch"
+  ],
+  "mandatoryScenarioArraysUnchanged": true,
+  "graphProof": [
+    {
+      "path": "backend/package.json",
+      "onlyRootEnginesChanged": true
+    },
+    {
+      "path": "backend/package-lock.json",
+      "onlyRootEnginesChanged": true
+    },
+    {
+      "path": "frontend/package.json",
+      "onlyRootEnginesChanged": true
+    },
+    {
+      "path": "frontend/package-lock.json",
+      "onlyRootEnginesChanged": true
+    }
+  ],
+  "dockerPinsAndExclusionsVerified": true,
+  "sourceFiles": [
+    {
+      "path": ".nvmrc",
+      "sha256": "73fb1b615e2043a933be1c0895cde4358036acc28d785692509b822aa53c761f"
+    },
+    {
+      "path": ".github/workflows/mvp.yml",
+      "sha256": "2ca1a165bd8da122e49d1aa7839bbc02019867d83b96456f0fbce1554657edde"
+    },
+    {
+      "path": "backend/Dockerfile",
+      "sha256": "49f3bf99917365a50f92d5df5a4a1ce61a0b070b927976ea5adcd6d0e13d9ae3"
+    },
+    {
+      "path": "backend/.dockerignore",
+      "sha256": "6e24ce4de567df4f582b36e61c3c9fb567baa7de0090f2f3fe5d6d03e62ad718"
+    },
+    {
+      "path": "backend/package.json",
+      "sha256": "631edc8e29ef123712b41212b251308d9975fbac4c9d6e1999e4839c60760b3e"
+    },
+    {
+      "path": "backend/package-lock.json",
+      "sha256": "4c4dbbfdedd053bbda1033070a16dd3b1a46ae3bbc4090adbcac2cc1f3c24025"
+    },
+    {
+      "path": "frontend/Dockerfile",
+      "sha256": "bc30537090e0f42b5b929fd2ae944e0ded489ec81917181718e0d1db9d7b2ce3"
+    },
+    {
+      "path": "frontend/.dockerignore",
+      "sha256": "6e24ce4de567df4f582b36e61c3c9fb567baa7de0090f2f3fe5d6d03e62ad718"
+    },
+    {
+      "path": "frontend/package.json",
+      "sha256": "ad4b03be1896c34ca22730388791bd06210bfa03c8f1b93f5ff831fd40edbe8b"
+    },
+    {
+      "path": "frontend/package-lock.json",
+      "sha256": "fb33b2a92e5e1122026f2ba67e406a77db914df8090571cd21421c961d9bbae4"
+    },
+    {
+      "path": "scripts/verify-runtime.mjs",
+      "sha256": "9ecfca33e35cf4ad239862495cc0feb9fc7bf5e15725c386cff748abd4c27ba1"
+    },
+    {
+      "path": "scripts/verify-mvp.mjs",
+      "sha256": "5670e4781de2851410b526e46b3e032d7605778a03f1edce7bff7422de4ccdb9"
+    },
+    {
+      "path": "scripts/tests/verify-mvp.test.mjs",
+      "sha256": "461d7534311e8c144d3c8e1b1bab08531d58dbb6e3e6467ce00c8cacde0dff93"
+    },
+    {
+      "path": "docs/runtime-setup.md",
+      "sha256": "5c55e1ee02382d13ee3dac10a1c0617fe5f4892de5e1f4d964c3add63d852652"
+    }
+  ]
+}

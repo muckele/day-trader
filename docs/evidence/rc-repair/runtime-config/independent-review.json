@@ -1,0 +1,14 @@
+{
+  "at": "2026-09-13T16:47:27.511833+00:00",
+  "reviewer": "independent invariants agent",
+  "baseSha": "d620aab5e56fdf41a986734bdf516ec028889f15",
+  "scope": "Read-only runtime source diff: Docker pins/ignores, .nvmrc, CI, engines/locks, runtime gate, explicit TAP options and protocol tests",
+  "findings": [],
+  "observations": [
+    "Runtime declarations consistent",
+    "Dependency graphs unchanged except root engines",
+    "All TAP gates explicitly select TAP; actual output and negative mandatory-scenario assertions inspected",
+    "Docker ignore boundaries and ignore-scripts installs consistent with verifier"
+  ],
+  "limitations": "No new test run, image CVE scan, external request or registry validation performed by this reviewer."
+}

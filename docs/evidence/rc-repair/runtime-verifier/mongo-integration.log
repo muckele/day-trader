@@ -1,0 +1,14 @@
+✔ real database and HTTP login reject non-owner, protect data and revoke logout token (142.028792ms)
+✔ real unique outbox index deduplicates concurrent reconciliation and competing senders (22.589667ms)
+✔ expired sending lease recovers after reconnect with bounded retry (19.793958ms)
+✔ real unique lock index elects one worker and rejects lost or expired lease renewal (78.09575ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 488.970833
+
+Acceptance summary rejected: Expected every required scenario exactly once and at least 4 passing tests with no failures, skips, or flakes and a complete runner summary

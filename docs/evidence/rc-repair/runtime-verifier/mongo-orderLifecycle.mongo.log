@@ -1,0 +1,27 @@
+▶ real replica-set financial lifecycle
+  ✔ manual/manual, robo/robo and mixed races admit exactly one (142.65475ms)
+  ✔ duplicate concurrent submit and fingerprint conflict (30.377916ms)
+  ✔ accepted timeout misses and restart never resubmit (29.306125ms)
+  ✔ post-acceptance persistence failure recovers original (68.117667ms)
+  ✔ partial fill duplicate/out-of-order then canceled releases only remainder (102.218208ms)
+  ✔ pre-submit control rejection releases reservation without POST (28.74325ms)
+  ✔ definitive rejected entry releases and 5xx replacement retains conservative capacity (101.903625ms)
+  ✔ replacement rejection keeps original live and retains original capacity (72.550042ms)
+  ✔ weekly and monthly limits bind concurrent requests independently (73.84125ms)
+  ✔ old-period uncertainty remains counted in fresh day/week/month (33.422708ms)
+  ✔ reducing exit bypasses exhausted spending and daily loss thresholds (34.577458ms)
+  ✔ production factory requires positive complete risk settings by default (92.194333ms)
+  ✔ uncertain, submitting and rejected local states have durable outbox events (83.239625ms)
+  ✔ final lease/control callback prevents POST after intervening protection check (46.984208ms)
+  ✔ partial fill replacement binds cumulative chain without double charging (122.943458ms)
+✔ real replica-set financial lifecycle (1268.271916ms)
+ℹ tests 16
+ℹ suites 0
+ℹ pass 16
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1392.855542
+
+Acceptance summary rejected: Expected every required scenario exactly once and at least 16 passing tests with no failures, skips, or flakes and a complete runner summary

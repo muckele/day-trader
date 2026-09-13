@@ -1,0 +1,11 @@
+✔ controlled HTTP provider retains accepted timeout and idempotent broker identity (30.59525ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 96.533958
+
+Acceptance summary rejected: Expected every required scenario exactly once and at least 1 passing tests with no failures, skips, or flakes and a complete runner summary

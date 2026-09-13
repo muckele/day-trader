@@ -1,0 +1,20 @@
+▶ real Mongo lifecycle fault boundaries
+  ✔ HTTP 500 after acceptance recovers same broker order across restart (72.050292ms)
+  ✔ uncertainty window expiry requires reconciliation without releasing or reposting (43.451875ms)
+  ✔ database intent failure prevents any broker submission (7.141084ms)
+  ✔ replacement cannot increase exposure or mutate protective terms (135.125334ms)
+  ✔ accepted replacement retains reservation after downstream broker-context 403 (82.433333ms)
+  ✔ low limit price cannot undervalue existing position for size limits (22.6355ms)
+  ✔ manual entries block exactly at daily loss threshold (9.074958ms)
+  ✔ fractional-cent broker average fills persist without duplicate spend (71.164125ms)
+✔ real Mongo lifecycle fault boundaries (666.337375ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 796.13875
+
+Acceptance summary rejected: Expected every required scenario exactly once and at least 9 passing tests with no failures, skips, or flakes and a complete runner summary
