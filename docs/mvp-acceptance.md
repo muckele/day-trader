@@ -1,32 +1,29 @@
-> **2026-09-13 repair checkpoint: RC-001 and RC-002 repaired; NO-GO pending supported-runtime and Linux image acceptance.** Final safety verifier passed all23 required gates, exit0, with no skipped scenarios. This Node20 run preserves historical comparison and is not a supported-runtime release pass. See `docs/evidence/rc-repair/safety-final-verifier/report.json` and `docs/evidence/rc-repair/repair-decision.md`. The Phase3 GO statements below are historical; original19/19 reports remain unchanged.
+# Owner-only paper MVP acceptance ledger — RC repair
 
-# Owner-only paper MVP acceptance ledger — Phase 3
+**Combined local RC: NO-GO pending image CVE analysis.** RC-001 and RC-002 are repaired and verified under the mandatory local regression matrix. Required combined checks cannot be waived. The original candidate `1972254bfcfd0b6ff724876cd0d2a2b15006ac26` remains NO-GO; its historical 19/19 report did not exercise the two reproduced defects.
 
-**Final local decision: VERIFIED RELEASE CANDIDATE / GO.** All 19 required gates passed; complete verifier exit 0, with 22 browser tests and 9 process scenarios passing without skips or flakes.
-
-The local release threshold is **every required deterministic gate executed and passed**, including actual frontend/browser/auth/backend/Mongo/provider-boundary acceptance, separate worker processes and local SMTP. The complete verifier is the authority: `docs/evidence/verification/report.json`. A local pass earns **VERIFIED RELEASE CANDIDATE**, never **DEPLOYED PAPER MVP VERIFIED**. Exact final counts and decision are in `mvp-verification.md`.
-
-| Acceptance item | Local evidence | External boundary / retained limitation |
+| Acceptance item | Current evidence and status | Remaining limit |
 |---|---|---|
-| Phase 2 preserved | Clean starting SHA `0dcc4d0dad7f47768a5613573b0a828bda0667ff`; complete baseline checks passed, documented incomplete-gate exit1 | No reset/discard |
-| Owner login, protected routes, signup disabled, logout/revocation/expiry | Browser real form/cookies/server/Mongo; historical non-owner actual HTTP endpoint matrix | Deployed HTTPS/cookie configuration unobserved |
-| Exact paper origin/account, readiness indexes/write probe | Existing broker guard regressions; actual new-DB startup; readiness refusal creates no intent/close/write | External account identity not observed |
-| Manual lifecycle | Browser acknowledgement, partial/final fills, accounting/reload, rejection, accepted timeout, double-click, unfilled cancel and partial/cancel | Controlled HTTP broker contract, no external orders |
-| Research/trade-plan shared lifecycle | Real research browser eligibility/provenance/timestamps/submit; common reservations; flat worker abstention | No new strategy features or profitability claim |
-| Worker independent of browser | Real browser save/enable/logout/context close → separate Node worker → durable decision/intent/order/reservation/audit/outbox → new login | Persistent deployed unattended operation unobserved |
-| Disable/emergency/lease/process races | Nine process scenarios: abstention, two-worker contention, two disable barriers, two lost-lease barriers, two emergency states, plus browser independence included in total | Known protective/reducing paths remain permitted; external timing unobserved |
-| Atomic spending and source isolation | Real Mongo baseline + Phase3 cash/close/admission concurrency; browser core-screen source assertions | Period usage stays consumed after sales |
-| Cash resynchronization | Fresh confirmed account snapshot, no unresolved buys, transaction serialization, repeated/concurrent sync tests | No credit from local sale assumptions; unknown/stale cash fails closed |
-| Coordinated close | Real browser success and uncertain cancellation; real Mongo deadline/failure/concurrency/remaining-position tests; independent timer regression | Outage can delay cancellation/restoration; uncertain state requires review |
-| Deliberate identical intent | Browser double-click and timeout reuse one POST; terminal prepare action sends none; explicit prepared submit gets new identity | No automatic key rotation on ambiguous failure |
-| Admission rejection correction | Real API/Mongo concurrent rejected identity; explicit no-submission result; frontend and browser corrected-ticket acceptance | Unknown failures remain conservative |
-| Notification transport and UI | Real outbox/Nodemailer/STARTTLS capture, events/retry/process-death/restart/dedup; Activity queue/retry/accepted/failed labels | Provider acceptance is not external delivery or inbox receipt |
-| Nine core screens | Browser loading/valid/empty/stale-or-unavailable/auth expiry/backend failure, provider source and simulator isolation | Defined source-appropriate behavior, not fabricated provider success |
-| Research/backtest integrity | Provenance/generated timestamps; explicit same-close/one-share/fixed-cash/no-fee/no-slippage assumptions | Optimistic historical model, no execution guarantee |
-| Dependencies | Fresh audits, compatible body-parser/lodash lock changes; every remaining high analyzed | Deferred frontend toolchain risks documented individually |
-| CI configuration | YAML parse, Node20/Chromium/Mongo/full-verifier parity, read-only permissions, no broker/SMTP secrets in PR jobs | Hosted Actions NOT RUN; no push authorized |
-| Guarded external acceptance tool | 12 controlled tests and zero-network dry-run; exact account/origin/symbol/notional and test-owned cleanup | External execution NOT RUN / BLOCKED BY AUTHORIZATION |
-| Final release command | Full `verify-mvp`, no checks-only bypass, minimum counts and no skipped/flaky acceptance | Exact exit/result in verification report |
-| Deployment and operational acceptance | No deployment/persistent activation performed | NOT RUN / BLOCKED BY AUTHORIZATION |
+| RC-001 final-account boundary | Fixed; original asserting candidate run fails all four reproduced stop/lease barriers, corrected required suite passes | Durable authorization is not proof of transport; Mongo leases do not fence the broker |
+| Stop/disable/re-enable and dispatch claim ordering | Shared account serializer, generation, exact payload/identity and executor lease; mandatory 25-scenario primary matrix | Earlier authorized but unobserved dispatch remains draining/uncertain |
+| Stop completion | Healthy first-stop-only cancel/reconcile reaches stopped; paused state and dashboard refresh behavior asserted | Empty list, one 404, timeout, lease expiry or process death alone cannot establish no-send |
+| Protective/close operations with entry disabled | Separate 10-scenario final-account exit/cancel matrix, expiry/takeover and policy positives | Relevant exit ownership still required; emergency cancellation supersedes replacement |
+| RC-002 original stale snapshot | Fixed; original six-plus-six shares violates $100 cap at fixed $10, correction preserves six shares and rejects second identity | Admission caps do not prevent later market-price appreciation |
+| Exposure continuity and retry | Required 24 child scenarios plus one real worker process scenario; canonical fills/reservations/coverage/version coordination | Unknown/unattributed coverage blocks new exposure, not protection/reconciliation/reduction |
+| Legitimate headroom | Six shares count as $60; covered native baseline permits four more; delayed observations recover through reconciliation | Historical fills lacking trusted baseline require explicit operator reconciliation |
+| Financial integrity and identity | Existing lifecycle, partial fills, replacement, cancellation, spending, cash ceiling, protection and close regressions remain mandatory | Sales do not reset period spend; uncertainty does not justify rotating identities/deleting data |
+| Owner session and paper isolation | Full browser/API/Mongo/provider fixture acceptance retained; production image readiness with guard intact | External/deployed account and HTTPS configuration unobserved |
+| Research/manual/browser foundation | Existing source/provenance, deliberate new intent, retry/double-click, nine core screens and simulator separation retained | No strategy or profitability evidence granted |
+| Worker and notification foundation | Actual separate processes and local STARTTLS/outbox acceptance retained | Local provider acceptance is not external inbox receipt or unattended deployed operation |
+| Supported runtime | Node24.21.0/npm11.19.0 exact pins, bundled executable provenance and explicit TAP output; no dependency graph migration | Node20 runs are historical comparison only |
+| Linux images/startup/static navigation | Both linux/arm64 builds exit0; isolated backend production readiness; nginx1.30.4 config and nine routes; actual browser login rendering | No Linux amd64 execution or deployment claim |
+| npm dependencies | Fresh authorized registry audits: backend0; frontend57 (28high15moderate14low), actual findings preserved | Tooling/browser advisory disposition remains open; no forced upgrade |
+| Image security | Local inventory, image environment/file exclusions and official version evidence completed | **BLOCKED:** Docker Scout metadata egress rejected by automatic approval; no CVE scan executed |
+| Hosted CI | Runtime YAML/config locally reviewed; complete verifier mandatory | NOT RUN; no push/hosted trigger |
+| External account/SMTP acceptance | Controlled fixtures only; guarded external tool remains existing foundation | NOT RUN; separately authorized external broker/SMTP actions required |
+| Deployment and roadmap operational gates | Existing foundation and master brief mapping preserved | NOT RUN: deployment provenance, backup/restore, revocation/recovery drills, monitoring/soak |
+| Broader agentic roadmap | No new agent/strategy/ledger was started | Mandate/economics/commercial evidence and strategy evaluation remain incomplete |
 
-Phase 2 financial tests remain required gates. Older API-fixture Playwright cases are not presented as full-stack proof. Runner counts include named parent tests in Node TAP; substantive scenario counts are distinguished in the verification record.
+Exact commands, counts and failed-run distinctions are in `mvp-verification.md`. Current deterministic report: `docs/evidence/rc-repair/runtime-final-verifier/report.json`; overall checkpoint and security blocker: `docs/evidence/rc-repair/repair-decision.md`. The deterministic verifier's own VERIFIED result does not cover the separate required image-security gate and cannot alone grant combined local RC status.
+
+The historical `docs/evidence/verification/report.json` and `.md` remain byte-for-byte unchanged. Node parent suite entries are counted explicitly; 24 substantive RC-002 child scenarios produce 25 Node entries. Missing, duplicate, skipped, TODO or failed required identities fail the verifier regardless of aggregate totals. Actual assertions and red/green evidence were reviewed; scenario names alone are insufficient proof.

@@ -6,11 +6,11 @@ Phase 3 local release status is recorded in `docs/evidence/verification/report.j
 
 ## Local setup and configuration
 
-Use Node 20 (matching existing Dockerfiles) and npm. From the repository root:
+Use the repository `.nvmrc` pin: Node 24.21.0 with its bundled npm 11.19.0, matching the reviewed image and CI runtime. Read `docs/runtime-setup.md`, run `nvm install` and `nvm use` if using nvm, then check `node --version`, `npm --version`, `command -v node` and `command -v npm`; both tools must resolve from the same selected distribution. Node20 reports are historical and are not a supported-runtime pass. From the repository root:
 
 ```sh
-npm ci --prefix backend --ignore-scripts
-npm ci --prefix frontend --ignore-scripts
+npm ci --prefix backend --ignore-scripts --no-audit --no-fund
+npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
 ```
 
 Set configuration through your local protected environment or deployment secret manager. Never commit values. Required owner access: `MONGO_URI`, `JWT_SECRET` (strong random secret), `OWNER_USER_ID` (explicit existing ObjectId). Required broker writes: paper API credentials (`APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`), `APCA_BASE_URL=https://paper-api.alpaca.markets`, and `ALPACA_EXPECTED_PAPER_ACCOUNT_ID` (broker account UUID). Host configuration also accepts existing aliases documented in the adapters.
@@ -124,3 +124,12 @@ The Robo settings/control API and screen distinguish disabled new automated admi
 Position admission uses a versioned portfolio observation checked against existing canonical fills and a trusted baseline. Pending reservations cannot disappear into terminal filled status while positions lag. Unknown coverage blocks new exposure, while reconciliation/protection/reductions remain available within known quantities. When coherent broker observations catch up with canonical holdings, normal headroom returns; observed holdings and already-covered fills are not added twice. Admission limits do not guarantee market values remain below the cap after price appreciation.
 
 A preexisting account with historical fills and no trusted exposure baseline requires explicit reconciliation; the repair does not guess a baseline from a possibly lagging position response. Unattributed external activity, incomplete order discovery, or contradictory fill/position observations also block new entries. Preserve records and investigate the discrepancy. Do not bypass this gate by deleting the baseline or fills. Native clean-account baseline establishment, delayed-fill recovery, and positive trading headroom are covered by the mandatory RC-002 scenarios.
+
+
+## Current runtime/security checkpoint
+
+RC-001 and RC-002 are repaired locally. Use `node scripts/verify-mvp.mjs --report-dir docs/evidence/rc-repair/runtime-final-verifier` under Node 24.21.0 and bundled npm 11.19.0 for the recorded combined deterministic command; choose another new evidence directory for any later rerun. Required Node test gates explicitly emit TAP on Node24. Exact existing output is in the verification record; do not overwrite historical evidence.
+
+The two local Linux candidate images passed build, isolated production startup and static navigation, but local RC remains NO-GO because image CVE analysis is approval-blocked. Automatic approval rejected Docker Scout's package-URL/layer-digest transfer to Docker's CVE service before execution. No scan metadata/source/image upload occurred. Obtain explicit authorization for that narrow metadata transfer and disposition the resulting reports before updating the decision. Do not substitute a registry/proxy/alternate scanner to bypass the rejection. Image inventory and pinned official versions are not a completed vulnerability scan. Candidate image IDs and fixture cleanup are recorded in `docs/evidence/rc-repair/runtime-containers/report.json`.
+
+Fresh npm audits are separate authorized operations and have completed: backend0 findings, frontend57 findings. Retain the current disposition; no forced toolchain migration is part of this repair. Hosted CI, external paper/SMTP acceptance, deployment and persistent activation still require separate authorization. Backup/restore, credential-revocation/recovery, deployment provenance, monitoring, strategy evaluation and commercial evidence remain separate master-brief gates.

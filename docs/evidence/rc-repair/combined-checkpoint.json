@@ -1,0 +1,329 @@
+{
+  "ok": false,
+  "requiredAcceptance": [
+    {
+      "name": "runtime",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "backend-install",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "frontend-install",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "verification-tests",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "backend-tests",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-integration",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-orderLifecycle.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-orderLifecycle.faults",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-orderProtection",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-phase3Financial.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-phase3Admission.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-phase3Smtp.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-nonOwnerAuthorization.fullstack",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "frontend-tests",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "frontend-build",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "provider-contract",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "process-acceptance",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "browser-lifecycle",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "browser-core-screens",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "rc-dispatch",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-rc002Exposure.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "rc-exposure-process",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "rc-exit-dispatch",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    }
+  ],
+  "externalAcceptance": [
+    {
+      "name": "External Alpaca paper acceptance",
+      "status": "NOT RUN",
+      "reason": "Requires explicit operator authorization; the verifier uses only the controlled local provider"
+    },
+    {
+      "name": "External SMTP inbox receipt",
+      "status": "NOT RUN",
+      "reason": "Local SMTP acceptance proves the capture boundary, not external delivery or inbox receipt"
+    },
+    {
+      "name": "Deployed-environment and operational acceptance",
+      "status": "NOT RUN",
+      "reason": "No deployment is performed by this verifier"
+    }
+  ],
+  "generatedAt": "2026-09-13T16:48:50.187Z",
+  "runtime": "v24.21.0",
+  "deterministicChecksPass": true,
+  "summedGateDurationMs": 197038,
+  "counts": [
+    {
+      "name": "runtime",
+      "code": 0
+    },
+    {
+      "name": "backend-install",
+      "code": 0
+    },
+    {
+      "name": "frontend-install",
+      "code": 0
+    },
+    {
+      "name": "verification-tests",
+      "code": 0,
+      "passedTests": 16,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "backend-tests",
+      "code": 0,
+      "passedTests": 388,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "mongo-integration",
+      "code": 0,
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "mongo-orderLifecycle.faults",
+      "code": 0,
+      "passedTests": 9,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "mongo-orderLifecycle.mongo",
+      "code": 0,
+      "passedTests": 16,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "mongo-orderProtection",
+      "code": 0,
+      "passedTests": 8,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "mongo-phase3Financial.mongo",
+      "code": 0,
+      "passedTests": 17,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "mongo-phase3Smtp.mongo",
+      "code": 0,
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "mongo-rc002Exposure.mongo",
+      "code": 0,
+      "passedTests": 25,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "frontend-tests",
+      "code": 0,
+      "passedTests": 40,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "frontend-build",
+      "code": 0
+    },
+    {
+      "name": "mongo-nonOwnerAuthorization.fullstack",
+      "code": 0,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "mongo-phase3Admission.mongo",
+      "code": 0,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "provider-contract",
+      "code": 0,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "process-acceptance",
+      "code": 0,
+      "passedTests": 9,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "rc-dispatch",
+      "code": 0,
+      "passedTests": 25,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "rc-exit-dispatch",
+      "code": 0,
+      "passedTests": 10,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "rc-exposure-process",
+      "code": 0,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "browser-lifecycle",
+      "code": 0,
+      "passedTests": 14,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    {
+      "name": "browser-core-screens",
+      "code": 0,
+      "passedTests": 8,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    }
+  ],
+  "actualProcessExit": 0,
+  "combinedLocalRC": "NO-GO",
+  "blockingGate": "image CVE analysis: automatic approval rejected private image PURL/layer-digest metadata egress",
+  "rc001": "repaired and verified",
+  "rc002": "repaired and verified",
+  "deterministicVerifierStatus": "VERIFIED RELEASE CANDIDATE",
+  "deterministicVerifierReleaseCandidate": true,
+  "status": "NO-GO",
+  "releaseCandidate": false,
+  "startingSha": "1972254bfcfd0b6ff724876cd0d2a2b15006ac26",
+  "safetySha": "d620aab5e56fdf41a986734bdf516ec028889f15",
+  "runtimeSha": "0aa56d7fce9c028c3216589238f5ecd3395f0705",
+  "cleanup": {
+    "mainTestMongoContainer": "day-trader-rc-repair stopped after final verification",
+    "containerFixture": "all disposable containers/network removed",
+    "candidateImages": "retained, not activated; CVE approval pending"
+  },
+  "operatorBrief": "untracked, nonempty, unchanged; excluded from commits"
+}

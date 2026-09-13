@@ -1,64 +1,77 @@
-> **2026-09-13 repair checkpoint: RC-001 and RC-002 repaired; NO-GO pending supported-runtime and Linux image acceptance.** Final safety verifier passed all23 required gates, exit0, with no skipped scenarios. This Node20 run preserves historical comparison and is not a supported-runtime release pass. See `docs/evidence/rc-repair/safety-final-verifier/report.json` and `docs/evidence/rc-repair/repair-decision.md`. The Phase3 GO statements below are historical; original19/19 reports remain unchanged.
+# Verification record — RC repairs and supported runtime
 
-# MVP verification record — Phase 3
+**Deterministic combined verifier: 23/23 passed, exit 0. Overall local RC: NO-GO pending approval-blocked image CVE analysis.** RC-001/RC-002 are repaired; the former reviewed candidate remains NO-GO. This record supersedes earlier Phase 3 GO prose without overwriting historical 19/19 reports.
 
-Status: **VERIFIED RELEASE CANDIDATE — GO for the defined deterministic local owner-only Alpaca PAPER MVP.** Complete verifier exit: **0**. All **19 required gates passed** on one fresh run. This is not DEPLOYED PAPER MVP VERIFIED.
+Starting SHA: `1972254bfcfd0b6ff724876cd0d2a2b15006ac26`. Safety commit: `d620aab5e56fdf41a986734bdf516ec028889f15`. Branch `codex/owner-paper-mvp`, repository `muckele/day-trader`; Phase 2 ancestor `0dcc4d0dad7f47768a5613573b0a828bda0667ff` preserved. Runtime source is a separate subsequent commit; final source hashes are in `docs/evidence/rc-repair/runtime-final-source-manifest.json`.
 
-Starting SHA: `0dcc4d0dad7f47768a5613573b0a828bda0667ff`, initially clean branch `codex/owner-paper-mvp`. Phase 2 and its earlier foundation remain preserved. The final Phase 3 commit is the commit containing this record; use `git log -1` for its exact immutable SHA.
-
-## Exact complete command and environment
+## Final complete command
 
 ```sh
-env -i PATH="/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin:$PATH" HOME="$HOME" \
-  PLAYWRIGHT_CHROMIUM_EXECUTABLE='/Users/Matt/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell' \
-  node scripts/verify-mvp.mjs
+env PATH=/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin:/usr/local/bin:/usr/bin:/bin \
+  PLAYWRIGHT_CHROMIUM_EXECUTABLE=/Users/Matt/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell \
+  /private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node scripts/verify-mvp.mjs \
+  --report-dir docs/evidence/rc-repair/runtime-final-verifier \
+  > docs/evidence/rc-repair/runtime-final-verifier-execution.log 2>&1
 ```
 
-Node **20.20.2**, Google Chrome for Testing **151.0.7922.34**, OpenSSL **3.6.4**, MongoDB **7** replica set `mvp` on `127.0.0.1:27189`. The Chrome executable is an explicit local cached binary; CI installs the browser matching its Playwright package. Both committed-lockfile npm ci installs and the production frontend build passed. No build warning was waived. External credentials and activation flags were scrubbed. Every integration fixture creates/drops its own random `mvp_test_*` database. The test-owned container `day-trader-mvp-phase3` was removed after testing.
+Actual process exit **0**. Report generated **2026-09-13T16:48:50.187Z**; summed gate duration **197038 ms**. `docs/evidence/rc-repair/runtime-final-verifier/report.json` records every actual child command, process exit, summary and required scenario identity. The directory contains all logs and browser JSON. No executable source changed during this run.
 
-## Actual final counts
+Node **24.21.0**, bundled npm **11.19.0**. Host Node `/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node`; npm resolves to that distribution's `lib/node_modules/npm/bin/npm-cli.js`; the runtime gate verifies both realpaths. Host architecture darwin/arm64; Chrome **151.0.7922.34**, CLI OpenSSL **3.6.4**, Node built-in OpenSSL **3.5.8**. Test-owned Mongo **7** replica set `mvp`, loopback `27189`; only randomized test databases are created/dropped. Provider, SMTP and browser services are controlled local fixtures. Credentials/activation are scrubbed by the runner.
 
-| Check | Result |
-|---|---|
-| Verifier regression tests | 10 passed, 0 failed, 0 skipped |
-| Backend unit/regression tests | 377 passed, 0 failed, 0 skipped |
-| Mongo/HTTP foundation | 4 passed, 0 failed, 0 skipped |
-| Mongo order lifecycle | 16 passed, 0 failed, 0 skipped |
-| Mongo lifecycle fault boundaries | 9 passed, 0 failed, 0 skipped |
-| Mongo protection | 8 passed, 0 failed, 0 skipped |
-| Mongo cash/coordinated close/recovery | 17 passed, 0 failed, 0 skipped |
-| Real Mongo + STARTTLS SMTP | 4 passed, 0 failed, 0 skipped |
-| Historical non-owner HTTP authorization | 1 passed, 0 failed, 0 skipped |
-| Durable admission rejection HTTP/Mongo | 1 passed, 0 failed, 0 skipped |
-| Frontend unit tests | 34 passed, 0 failed, 0 skipped |
-| Controlled HTTP provider contract | 1 passed, 0 failed, 0 skipped |
-| Separate-process acceptance | 9 passed, 0 failed, 0 skipped |
-| Browser lifecycle acceptance | 14 passed, 0 failed, 0 skipped |
-| Browser core-screen matrix | 8 passed, 0 failed, 0 skipped |
-| Backend/frontend lockfile installation | Passed |
-| Production frontend build | Passed |
-| Complete release verifier | Exit 0; 19/19 required gates VERIFIED |
+## Exact gate counts
 
-The eight Mongo/HTTP suites total **60 Node test entries**, including five parent suite-container entries (55 substantive child/standalone tests). The negative authorization test makes **30 actual protected HTTP requests**, all 403 with no provider request/write or persisted trading mutation. Backend tests include **12 guarded external-tool tests**, all controlled/no external calls. Frontend tests span **12 suites**. Playwright totals **22 passed, 0 failed, 0 skipped, 0 flaky**. The eight screen scenarios each exercise all nine screens, providing 72 named screen checks in addition to API/source assertions. The nine process scenarios include a browser configure/logout/context-close/reopen path.
+| Gate | Passed test entries / result | Failed | Skipped | Flaky | Exit |
+|---|---:|---:|---:|---:|---:|
+| runtime | Passed | 0 | 0 | 0 | 0 |
+| backend-install | Passed | 0 | 0 | 0 | 0 |
+| frontend-install | Passed | 0 | 0 | 0 | 0 |
+| verification-tests | 16 | 0 | 0 | 0 | 0 |
+| backend-tests | 388 | 0 | 0 | 0 | 0 |
+| mongo-integration | 4 | 0 | 0 | 0 | 0 |
+| mongo-orderLifecycle.faults | 9 | 0 | 0 | 0 | 0 |
+| mongo-orderLifecycle.mongo | 16 | 0 | 0 | 0 | 0 |
+| mongo-orderProtection | 8 | 0 | 0 | 0 | 0 |
+| mongo-phase3Financial.mongo | 17 | 0 | 0 | 0 | 0 |
+| mongo-phase3Smtp.mongo | 4 | 0 | 0 | 0 | 0 |
+| mongo-rc002Exposure.mongo | 25 | 0 | 0 | 0 | 0 |
+| frontend-tests | 40 | 0 | 0 | 0 | 0 |
+| frontend-build | Passed | 0 | 0 | 0 | 0 |
+| mongo-nonOwnerAuthorization.fullstack | 1 | 0 | 0 | 0 | 0 |
+| mongo-phase3Admission.mongo | 1 | 0 | 0 | 0 | 0 |
+| provider-contract | 1 | 0 | 0 | 0 | 0 |
+| process-acceptance | 9 | 0 | 0 | 0 | 0 |
+| rc-dispatch | 25 | 0 | 0 | 0 | 0 |
+| rc-exit-dispatch | 10 | 0 | 0 | 0 | 0 |
+| rc-exposure-process | 1 | 0 | 0 | 0 | 0 |
+| browser-lifecycle | 14 | 0 | 0 | 0 | 0 |
+| browser-core-screens | 8 | 0 | 0 | 0 | 0 |
 
-## What the acceptance proves
+Mongo gates total 85 Node entries, including parent suite entries; RC-002 contributes 24 required child scenarios plus its parent (25 entries). Primary RC-001 has 25 required scenarios, exit/cancel RC-001 has 10, and the real worker exposure suite has one. Browser total is 22. Mandatory exact scenario identities are required once with successful assertions; missing, duplicate, skipped, TODO or failed identities fail even when aggregate totals remain high. Protocol tests use actual Node24 output. Positive stop-completion and exposure-headroom cases remain required, alongside previous financial assertions.
 
-Browser lifecycle: real owner form login, protected routes and revoked cookies; real non-owner form denial; manual acknowledgement/partial/final fill/accounting/reload; accepted timeout/reload/same-key retry and explicit new identical action; broker rejection; partial-fill cancellation; coordinated stop-cancel-confirm-close; core route availability; expiry of an actually issued session; research eligibility/provenance/shared spending; rapid double-click; unfilled cancellation; uncertain stop cancellation blocking overlapping exit; and confirmed admission rejection followed by a corrected ticket.
+## Fail-before/pass-after and intermediate failures
 
-The separate-process suite proves flat-market abstention, two competing workers producing one entry, disabling during research and immediately before submission, lease loss after decision persistence and immediately before POST, emergency stop during acknowledged and uncertain submissions while preserving unrelated orders, reconciliation with entries disabled, and independent worker activity after browser logout/closure. Decisions, intent, broker order, reservation, audit and notification records are inspected in real Mongo.
+`docs/evidence/rc-repair/rc001-original-red.json` and `.log` stamp unchanged candidate1972254, Node20.20.2 executable and command, exit1: all four final-account emergency/disable/takeover/expiry barriers allowed a forbidden POST. Corrected primary/exit final logs pass. `rc001-regression-notes.md` and `rc001-exit-tests.md` map the precise assertions and process ordering.
 
-The screen matrix covers Home/watchlist, Stock, Research, Trade Plan, Portfolio, Activity, Analytics, RoboTrader and Trading System across loading, valid data, persisted empty data, provider outage, empty/stale market observations, session expiration and backend failure. Real plan/backtest generation is exercised. Actual simulator fixtures with $777 P&L remain in explicitly labeled simulator Analytics, while Alpaca Portfolio shows broker cash/positions/history and Activity shows actual source-filtered fills. Research timestamps/provider provenance and explicit backtest assumptions are visible. Loading observation uses a DOM observer and browser network latency, not manufactured API responses.
+`rc002-red.log` stamps candidate lifecycle hash and Node24.19.0 executable, exit1: two six-share orders filled, 12 shares/$120 against $100, spend12000c/reserved0. `rc002-first-green.log` and final RC-002 logs show one order, six shares/$60, spend6000c and durable second rejection. The historic exploratory probes did not fully stamp their interpreter; their environment is not conflated with the separate original Node20 full verifier. `rc002-repair.md` records coverage, retry, partial/cancel/expiry, replacement, protective generations, both manual/Robo roles and real worker assertions.
 
-SMTP acceptance uses actual outbox code, Nodemailer, real STARTTLS sockets and a loopback capture provider. Three substantive scenarios verify acknowledgement/partial/final/rejected/uncertain/protection events, deduplication, temporary SMTP failure then retry in another process, and killed sending-worker lease recovery. Eight messages were captured. UI states distinguish queued, sending, retrying, provider accepted and failed. This proves local provider acceptance, not external inbox receipt.
+Final pre-runtime safety verifier: 23/23, exit0 on Node20.20.2 (`safety-final-verifier/`), preserved historical parity only. The first full Node24 run (`runtime-verifier/`, exit1) failed closed because Node24 emitted spec output while the verifier required TAP. Underlying test successes were not counted as an acceptance pass. All TAP gates now explicitly select TAP; actual subprocess red/green protocol evidence and independent review are in `runtime-config/`. The final full run above verifies the correction without relaxing the parser.
 
-## Review, corrections and limits
+Container fixture's initial internal-network port failure and a subsequent bridge-variable failure are retained in `runtime-containers/*-first.*`; both are fixture issues, not app defects. Final fixture exits0 and removes its containers/network. A sandbox-only Docker launch failed before creating resources, then the authorized Docker run proceeded. No failed mandatory final check was waived.
 
-The first full run correctly failed an old request-key regression fixture after admission rejection became durable. Both original risk refusals remain asserted with distinct keys; old keys stay rejected after settings improve, and only a fresh valid key submits. Its failed report is preserved in `evidence/phase3-first-complete/`. A subsequent full run passed; final review then added refusal of missing/contradictory fill quantities in the external tool, followed by the complete fresh run reported here. No failed, skipped or flaky check was waived. See `evidence/phase3-review.md` for concrete product defects found by browser/review work.
+## Runtime images, audits and required blocker
 
-Fresh dependency audit: backend **0 findings**; frontend **57** (28 high, 15 moderate, 14 low, 0 critical). Compatible body-parser and lodash lock updates were installed and tested. Every remaining high is analyzed in `evidence/phase3-security-report.md`; no confirmed deployed static-app runtime exploit path was established in that bounded review. Tooling/developer/CI risks remain deferred, not declared harmless. No forced upgrade or framework migration occurred.
+Both Linux/arm64 builds exited0, using pinned Node24.21.0 and nginx1.30.4. `runtime-containers/README.md` contains exact build commands and the isolated check command. Backend image ID `sha256:125fd6abf409da48f5e8ed8b5301899dd8ded1708001300a993511293fda1186`; frontend `sha256:2caf28ef5c5a8bcd558703034a8df1cb44b4fdd519b627ad3b6be7a36938fc19`. Production backend confirms DB/index/write readiness and protected paper binding, unauthenticated401, `releaseReady:false`; nginx configuration and nine deep links pass and real browser renders Login. No Linuxamd64 execution claim. Local no-network inventory/image config checks found no .env/.env.local/.npmrc in app/static roots; these are not CVE scans.
 
-GitHub Actions YAML and bounded semantics passed local validation: Node20, Chromium installation, writable Mongo primary, complete verifier, read-only repository permissions and no broker/SMTP secret references. **Hosted CI NOT RUN**; no push was performed. After separate authorization, the operator can push this branch and run `gh workflow run mvp.yml --ref codex/owner-paper-mvp`, or open a PR. An actual successful hosted run is still required before claiming CI passed.
+Official Node release/checksum and nginx/image manifest evidence are in `runtime-preparation/`; exact patch claims were freshly checked. Archive hash matched official HTTPS checksums; detached GPG signature verification was not performed because GPG was unavailable. Package graphs are unchanged except root engine metadata.
 
-**External Alpaca acceptance: NOT RUN / BLOCKED BY AUTHORIZATION. External SMTP receipt: NOT RUN / BLOCKED BY AUTHORIZATION. Deployment and deployed operational acceptance: NOT RUN.** No external brokerage order, external email, production deployment, live execution or persistent production activation occurred. Live trading remains disabled. These are separate external/deployment gates, not fabricated local passes. No deterministic local blocker remains in the verified scope.
+Fresh authorized npm audits under Node24.21.0/npm11.19.0 completed with empty stderr: backend exit0, **0 findings**; frontend exit1, **57 findings (28high15moderate14low, zero critical)**. Exit1 is advisory output, not a network failure. Commands, interpreter paths and raw response hashes: `audit/runtime-execution.json`; reachability and remaining tooling/browser risk: `audit/disposition.md`. No forced fix or framework migration.
 
-Machine-readable current report: `evidence/verification/report.json`. Committed final command outputs and browser JSON reports: `evidence/phase3-verification/`. Baseline, financial, UI, security and independent review reports remain alongside them. Secret-pattern and final diff checks are recorded in the final review evidence; they are bounded scans, not an exhaustive security audit.
+**Image CVE gate BLOCKED:** automatic approval review rejected Docker Scout's transfer of package URLs and layer digests to Docker's CVE service before execution. No scan ran; frontend scan withheld; no metadata/source/image uploaded and no alternate transport/scanner used. The exact record is `runtime-containers/scout-approval-block.json`. Successful build/static/readiness/version checks do not waive this required combined security gate.
+
+## Separate acceptance states
+
+The original candidate is NO-GO. The repaired deterministic foundation is verified locally; combined local RC remains NO-GO solely for the outstanding required image-analysis gate at this checkpoint. This is not deployed acceptance. Hosted CI, external Alpaca paper acceptance, external SMTP receipt, deployment, persistent activation and unattended operation are NOT RUN. Backup/restore, credential-revocation/recovery drills, deployment provenance, monitoring, strategy evaluation, costs/mandate and commercial evidence remain separate master-brief gates.
+
+Original 19/19 reports `docs/evidence/verification/report.json` and `.md` remain unchanged with hashes in `historical-verifier-hashes.json`. No push, PR, deployment, external broker request, external SMTP send, paid inference, credential change or live activation occurred. See acceptance ledger, checkpoint and `docs/evidence/rc-repair/repair-decision.md` for the bounded resume point.
+
+Runtime commit: `0aa56d7fce9c028c3216589238f5ecd3395f0705` (`chore: pin supported runtime and verify candidate images`). Final documentation/evidence follows without changing the verified executable source.

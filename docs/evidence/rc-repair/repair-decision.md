@@ -2,7 +2,7 @@
 
 Starting source: `1972254bfcfd0b6ff724876cd0d2a2b15006ac26`, `codex/owner-paper-mvp`, repository `muckele/day-trader`; `0dcc4d0dad7f47768a5613573b0a828bda0667ff` remains an ancestor. The original master brief was read from the original checkout, verified nonempty, and remains operator-added untracked documentation. It is not an application-code change or part of these commits.
 
-Current checkpoint: **RC-001/RC-002 repaired; NO-GO pending supported-runtime combined acceptance.** This document will be completed with exact results before the final checkpoint. Historical 19/19 reports have not been overwritten; the independent review/probes were inspected and preserved with provenance/hashes in `../rc-review/`.
+Current checkpoint: **RC-001/RC-002 repaired; final supported-runtime deterministic verification 23/23 passed, exit0; overall local RC NO-GO pending approval-blocked image CVE analysis.** Historical 19/19 reports have not been overwritten; the independent review/probes were inspected and preserved with provenance/hashes in `../rc-review/`.
 
 ## RC-001 contract and boundaries
 
@@ -41,3 +41,15 @@ The earlier local foundation is retained. The master brief's broader agentic Pha
 ## Final safety source verification before runtime change
 
 Complete `safety-final-verifier/report.json`: all23 required gates passed, exit0, generated 2026-09-13T16:24:08.703Z, Nodev20.20.2. Summed gate duration 220148ms. runtime:pass, backend-install:pass, frontend-install:pass, verification-tests:13, backend-tests:388, mongo-integration:4, mongo-orderLifecycle.faults:9, mongo-orderLifecycle.mongo:16, mongo-orderProtection:8, mongo-phase3Financial.mongo:17, mongo-phase3Smtp.mongo:4, mongo-rc002Exposure.mongo:25, frontend-tests:40, frontend-build:pass, mongo-nonOwnerAuthorization.fullstack:1, mongo-phase3Admission.mongo:1, provider-contract:1, process-acceptance:9, rc-dispatch:25, rc-exit-dispatch:10, rc-exposure-process:1, browser-lifecycle:14, browser-core-screens:8. All required tests have zero failures/skips/flakes. This includes all25 primaryRC001,10 exitRC001,24 childRC002 and realworker exposure coverage. Actual source hashes are in `safety-final-source-manifest.json`. Both clean installs and both browser suites completed. Runtime acceptance remains separate.
+
+## Final supported-runtime checkpoint
+
+The complete Node24.21.0/npm11.19.0 verifier passed23/23, exit0 with zero failed/skipped/flaky tests. Verifier16, backend388, Mongo85 entries (including24 RC002 child scenarios), frontend40, provider1, existingprocess9, primaryRC00125, exitRC00110, realworkerRC0021, browser22. Both clean lock installs and production frontend build passed. Exact commands, counts, runtime paths and source hashes are in `../../mvp-verification.md`, `runtime-final-verifier/report.json` and `runtime-final-source-manifest.json`. The separate runtime patch was independently reviewed with no concrete issue found.
+
+Both pinned Linuxarm64 images built exit0. Isolated production backend readiness and protected account configuration passed, nginx1.30.4 served nine routes, and Chromium rendered Login from the actual container. Disposable fixture containers/network were removed. Local package inventory and image config/file-exclusion checks passed; candidate images remain for pending analysis. Fresh final-runtime audits: backend0/exit0; frontend57/exit1 (28high15moderate14low), advisory output rather than network failure.
+
+The first Node24 verifier failed because default spec output did not satisfy the required TAP protocol. Explicit TAP selection fixed the fixture without weakening parser or identities; red and green protocol evidence is preserved. Container networking and bridge-variable failures are preserved separately as fixture defects. Neither is an unresolved app-safety finding.
+
+**Required image CVE analysis remains blocked.** Automatic approval review rejected Docker Scout before execution because package URLs and layer digests from private local images would be sent to Docker's CVE service. No scan/metadata transfer/source or image upload occurred; no alternate transport was used. Frontend analysis was withheld for the same reason. `runtime-containers/scout-approval-block.json` contains the exact request/reason. Do not grant combined local RC until narrow approval is obtained and actual findings are assessed. All other authorized checks at this checkpoint are complete; the original candidate remains NO-GO and hosted/external/deployed/agentic-roadmap gates remain distinct.
+
+Runtime commit: `0aa56d7fce9c028c3216589238f5ecd3395f0705` (`chore: pin supported runtime and verify candidate images`). Final documentation/evidence follows without changing the verified executable source.
