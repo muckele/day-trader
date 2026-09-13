@@ -660,22 +660,22 @@ async function maybeReconcileOpenAlpacaPaperOrders(reconcile = true, accountId =
   return reconcileOpenAlpacaPaperOrders({ accountId }).catch(() => null);
 }
 
-async function getTrades({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
+async function getSimulatorTrades({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
   const scopedAccountId = normalizePaperAccountId(accountId);
-  await maybeReconcileOpenAlpacaPaperOrders(reconcile, scopedAccountId);
-  return PaperTrade.find({ accountId: scopedAccountId }).sort({ filledAt: -1 }).lean();
+
+  return PaperTrade.find({ accountId: scopedAccountId, broker: 'paper' }).sort({ filledAt: -1 }).lean();
 }
 
-async function getOrders({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
+async function getSimulatorOrders({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
   const scopedAccountId = normalizePaperAccountId(accountId);
-  await maybeReconcileOpenAlpacaPaperOrders(reconcile, scopedAccountId);
-  return PaperOrder.find({ accountId: scopedAccountId }).sort({ updatedAt: -1, filledAt: -1 }).lean();
+
+  return PaperOrder.find({ accountId: scopedAccountId, broker: 'paper' }).sort({ updatedAt: -1, filledAt: -1 }).lean();
 }
 
-async function getPositions({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
+async function getSimulatorPositions({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
   const scopedAccountId = normalizePaperAccountId(accountId);
-  await maybeReconcileOpenAlpacaPaperOrders(reconcile, scopedAccountId);
-  const trades = await PaperTrade.find({ accountId: scopedAccountId }).sort({ filledAt: 1 }).lean();
+
+  const trades = await PaperTrade.find({ accountId: scopedAccountId, broker: 'paper' }).sort({ filledAt: 1 }).lean();
   const { positions } = buildPositions(trades);
   const symbolMeta = trades.reduce((acc, trade) => {
     const key = normalizeCompactSymbol(trade.symbol);
@@ -707,12 +707,12 @@ async function getPositions({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
   });
 }
 
-async function getAccount({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
+async function getSimulatorAccount({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
   const scopedAccountId = normalizePaperAccountId(accountId);
-  await maybeReconcileOpenAlpacaPaperOrders(reconcile, scopedAccountId);
+
   const settings = await getSettings({ accountId: scopedAccountId });
-  const trades = await PaperTrade.find({ accountId: scopedAccountId }).sort({ filledAt: 1 }).lean();
-  const positions = await getPositions({ reconcile: false, accountId: scopedAccountId });
+  const trades = await PaperTrade.find({ accountId: scopedAccountId, broker: 'paper' }).sort({ filledAt: 1 }).lean();
+  const positions = await getSimulatorPositions({ reconcile: false, accountId: scopedAccountId });
   const cash = calculateCash(trades, settings.startingCash);
   const positionsValue = positions.reduce((sum, pos) => sum + pos.marketValue, 0);
   const equity = cash + positionsValue;
@@ -720,6 +720,8 @@ async function getAccount({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
   const totalPnl = equity - settings.startingCash;
 
   return {
+    executionSource: 'local-simulation',
+    broker: 'paper',
     cash,
     positionsValue,
     equity,
@@ -730,8 +732,8 @@ async function getAccount({ reconcile = true, accountId = ACCOUNT_ID } = {}) {
   };
 }
 
-async function getEquityCurve({ accountId = ACCOUNT_ID } = {}) {
-  return PaperEquity.find({ accountId: normalizePaperAccountId(accountId) }).sort({ timestamp: 1 }).lean();
+async function getSimulatorEquityCurve({ accountId = ACCOUNT_ID } = {}) {
+  return PaperEquity.find({ accountId: normalizePaperAccountId(accountId), executionSource: 'local-simulation' }).sort({ timestamp: 1 }).lean();
 }
 
 async function getRegimeAtTrade(now) {
@@ -898,7 +900,7 @@ async function createAttachedExitOrders({
   return attached;
 }
 
-async function placeOrder({
+async function placeSimulatedOrder({
   accountId = ACCOUNT_ID,
   symbol,
   side,
@@ -999,8 +1001,8 @@ async function placeOrder({
     maxPricePerShare: parsedMaxPricePerShare
   });
 
-  const account = await getAccount({ accountId: scopedAccountId });
-  const trades = await PaperTrade.find({ accountId: scopedAccountId }).sort({ filledAt: 1 }).lean();
+  const account = await getSimulatorAccount({ accountId: scopedAccountId });
+  const trades = await PaperTrade.find({ accountId: scopedAccountId, broker: 'paper' }).sort({ filledAt: 1 }).lean();
   const { positions } = buildPositions(trades);
   const currentPosition = positions[normalizedSymbol] || { qty: 0, avgCost: 0 };
   const equityBase = account.equity > 0 ? account.equity : settings.startingCash;
@@ -1175,7 +1177,7 @@ async function placeOrder({
   };
   let alpacaPaperOrder = null;
   let order = null;
-  const syncToAlpaca = shouldSyncPaperTradesToAlpaca();
+  const syncToAlpaca = false; // Alpaca execution is dispatched before entering simulator accounting.
   if (syncToAlpaca) {
     const clientOrderId = buildClientOrderId({
       origin,
@@ -1270,7 +1272,7 @@ async function placeOrder({
     }
 
     if (localStatus !== 'filled') {
-      const updatedAccount = await getAccount({ accountId: scopedAccountId });
+      const updatedAccount = await getSimulatorAccount({ accountId: scopedAccountId });
       return {
         order,
         trade: null,
@@ -1388,8 +1390,9 @@ async function placeOrder({
   settings.cooldownUntil = cooldownUntil;
   await settings.save();
 
-  const updatedAccount = await getAccount({ accountId: scopedAccountId });
+  const updatedAccount = await getSimulatorAccount({ accountId: scopedAccountId });
   await PaperEquity.create({
+    executionSource: 'local-simulation',
     accountId: scopedAccountId,
     timestamp: now,
     equity: updatedAccount.equity,
@@ -1523,7 +1526,27 @@ async function recordRejectedOrder(payload = {}, rejectedReason = 'Order rejecte
   }
 }
 
+function alpacaPortfolio() { return require('../services/alpacaPortfolioService').createAlpacaPortfolio(); }
+async function placeOrder(payload) {
+  if (shouldSyncPaperTradesToAlpaca()) return require('../services/alpacaExecutionService').submitAlpacaEntry(payload);
+  const result = await placeSimulatedOrder(payload);
+  return { ...result, executionSource: 'local-simulation', broker: 'paper' };
+}
+async function getAccount(options) { return shouldSyncPaperTradesToAlpaca() ? alpacaPortfolio().getAccount() : getSimulatorAccount(options); }
+async function getPositions(options) { return shouldSyncPaperTradesToAlpaca() ? alpacaPortfolio().getPositions() : getSimulatorPositions(options); }
+async function getTrades(options) {
+  if (shouldSyncPaperTradesToAlpaca()) return alpacaPortfolio().getTrades();
+  return (await getSimulatorTrades(options)).map(row => ({ ...row, executionSource: 'local-simulation', broker: 'paper' }));
+}
+async function getOrders(options) {
+  if (shouldSyncPaperTradesToAlpaca()) return alpacaPortfolio().getOrders();
+  return (await getSimulatorOrders(options)).map(row => ({ ...row, executionSource: 'local-simulation', broker: 'paper' }));
+}
+async function getEquityCurve(options) { return shouldSyncPaperTradesToAlpaca() ? alpacaPortfolio().getEquityCurve() : getSimulatorEquityCurve(options); }
+
 module.exports = {
+  getSimulatorAccount,
+  getSimulatorPositions,
   getSettings,
   updateSettings,
   getTrades,

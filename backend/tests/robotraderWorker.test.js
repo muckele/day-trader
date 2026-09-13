@@ -141,7 +141,20 @@ function createDeps({ approved = true } = {}) {
       }
     })
   };
-  return { deps, createdDecisions, createdOrders, auditEvents, brokerSubmissions };
+  const lifecycleCalls = [];
+  // Worker contract fixture: lifecycle failure semantics are exercised against real Mongo
+  // in lifecycle integration tests; this fixture verifies delegation and projection only.
+  deps.getOrderLifecycle = async ({ broker }) => ({ submit: async request => {
+    lifecycleCalls.push(request);
+    await request.beforeSubmit?.();
+    const intent = { _id: 'intent-1', accountId: 'paper-account', clientOrderId: 'daytrader-robotrader-AAPL-fixed', filledQty: 0 };
+    let order = {};
+    try { order = (await broker.submitOrder({ ...request.orderInput, clientOrderId: intent.clientOrderId })).order; intent.status = 'acknowledged'; }
+    catch (error) { intent.status = isAmbiguousSubmitError(error) ? 'submission_uncertain' : 'rejected'; intent.rejectionReason = error.message; }
+    return { intent, order: { ...order, externalOrderId: order.id }, executionSource: 'alpaca-paper' };
+  } });
+  deps.RoboTradeOrder.findOneAndUpdate = async (filter, update) => deps.RoboTradeOrder.create({ ...filter, ...update.$set });
+  return { deps, createdDecisions, createdOrders, auditEvents, brokerSubmissions, lifecycleCalls };
 }
 
 test('robotrader worker saves approved decisions and submitted orders', async () => {
@@ -155,7 +168,12 @@ test('robotrader worker saves approved decisions and submitted orders', async ()
   assert.equal(context.createdDecisions[0].researchSnapshot.summaryVersion, 1);
   assert.equal(context.createdDecisions[0].researchSnapshot.symbol, 'AAPL');
   assert.equal(context.createdDecisions[0].researchSnapshot.bars, undefined);
-  assert.equal(context.createdOrders[0].accountId, 'user:user-worker');
+  assert.equal(context.createdOrders[0].accountId, 'paper-account');
+  assert.equal(context.lifecycleCalls[0].origin, 'robotrader');
+  assert.ok(context.lifecycleCalls[0].idempotencyKey);
+  assert.equal(context.brokerSubmissions[0].orderClass, 'simple');
+  assert.equal(context.brokerSubmissions[0].orderType, 'limit');
+  assert.equal(context.brokerSubmissions[0].riskStopPrice, 190);
   assert.equal(context.createdOrders[0].externalOrderId, 'alpaca-order-1');
   assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
   assert.equal(context.brokerSubmissions.length, 1);
@@ -180,11 +198,11 @@ test('robotrader worker keeps failed submissions reconcilable by client order id
   assert.equal(result.ok, true);
   assert.equal(context.createdOrders.length, 1);
   assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
-  assert.equal(context.createdOrders[0].status, 'pending_submit');
-  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_error_pending_reconciliation');
-  assert.equal(context.createdDecisions[0].status, 'error');
+  assert.equal(context.createdOrders[0].status, 'submission_uncertain');
+  assert.equal(context.createdOrders[0].intentId, 'intent-1');
+  assert.equal(context.createdDecisions[0].status, 'submitted');
   assert.equal(context.brokerSubmissions[0].clientOrderId, context.createdOrders[0].clientOrderId);
-  assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_order_submit_uncertain'), true);
+  assert.equal(context.lifecycleCalls.length, 1);
 });
 
 test('robotrader worker marks explicit broker rejections terminal', async () => {
@@ -219,22 +237,10 @@ test('robotrader worker marks explicit broker rejections terminal', async () => 
   assert.equal(context.createdOrders.length, 1);
   assert.equal(context.createdOrders[0].clientOrderId, 'daytrader-robotrader-AAPL-fixed');
   assert.equal(context.createdOrders[0].status, 'rejected');
-  assert.equal(context.createdOrders[0].reconciliationStatus, 'submit_rejected');
-  assert.equal(context.createdOrders[0].discrepancy, 'Alpaca 422: qty must be whole shares for advanced order class');
-  assert.deepEqual(context.createdOrders[0].rawPayload, {
-    symbol: 'AAPL',
-    qty: '1.25',
-    order_class: 'bracket'
-  });
-  assert.deepEqual(context.createdOrders[0].alpacaResponse.data, {
-    code: 42210000,
-    message: 'qty must be whole shares for advanced order class'
-  });
-  assert.ok(context.createdOrders[0].rejectedAt);
+  assert.equal(context.createdOrders[0].intentId, 'intent-1');
   assert.equal(context.createdDecisions[0].status, 'rejected');
-  assert.equal(context.createdDecisions[0].error, 'Alpaca 422: qty must be whole shares for advanced order class');
-  assert.equal(context.brokerSubmissions[0].clientOrderId, context.createdOrders[0].clientOrderId);
-  assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_order_rejected'), true);
+  assert.equal(context.lifecycleCalls.length, 1);
+  assert.equal(context.brokerSubmissions.length, 1);
 });
 
 test('robotrader paper preview evaluates without saving or submitting orders', async () => {
@@ -625,18 +631,12 @@ test('disable during research prevents submission even for run-once', async () =
   assert.equal(context.brokerSubmissions.length, 0);
 });
 
-test('accepted order save failure preserves acknowledgement and never becomes rejected', async () => {
+test('projection persistence failure cannot turn an authoritative acknowledgement into rejection', async () => {
   const context = createDeps();
-  const create = context.deps.RoboTradeOrder.create;
-  context.deps.RoboTradeOrder.create = async input => {
-    const doc = await create(input);
-    doc.save = async () => { throw new Error('database unavailable'); };
-    return doc;
-  };
-  const result = await runRoboTraderForUser({ userId: 'user-worker' }, context.deps);
-  assert.equal(result.submittedOrder.status, 'accepted');
-  assert.equal(result.submittedOrder.reconciliationStatus, 'acknowledgement_persistence_failed');
+  context.deps.RoboTradeOrder.findOneAndUpdate = async () => { throw new Error('projection database unavailable'); };
+  await assert.rejects(runRoboTraderForUser({ userId: 'user-worker' }, context.deps), /projection database unavailable/);
   assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(context.lifecycleCalls.length, 1);
   assert.equal(context.auditEvents.some(e => e.eventType === 'robotrader_order_rejected'), false);
 });
 
@@ -711,6 +711,40 @@ test('submission audit failure retains accepted status without another broker wr
   };
   context.deps.enqueueOrderNotification = async () => { throw new Error('outbox failed'); };
   const result = await runRoboTraderForUser({ userId: 'user-worker' }, context.deps);
-  assert.equal(result.submittedOrder.status, 'accepted');
+  assert.equal(result.submittedOrder.status, 'acknowledged');
   assert.equal(context.brokerSubmissions.length, 1);
 });
+
+
+test('emergency stop finds intent after projection loss and cancels only entry remainder through lifecycle', async () => {
+  const context = createDeps();
+  context.deps.RoboTradeOrder.find = () => chain([]);
+  context.deps.OrderIntent = { find: async () => [{ _id: 'durable-entry', clientOrderId: 'stable-entry', side: 'buy', status: 'partially_filled' }] };
+  context.deps.createAlpacaBroker = () => ({ listOrders: async () => [
+    { id:'entry-broker',client_order_id:'stable-entry',side:'buy',filled_qty:'4',order_class:'simple' },
+    { id:'stop-broker',client_order_id:'robo-stop',side:'sell',filled_qty:'0',order_class:'simple' }
+  ], cancelOrder: async () => { throw new Error('Must delegate lifecycle cancellation'); } });
+  const cancellations=[];
+  context.deps.getOrderLifecycle = async () => ({ reconcile: async () => ({}), cancel: async input => { cancellations.push(input); return {intent:{status:'cancel_pending'}}; } });
+  const result=await emergencyStop({userId:'user-worker',cancelOpenOrders:true},context.deps);
+  assert.deepEqual(cancellations,[{intentId:'durable-entry'}]);
+  assert.deepEqual(result.canceledOrderIds,['entry-broker']);
+});
+
+
+for (const recovery of ['submission_uncertain','replacement']) {
+  test(`emergency stop reconciles ${recovery} broker acceptance before cancellation without projection`, async () => {
+    const context=createDeps(); const calls=[];
+    const intent={_id:'durable-entry',clientOrderId:'original-client',side:'buy',status:'submission_uncertain'};
+    if(recovery==='replacement') intent.replacement={clientOrderId:'successor-client',brokerOrderId:'successor-id'};
+    context.deps.RoboTradeOrder.find=()=>chain([]);
+    context.deps.OrderIntent={find:async()=>[intent]};
+    context.deps.createAlpacaBroker=()=>({listOrders:async()=>[{id:recovery==='replacement'?'successor-id':'entry-id',
+      client_order_id:recovery==='replacement'?'successor-client':'original-client',side:'buy',filled_qty:'0'}]});
+    context.deps.getOrderLifecycle=async()=>({reconcile:async({intentId})=>{calls.push(['reconcile',intentId]);},
+      cancel:async({intentId})=>{calls.push(['cancel',intentId]);}});
+    const result=await emergencyStop({userId:'user-worker',cancelOpenOrders:true},context.deps);
+    assert.deepEqual(calls,[['reconcile','durable-entry'],['cancel','durable-entry']]);
+    assert.equal(result.canceledOrderIds.length,1); assert.equal(result.cancelErrors.length,0);
+  });
+}

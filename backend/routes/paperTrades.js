@@ -34,6 +34,8 @@ router.post('/order', async (req, res) => {
     const resolvedOrigin = origin || (strategyId ? 'trade_plan' : 'manual');
     const result = await paperBroker.placeOrder({
       accountId,
+      userId: req.user.userId,
+      idempotencyKey: req.get('Idempotency-Key') || req.body?.idempotencyKey,
       symbol,
       side,
       qty,
@@ -57,7 +59,7 @@ router.post('/order', async (req, res) => {
     res.json(result);
   } catch (err) {
     const payload = req.body || {};
-    if (!err.paperOrderRecorded) {
+    if (!err.paperOrderRecorded && !require('../services/alpacaTradingClient').shouldSyncPaperTradesToAlpaca()) {
       await paperBroker.recordRejectedOrder({
         ...payload,
         accountId,
@@ -65,7 +67,7 @@ router.post('/order', async (req, res) => {
         metadata: payload.metadata || {}
       }, err.message).catch(() => {});
     }
-    res.status(err.statusCode || 400).json({
+    res.status(err.statusCode || err.status || 400).json({
       error: err.message,
       order: err.paperOrder || undefined,
       brokerOrder: err.brokerOrder || undefined

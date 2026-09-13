@@ -8,11 +8,14 @@ Runtime: v20.20.2
 - verification-tests: PASS (exit 0)
 - backend-tests: PASS (exit 0)
 - mongo-integration: PASS (exit 0)
+- mongo-orderLifecycle.faults: PASS (exit 0)
+- mongo-orderLifecycle.mongo: PASS (exit 0)
+- mongo-orderProtection: PASS (exit 0)
 - frontend-tests: PASS (exit 0)
 - frontend-build: PASS (exit 0)
 
-- Mongo persistence, reservation and restart integration: BLOCKED — Full lifecycle integration suite not implemented
+- Implemented Mongo financial lifecycle, reservation, fault and protection regressions: VERIFIED — All three required isolated Mongo financial regression suites passed; bounded coverage only
 - Actual frontend/backend/auth/database lifecycle E2E: BLOCKED — Existing Playwright suite mocks API responses
-- Fault/concurrency/protection acceptance: BLOCKED — Complete acceptance coverage not implemented
+- Complete fault/concurrency/protection release acceptance: BLOCKED — Bounded regressions do not establish all release failure interleavings and external acceptance
 
 Release candidate: NO.

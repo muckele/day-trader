@@ -221,7 +221,10 @@ function evaluateRoboRisk({
   runCheck('symbol_present', Boolean(symbol), 'Symbol is required.');
   runCheck('mvp_entry_scope', riskReducingOnly || (assetClass === 'stocks' && side === 'buy' && Number.isInteger(qty) && qty > 0 && !notional), 'Automated entries require long-only whole-share stocks or ordinary ETFs; fractional and notional automation is disabled.');
   runCheck('entry_session', riskReducingOnly || (marketIsOpen && !extendedHoursRequested), 'Automated entries require a verified open regular market session.');
-  runCheck('entry_protection', riskReducingOnly || (['bracket', 'oto'].includes(orderInput.orderClass) && Boolean(orderInput.stopLoss || orderInput.stop_loss)), 'Automated entries require broker-attached stop protection.');
+  const managedStop = Number(orderInput.riskStopPrice || orderInput.stopLossPrice);
+  const managedProtection = orderInput.orderClass === 'simple' && orderInput.orderType === 'limit'
+    && Number.isInteger(qty) && qty > 0 && managedStop > 0 && managedStop < Number(orderInput.limitPrice);
+  runCheck('entry_protection', riskReducingOnly || managedProtection || (['bracket', 'oto'].includes(orderInput.orderClass) && Boolean(orderInput.stopLoss || orderInput.stop_loss)), 'Automated entries require a valid managed stop on a capped whole-share entry or broker-attached protection.');
   const knownNumber = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
   runCheck('account_data_known', riskReducingOnly || (knownNumber(account.equity) && Number(account.equity) > 0 && knownNumber(account.last_equity) && knownNumber(account.cash) && knownNumber(dailyPnl) && estimatedNotional > 0), 'Current equity, previous equity, cash, P&L, and positive entry value must be known.');
 

@@ -15,6 +15,8 @@ const roboTradeOrderSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     accountId: { type: String, default: 'default', index: true },
+    intentId: { type: mongoose.Schema.Types.ObjectId, ref: 'OrderIntent', default: null, index: true },
+    executionSource: { type: String, default: 'alpaca-paper' },
     decisionId: { type: mongoose.Schema.Types.ObjectId, ref: 'RoboTradeDecision', default: null, index: true },
     environment: { type: String, enum: ['paper', 'live'], default: 'paper', index: true },
     broker: { type: String, enum: ['alpaca'], default: 'alpaca', index: true },

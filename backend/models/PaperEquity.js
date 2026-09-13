@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const paperEquitySchema = new mongoose.Schema(
   {
+    executionSource: { type: String, default: null, index: true },
     accountId: { type: String, default: 'default', index: true },
     timestamp: { type: Date, default: Date.now },
     equity: { type: Number, required: true },

@@ -1,0 +1,30 @@
+TAP version 13
+# Subtest: verification drops real credentials and scheduler activation
+ok 1 - verification drops real credentials and scheduler activation
+  ---
+  duration_ms: 0.588708
+  ...
+# Subtest: verification preserves failures and continues independent checks
+ok 2 - verification preserves failures and continues independent checks
+  ---
+  duration_ms: 0.451583
+  ...
+# Subtest: integration discovery runs each Mongo fixture in its own sequential check
+ok 3 - integration discovery runs each Mongo fixture in its own sequential check
+  ---
+  duration_ms: 0.263542
+  ...
+# Subtest: financial acceptance fails closed on missing or failing Mongo suites and preserves E2E blocker
+ok 4 - financial acceptance fails closed on missing or failing Mongo suites and preserves E2E blocker
+  ---
+  duration_ms: 0.547708
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 42.67075

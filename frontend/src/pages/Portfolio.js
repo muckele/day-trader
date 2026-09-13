@@ -97,7 +97,7 @@ export default function Portfolio() {
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs uppercase tracking-wide text-slate-400">Portfolio</p>
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">Paper Mode</h1>
+          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">{account?.executionSource === 'alpaca-paper' ? 'Alpaca Paper' : account?.executionSource === 'local-simulation' ? 'Local Simulator' : 'Source unavailable'}</h1>
         </div>
         <Badge variant="solid">PAPER MODE</Badge>
       </div>
@@ -105,7 +105,7 @@ export default function Portfolio() {
       <Card className="p-6">
         <div className="flex items-center justify-between mb-4">
           <p className="text-sm font-semibold text-slate-900 dark:text-white">Equity Curve</p>
-          <p className="text-xs text-slate-500">All time</p>
+          <p className="text-xs text-slate-500">{account?.executionSource === 'alpaca-paper' ? 'Last month' : 'All time'}</p>
         </div>
         <div className="h-52">
           {equity.length ? (

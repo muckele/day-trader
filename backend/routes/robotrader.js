@@ -646,30 +646,14 @@ router.post('/orders/:orderId/cancel', sensitiveRateLimit({ max: 12 }), async (r
     if (!user) return res.status(401).json({ message: 'User not found.' });
     const order = await RoboTradeOrder.findOne(buildOrderLookup(user._id, req.params.orderId));
     if (!order) return res.status(404).json({ message: 'RoboTrader order not found.' });
-    if (!order.externalOrderId) {
-      return res.status(400).json({ message: 'Order does not have an Alpaca order id.' });
-    }
-    const broker = createAlpacaBroker({ mode: order.environment });
-    const response = await broker.cancelOrder(order.externalOrderId);
-    order.status = 'canceled';
-    order.canceledAt = new Date();
-    order.lastReconciledAt = new Date();
+    if (!order.intentId) return res.status(409).json({ message: 'Legacy order requires operator reconciliation before modification.' });
+    const lifecycle = await require('../services/orderLifecycleService').getOrderLifecycle();
+    const result = await lifecycle.cancel({ intentId: order.intentId, userId: String(user._id) });
+    order.status = result.intent.status;
     order.reconciliationStatus = 'cancel_requested';
-    order.alpacaResponse = response || order.alpacaResponse;
     await order.save();
-    await RoboAuditLog.create({
-      userId: user._id,
-      eventType: 'robotrader_order_cancel_requested',
-      payload: {
-        orderId: order.externalOrderId,
-        clientOrderId: order.clientOrderId,
-        symbol: order.symbol
-      }
-    });
-    res.json({ order });
-  } catch (err) {
-    next(err);
-  }
+    res.json({ ...result, projection: order });
+  } catch (err) { handleRouteError(err, res, next); }
 });
 
 router.post('/orders/:orderId/replace', sensitiveRateLimit({ max: 12 }), async (req, res, next) => {
@@ -678,59 +662,33 @@ router.post('/orders/:orderId/replace', sensitiveRateLimit({ max: 12 }), async (
     if (!user) return res.status(401).json({ message: 'User not found.' });
     const order = await RoboTradeOrder.findOne(buildOrderLookup(user._id, req.params.orderId));
     if (!order) return res.status(404).json({ message: 'RoboTrader order not found.' });
-    if (!order.externalOrderId) {
-      return res.status(400).json({ message: 'Order does not have an Alpaca order id.' });
-    }
-    if (order.environment === 'live') {
-      ensureLiveTradingAllowed(await getMappedSettingsForUser(user._id), 'Live order replacement');
-    }
-    const broker = createAlpacaBroker({ mode: order.environment });
-    const response = await broker.replaceOrder(order.externalOrderId, req.body || {});
-    order.alpacaResponse = response || order.alpacaResponse;
-    order.status = response?.status || order.status;
-    order.lastReconciledAt = new Date();
+    if (!order.intentId) return res.status(409).json({ message: 'Legacy order requires operator reconciliation before modification.' });
+    const lifecycle = await require('../services/orderLifecycleService').getOrderLifecycle();
+    const result = await lifecycle.replace({ intentId: order.intentId, userId: String(user._id),
+      changes: req.body || {}, idempotencyKey: req.get('Idempotency-Key') || req.body?.idempotencyKey });
+    order.status = result.intent.status;
     order.reconciliationStatus = 'replace_requested';
     await order.save();
-    await RoboAuditLog.create({
-      userId: user._id,
-      eventType: 'robotrader_order_replace_requested',
-      payload: {
-        orderId: order.externalOrderId,
-        clientOrderId: order.clientOrderId,
-        symbol: order.symbol,
-        replacement: req.body || {}
-      }
-    });
-    res.json({ order });
-  } catch (err) {
-    handleRouteError(err, res, next);
-  }
+    res.json({ ...result, projection: order });
+  } catch (err) { handleRouteError(err, res, next); }
 });
 
 router.post('/positions/:symbol/close', sensitiveRateLimit({ max: 12 }), async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
-    const settings = await getMappedSettingsForUser(user._id);
-    const environment = req.body?.environment === 'live' ? 'live' : settings.mode;
-    if (environment === 'live' && !settings.liveTradingExplicitlyEnabled) {
-      return res.status(403).json({ message: 'Live position closing requires explicit live trading opt-in.' });
-    }
-    const broker = createAlpacaBroker({ mode: environment });
-    const response = await broker.closePosition(req.params.symbol, req.body?.close || {});
-    await RoboAuditLog.create({
-      userId: user._id,
-      eventType: 'robotrader_position_close_requested',
-      payload: {
-        symbol: req.params.symbol.toUpperCase(),
-        environment,
-        response
-      }
-    });
-    res.json({ response });
-  } catch (err) {
-    next(err);
-  }
+    if (req.body?.environment === 'live') return res.status(403).json({ message: 'This release is paper-only.' });
+    const broker = createAlpacaBroker({ mode: 'paper' });
+    const positions = await broker.getPositions();
+    const symbol = req.params.symbol.toUpperCase();
+    const position = positions.find(p => p.symbol === symbol);
+    const qty = Number(req.body?.close?.qty || position?.qty);
+    const lifecycle = await require('../services/orderLifecycleService').getOrderLifecycle({ broker });
+    const result = await lifecycle.submit({ userId: String(user._id), origin: 'manual-close',
+      idempotencyKey: req.get('Idempotency-Key') || req.body?.idempotencyKey,
+      orderInput: { symbol, assetClass: 'stocks', side: 'sell', qty, orderType: 'market', timeInForce: 'day' } });
+    res.json(result);
+  } catch (err) { handleRouteError(err, res, next); }
 });
 
 router.get('/audit', async (req, res, next) => {

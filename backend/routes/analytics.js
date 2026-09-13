@@ -6,8 +6,6 @@ const PaperOrder = require('../models/PaperOrder');
 const PaperEquity = require('../models/PaperEquity');
 const PaperSettings = require('../models/PaperSettings');
 const PaperGuardrailEvent = require('../models/PaperGuardrailEvent');
-const BrokerOrder = require('../models/BrokerOrder');
-const Fill = require('../models/Fill');
 const paperBroker = require('../paper/paperBrokerClient');
 const {
   parseRange,
@@ -137,6 +135,7 @@ function buildExecutionQualityPayload({ range, orders, fills }) {
     .sort((a, b) => b.totalPnl - a.totalPnl);
 
   return {
+    executionSource: 'local-simulation',
     range,
     counts: {
       attemptedOrders,
@@ -161,7 +160,7 @@ router.get('/summary', async (req, res, next) => {
     const accountId = getRequestAccountId(req);
     const { range = '30d', symbol = '', strategyId = '', regime = '' } = req.query;
     const startDate = parseRange(range);
-    const tradeQuery = { accountId };
+    const tradeQuery = { accountId, broker: 'paper' };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
     if (symbol) tradeQuery.symbol = symbol.toUpperCase();
     if (strategyId) tradeQuery.strategyId = strategyId;
@@ -185,14 +184,14 @@ router.get('/summary', async (req, res, next) => {
       ? Number(((expectancyValues.filter(val => val <= -1).length / expectancyValues.length) * 100).toFixed(2))
       : 0;
 
-    const equityQuery = { accountId };
+    const equityQuery = { accountId, executionSource: 'local-simulation' };
     if (startDate) equityQuery.timestamp = { $gte: startDate };
     const equityPoints = await PaperEquity.find(equityQuery).sort({ timestamp: 1 }).lean();
     const { series: drawdownSeries, maxDrawdown } = computeDrawdownSeries(
       equityPoints.map(point => ({ timestamp: point.timestamp, equity: point.equity }))
     );
 
-    const account = await paperBroker.getAccount({ accountId });
+    const account = await paperBroker.getSimulatorAccount({ accountId });
     const settings = await PaperSettings.findOne({ accountId }).lean();
     const cashPct = account.equity ? (account.cash / account.equity) * 100 : 0;
     const positionsPct = account.equity ? (account.positionsValue / account.equity) * 100 : 0;
@@ -207,6 +206,7 @@ router.get('/summary', async (req, res, next) => {
     const avgHoldHours = computeHoldTimes(filtered);
 
     res.json({
+      executionSource: 'local-simulation',
       range,
       tradeCount: filtered.length,
       totalPnl: Number(totalPnl.toFixed(2)),
@@ -246,11 +246,11 @@ router.get('/snapshot', async (req, res, next) => {
     const accountId = getRequestAccountId(req);
     const { range = '30d' } = req.query;
     const startDate = parseRange(range);
-    const tradeQuery = { accountId };
+    const tradeQuery = { accountId, broker: 'paper' };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
     const trades = await PaperTrade.find(tradeQuery).sort({ filledAt: 1 }).lean();
 
-    const equityQuery = { accountId };
+    const equityQuery = { accountId, executionSource: 'local-simulation' };
     if (startDate) equityQuery.timestamp = { $gte: startDate };
     const equityPoints = await PaperEquity.find(equityQuery).sort({ timestamp: 1 }).lean();
 
@@ -258,12 +258,12 @@ router.get('/snapshot', async (req, res, next) => {
     if (startDate) guardrailQuery.createdAt = { $gte: startDate };
     const guardrailBlocks = await PaperGuardrailEvent.countDocuments(guardrailQuery);
 
-    res.json(buildSnapshot({
+    res.json({ executionSource: 'local-simulation', ...buildSnapshot({
       range,
       trades,
       equityPoints,
       guardrailBlocks
-    }));
+    }) });
   } catch (err) {
     next(err);
   }
@@ -274,12 +274,13 @@ router.get('/strategies', async (req, res, next) => {
     const accountId = getRequestAccountId(req);
     const { range = '30d' } = req.query;
     const startDate = parseRange(range);
-    const tradeQuery = { accountId };
+    const tradeQuery = { accountId, broker: 'paper' };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
     const trades = await PaperTrade.find(tradeQuery).sort({ filledAt: 1 }).lean();
     const grouped = aggregateStrategies(trades);
     const sorted = [...grouped].sort((a, b) => (b.avgR || -999) - (a.avgR || -999));
     res.json({
+      executionSource: 'local-simulation',
       range,
       strategies: grouped,
       top: sorted.slice(0, 3),
@@ -295,11 +296,11 @@ router.get('/regimes', async (req, res, next) => {
     const accountId = getRequestAccountId(req);
     const { range = '30d' } = req.query;
     const startDate = parseRange(range);
-    const tradeQuery = { accountId };
+    const tradeQuery = { accountId, broker: 'paper' };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
     const trades = await PaperTrade.find(tradeQuery).sort({ filledAt: 1 }).lean();
     const regimes = aggregateRegimes(trades);
-    res.json({ range, regimes });
+    res.json({ executionSource: 'local-simulation', range, regimes });
   } catch (err) {
     next(err);
   }
@@ -310,7 +311,7 @@ router.get('/trades.csv', async (req, res, next) => {
     const accountId = getRequestAccountId(req);
     const { range = '30d', symbol = '', strategyId = '', regime = '' } = req.query;
     const startDate = parseRange(range);
-    const tradeQuery = { accountId };
+    const tradeQuery = { accountId, broker: 'paper' };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
     if (symbol) tradeQuery.symbol = symbol.toUpperCase();
     if (strategyId) tradeQuery.strategyId = strategyId;
@@ -318,6 +319,7 @@ router.get('/trades.csv', async (req, res, next) => {
     const filtered = filterTrades(trades, { range, symbol, strategyId, regime });
 
     const rows = filtered.map(trade => ({
+      executionSource: 'local-simulation',
       filledAt: new Date(trade.filledAt).toISOString(),
       symbol: trade.symbol,
       side: trade.side,
@@ -334,6 +336,7 @@ router.get('/trades.csv', async (req, res, next) => {
     }));
 
     const headers = Object.keys(rows[0] || {
+      executionSource: '',
       filledAt: '',
       symbol: '',
       side: '',
@@ -367,28 +370,11 @@ router.get('/execution-quality', async (req, res, next) => {
     const accountId = getRequestAccountId(req);
     const { range = '30d' } = req.query;
     const startDate = parseRange(range);
-    const brokerOrderQuery = { accountId };
-    const fillQuery = { accountId };
-    const paperOrderQuery = { accountId };
-    const tradeQuery = { accountId };
+    const paperOrderQuery = { accountId, broker: 'paper' };
+    const tradeQuery = { accountId, broker: 'paper' };
     if (startDate) {
-      brokerOrderQuery.submittedAt = { $gte: startDate };
-      fillQuery.filledAt = { $gte: startDate };
       paperOrderQuery.filledAt = { $gte: startDate };
       tradeQuery.filledAt = { $gte: startDate };
-    }
-
-    const [brokerOrders, fills] = await Promise.all([
-      BrokerOrder.find(brokerOrderQuery).sort({ submittedAt: 1 }).lean(),
-      Fill.find(fillQuery).sort({ filledAt: 1 }).lean()
-    ]);
-
-    if (brokerOrders.length || fills.length) {
-      return res.json(buildExecutionQualityPayload({
-        range,
-        orders: brokerOrders,
-        fills
-      }));
     }
 
     const [paperOrders, trades] = await Promise.all([

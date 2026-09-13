@@ -1,3 +1,4 @@
+import { submitPaperOrder, paperOrderStatusMessage } from '../utils/paperOrderRequest';
 import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -321,7 +322,7 @@ export default function Research() {
         return;
       }
       const ticket = preview.ticket;
-      const res = await axios.post('/api/paper-trades/order', {
+      const res = await submitPaperOrder({
         symbol: ticket.symbol,
         assetClass: ticket.assetClass,
         side: ticket.side,
@@ -349,7 +350,7 @@ export default function Research() {
         type: status === 'rejected' ? 'error' : 'success',
         message: status === 'rejected'
           ? (res.data?.order?.rejectedReason || 'Paper order was rejected.')
-          : (status === 'filled' ? 'Research paper trade filled.' : 'Research paper order submitted.')
+          : paperOrderStatusMessage(status)
       });
     } catch (err) {
       emitToast({ type: 'error', message: getApiError(err) });

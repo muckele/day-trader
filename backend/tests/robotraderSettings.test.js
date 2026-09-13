@@ -80,3 +80,10 @@ for (const input of [{ allowFractionalShares: true }, { allowExtendedHours: true
     assert.throws(() => sanitizeSettingsUpdate(input), /MVP/);
   });
 }
+
+test('spending limits persist cents and reject invalid configuration', () => {
+  assert.deepEqual(sanitizeSettingsUpdate({ dailyLimit: 100.25, weeklyLimit: '500', monthlyLimit: 0 }), { dailyLimit: 100.25, weeklyLimit: 500, monthlyLimit: 0 });
+  for (const value of [null, '', -1, 'invalid', Infinity, 1.001]) {
+    assert.throws(() => sanitizeSettingsUpdate({ dailyLimit: value }), /dailyLimit/);
+  }
+});

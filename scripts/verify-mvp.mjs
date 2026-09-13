@@ -22,6 +22,26 @@ export async function runChecks(checks, execute) {
   return { ok: results.every(result => result.code === 0), checks: results };
 }
 
+export function buildMongoChecks(files) {
+  // Each suite owns a disposable database fixture. Separate checks prevent test
+  // files from racing over fixture startup, teardown, or database names.
+  return files.filter(name => name.endsWith('.test.js')).sort().map(name => ({
+    name: name === 'mvpPersistence.test.js' ? 'mongo-integration' : `mongo-${name.replace(/\.test\.js$/, '')}`,
+    command: process.execPath,
+    args: ['--test', `backend/integration/${name}`]
+  }));
+}
+
+export function buildRequiredAcceptance(checks) {
+  const financialNames = ['mongo-orderLifecycle.mongo', 'mongo-orderLifecycle.faults', 'mongo-orderProtection'];
+  const financialPass = financialNames.every(name => checks.some(check => check.name === name && check.code === 0));
+  return [
+    { name: 'Implemented Mongo financial lifecycle, reservation, fault and protection regressions', status: financialPass ? 'VERIFIED' : 'BLOCKED', reason: financialPass ? 'All three required isolated Mongo financial regression suites passed; bounded coverage only' : 'A required Mongo financial regression suite is missing or failed' },
+    { name: 'Actual frontend/backend/auth/database lifecycle E2E', status: 'BLOCKED', reason: 'Existing Playwright suite mocks API responses' },
+    { name: 'Complete fault/concurrency/protection release acceptance', status: 'BLOCKED', reason: 'Bounded regressions do not establish all release failure interleavings and external acceptance' }
+  ];
+}
+
 async function main() {
   const reportDir = path.join(root, 'docs/evidence/verification');
   await mkdir(reportDir, { recursive: true });
@@ -32,7 +52,7 @@ async function main() {
     ...['backend', 'frontend'].map(dir => ({ name: `${dir}-install`, command: 'npm', args: ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], cwd: path.join(root, dir) })),
     { name: 'verification-tests', command: process.execPath, args: ['--test', 'scripts/tests/verify-mvp.test.mjs'] },
     { name: 'backend-tests', command: process.execPath, args: ['--test', ...backendTests], cwd: path.join(root, 'backend') },
-    { name: 'mongo-integration', command: process.execPath, args: ['--test', 'backend/integration/mvpPersistence.test.js'] },
+    ...buildMongoChecks(await readdir(path.join(root, 'backend/integration'))),
     { name: 'frontend-tests', command: 'npm', args: ['test', '--', '--watchAll=false', '--runInBand'], cwd: path.join(root, 'frontend') },
     { name: 'frontend-build', command: 'npm', args: ['run', 'build'], cwd: path.join(root, 'frontend') },
   ];
@@ -54,11 +74,7 @@ async function main() {
   }));
   // Never promote unit/build success into a release claim. These requirements have
   // no complete executable harness yet; record them as blocked rather than skips.
-  result.requiredAcceptance = [
-    { name: 'Mongo persistence, reservation and restart integration', status: 'BLOCKED', reason: 'Full lifecycle integration suite not implemented' },
-    { name: 'Actual frontend/backend/auth/database lifecycle E2E', status: 'BLOCKED', reason: 'Existing Playwright suite mocks API responses' },
-    { name: 'Fault/concurrency/protection acceptance', status: 'BLOCKED', reason: 'Complete acceptance coverage not implemented' }
-  ];
+  result.requiredAcceptance = buildRequiredAcceptance(result.checks);
   result.generatedAt = new Date().toISOString();
   result.runtime = process.version;
   result.deterministicChecksPass = result.ok;

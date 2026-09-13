@@ -1,0 +1,23 @@
+✔ manual adapter preserves owner and stable key and never invents a filled trade (0.413459ms)
+✔ manual response serializes mongoose intent and exposes only broker-issued ID (2.990292ms)
+✔ robotrader settings default to paper mode with live trading disabled (0.782625ms)
+✔ robotrader settings rejects live even with confirmation (0.26675ms)
+✔ robotrader settings normalizes symbols and asset classes (0.094042ms)
+✔ robotrader settings sanitizes boolean string values (0.060583ms)
+✔ robotrader settings recovers from concurrent default create race (0.297083ms)
+✔ owner explicit enable clears stop pause but preserves circuit pauses (0.063333ms)
+✔ unsupported automated settings rejected: {"allowFractionalShares":true} (0.054375ms)
+✔ unsupported automated settings rejected: {"allowExtendedHours":true} (0.138084ms)
+✔ unsupported automated settings rejected: {"allowCryptoTrading":true} (0.077083ms)
+✔ unsupported automated settings rejected: {"allowOptionsTrading":true} (0.09225ms)
+✔ unsupported automated settings rejected: {"allowShortSelling":true} (0.055167ms)
+✔ unsupported automated settings rejected: {"allowedAssetClasses":["crypto"]} (0.047792ms)
+✔ spending limits persist cents and reject invalid configuration (0.150208ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 184.363584

@@ -1,0 +1,16 @@
+const mongoose = require('mongoose');
+const schema = new mongoose.Schema({
+  intentId: { type: mongoose.Schema.Types.ObjectId, required: true, unique: true },
+  accountId: { type: String, required: true, index: true },
+  userId: { type: String, required: true },
+  symbol: { type: String, required: true },
+  state: { type: String, default: 'required', index: true },
+  generation: { type: Number, default: 0 },
+  clientOrderId: String,
+  brokerOrderId: String,
+  qty: { type: Number, default: 0 },
+  confirmedQty: { type: Number, default: 0 },
+  error: String,
+  brokerSnapshot: mongoose.Schema.Types.Mixed
+}, { timestamps: true, optimisticConcurrency: true });
+module.exports = mongoose.model('OrderProtection', schema);

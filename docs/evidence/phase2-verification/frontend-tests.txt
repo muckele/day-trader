@@ -1,0 +1,14 @@
+
+> frontend@0.1.0 test
+> react-scripts test --watchAll=false --runInBand
+
+PASS src/App.test.js
+PASS src/pages/ReleaseScope.test.js
+PASS src/utils/paperOrderRequest.test.js
+PASS src/pages/Stock.test.js
+
+Test Suites: 4 passed, 4 total
+Tests:       12 passed, 12 total
+Snapshots:   0 total
+Time:        1.224 s, estimated 2 s
+Ran all test suites.

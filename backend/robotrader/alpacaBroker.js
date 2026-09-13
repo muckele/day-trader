@@ -139,6 +139,7 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
     getClock: () => request('get', '/v2/clock'),
     getAsset: symbol => request('get', `/v2/assets/${encodeURIComponent(symbol)}`),
     getPositions: () => request('get', '/v2/positions'),
+    getPortfolioHistory: () => request('get', '/v2/account/portfolio/history', null, { params: { period: '1M', timeframe: '1D', extended_hours: false } }),
     listOrders: (params = {}) => request('get', '/v2/orders', null, { params }),
     getOrder: orderId => request('get', `/v2/orders/${encodeURIComponent(orderId)}`),
     getOrderByClientOrderId: clientOrderId => request('get', '/v2/orders:by_client_order_id', null, {

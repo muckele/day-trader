@@ -20,7 +20,11 @@ const orderIntentSchema = new mongoose.Schema(
     allowExtendedHours: { type: Boolean, default: true },
     strategyId: { type: String, default: null },
     setupType: { type: String, default: null },
-    status: { type: String, enum: ['created', 'filled', 'rejected'], default: 'created', index: true },
+    status: { type: String, default: 'created', index: true },
+    userId: String, environment: String, executionSource: String, idempotencyKey: String, payloadFingerprint: String, clientOrderId: String,
+    orderInput: mongoose.Schema.Types.Mixed, periodKeys: mongoose.Schema.Types.Mixed,
+    reservedCents: {type:Number,default:0}, filledQty:{type:Number,default:0}, filledNotionalCents:{type:Number,default:0},
+    uncertainSince: Date, protectionState: mongoose.Schema.Types.Mixed, replacement: mongoose.Schema.Types.Mixed,
     rejectionReason: { type: String, default: null },
     requestedAt: { type: Date, default: Date.now },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
@@ -30,4 +34,5 @@ const orderIntentSchema = new mongoose.Schema(
 
 orderIntentSchema.index({ accountId: 1, requestedAt: -1 });
 
+orderIntentSchema.index({accountId:1,environment:1,idempotencyKey:1},{unique:true,partialFilterExpression:{executionSource:'alpaca-paper'}});
 module.exports = mongoose.model('OrderIntent', orderIntentSchema);

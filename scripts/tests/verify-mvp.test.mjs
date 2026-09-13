@@ -23,3 +23,24 @@ test('verification preserves failures and continues independent checks', async (
   assert.equal(result.checks[0].code, 3);
   assert.equal(result.checks[1].code, 0);
 });
+
+test('integration discovery runs each Mongo fixture in its own sequential check', async () => {
+  const { buildMongoChecks } = await import('../verify-mvp.mjs');
+  const checks = buildMongoChecks(['phase2Lifecycle.test.js', 'README.md', 'mvpPersistence.test.js', 'phase2Protection.test.js']);
+  assert.deepEqual(checks.map(check => check.args), [
+    ['--test', 'backend/integration/mvpPersistence.test.js'],
+    ['--test', 'backend/integration/phase2Lifecycle.test.js'],
+    ['--test', 'backend/integration/phase2Protection.test.js']
+  ]);
+  assert.equal(new Set(checks.map(check => check.name)).size, 3);
+});
+
+test('financial acceptance fails closed on missing or failing Mongo suites and preserves E2E blocker', async () => {
+  const { buildRequiredAcceptance } = await import('../verify-mvp.mjs');
+  assert.equal(buildRequiredAcceptance([])[0].status, 'BLOCKED');
+  const passing = ['mongo-orderLifecycle.mongo', 'mongo-orderLifecycle.faults', 'mongo-orderProtection'].map(name => ({ name, code: 0 }));
+  const accepted = buildRequiredAcceptance(passing);
+  assert.equal(accepted[0].status, 'VERIFIED');
+  assert.ok(accepted.some(item => item.status === 'BLOCKED' && /frontend/.test(item.name)));
+  assert.equal(buildRequiredAcceptance([...passing.slice(0, 2), { name: 'mongo-orderProtection', code: 1 }])[0].status, 'BLOCKED');
+});

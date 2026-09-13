@@ -145,6 +145,14 @@ function sanitizeSettingsUpdate(input = {}, current = {}) {
   if (input.allowedAssetClasses !== undefined) update.allowedAssetClasses = normalizeAssetClasses(input.allowedAssetClasses);
   if (input.allowedSymbols !== undefined) update.allowedSymbols = normalizeSymbolList(input.allowedSymbols);
   if (input.blockedSymbols !== undefined) update.blockedSymbols = normalizeSymbolList(input.blockedSymbols);
+  for (const field of ['dailyLimit', 'weeklyLimit', 'monthlyLimit']) {
+    if (input[field] === undefined) continue;
+    const value = Number(input[field]);
+    if (input[field] === null || input[field] === '' || !Number.isFinite(value) || value < 0 || !Number.isSafeInteger(Math.round(value * 100)) || Math.abs(value * 100 - Math.round(value * 100)) > 1e-7) {
+      reject(`${field} must be a nonnegative dollar amount with at most two decimal places.`);
+    }
+    update[field] = value;
+  }
   if (input.maxTradeAmount !== undefined) update.maxTradeAmount = toNonNegativeNumber(input.maxTradeAmount);
   if (input.maxPositionSize !== undefined) update.maxPositionSize = toNonNegativeNumber(input.maxPositionSize);
   if (input.maxDailyLoss !== undefined) update.maxDailyLoss = toNonNegativeNumber(input.maxDailyLoss);

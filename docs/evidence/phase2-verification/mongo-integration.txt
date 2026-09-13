@@ -1,0 +1,30 @@
+TAP version 13
+# Subtest: real database and HTTP login reject non-owner, protect data and revoke logout token
+ok 1 - real database and HTTP login reject non-owner, protect data and revoke logout token
+  ---
+  duration_ms: 160.629875
+  ...
+# Subtest: real unique outbox index deduplicates concurrent reconciliation and competing senders
+ok 2 - real unique outbox index deduplicates concurrent reconciliation and competing senders
+  ---
+  duration_ms: 23.509334
+  ...
+# Subtest: expired sending lease recovers after reconnect with bounded retry
+ok 3 - expired sending lease recovers after reconnect with bounded retry
+  ---
+  duration_ms: 22.202083
+  ...
+# Subtest: real unique lock index elects one worker and rejects lost or expired lease renewal
+ok 4 - real unique lock index elects one worker and rejects lost or expired lease renewal
+  ---
+  duration_ms: 60.135042
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 483.714291

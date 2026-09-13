@@ -48,6 +48,8 @@ test('trade execute route uses paper broker persistence pipeline', async t => {
 
   const handler = getRouteHandler(tradeRouter, '/execute', 'post');
   const req = {
+    user: { userId: 'owner' },
+    get: name => name === 'Idempotency-Key' ? 'stable-unit-key' : undefined,
     body: {
       symbol: 'AAPL',
       side: 'buy',
@@ -66,6 +68,8 @@ test('trade execute route uses paper broker persistence pipeline', async t => {
   assert.equal(res.statusCode, 200);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].origin, 'manual');
+  assert.equal(calls[0].userId, 'owner');
+  assert.equal(calls[0].idempotencyKey, 'stable-unit-key');
   assert.equal(calls[0].metadata.source, 'api_trade_execute');
   assert.equal(res.body.order._id, 'paper-order-1');
 });
@@ -84,6 +88,8 @@ test('paper order route does not duplicate already recorded rejected broker orde
 
   const handler = getRouteHandler(paperTradesRouter, '/order', 'post');
   const req = {
+    user: { userId: 'owner' },
+    get: name => name === 'Idempotency-Key' ? 'stable-unit-key' : undefined,
     body: {
       symbol: 'AAPL',
       side: 'buy',

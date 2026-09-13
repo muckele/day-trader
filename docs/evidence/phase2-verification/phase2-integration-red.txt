@@ -1,0 +1,69 @@
+✔ manual adapter preserves owner and stable key and never invents a filled trade (0.398583ms)
+✖ manual response serializes mongoose intent and exposes only broker-issued ID (2.916583ms)
+✔ robotrader settings default to paper mode with live trading disabled (0.8055ms)
+✔ robotrader settings rejects live even with confirmation (0.246708ms)
+✔ robotrader settings normalizes symbols and asset classes (0.090875ms)
+✔ robotrader settings sanitizes boolean string values (0.064917ms)
+✔ robotrader settings recovers from concurrent default create race (0.296958ms)
+✔ owner explicit enable clears stop pause but preserves circuit pauses (0.05625ms)
+✔ unsupported automated settings rejected: {"allowFractionalShares":true} (0.05525ms)
+✔ unsupported automated settings rejected: {"allowExtendedHours":true} (0.05125ms)
+✔ unsupported automated settings rejected: {"allowCryptoTrading":true} (0.053083ms)
+✔ unsupported automated settings rejected: {"allowOptionsTrading":true} (0.098083ms)
+✔ unsupported automated settings rejected: {"allowShortSelling":true} (0.049458ms)
+✔ unsupported automated settings rejected: {"allowedAssetClasses":["crypto"]} (0.042125ms)
+✖ spending limits persist cents and reject invalid configuration (0.763917ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 13
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 182.889375
+
+✖ failing tests:
+
+test at backend/tests/alpacaExecutionService.test.js:15:1
+✖ manual response serializes mongoose intent and exposes only broker-issued ID (2.916583ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  undefined !== 'SPY'
+
+      at TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/tests/alpacaExecutionService.test.js:21:10)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: 'SPY',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at backend/tests/robotraderSettings.test.js:84:1
+✖ spending limits persist cents and reject invalid configuration (0.763917ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+
+  + {}
+  - {
+  -   dailyLimit: 100.25,
+  -   monthlyLimit: 0,
+  -   weeklyLimit: 500
+  - }
+
+      at TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/tests/robotraderSettings.test.js:85:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+      at Test.postRun (node:internal/test_runner/test:1522:19)
+      at Test.run (node:internal/test_runner/test:1447:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: {},
+    expected: { dailyLimit: 100.25, weeklyLimit: 500, monthlyLimit: 0 },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

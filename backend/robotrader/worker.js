@@ -1,5 +1,6 @@
 const { randomUUID } = require('node:crypto');
 const { enqueueOrderNotification } = require('../services/roboNotificationService');
+const OrderIntent = require('../models/OrderIntent');
 const RoboSettings = require('../models/RoboSettings');
 const RoboTradeDecision = require('../models/RoboTradeDecision');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
@@ -580,152 +581,42 @@ async function cleanupRoboAuditLogs({
   };
 }
 
-async function submitApprovedOrder({
-  userId,
-  accountId,
-  environment,
-  decisionDoc,
-  orderInput,
-  riskResult,
-  broker,
-  now,
-  beforeSubmit,
-  deps
-}) {
-  const clientOrderId = orderInput.clientOrderId || orderInput.client_order_id || deps.buildClientOrderId({
-    origin: 'robotrader',
-    symbol: orderInput.symbol,
-    now
+async function submitApprovedOrder({ userId, accountId, environment, decisionDoc, orderInput,
+  riskResult, broker, now, beforeSubmit, deps }) {
+  const lifecycle = await (deps.getOrderLifecycle || require('../services/orderLifecycleService').getOrderLifecycle)({ broker });
+  const result = await lifecycle.submit({
+    userId: String(userId), origin: 'robotrader',
+    idempotencyKey: decisionDoc.idempotencyKey || `robotrader-decision:${decisionDoc._id}`,
+    orderInput, beforeSubmit
   });
-  const pendingOrder = await deps.RoboTradeOrder.create({
-    userId,
-    accountId,
-    decisionId: decisionDoc._id,
-    environment,
-    symbol: normalizeSymbol(orderInput.symbol),
-    assetClass: normalizeAssetClass(orderInput.assetClass) || 'stocks',
-    side: orderInput.side,
-    orderType: orderInput.orderType,
-    orderClass: orderInput.orderClass,
-    timeInForce: orderInput.timeInForce,
-    qty: orderInput.qty,
-    notional: orderInput.notional,
-    limitPrice: orderInput.limitPrice,
-    stopPrice: orderInput.stopPrice,
-    trailPrice: orderInput.trailPrice,
-    trailPercent: orderInput.trailPercent,
-    takeProfit: orderInput.takeProfit,
-    stopLoss: orderInput.stopLoss,
-    riskStopPrice: orderInput.riskStopPrice,
-    riskTakeProfitPrice: orderInput.riskTakeProfitPrice,
-    clientOrderId,
-    status: 'pending_submit',
-    reasoningSummary: decisionDoc.reasoningSummary,
-    strategyId: decisionDoc.strategyId,
-    riskChecks: riskResult.checks || []
-  });
+  const intent = result.intent;
+  const order = result.order || {};
+  // Compatibility projection only; the lifecycle already owns identity, reservation and fills.
+  const pendingOrder = await deps.RoboTradeOrder.findOneAndUpdate({ clientOrderId: intent.clientOrderId }, { $set: {
+    userId, accountId: intent.accountId, intentId: intent._id, executionSource: 'alpaca-paper',
+    decisionId: decisionDoc._id, environment, symbol: orderInput.symbol, assetClass: 'stocks',
+    side: orderInput.side, orderType: orderInput.orderType, orderClass: 'simple',
+    timeInForce: orderInput.timeInForce, qty: orderInput.qty, limitPrice: orderInput.limitPrice,
+    riskStopPrice: orderInput.riskStopPrice, externalOrderId: order.externalOrderId || null,
+    status: intent.status, filledQty: intent.filledQty, alpacaResponse: order,
+    reasoningSummary: decisionDoc.reasoningSummary, strategyId: decisionDoc.strategyId,
+    riskChecks: riskResult.checks || [], submittedAt: now
+  } }, { upsert: true, new: true });
+  decisionDoc.status = ['rejected'].includes(intent.status) ? 'rejected' : 'submitted';
+  decisionDoc.alpacaResponse = order;
+  await decisionDoc.save();
+  await deps.enqueueOrderNotification?.(pendingOrder, { now }).catch(() => {});
+  return pendingOrder;
+}
 
-  try {
-    await beforeSubmit();
-  } catch (error) {
-    pendingOrder.status = 'rejected';
-    pendingOrder.reconciliationStatus = 'blocked_before_submission';
-    pendingOrder.discrepancy = error.message;
-    await pendingOrder.save();
-    throw error;
-  }
-  let acknowledged = false;
-  try {
-    const result = await broker.submitOrder({
-      ...orderInput,
-      clientOrderId: pendingOrder.clientOrderId
-    });
-    acknowledged = true;
-    const order = result.order || {};
-    pendingOrder.externalOrderId = order.id || null;
-    pendingOrder.clientOrderId = order.client_order_id || result.payload?.client_order_id || pendingOrder.clientOrderId;
-    pendingOrder.status = order.status || 'submitted';
-    pendingOrder.rawPayload = result.payload || {};
-    pendingOrder.alpacaResponse = order;
-    pendingOrder.submittedAt = order.submitted_at || now;
-    pendingOrder.filledQty = toFiniteNumber(order.filled_qty, null);
-    pendingOrder.filledAvgPrice = toFiniteNumber(order.filled_avg_price, null);
-    pendingOrder.filledAt = order.filled_at || null;
-    await pendingOrder.save();
-    if (String(pendingOrder.status || '').toLowerCase() === 'filled' && typeof deps.submitProtectiveStopForEntry === 'function') {
-      try {
-        const positions = typeof broker.getPositions === 'function'
-          ? await broker.getPositions()
-          : [];
-        await deps.submitProtectiveStopForEntry(pendingOrder, { broker, positions, now }, deps);
-      } catch (err) {
-        await writeAudit(userId, 'robotrader_protective_stop_error', {
-          decisionId: String(decisionDoc._id),
-          parentOrderId: String(pendingOrder._id),
-          clientOrderId: pendingOrder.clientOrderId,
-          symbol: pendingOrder.symbol,
-          reason: err?.message || 'Could not create protective stop after immediate fill.',
-          environment
-        }, deps);
-      }
-    }
-
-    decisionDoc.status = 'submitted';
-    decisionDoc.alpacaResponse = order;
-    await decisionDoc.save();
-
-    await writeAudit(userId, 'robotrader_order_submitted', {
-      decisionId: String(decisionDoc._id),
-      orderId: pendingOrder.externalOrderId,
-      clientOrderId: pendingOrder.clientOrderId,
-      symbol: pendingOrder.symbol,
-      status: pendingOrder.status,
-      environment
-    }, deps);
-    await deps.enqueueOrderNotification?.(pendingOrder, { now }).catch(() => {});
-    return pendingOrder;
-  } catch (err) {
-    if (acknowledged) {
-      pendingOrder.reconciliationStatus = 'acknowledgement_persistence_failed';
-      pendingOrder.discrepancy = 'Broker accepted the order; local persistence or audit failed. Reconciliation required.';
-      await pendingOrder.save().catch(() => {});
-      await writeAudit(userId, 'robotrader_order_acknowledgement_error', {
-        clientOrderId: pendingOrder.clientOrderId, orderId: pendingOrder.externalOrderId, environment
-      }, deps).catch(() => {});
-      await deps.enqueueOrderNotification?.(pendingOrder, { now }).catch(() => {});
-      return pendingOrder;
-    }
-    const ambiguousSubmit = deps.isAmbiguousSubmitError(err);
-    const brokerError = buildBrokerErrorSnapshot(err);
-    const brokerErrorMessage = brokerError.message || 'Alpaca order submission failed.';
-    pendingOrder.status = ambiguousSubmit ? 'pending_submit' : 'rejected';
-    pendingOrder.reconciliationStatus = ambiguousSubmit
-      ? 'submit_error_pending_reconciliation'
-      : 'submit_rejected';
-    if (!ambiguousSubmit) pendingOrder.rejectedAt = now;
-    pendingOrder.discrepancy = brokerErrorMessage;
-    pendingOrder.rawPayload = err.alpacaPayload || {};
-    pendingOrder.alpacaResponse = brokerError;
-    await pendingOrder.save();
-
-    decisionDoc.status = ambiguousSubmit ? 'error' : 'rejected';
-    decisionDoc.error = brokerErrorMessage;
-    decisionDoc.alpacaResponse = brokerError;
-    await decisionDoc.save();
-
-    await writeAudit(userId, ambiguousSubmit ? 'robotrader_order_submit_uncertain' : 'robotrader_order_rejected', {
-      decisionId: String(decisionDoc._id),
-      clientOrderId: pendingOrder.clientOrderId,
-      symbol: pendingOrder.symbol,
-      reason: brokerErrorMessage,
-      status: brokerError.status,
-      brokerError,
-      ambiguousSubmit,
-      environment
-    }, deps);
-    await deps.enqueueOrderNotification?.(pendingOrder, { now }).catch(() => {});
-    return pendingOrder;
-  }
+function capAutomatedEntry(input, research = {}) {
+  if (input.side !== 'buy') return input;
+  const reference = Number(input.limitPrice || research.price || research.quote?.price);
+  const limitPrice = roundOrderPrice(input.limitPrice || reference * 1.005);
+  const qty = Math.floor(Number(input.qty) || (Number(input.notional || input.estimatedNotional) / limitPrice));
+  return { ...input, orderType: 'limit', orderClass: 'simple', limitPrice, qty,
+    notional: null, estimatedNotional: qty * limitPrice,
+    riskStopPrice: extractRiskStopPrice(input), takeProfit: null, stopLoss: null };
 }
 
 async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = false, now = new Date() } = {}, deps = defaultDeps) {
@@ -834,7 +725,7 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
           qty: 1,
           estimatedNotional: 0
         };
-    const orderInput = adaptOrderForMarketSession(baseOrderInput, {
+    const orderInput = adaptOrderForMarketSession(capAutomatedEntry(baseOrderInput, research), {
       settings,
       marketClock,
       research
@@ -1038,7 +929,7 @@ async function previewRoboTraderForUser({
           qty: 1,
           estimatedNotional: 0
         };
-    const orderInput = adaptOrderForMarketSession(baseOrderInput, {
+    const orderInput = adaptOrderForMarketSession(capAutomatedEntry(baseOrderInput, research), {
       settings,
       marketClock,
       research
@@ -1183,6 +1074,19 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
         localOpenOrdersQuery = localOpenOrdersQuery.lean();
       }
       const localOpenOrders = await localOpenOrdersQuery;
+      // Recover app ownership from the durable intent even when projection persistence failed.
+      if (deps.OrderIntent) {
+        const intents = await deps.OrderIntent.find({ userId: String(userId), executionSource: 'alpaca-paper',
+          origin: /^robo/i, side: 'buy', status: { $nin: ['filled', 'canceled', 'expired', 'rejected'] } });
+        for (const intent of intents) {
+          const owned = { intentId: intent._id, side: intent.side, orderClass: 'simple', status: intent.status };
+          localOpenOrders.push({ ...owned, clientOrderId: intent.clientOrderId });
+          if (intent.replacement?.clientOrderId || intent.replacement?.brokerOrderId) {
+            localOpenOrders.push({ ...owned, clientOrderId: intent.replacement.clientOrderId,
+              externalOrderId: intent.replacement.brokerOrderId });
+          }
+        }
+      }
       const localOrdersByExternalId = new Map();
       const localOrdersByClientOrderId = new Map();
       for (const order of Array.isArray(localOpenOrders) ? localOpenOrders : []) {
@@ -1208,7 +1112,8 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
         }
 
         if (String(order.side || localOrder.side || '').toLowerCase() !== 'buy'
-          || !Number.isFinite(Number(order.filled_qty)) || Number(order.filled_qty) > 0
+          || !Number.isFinite(Number(order.filled_qty))
+          || (Number(order.filled_qty) > 0 && (!localOrder.intentId || String(order.order_class || 'simple') !== 'simple'))
           || String(order.order_class || '').toLowerCase() === 'oco') {
           preservedOrders.push({ id: externalOrderId, reason: 'Protection, filled exposure, or unknown order state; manual review required.' });
           continue;
@@ -1216,7 +1121,11 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
         const cancelTarget = externalOrderId || normalizeOrderIdentifier(localOrder.externalOrderId);
         if (!cancelTarget) continue;
         try {
-          await broker.cancelOrder(cancelTarget);
+          if (localOrder.intentId) {
+            const lifecycle = await (deps.getOrderLifecycle || require('../services/orderLifecycleService').getOrderLifecycle)({ broker });
+            await lifecycle.reconcile({ intentId: localOrder.intentId });
+            await lifecycle.cancel({ intentId: localOrder.intentId });
+          } else await broker.cancelOrder(cancelTarget);
           canceled.push(cancelTarget);
           if (externalOrderId) canceledExternalOrderIds.push(externalOrderId);
           if (clientOrderId) canceledClientOrderIds.push(clientOrderId);
@@ -1284,6 +1193,7 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
 
 const defaultDeps = {
   enqueueOrderNotification,
+  OrderIntent,
   RoboSettings,
   RoboTradeDecision,
   RoboTradeOrder,
@@ -1309,6 +1219,8 @@ const defaultDeps = {
 
 module.exports = {
   buildDecisionIdempotencyKey,
+  capAutomatedEntry,
+  submitApprovedOrder,
   buildRunId,
   buildSymbolUniverse,
   cleanupRoboAuditLogs,

@@ -15,6 +15,9 @@ const defaultSettings = {
   allowedAssetClasses: ['stocks'],
   allowedSymbols: [],
   blockedSymbols: [],
+  dailyLimit: 0,
+  weeklyLimit: 0,
+  monthlyLimit: 0,
   maxTradeAmount: 1000,
   maxPositionSize: 5000,
   maxDailyLoss: 500,
@@ -142,6 +145,9 @@ const RISK_PRESETS = [
 ];
 
 const numericFields = [
+  ['dailyLimit', 'Daily Entry Spending Limit (UTC)', '$'],
+  ['weeklyLimit', 'Weekly Entry Spending Limit (Monday UTC)', '$'],
+  ['monthlyLimit', 'Monthly Entry Spending Limit (UTC)', '$'],
   ['maxTradeAmount', 'Max Trade Amount', '$'],
   ['maxPositionSize', 'Max Position Size', '$'],
   ['maxDailyLoss', 'Max Daily Loss', '$'],
@@ -780,6 +786,7 @@ export default function RoboTrader() {
           </div>
 
           <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <p className="text-sm text-slate-400 md:col-span-2">Spending limits apply to manual and automated Alpaca paper entries together, including pending reservations. Zero blocks new entries. Sales do not replenish spending limits.</p>
             {numericFields.map(([key, label, prefix]) => (
               <label key={key} className="rt-panel p-4">
                 <span className="rt-label">{label}</span>

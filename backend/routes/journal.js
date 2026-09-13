@@ -33,11 +33,13 @@ function normalizeSearchQuery(value) {
 router.get('/:tradeId', async (req, res, next) => {
   try {
     const accountId = getRequestAccountId(req);
+    const trade = await PaperTrade.findOne({ _id: req.params.tradeId, accountId, broker: 'paper' }).lean();
+    if (!trade) return res.status(404).json({ error: 'Simulator trade not found.' });
     const entry = await PaperJournalEntry.findOne({
       accountId,
       tradeId: req.params.tradeId
     }).lean();
-    res.json(entry || null);
+    res.json(entry ? { ...entry, executionSource: 'local-simulation' } : null);
   } catch (err) {
     next(err);
   }
@@ -46,6 +48,8 @@ router.get('/:tradeId', async (req, res, next) => {
 router.put('/:tradeId', async (req, res, next) => {
   try {
     const accountId = getRequestAccountId(req);
+    const trade = await PaperTrade.findOne({ _id: req.params.tradeId, accountId, broker: 'paper' }).lean();
+    if (!trade) return res.status(404).json({ error: 'Simulator trade not found.' });
     const payload = {
       thesis: req.body?.thesis || '',
       plan: req.body?.plan || '',
@@ -61,7 +65,7 @@ router.put('/:tradeId', async (req, res, next) => {
       { $set: payload },
       { new: true, upsert: true }
     );
-    res.json(entry);
+    res.json({ ...entry.toObject(), executionSource: 'local-simulation' });
   } catch (err) {
     next(err);
   }
@@ -76,7 +80,7 @@ router.get('/', async (req, res, next) => {
       return res.status(400).json({ error: 'search is limited to 80 characters.' });
     }
     const startDate = parseRange(range);
-    const tradeQuery = { accountId };
+    const tradeQuery = { accountId, broker: 'paper' };
     if (startDate) tradeQuery.filledAt = { $gte: startDate };
     if (symbol) tradeQuery.symbol = symbol.toUpperCase();
     if (strategyId) tradeQuery.strategyId = strategyId;
@@ -106,6 +110,7 @@ router.get('/', async (req, res, next) => {
       const trade = tradeMap[entry.tradeId.toString()];
       return {
         ...entry,
+        executionSource: 'local-simulation',
         trade: trade
           ? {
               symbol: trade.symbol,

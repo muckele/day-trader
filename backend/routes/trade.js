@@ -13,6 +13,8 @@ router.post('/execute', auth, requireMongo, async (req, res, next) => {
     const payload = req.body || {};
     const result = await paperBroker.placeOrder({
       accountId,
+      userId: req.user.userId,
+      idempotencyKey: req.get('Idempotency-Key') || req.body?.idempotencyKey,
       symbol: payload.symbol,
       side: payload.side,
       qty: payload.qty,
@@ -39,7 +41,7 @@ router.post('/execute', auth, requireMongo, async (req, res, next) => {
     res.json(result);
   } catch (err) {
     const payload = req.body || {};
-    await paperBroker.recordRejectedOrder({
+    if (!require('../services/alpacaTradingClient').shouldSyncPaperTradesToAlpaca()) await paperBroker.recordRejectedOrder({
       ...payload,
       accountId,
       origin: 'manual',
@@ -48,7 +50,7 @@ router.post('/execute', auth, requireMongo, async (req, res, next) => {
         source: 'api_trade_execute'
       }
     }, err.message).catch(() => {});
-    res.status(400).json({ error: err.message });
+    res.status(err.statusCode || err.status || 400).json({ error: err.message, code: err.code });
   }
 });
 

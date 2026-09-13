@@ -94,8 +94,8 @@ export default function Analytics() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="rt-eyebrow">Analytics</p>
-          <h1 className="rt-title">Performance Dashboard</h1>
+          <p className="rt-eyebrow">Analytics · Local simulator only</p>
+          <h1 className="rt-title">Local Simulator Performance</h1>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="secondary" size="sm" onClick={handleExport}>

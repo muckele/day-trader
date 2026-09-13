@@ -1,4 +1,8 @@
 const mongoose = require('mongoose');
+const AccountCapacity = require('../models/AccountCapacity');
+const SpendingBucket = require('../models/SpendingBucket');
+const OrderProtection = require('../models/OrderProtection');
+const OrderProtectionLock = require('../models/OrderProtectionLock');
 const BrokerOrder = require('../models/BrokerOrder');
 const Fill = require('../models/Fill');
 const OrderIntent = require('../models/OrderIntent');
@@ -21,6 +25,7 @@ const {
 } = require('./recommendationEngine');
 
 const TRADING_INDEX_MODELS = [
+  AccountCapacity, SpendingBucket, OrderProtection, OrderProtectionLock,
   NotificationOutbox,
   BrokerOrder,
   Fill,

@@ -1,3 +1,4 @@
+import { submitPaperOrder, paperOrderStatusMessage } from '../utils/paperOrderRequest';
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { useParams } from 'react-router-dom';
@@ -445,7 +446,7 @@ export default function Stock() {
     setIsSubmitting(true);
     setTradeError('');
     try {
-      const res = await axios.post('/api/paper-trades/order', {
+      const res = await submitPaperOrder({
         symbol,
         assetClass: tradeAssetClass,
         side: tradeSide,
@@ -481,7 +482,7 @@ export default function Stock() {
       const fillPrice = formatOrderPrice(res.data.order?.fillPrice);
       emitToast({
         type: 'success',
-        title: filled ? 'Order filled' : 'Order submitted',
+        title: paperOrderStatusMessage(orderStatus),
         message: `${tradeSide.toUpperCase()} ${normalizedTradeQty} ${symbol}${
           filled && fillPrice ? ` @ $${fillPrice}` : ` · ${String(orderStatus || 'open').toUpperCase()}`
         }${

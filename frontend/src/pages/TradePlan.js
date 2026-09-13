@@ -1,3 +1,4 @@
+import { submitPaperOrder, paperOrderStatusMessage } from '../utils/paperOrderRequest';
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import Card from '../components/ui/Card';
@@ -207,7 +208,7 @@ export default function TradePlan() {
 
     setExecuting(true);
     try {
-      const res = await axios.post('/api/paper-trades/order', {
+      const res = await submitPaperOrder({
         symbol: selectedIdea.symbol,
         assetClass: executionAssetClass,
         side,
@@ -242,7 +243,7 @@ export default function TradePlan() {
       }
       emitToast({
         type: 'success',
-        message: status === 'filled' ? 'Paper trade filled.' : 'Paper order submitted.'
+        message: paperOrderStatusMessage(status)
       });
       closeExecutionModal();
       fetchPlan();

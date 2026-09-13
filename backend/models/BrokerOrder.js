@@ -13,7 +13,8 @@ const brokerOrderSchema = new mongoose.Schema(
     side: { type: String, enum: ['buy', 'sell'], required: true },
     qty: { type: Number, required: true },
     orderType: { type: String, default: 'market' },
-    status: { type: String, enum: ['filled', 'rejected', 'cancelled', 'submitted'], default: 'submitted', index: true },
+    status: { type: String, default: 'submitted', index: true },
+    executionSource: String, clientOrderId: String, replacedBy: String, replaces: String, filledQty:{type:Number,default:0}, filledNotionalCents:{type:Number,default:0},
     estimatedPrice: { type: Number, default: null },
     fillPrice: { type: Number, default: null },
     notional: { type: Number, default: null },
@@ -29,4 +30,5 @@ const brokerOrderSchema = new mongoose.Schema(
 
 brokerOrderSchema.index({ accountId: 1, submittedAt: -1 });
 
+brokerOrderSchema.index({accountId:1,externalOrderId:1},{unique:true,partialFilterExpression:{executionSource:'alpaca-paper'}});
 module.exports = mongoose.model('BrokerOrder', brokerOrderSchema);

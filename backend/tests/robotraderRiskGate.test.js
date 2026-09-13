@@ -478,3 +478,14 @@ for (const [name, overrides] of [
     assert.equal(result.approved, false);
   });
 }
+
+
+test('risk gate admits capped whole-share managed protection and rejects invalid stop terms', () => {
+  const input={asset:{tradable:true,status:'active'},marketClock:{is_open:true},settings:baseSettings,
+    account:{cash:'5000',equity:'10000',last_equity:'10000',status:'ACTIVE'},positions:[],openOrders:[],recentOrders:[],
+    tradesToday:0,dailyPnl:0,decision:baseDecision,environment:'paper',
+    orderInput:{...baseOrder,orderType:'limit',orderClass:'simple',limitPrice:201,riskStopPrice:190,stopLoss:null,takeProfit:null}};
+  assert.equal(evaluateRoboRisk(input).approved,true);
+  input.orderInput.riskStopPrice=210;
+  assert.equal(evaluateRoboRisk(input).checks.find(c=>c.name==='entry_protection').passed,false);
+});

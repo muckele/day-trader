@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const fillSchema = new mongoose.Schema(
   {
+    executionSource:String, externalOrderId:String, cumulativeQty:Number, notionalCents:Number,
     accountId: { type: String, default: 'default', index: true },
     broker: { type: String, enum: ['paper', 'alpaca'], default: 'paper', index: true },
     intentId: { type: mongoose.Schema.Types.ObjectId, ref: 'OrderIntent', default: null, index: true },
@@ -25,4 +26,5 @@ const fillSchema = new mongoose.Schema(
 
 fillSchema.index({ accountId: 1, filledAt: -1 });
 
+fillSchema.index({accountId:1,externalOrderId:1,cumulativeQty:1},{unique:true,partialFilterExpression:{executionSource:'alpaca-paper'}});
 module.exports = mongoose.model('Fill', fillSchema);

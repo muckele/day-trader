@@ -5,7 +5,7 @@
       "name": "runtime",
       "code": 0,
       "signal": null,
-      "durationMs": 33,
+      "durationMs": 31,
       "command": [
         "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
         "-e",
@@ -17,7 +17,7 @@
       "name": "backend-install",
       "code": 0,
       "signal": null,
-      "durationMs": 1023,
+      "durationMs": 840,
       "command": [
         "npm",
         "ci",
@@ -31,7 +31,7 @@
       "name": "frontend-install",
       "code": 0,
       "signal": null,
-      "durationMs": 8667,
+      "durationMs": 6735,
       "command": [
         "npm",
         "ci",
@@ -45,7 +45,7 @@
       "name": "verification-tests",
       "code": 0,
       "signal": null,
-      "durationMs": 76,
+      "durationMs": 75,
       "command": [
         "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
         "--test",
@@ -57,11 +57,13 @@
       "name": "backend-tests",
       "code": 0,
       "signal": null,
-      "durationMs": 1664,
+      "durationMs": 1607,
       "command": [
         "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
         "--test",
         "tests/accountScope.test.js",
+        "tests/alpacaExecutionService.test.js",
+        "tests/alpacaPortfolio.test.js",
         "tests/alpacaTradingClient.test.js",
         "tests/analysisEngine.test.js",
         "tests/analytics.test.js",
@@ -75,11 +77,13 @@
         "tests/executionGate.test.js",
         "tests/executionReadiness.test.js",
         "tests/guardrails.test.js",
+        "tests/manualAlpacaDispatch.test.js",
         "tests/marketRoute.test.js",
         "tests/mongoConnectionConfig.test.js",
         "tests/mongoNetwork.test.js",
         "tests/mongoState.test.js",
         "tests/notificationRecovery.test.js",
+        "tests/orderLifecycle.financial.test.js",
         "tests/ownerAccess.test.js",
         "tests/ownerAuthRoutes.test.js",
         "tests/ownerBootstrap.test.js",
@@ -110,6 +114,7 @@
         "tests/robotraderStrategyEngine.test.js",
         "tests/robotraderWorker.test.js",
         "tests/sessionCookie.test.js",
+        "tests/simulatorSeparation.test.js",
         "tests/strategyRunService.test.js",
         "tests/tradeLogic.test.js",
         "tests/tradePlan.test.js",
@@ -126,7 +131,7 @@
       "name": "mongo-integration",
       "code": 0,
       "signal": null,
-      "durationMs": 624,
+      "durationMs": 514,
       "command": [
         "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
         "--test",
@@ -135,10 +140,46 @@
       "log": "/Users/Matt/Projects/day-trader/docs/evidence/verification/mongo-integration.log"
     },
     {
+      "name": "mongo-orderLifecycle.faults",
+      "code": 0,
+      "signal": null,
+      "durationMs": 824,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/orderLifecycle.faults.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/verification/mongo-orderLifecycle.faults.log"
+    },
+    {
+      "name": "mongo-orderLifecycle.mongo",
+      "code": 0,
+      "signal": null,
+      "durationMs": 1421,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/orderLifecycle.mongo.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/verification/mongo-orderLifecycle.mongo.log"
+    },
+    {
+      "name": "mongo-orderProtection",
+      "code": 0,
+      "signal": null,
+      "durationMs": 687,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/orderProtection.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/verification/mongo-orderProtection.log"
+    },
+    {
       "name": "frontend-tests",
       "code": 0,
       "signal": null,
-      "durationMs": 2378,
+      "durationMs": 2211,
       "command": [
         "npm",
         "test",
@@ -152,7 +193,7 @@
       "name": "frontend-build",
       "code": 0,
       "signal": null,
-      "durationMs": 11353,
+      "durationMs": 11141,
       "command": [
         "npm",
         "run",
@@ -163,9 +204,9 @@
   ],
   "requiredAcceptance": [
     {
-      "name": "Mongo persistence, reservation and restart integration",
-      "status": "BLOCKED",
-      "reason": "Full lifecycle integration suite not implemented"
+      "name": "Implemented Mongo financial lifecycle, reservation, fault and protection regressions",
+      "status": "VERIFIED",
+      "reason": "All three required isolated Mongo financial regression suites passed; bounded coverage only"
     },
     {
       "name": "Actual frontend/backend/auth/database lifecycle E2E",
@@ -173,12 +214,12 @@
       "reason": "Existing Playwright suite mocks API responses"
     },
     {
-      "name": "Fault/concurrency/protection acceptance",
+      "name": "Complete fault/concurrency/protection release acceptance",
       "status": "BLOCKED",
-      "reason": "Complete acceptance coverage not implemented"
+      "reason": "Bounded regressions do not establish all release failure interleavings and external acceptance"
     }
   ],
-  "generatedAt": "2026-09-13T04:43:30.729Z",
+  "generatedAt": "2026-09-13T05:02:37.026Z",
   "runtime": "v20.20.2",
   "deterministicChecksPass": true,
   "releaseCandidate": false

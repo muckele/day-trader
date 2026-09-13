@@ -80,3 +80,14 @@ Rollback: disable automation first and retain audit/order history, preserve unre
 Use the owner RoboTrader Emergency Stop control or authenticated `POST /api/robotrader/emergency-stop` with `{"cancelOpenOrders":true,"environment":"paper"}`. Review its reported preserved orders and pending cancellations. The stop blocks new automated exposure; it does not flatten positions. Protective sells and known partial linked groups are preserved. Broker acceptance may already be in flight; verify broker state and reconciliation before considering cancellation final.
 
 Explicit owner Enable is required to resume and clears only the emergency/user-disable pause. Separate failure pauses remain until resolved. Keep reconciliation working while entries are disabled. Flattening, broad cancellation and destructive history retention changes require separate deliberate operator action and are not implicit in emergency stop.
+
+
+## Phase 2 financial controls
+
+Set positive daily/weekly/monthly entry spending limits in RoboTrader settings before any Alpaca paper entry. These apply to manual/research/trade-plan and automated entries together. Zero/missing values block entries. Boundaries are UTC day, Monday week and calendar month. Pending/uncertain orders retain reservations, and sells do not replenish period spending.
+
+Use a stable Idempotency-Key for every entry/close and replacement. Never create another key merely to recover a timeout. Reconciliation looks up the persisted client ID and never reposts; unresolved submissions move to reconciliation_required after five minutes while capacity remains held. Do not delete intents, fills, locks or spending documents to clear an operational block.
+
+Managed protective stops resize by confirmed cancellation then a new durable generation. Unresolved protection blocks new automated risk and creates audit/outbox alerts. A conflicting manual exit is blocked while a protective reservation exists; a coordinated stop-cancel/close workflow remains a release acceptance item. Emergency stop disables automation and discovers app-owned entry groups from durable intents, preserving protective sells.
+
+This phase deliberately supports only one non-increasing replacement with unchanged protective terms. Cash capacity does not automatically rise after sales/deposits. Full-stack and external acceptance remain required before operation; no unattended activation or deployment was performed.

@@ -1,30 +1,36 @@
 # Implementation checkpoint — resume here
 
-Status: IMPLEMENTATION INCOMPLETE. Do not deploy or activate unattended trading. Branch codex/owner-paper-mvp; starting HEAD 4b3425153b7f3dc3816246cf5d5da7e41d42670e. No commits or external trading performed. Uncommitted changes are this session's implementation.
+Status: **IMPLEMENTATION INCOMPLETE / NO-GO for release**. Repository muckele/day-trader, branch `codex/owner-paper-mvp`.
+
+The prior dirty tree was inspected, matched its documented checkpoint, and passed deterministic checks before preservation as `a2fdefaac8cce02fe721251eae6d8fc2191af7c8` (`feat: harden owner-only paper MVP foundation`). That is the Phase 2 starting SHA. The earlier starting SHA was `4b3425153b7f3dc3816246cf5d5da7e41d42670e`. Phase 2 is recorded by the subsequent financial-integrity commit; use `git log -2` for its exact SHA rather than embedding a self-referential commit hash.
 
 ## Completed bounded work
 
-Owner authorization/bootstrap/logout revocation, immutable paper-only exact origin and expected-account write guards, readiness index/write gating, worker disable-state race and lease checks, legacy entry shutdown, conservative automation settings/risk restrictions, durable notification outbox/SMTP dependency, release-scope UI, verification script/CI configuration, and isolated MongoDB/HTTP regression tests. Read component reports in docs/evidence before changing these again.
+Foundation: owner authorization/bootstrap/logout revocation, exact paper endpoint and expected-account write guards, readiness index/write gating, worker disable/lease checks, legacy entry shutdown, conservative settings, durable notification outbox, release-scope UI and deterministic verification.
 
-## Next unfinished task
+Phase 2: manual/research/trade-plan and Robo entries share OrderIntent/BrokerOrder/Fill and atomic AccountCapacity/SpendingBucket transactions. Stable logical request keys and client IDs prevent repost after timeout, lost acknowledgement or restart. Cumulative confirmed fills charge integer cents; uncertainty retains capacity and reaches reconciliation_required after five minutes without automatic resubmission. UTC day/Monday week/calendar month budgets are configurable in the Robo settings screen and apply to all Alpaca entries. Simulator records are excluded from Alpaca portfolio data and budgets.
 
-Unify the manual paper path and canonical worker on a durable account/environment order intent and reservation lifecycle. Start by reading backend/paper/paperBrokerClient.js placeOrder/reconcileAlpacaPaperOrder, backend/services/executionTelemetryService.js, backend/models/OrderIntent.js, backend/models/BrokerOrder.js, backend/models/Fill.js and backend/robotrader/reconciliation.js. Existing manual sync can classify post-acceptance polling errors as rejection and mix simulator-derived accounting with broker data. Existing active worker does not atomically enforce dailyLimit/weeklyLimit/monthlyLimit expenditure.
+Managed stops protect actual filled quantities, resize through cancel-confirm-new generations, recover by stable client ID, and emit durable failure events. Protection and reducing manual exits share an account lease. Emergency stop discovers authoritative app intents even when compatibility projection persistence failed. Replacements permit one successor with non-increasing quantity/limit and unchanged protective terms; unresolved successors preserve reservations. Read the three Phase 2 component reports and plan for supported behavior and limitations.
 
-Implement tests FIRST against the disposable replica set: duplicate logical request -> one stable client_order_id and one reservation; timeout after broker acceptance -> uncertain intent retained/reconciled; database failure before submit -> no broker write; persistence failure after broker acceptance -> no rejection/retry; partial fill then cancel -> confirmed spent capacity retained; concurrent workers/manual requests -> no overspend. Use dedicated broker boundary fixture adapter; never real credentials. Use decimal/cents arithmetic and document UTC or explicit market timezone boundaries. Do not sell to replenish spending budgets. Bind unique indexes to designated account and paper environment and gate readiness on them.
+## Next unfinished task: full-stack release acceptance
 
-## Further required work
+Build actual frontend → backend → real login/auth → isolated Mongo → controlled provider adapter E2E. Do not inject browser auth tokens or mock application API responses and call that full-stack verification. Existing browser evidence remains API-fixture-only. Include manual/research/trade-plan/worker, duplicate requests, pending/partial/final UI states and source identity.
 
-1. Complete instrument eligibility (explicit ordinary ETF/stock allowlist), shared reducing-exit policy, global/manual control parity and approval limits.
-2. Partial-fill protection, child orders, replacement chains, emergency linked-group races, protected exits while entries disabled. Current bracket use does not protect every partial exposure.
-3. Account-scoped concurrency across all execution paths; current worker lock is user-scoped, adequate only for its single-owner loop, not manual/reconciliation coordination.
-4. Finish notification protection-failure events, operational UI and SMTP receipt evidence; bounded retries/local dedup do not mean exactly-once delivery.
-5. Actual frontend/backend/auth/Mongo order E2E with external providers stubbed only at their boundary. Existing browser tests are UI fixtures.
-6. Full fault/concurrency acceptance and opt-in external paper order command with dedicated account/capped exposure/test-owned cleanup. No such full external order acceptance command exists yet.
-7. Complete all core screen contracts, simulator isolation, research provenance/staleness and backtest accounting audit.
-8. Address remaining dependency advisories without uncontrolled upgrades; validate deploy artifact, Fly/cookie configuration, CI run/branch protections, complete runbook gaps.
+Extend complete fault/concurrency acceptance around server process restarts, lease expiry during broker I/O, settings changes during in-flight operations, linked replacement/emergency stop, source-specific core screen contracts, and unavailable notifications. Phase 2's real Mongo suites establish bounded invariants, not exhaustive release acceptance.
 
-## Verification
+## Deliberate restrictions and remaining local work
 
-Run `node scripts/verify-mvp.mjs` with Node 20 and disposable MongoDB on 127.0.0.1:27189. The command scrubs credentials, installs lockfiles, runs implemented tests and records unmet required layers as BLOCKED with exit 1. `--checks-only` deliberately tests only implemented checks; it is never a release-candidate signal. See final report.json for actual latest results. Full-stack lifecycle acceptance remains incomplete even when unit tests/build pass.
+- Entries require positive spending/risk limits and whole-share capped prices in the supported equity universe. Missing/zero limits block entries. Selling does not replenish period spending.
+- Conservative account cash floor does not automatically increase after sales/deposits. Design a reconciled, serialized cash resynchronization operation before expanding repeated cash recycling; do not clear capacity records or bypass reservations.
+- One replacement successor; only reductions with unchanged protection/order terms. Sell replacement and uncertain replacement cancellation fail closed. Reconcile first.
+- Existing protective reservation blocks a conflicting manual exit. A coordinated operator cancel-stop/close workflow and its fault acceptance still need product-level completion. Protection resizing can leave a temporary gap while cancellation is confirmed; new automated risk is blocked during unresolved coverage.
+- Browser identical payloads retain their logical key through retries/reloads for the session. A deliberate “new identical order” action needs full-stack acceptance; do not silently rotate keys on timeout.
+- Historical unmarked simulator equity is excluded because its source cannot be established. Alpaca cash/positions/history come from broker reads; local confirmed Fill records supply execution history. Full history/provenance and all core-screen contracts need release acceptance.
+- External Alpaca replacement/stop semantics, real broker account identity, SMTP receipt, unattended worker operation and deployment remain unobserved. No external orders, SMTP sends, persistent activation or deployment are authorized by this phase.
+- Dependency findings are documented individually in `docs/evidence/phase2-dependencies.md`. No forced upgrade or framework migration was performed.
 
-External access cannot solve the unfinished local code. No additional user permission is needed for remaining local implementation. External trading, real SMTP recipient tests, persistent activation and deployment require explicit authorization when the actual tooling is ready for review.
+## Verification and operational state
+
+Run `node scripts/verify-mvp.mjs` with Node 20 and disposable MongoDB 7 replica set `mvp` on `127.0.0.1:27189`. Phase 2 used test-owned Docker container `day-trader-mvp-phase2`; tests create and drop random `mvp_test_*` databases. Credentials/scheduler flags are scrubbed by the verifier. The latest report under `docs/evidence/verification` is the actual result authority.
+
+The verifier includes lifecycle, fault and protection Mongo gates and must still exit 1 while full-stack and complete release acceptance are blocked. `--checks-only` is not a release signal. Live trading remains disabled. No additional user input is needed for the remaining local acceptance work.

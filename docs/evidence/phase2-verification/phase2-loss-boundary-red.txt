@@ -1,0 +1,74 @@
+TAP version 13
+# Subtest: real Mongo lifecycle fault boundaries
+    # Subtest: HTTP 500 after acceptance recovers same broker order across restart
+    ok 1 - HTTP 500 after acceptance recovers same broker order across restart
+      ---
+      duration_ms: 82.736209
+      ...
+    # Subtest: uncertainty window expiry requires reconciliation without releasing or reposting
+    ok 2 - uncertainty window expiry requires reconciliation without releasing or reposting
+      ---
+      duration_ms: 49.857334
+      ...
+    # Subtest: database intent failure prevents any broker submission
+    ok 3 - database intent failure prevents any broker submission
+      ---
+      duration_ms: 8.044125
+      ...
+    # Subtest: replacement cannot increase exposure or mutate protective terms
+    ok 4 - replacement cannot increase exposure or mutate protective terms
+      ---
+      duration_ms: 143.347458
+      ...
+    # Subtest: accepted replacement retains reservation after downstream broker-context 403
+    ok 5 - accepted replacement retains reservation after downstream broker-context 403
+      ---
+      duration_ms: 100.093541
+      ...
+    # Subtest: low limit price cannot undervalue existing position for size limits
+    ok 6 - low limit price cannot undervalue existing position for size limits
+      ---
+      duration_ms: 15.631583
+      ...
+    # Subtest: manual entries block exactly at daily loss threshold
+    not ok 7 - manual entries block exactly at daily loss threshold
+      ---
+      duration_ms: 30.437083
+      location: '/Users/Matt/Projects/day-trader/backend/integration/orderLifecycle.faults.test.js:109:13'
+      failureType: 'testCodeFailure'
+      error: 'Missing expected rejection.'
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected:
+      operator: 'rejects'
+      stack: |-
+        process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+        async TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/integration/orderLifecycle.faults.test.js:114:7)
+        async Test.run (node:internal/test_runner/test:797:9)
+        async TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/integration/orderLifecycle.faults.test.js:109:5)
+        async Test.run (node:internal/test_runner/test:797:9)
+        async Test.processPendingSubtests (node:internal/test_runner/test:526:7)
+      ...
+    # Subtest: fractional-cent broker average fills persist without duplicate spend
+    ok 8 - fractional-cent broker average fills persist without duplicate spend
+      ---
+      duration_ms: 77.930375
+      ...
+    1..8
+not ok 1 - real Mongo lifecycle fault boundaries
+  ---
+  duration_ms: 756.378083
+  location: '/Users/Matt/Projects/day-trader/backend/integration/orderLifecycle.faults.test.js:36:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 9
+# suites 0
+# pass 7
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 895.715875

@@ -1,0 +1,531 @@
+Continue the Day Trader owner-only paper-MVP implementation from the existing verified checkpoint.
+
+Repository:
+`/Users/Matt/Projects/day-trader`
+
+Repository:
+`muckele/day-trader`
+
+Branch:
+`codex/owner-paper-mvp`
+
+IMPORTANT: Do not start over and do not rerun the original broad MVP implementation prompt as though nothing has been completed.
+
+The previous implementation session produced a resumable checkpoint at:
+
+`docs/mvp-checkpoint.md`
+
+Also read before making changes:
+
+* `docs/mvp-plan.md`
+* `docs/mvp-scope.md`
+* `docs/mvp-acceptance.md`
+* `docs/mvp-verification.md`
+* `docs/mvp-runbook.md`
+* `docs/evidence/verification/report.md`
+* `docs/evidence/verification/report.json`
+* `docs/evidence/safety-review.md`
+
+The previous verification reported:
+
+* Backend tests: 332 passed, 0 failed, 0 skipped
+* Real MongoDB/HTTP integration tests: 4 passed
+* Frontend tests: 9 passed
+* Verification-script tests: 2 passed
+* Frontend production build: passed
+* Full MVP verifier: intentionally exit 1 because required MVP work remains incomplete
+
+Live trading was not enabled.
+No production deployment or real external broker order was authorized.
+
+============================================================
+0. PRESERVE THE VERIFIED CHECKPOINT FIRST
+=========================================
+
+Before implementing anything:
+
+1. Inspect:
+
+   * `git status`
+   * `git diff --stat`
+   * `git diff`
+   * untracked files
+   * current branch
+   * current HEAD
+
+2. Confirm that the dirty-tree changes correspond to the documented prior MVP implementation.
+
+3. Run the existing deterministic verification if practical before checkpointing.
+
+4. If the dirty-tree contents are consistent with the documented verified checkpoint, create a checkpoint commit before beginning Phase 2.
+
+Use a clear commit message such as:
+
+`feat: harden owner-only paper MVP foundation`
+
+Do NOT:
+
+* reset the repository
+* discard unrelated changes
+* force push
+* squash away evidence
+* modify production infrastructure
+* enable live trading
+* send real brokerage orders
+* send external SMTP messages
+
+If the dirty tree contains unrelated or suspicious changes, preserve them and report the conflict instead of deleting them.
+
+After checkpointing, record the new starting SHA for this phase.
+
+============================================================
+
+1. PRIMARY GOAL OF THIS PHASE
+   ============================================================
+
+Complete the remaining FINANCIAL-INTEGRITY layer required for the owner-only Alpaca PAPER MVP.
+
+Do NOT broaden scope.
+
+This phase is specifically about:
+
+A. A common durable Alpaca-backed order lifecycle
+B. Atomic daily/weekly/monthly spending enforcement
+C. Correct handling of uncertain broker submissions
+D. Partial fills and protective-order lifecycle
+E. Replacement/cancellation correctness
+F. Shared concurrency safety between manual and RoboTrader requests
+
+Do not spend this phase adding:
+
+* live trading
+* options
+* shorts
+* margin
+* leveraged/inverse ETFs
+* multiple brokerage accounts
+* subscriptions
+* billing
+* public multi-user brokerage onboarding
+* new trading strategies
+* cosmetic redesigns
+
+============================================================
+2. DESIGN BEFORE IMPLEMENTATION
+===============================
+
+Inspect the existing implementation and determine which current models and
+services should become authoritative.
+
+Pay particular attention to:
+
+* `OrderIntent`
+* `BrokerOrder`
+* `Fill`
+* `RoboTradeOrder`
+* `PaperOrder`
+* `PaperTrade`
+* execution telemetry
+* Alpaca client/order adapters
+* manual trade routes
+* trade-plan execution
+* research trade workflow
+* RoboTrader worker
+* reconciliation
+* risk checks
+* account scoping
+* spending limit configuration
+
+Do not create another parallel order system unless unavoidable.
+
+Write/update a focused implementation section in:
+
+`docs/mvp-plan.md`
+
+Define the lifecycle state machine explicitly.
+
+At minimum distinguish:
+
+* intent_created
+* reserved
+* submitting
+* acknowledged
+* partially_filled
+* filled
+* cancel_pending
+* canceled
+* replace_pending
+* replaced
+* rejected
+* expired
+* submission_uncertain
+* reconciliation_required
+
+The exact names may follow existing conventions, but semantics must be explicit.
+
+Define which records are authoritative for:
+
+* logical intent
+* broker submission
+* fills
+* spending reservation
+* protective orders
+* replacements
+* reconciliation
+
+Then implement.
+
+============================================================
+3. COMMON DURABLE ORDER LIFECYCLE
+=================================
+
+Unify Alpaca-backed execution paths sufficiently that manual, trade-plan,
+research-originated, and RoboTrader orders share the same financial-integrity
+invariants.
+
+Every Alpaca-backed entry must:
+
+1. Verify owner authorization.
+2. Verify expected Alpaca paper account.
+3. Verify paper-only release mode.
+4. Validate instrument/order eligibility.
+5. Fetch sufficiently fresh account/order context.
+6. Run required risk and spending checks.
+7. Persist an order intent.
+8. Atomically reserve applicable spending capacity.
+9. Assign and persist a stable unique `client_order_id`.
+10. Submit once to Alpaca.
+11. Persist acknowledgement or mark submission as uncertain.
+12. Reconcile by broker identifiers/client_order_id.
+13. Persist fills idempotently.
+14. Release or finalize reservations according to documented state rules.
+15. Emit durable audit and notification events.
+
+The same logical intent must never produce a second broker order merely because:
+
+* HTTP timed out
+* process restarted
+* database save failed after submission
+* the user clicked twice
+* reconciliation retried
+* the broker response was lost
+
+Use idempotency and uniqueness at the database level where appropriate.
+
+============================================================
+4. UNCERTAIN BROKER SUBMISSION RECOVERY
+=======================================
+
+Implement the missing uncertainty handling for manual and other Alpaca-backed
+paths, not just RoboTrader.
+
+Required scenario:
+
+1. App sends order with stable `client_order_id`.
+2. Alpaca accepts it.
+3. Client receives timeout/network failure before acknowledgement.
+4. App records state as uncertain, NOT rejected.
+5. App attempts lookup by `client_order_id`.
+6. If found, bind the broker order to the existing intent.
+7. If temporarily not found, do not immediately submit a replacement.
+8. Reconciliation retries for an explicitly bounded uncertainty window.
+9. Only after documented terminal evidence may the intent become safely retryable.
+
+Add regression tests for this exact scenario.
+
+Also test:
+
+* broker 500 after accepting request
+* database error after broker acknowledgement
+* restart during uncertainty
+* repeated reconciliation
+* duplicate user request while uncertainty exists
+
+At no point should these scenarios create two Alpaca orders for one logical intent.
+
+============================================================
+5. ATOMIC DAILY / WEEKLY / MONTHLY SPENDING RESERVATIONS
+========================================================
+
+Implement enforceable spending budgets shared across manual and automated
+entry paths.
+
+Existing configuration includes:
+
+* `dailyLimit`
+* `weeklyLimit`
+* `monthlyLimit`
+
+These must become actual execution limits, not display/configuration-only fields.
+
+Define/document:
+
+* Timezone used for boundaries.
+* Start/end of day.
+* Start/end of week.
+* Start/end of month.
+* Meaning of 0/null/missing values.
+* What qualifies as spending.
+* How pending orders reserve capacity.
+* How partial fills consume capacity.
+* How canceled/rejected/expired orders release unused reservations.
+* How uncertain orders remain conservatively reserved.
+* How replacements transfer rather than duplicate reservations.
+* Whether selling a position replenishes budget.
+
+For MVP, selling must NOT replenish entry spending capacity for the same
+day/week/month unless the existing product contract explicitly says otherwise.
+
+Use atomic MongoDB operations or transactions appropriate to the existing
+topology.
+
+A check-then-write race is not acceptable.
+
+Required concurrency test:
+
+Two valid requests arrive simultaneously.
+Their combined spending exceeds a limit.
+Exactly one may reserve enough capacity if both cannot fit.
+The other must fail safely before sending an Alpaca order.
+
+Test this across:
+
+* manual + manual
+* Robo + Robo
+* manual + Robo
+
+Use cash-aware sizing and do not treat margin buying power as available cash
+for this non-leveraged MVP.
+
+============================================================
+6. PARTIAL FILLS AND PROTECTIVE ORDERS
+======================================
+
+Complete the protective-order lifecycle.
+
+For automated stock entries:
+
+* Protection must reflect actual filled quantity.
+* Partial fills must not create oversized protective exits.
+* Additional fills must update protection safely.
+* Duplicate reconciliation must not create duplicate protection.
+* A canceled remainder must leave protection appropriate for the filled position.
+* Child-order rejection or absence must be visible and auditable.
+* Additional automated risk should be blocked when existing required protection
+  is missing or unresolved.
+* Restart/reconciliation must be able to recover protection state.
+
+Test at minimum:
+
+A. Entry 10 shares:
+
+* fills 4
+* protection becomes valid for 4
+* fills remaining 6
+* protection becomes valid for total remaining position without duplicate exits
+
+B. Entry 10:
+
+* fills 4
+* remaining 6 canceled
+* protection remains valid for 4
+
+C. Protection submission fails:
+
+* position is flagged unprotected
+* alert/audit is created
+* no new automated exposure is allowed until appropriately resolved
+
+D. Reconciliation runs twice:
+
+* no duplicate protective order
+
+E. Position quantity changes before protective reconciliation:
+
+* app never creates an exit larger than the actual remaining position
+
+Where Alpaca-native bracket behavior already handles a case correctly,
+reuse it instead of reproducing broker logic unnecessarily.
+
+============================================================
+7. REPLACEMENTS AND LINKED ORDER GROUPS
+=======================================
+
+Verify replacement semantics.
+
+A replacement must not:
+
+* create a second spending reservation
+* lose the original logical intent
+* double-count filled quantities
+* orphan protective children
+* allow total outstanding quantity/notional beyond limits
+
+Persist a replacement chain or equivalent traceability.
+
+Test:
+
+* replace before fill
+* partial fill then replace remainder
+* replacement rejection
+* timeout during replacement
+* reconciliation of old and replacement broker IDs
+* cancellation during replacement
+
+Emergency stop must understand linked app-owned order groups and preserve
+necessary risk-reducing protection.
+
+============================================================
+8. SIMULATOR / ALPACA SEPARATION
+================================
+
+Fix any remaining ambiguity between:
+
+1. local simulated paper trading
+2. actual Alpaca paper trading
+
+They must not silently share:
+
+* positions
+* cash
+* P&L
+* fills
+* order status
+* performance curves
+* budget consumption
+
+Every relevant API/UI response should expose an explicit execution source or
+broker identity.
+
+If a core screen combines simulator and Alpaca data today, separate it or make
+the source unmistakable.
+
+Do not delete the simulator unless unnecessary code creates safety problems.
+Keep it clearly distinct.
+
+============================================================
+9. TESTING REQUIREMENTS FOR THIS PHASE
+======================================
+
+Use TDD for confirmed bugs and new financial-integrity behavior.
+
+Extend real Mongo integration coverage rather than relying only on mocked model
+methods.
+
+Required new automated scenarios include:
+
+1. Duplicate manual submit.
+2. Manual/Robo spending race.
+3. Broker accepts + network timeout.
+4. DB persistence failure after broker acceptance.
+5. Restart with unresolved order.
+6. Partial fill.
+7. Partial fill + cancellation.
+8. Replacement after partial fill.
+9. Duplicate reconciliation.
+10. Protective-order failure.
+11. Emergency stop during pending entry.
+12. Loss/limit state while a risk-reducing exit remains necessary.
+
+External Alpaca requests are NOT authorized for this phase.
+Use controllable test adapters/servers at the provider boundary.
+
+Do not inject fake browser auth tokens for tests claiming to be full-stack.
+
+============================================================
+10. VERIFIER AND ACCEPTANCE LEDGER
+==================================
+
+Update:
+
+* `scripts/verify-mvp.mjs`
+* `docs/mvp-acceptance.md`
+* `docs/mvp-verification.md`
+* `docs/mvp-checkpoint.md`
+
+Add verification gates for the lifecycle and spending work completed here.
+
+The verifier must continue to exit nonzero while unrelated required MVP
+acceptance items remain incomplete.
+
+Do not weaken the verifier simply to get exit 0.
+
+When this phase is complete, the expected status may still legitimately be:
+
+IMPLEMENTATION INCOMPLETE
+
+or
+
+IMPLEMENTED, NOT FULLY VERIFIED
+
+if the full-stack E2E/external acceptance work remains.
+
+That is acceptable.
+
+============================================================
+11. DEPENDENCY FINDINGS
+=======================
+
+Do not allow dependency cleanup to derail the financial-integrity phase.
+
+Review the remaining reported audit findings enough to determine whether any
+represent an exploitable production risk in the released application.
+
+Fix low-risk, non-breaking issues when reasonable.
+
+Do NOT:
+
+* run `npm audit fix --force`
+* perform uncontrolled React/build-system migrations
+* make major dependency upgrades unrelated to the MVP blocker
+
+Document deferred findings with package, path, severity, exploitability in this
+app, and recommended post-MVP remediation.
+
+============================================================
+12. FINAL VERIFICATION
+======================
+
+When implementation is complete:
+
+1. Run targeted regression tests.
+2. Run backend full tests.
+3. Run real Mongo integration tests.
+4. Run frontend tests.
+5. Run frontend production build.
+6. Run verification-script tests.
+7. Run the complete deterministic MVP verifier.
+8. Inspect `git diff`.
+9. Inspect for credentials/secrets.
+10. Update documentation and checkpoint.
+11. Commit the completed Phase 2 work if all changes are internally consistent.
+
+Report:
+
+* Starting SHA.
+* Final SHA.
+* Commits created.
+* Files changed.
+* Specific lifecycle defects fixed.
+* Spending reservation design.
+* Exact concurrency guarantees.
+* Partial-fill/protection behavior.
+* Exact tests added.
+* Actual test results.
+* MVP verifier result.
+* Remaining acceptance blockers.
+* Whether any external action was performed.
+* Confirmation that live trading remains disabled.
+
+Do NOT claim the MVP is complete merely because this phase passes.
+
+The intended next phase after this one is:
+
+FULL-STACK RELEASE ACCEPTANCE:
+frontend → backend → auth → Mongo → controlled broker adapter,
+followed by fault/concurrency completion and guarded external Alpaca-paper
+acceptance tooling.
+
+Start now by reading `docs/mvp-checkpoint.md`, preserving the verified dirty-tree
+checkpoint in Git, and then implement the next unfinished financial-integrity
+task.
