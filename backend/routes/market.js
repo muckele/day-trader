@@ -7,7 +7,7 @@ const {
   isCryptoSymbol,
   normalizeCryptoProviderSymbol
 } = require('../services/marketData');
-const { getMarketStatus } = require('../utils/marketStatus');
+const { getExecutionMarketStatus } = require('../services/executionMarketStatus');
 
 const router = express.Router();
 
@@ -102,8 +102,9 @@ router.get('/intraday/:symbol', async (req, res) => {
   }
 });
 
-router.get('/status', (req, res) => {
-  res.json(getMarketStatus());
+router.get('/status', async (req, res) => {
+  const status = await getExecutionMarketStatus();
+  return res.status(status.status === 'UNAVAILABLE' ? 503 : 200).json(status);
 });
 
 router.get('/historical/:symbol', async (req, res) => {

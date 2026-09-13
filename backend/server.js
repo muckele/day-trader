@@ -281,7 +281,7 @@ app.get('/api/readiness', (req, res) => {
   res.status(persistence.ready ? 200 : 503).json({
     persistence, executionEnvironment: 'alpaca-paper',
     releaseReady: false,
-    releaseBlockers: ['Atomic spending and full lifecycle acceptance remain incomplete'],
+    releaseBlockers: ['External paper-account and deployed-environment acceptance have not been recorded'],
     notificationConfigured: Boolean(process.env.SMTP_HOST && process.env.ROBO_NOTIFICATION_RECIPIENT),
     accountBindingConfigured: Boolean(process.env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID)
   });

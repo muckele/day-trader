@@ -26,31 +26,6 @@ function toNumber(value) {
   return typeof value === 'number' ? value : Number(value);
 }
 
-function mockQuote(symbol) {
-  const base = 100 + Math.random() * 200;
-  const change = (Math.random() - 0.5) * 4;
-  return {
-    symbol,
-    price: Number(base.toFixed(2)),
-    change: Number(change.toFixed(2)),
-    changePercent: Number((change / base * 100).toFixed(2))
-  };
-}
-
-function mockSparkline(symbol, points = 40) {
-  const start = 100 + Math.random() * 200;
-  let price = start;
-  const now = Date.now();
-  return Array.from({ length: points }).map((_, idx) => {
-    price += (Math.random() - 0.5) * 1.5;
-    return {
-      time: new Date(now - (points - idx) * 60 * 1000).toISOString(),
-      price: Number(price.toFixed(2)),
-      symbol
-    };
-  });
-}
-
 function normalizeSymbol(symbol) {
   return String(symbol || '').trim().toUpperCase();
 }
@@ -102,15 +77,16 @@ async function fetchStockQuotes(symbols) {
   const quotes = resp.data?.quotes || {};
   return symbols.map(symbol => {
     const quote = quotes[symbol];
-    const price = quote?.ap || quote?.bp || 0;
-    const prev = quote?.bp || quote?.ap || price;
-    const change = price - prev;
+    const price = quote?.ap || quote?.bp || null;
     return {
       symbol,
       assetClass: 'equity',
-      price: Number(toNumber(price).toFixed(2)),
-      change: Number(toNumber(change).toFixed(2)),
-      changePercent: prev ? Number((change / prev * 100).toFixed(2)) : 0
+      asOf: quote?.t || null,
+      source: 'alpaca',
+      price: price !== null && Number.isFinite(Number(price)) && Number(price) > 0 ? Number(toNumber(price).toFixed(2)) : null,
+      // A latest bid/ask quote has no previous-close reference.
+      change: null,
+      changePercent: null
     };
   });
 }
@@ -185,14 +161,7 @@ async function fetchQuotes(symbols, options = {}) {
   const cached = getCache(cacheKey);
   if (cached) return cached;
 
-  if (missingCredentials()) {
-    const data = normalized.map(symbol => ({
-      ...mockQuote(symbol),
-      assetClass: requestedAssetClass || (isCryptoSymbol(symbol) ? 'crypto' : 'equity')
-    }));
-    setCache(cacheKey, data, 60 * 1000);
-    return data;
-  }
+  if (missingCredentials()) throw Object.assign(new Error('Market data credentials unavailable'), { code: 'DATA_UNAVAILABLE' });
 
   const equitySymbols = [];
   const cryptoSymbols = [];
@@ -222,9 +191,11 @@ async function fetchQuotes(symbols, options = {}) {
     return bySymbol[key] || {
       symbol: key,
       assetClass: requestedAssetClass || (isCryptoSymbol(symbol) ? 'crypto' : 'equity'),
-      price: 0,
-      change: 0,
-      changePercent: 0
+      price: null,
+      asOf: null,
+      source: 'unavailable',
+      change: null,
+      changePercent: null
     };
   });
 
@@ -241,11 +212,7 @@ async function fetchSparkline(symbol, range = '1D', options = {}) {
   const cached = getCache(cacheKey);
   if (cached) return cached;
 
-  if (missingCredentials()) {
-    const data = mockSparkline(normalizedSymbol, 48);
-    setCache(cacheKey, data, 60 * 1000);
-    return data;
-  }
+  if (missingCredentials()) throw Object.assign(new Error('Market data credentials unavailable'), { code: 'DATA_UNAVAILABLE' });
 
   const limit = range === '1D' ? 78 : 150;
   const headers = {

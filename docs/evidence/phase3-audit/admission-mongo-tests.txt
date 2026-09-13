@@ -1,0 +1,27 @@
+✔ real API durably rejects risk admission, preserves that identity, and permits a corrected ticket (1455.590833ms)
+▶ Phase 3 real Mongo cash and coordinated closes
+  ✔ confirmed sale/deposit refresh preserves spending, repeated refresh never credits twice (240.819917ms)
+  ✔ unresolved entry blocks refresh and invalid/withdrawn cash prevents entry (177.072041ms)
+  ✔ close cancels only app stop, waits for terminal evidence, then sizes actual position (220.957792ms)
+  ✔ unrelated exit never canceled and blocks full close (38.2415ms)
+  ✔ concurrent close requests share protection lease and submit once (195.693375ms)
+  ✔ expired close relinquishes protection suppression and does not submit later (136.475291ms)
+  ✔ pending close blocks independent manual sell even after stops cancel (76.295125ms)
+  ✔ stale cash snapshot and external pending buy cannot refresh capacity (23.945666ms)
+  ✔ accepted close timeout survives service restart and never repeats POST (185.383875ms)
+  ✔ lease loss after stop discovery prevents broker cancellation (21.348583ms)
+  ✔ unknown stop identity fails safely without cancel or close writes (16.85ms)
+  ✔ unfilled close deadline cancels its own exit and returns remaining position to protection (159.603458ms)
+  ✔ protective acceptance with lost broker ID is discovered through durable client identity (84.993875ms)
+  ✔ production admission refuses unready execution before any intent or protective mutation (51.547208ms)
+  ✔ bounded recovery does no broker work while idle and restores stops after expired close (271.506ms)
+  ✔ protection restoration timeout stays scheduled and recovers accepted stop without duplication (339.076083ms)
+✔ Phase 3 real Mongo cash and coordinated closes (2642.971583ms)
+ℹ tests 18
+ℹ suites 0
+ℹ pass 18
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2830.780042

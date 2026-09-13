@@ -28,7 +28,7 @@ function createAlpacaPortfolio({ broker = createAlpacaBroker(), expectedAccountI
     },
     async getPositions() { await verifiedAccount(); return (await broker.getPositions()).map(position); },
     async getOrders() { await verifiedAccount(); return (await OrderIntent.find({ accountId: expectedAccountId, broker: 'alpaca', environment: 'paper' }).sort({ createdAt: -1 }).limit(500).lean()).map(mapIntent); },
-    async getTrades() { await verifiedAccount(); return (await Fill.find({ accountId: expectedAccountId, broker: 'alpaca', environment: 'paper' }).sort({ filledAt: -1 }).limit(500).lean()).map(fill => ({ ...fill, ...source })); },
+    async getTrades() { await verifiedAccount(); return (await Fill.find({ accountId: expectedAccountId, broker: 'alpaca', executionSource: 'alpaca-paper' }).sort({ filledAt: -1 }).limit(500).lean()).map(fill => ({ ...fill, ...source })); },
     async getEquityCurve() {
       await verifiedAccount();
       if (typeof broker.getPortfolioHistory !== 'function') throw Object.assign(new Error('Alpaca equity history unavailable.'), { statusCode: 503 });

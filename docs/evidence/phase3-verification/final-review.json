@@ -1,0 +1,6 @@
+{
+  "changed_text_files_scanned": 135,
+  "credential_shaped_matches": [],
+  "git_diff_check": "passed",
+  "scope": "Private-key, AWS access-key, GitHub-token, OpenAI-project-key and Slack-token patterns in changed/untracked text; not an exhaustive secret/security audit."
+}

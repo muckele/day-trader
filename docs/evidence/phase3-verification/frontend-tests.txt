@@ -1,0 +1,22 @@
+
+> frontend@0.1.0 test
+> react-scripts test --watchAll=false --runInBand
+
+PASS src/App.test.js
+PASS src/pages/ReleaseScope.test.js
+PASS src/components/PaperOrderIntentPanel.test.js
+PASS src/pages/Stock.test.js
+PASS src/pages/BrokerDisplays.test.js
+PASS src/context/AuthUnavailable.test.js
+PASS src/hooks/useMarketStatus.test.js
+PASS src/utils/paperOrderRequest.test.js
+PASS src/components/NotificationStatusPanel.test.js
+PASS src/utils/positionCloseRequest.test.js
+PASS src/utils/researchPaperTicket.test.js
+PASS src/utils/marketFreshness.test.js
+
+Test Suites: 12 passed, 12 total
+Tests:       34 passed, 34 total
+Snapshots:   0 total
+Time:        1.625 s, estimated 2 s
+Ran all test suites.

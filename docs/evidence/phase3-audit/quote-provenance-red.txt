@@ -1,0 +1,48 @@
+TAP version 13
+# Subtest: equity quotes retain provider timestamps and missing quotes never become zero-priced data
+not ok 1 - equity quotes retain provider timestamps and missing quotes never become zero-priced data
+  ---
+  duration_ms: 3.497417
+  location: '/Users/Matt/Projects/day-trader/backend/tests/marketQuoteProvenance.test.js:3:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+
+    + undefined
+    - '2026-09-01T12:00:00Z'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: '2026-09-01T12:00:00Z'
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/tests/marketQuoteProvenance.test.js:5:66)
+    async Test.run (node:internal/test_runner/test:797:9)
+    async Test.processPendingSubtests (node:internal/test_runner/test:526:7)
+  ...
+# Subtest: unconfigured quote and sparkline provider fails instead of fabricating market prices
+not ok 2 - unconfigured quote and sparkline provider fails instead of fabricating market prices
+  ---
+  duration_ms: 0.671167
+  location: '/Users/Matt/Projects/day-trader/backend/tests/marketQuoteProvenance.test.js:7:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    code: 'DATA_UNAVAILABLE'
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/Users/Matt/Projects/day-trader/backend/tests/marketQuoteProvenance.test.js:8:65)
+    async Test.run (node:internal/test_runner/test:797:9)
+    async Test.processPendingSubtests (node:internal/test_runner/test:526:7)
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 0
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 71.872959

@@ -1,36 +1,30 @@
-# MVP acceptance ledger
+# Owner-only paper MVP acceptance ledger — Phase 3
 
-Current status: **IMPLEMENTATION INCOMPLETE**. Decision: **NO-GO**. Passing bounded checks does not imply the complete product contract is implemented.
+**Final local decision: VERIFIED RELEASE CANDIDATE / GO.** All 19 required gates passed; complete verifier exit 0, with 22 browser tests and 9 process scenarios passing without skips or flakes.
 
-| Acceptance item | Status | Evidence / remaining requirement |
+The local release threshold is **every required deterministic gate executed and passed**, including actual frontend/browser/auth/backend/Mongo/provider-boundary acceptance, separate worker processes and local SMTP. The complete verifier is the authority: `docs/evidence/verification/report.json`. A local pass earns **VERIFIED RELEASE CANDIDATE**, never **DEPLOYED PAPER MVP VERIFIED**. Exact final counts and decision are in `mvp-verification.md`.
+
+| Acceptance item | Local evidence | External boundary / retained limitation |
 |---|---|---|
-| Repository identity and baseline | VERIFIED | Clean starting HEAD 4b3425153b7f3dc3816246cf5d5da7e41d42670e; baseline 270 backend + 3 frontend, build passed on host Node 24 |
-| Explicit owner binding, disabled signup, non-owner isolation | VERIFIED | Owner tests and real Mongo/HTTP login/logout integration; full browser/server route-tree E2E remains separate |
-| Session expiration and persistent logout revocation | VERIFIED | Owner middleware and real DB session-version revocation tests |
-| Exact paper destination and account identity before broker writes | VERIFIED | brokerBoundarySafety tests; no external account observed |
-| Readiness based on indexes and majority write probe | IMPLEMENTED | Unit/race regressions pass; actual production capacity and automatic driver reconnect remain unobserved |
-| Immutable advanced/live restrictions and UI controls | VERIFIED | Backend restrictions, 9 frontend unit tests and 2 earlier API-fixture browser cases |
-| Single canonical automated entry loop | VERIFIED | Legacy run aliases/enable blocked; legacy/live scheduler tests pass |
-| Disable-state overwrite and lost-lease rejection | VERIFIED | Worker regressions + real Mongo unique lock and expired/lost renewal checks |
-| Account/environment concurrency across manual, worker, reconciliation | IMPLEMENTED, BOUNDED VERIFICATION | Real Mongo transaction races for manual/manual, Robo/Robo and mixed origins; shared exit/protection lease. Exhaustive process/lease faults remain release acceptance. |
-| Stable durable common order lifecycle and simulator separation | IMPLEMENTED, BOUNDED VERIFICATION | Stable intent/client keys, uncertain recovery, cumulative fills; Alpaca reads bypass simulator balances. Core UI full-stack acceptance remains. |
-| Atomic daily/weekly/monthly expenditure reservations | IMPLEMENTED, BOUNDED VERIFICATION | UTC transactional integer cents and account serialization; positive configured limits enforced across manual/automated entries. See Phase 2 lifecycle evidence. |
-| Cash-aware, conservative whole-share regular-hours entries | IMPLEMENTED | Risk regressions pass; exhaustive instrument eligibility/shared manual policy incomplete |
-| Risk-reducing exit exemptions | IMPLEMENTED | Targeted risk tests; full cross-path fault acceptance incomplete |
-| Emergency stop persistent state and selective cancellation | IMPLEMENTED | Unit regressions preserve known protective/partial orders; in-flight linked-group race not fully verified |
-| Partial-fill and protective child lifecycle | IMPLEMENTED, BOUNDED VERIFICATION | Real Mongo managed stops: 4+6, 4+cancel, duplicate/restart, uncertainty, reduced position and shared exit reservation. External contract/complete fault matrix unverified. |
-| Durable SMTP outbox, retries/dedup/restart | IMPLEMENTED | Unit tests and real Mongo concurrent claim/dedup/reconnect tests pass; real SMTP receipt not observed |
-| Protection-failure notification events and operational UI | IN PROGRESS | Durable audit/outbox protection events implemented; operational full-stack UI and actual SMTP receipt remain. |
-| Core screen/API contracts, provenance and accounting | IN PROGRESS | Robo unavailable states fixed; all other core workflows need systematic verification |
-| Complete full-stack lifecycle E2E | NOT STARTED | Existing browser tests use API fixtures, not full auth/backend/Mongo/broker lifecycle |
-| Complete fault/concurrency acceptance | IN PROGRESS | Phase 2 adds real Mongo spending, uncertainty, replacement and protection tests; complete server/lease/control/broker-contract acceptance remains gated. |
-| Reproducible verification command | VERIFIED | Final report in evidence/verification; returns nonzero for incomplete required layers |
-| GitHub Actions and branch protection | IMPLEMENTED | Workflow configured; no GitHub run or administrative branch protection observed |
-| External acceptance command | NOT STARTED | Full guarded order/fill acceptance command still needs implementation |
-| External paper orders, fills, logout worker operation and receipt | BLOCKED | No external trading/SMTP authorization; local code requirements also incomplete |
-| Fly deployment and deployed acceptance | BLOCKED | Not authorized and current code is not release-ready |
-| Runbook and resumable checkpoint | IMPLEMENTED | mvp-runbook.md and mvp-checkpoint.md disclose missing steps |
+| Phase 2 preserved | Clean starting SHA `0dcc4d0dad7f47768a5613573b0a828bda0667ff`; complete baseline checks passed, documented incomplete-gate exit1 | No reset/discard |
+| Owner login, protected routes, signup disabled, logout/revocation/expiry | Browser real form/cookies/server/Mongo; historical non-owner actual HTTP endpoint matrix | Deployed HTTPS/cookie configuration unobserved |
+| Exact paper origin/account, readiness indexes/write probe | Existing broker guard regressions; actual new-DB startup; readiness refusal creates no intent/close/write | External account identity not observed |
+| Manual lifecycle | Browser acknowledgement, partial/final fills, accounting/reload, rejection, accepted timeout, double-click, unfilled cancel and partial/cancel | Controlled HTTP broker contract, no external orders |
+| Research/trade-plan shared lifecycle | Real research browser eligibility/provenance/timestamps/submit; common reservations; flat worker abstention | No new strategy features or profitability claim |
+| Worker independent of browser | Real browser save/enable/logout/context close → separate Node worker → durable decision/intent/order/reservation/audit/outbox → new login | Persistent deployed unattended operation unobserved |
+| Disable/emergency/lease/process races | Nine process scenarios: abstention, two-worker contention, two disable barriers, two lost-lease barriers, two emergency states, plus browser independence included in total | Known protective/reducing paths remain permitted; external timing unobserved |
+| Atomic spending and source isolation | Real Mongo baseline + Phase3 cash/close/admission concurrency; browser core-screen source assertions | Period usage stays consumed after sales |
+| Cash resynchronization | Fresh confirmed account snapshot, no unresolved buys, transaction serialization, repeated/concurrent sync tests | No credit from local sale assumptions; unknown/stale cash fails closed |
+| Coordinated close | Real browser success and uncertain cancellation; real Mongo deadline/failure/concurrency/remaining-position tests; independent timer regression | Outage can delay cancellation/restoration; uncertain state requires review |
+| Deliberate identical intent | Browser double-click and timeout reuse one POST; terminal prepare action sends none; explicit prepared submit gets new identity | No automatic key rotation on ambiguous failure |
+| Admission rejection correction | Real API/Mongo concurrent rejected identity; explicit no-submission result; frontend and browser corrected-ticket acceptance | Unknown failures remain conservative |
+| Notification transport and UI | Real outbox/Nodemailer/STARTTLS capture, events/retry/process-death/restart/dedup; Activity queue/retry/accepted/failed labels | Provider acceptance is not external delivery or inbox receipt |
+| Nine core screens | Browser loading/valid/empty/stale-or-unavailable/auth expiry/backend failure, provider source and simulator isolation | Defined source-appropriate behavior, not fabricated provider success |
+| Research/backtest integrity | Provenance/generated timestamps; explicit same-close/one-share/fixed-cash/no-fee/no-slippage assumptions | Optimistic historical model, no execution guarantee |
+| Dependencies | Fresh audits, compatible body-parser/lodash lock changes; every remaining high analyzed | Deferred frontend toolchain risks documented individually |
+| CI configuration | YAML parse, Node20/Chromium/Mongo/full-verifier parity, read-only permissions, no broker/SMTP secrets in PR jobs | Hosted Actions NOT RUN; no push authorized |
+| Guarded external acceptance tool | 12 controlled tests and zero-network dry-run; exact account/origin/symbol/notional and test-owned cleanup | External execution NOT RUN / BLOCKED BY AUTHORIZATION |
+| Final release command | Full `verify-mvp`, no checks-only bypass, minimum counts and no skipped/flaky acceptance | Exact exit/result in verification report |
+| Deployment and operational acceptance | No deployment/persistent activation performed | NOT RUN / BLOCKED BY AUTHORIZATION |
 
-See mvp-checkpoint.md for the exact next unfinished task. No live trading was enabled.
-
-Phase 2 foundation SHA: `a2fdefaac8cce02fe721251eae6d8fc2191af7c8`. Restrictions: cash floor never automatically replenished; one non-increasing replacement; conflicting manual exits are blocked by required protective reservations. These restrictions must remain explicit during release acceptance.
+Phase 2 financial tests remain required gates. Older API-fixture Playwright cases are not presented as full-stack proof. Runner counts include named parent tests in Node TAP; substantive scenario counts are distinguished in the verification record.

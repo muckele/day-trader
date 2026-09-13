@@ -1,0 +1,2 @@
+const { defineConfig } = require('../../frontend/node_modules/@playwright/test');
+module.exports=defineConfig({testDir:__dirname,testMatch:'*.spec.cjs',workers:1,fullyParallel:false,timeout:60000,expect:{timeout:15000},outputDir:'../../docs/evidence/phase3-browser-artifacts',reporter:[['list'],['json',{outputFile:require('node:path').resolve(__dirname,'../../docs/evidence/phase3-browser-report.json')}]],use:{headless:true,trace:'retain-on-failure',screenshot:'only-on-failure',launchOptions:{executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE||undefined}}});

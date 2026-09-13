@@ -1,0 +1,70 @@
+TAP version 13
+# Subtest: dry run makes zero network calls even without credentials or authorization
+ok 1 - dry run makes zero network calls even without credentials or authorization
+  ---
+  duration_ms: 1.6725
+  ...
+# Subtest: all preflight safety failures occur without network access
+ok 2 - all preflight safety failures occur without network access
+  ---
+  duration_ms: 2.580375
+  ...
+# Subtest: client IDs are unique and broker-length bounded
+ok 3 - client IDs are unique and broker-length bounded
+  ---
+  duration_ms: 1.583416
+  ...
+# Subtest: account identity/readiness/market/nonempty account prevent submission
+ok 4 - account identity/readiness/market/nonempty account prevent submission
+  ---
+  duration_ms: 0.829583
+  ...
+# Subtest: one bounded POST followed by exact test-owned cancel and terminal lookup
+ok 5 - one bounded POST followed by exact test-owned cancel and terminal lookup
+  ---
+  duration_ms: 1.011833
+  ...
+# Subtest: ambiguous POST reconciles by same client ID without retry
+ok 6 - ambiguous POST reconciles by same client ID without retry
+  ---
+  duration_ms: 0.360708
+  ...
+# Subtest: foreign or altered broker resource is never canceled
+ok 7 - foreign or altered broker resource is never canceled
+  ---
+  duration_ms: 2.43525
+  ...
+# Subtest: uncertain cancellation is bounded and requires operator reconciliation
+ok 8 - uncertain cancellation is bounded and requires operator reconciliation
+  ---
+  duration_ms: 0.204416
+  ...
+# Subtest: filled position is disclosed and never liquidated
+ok 9 - filled position is disclosed and never liquidated
+  ---
+  duration_ms: 0.308708
+  ...
+# Subtest: unknown duplicate and missing CLI options fail
+ok 10 - unknown duplicate and missing CLI options fail
+  ---
+  duration_ms: 0.344875
+  ...
+# Subtest: transport rejects untrusted origins before fetch
+ok 11 - transport rejects untrusted origins before fetch
+  ---
+  duration_ms: 0.140333
+  ...
+# Subtest: missing or contradictory filled quantities never establish zero-fill cleanup
+ok 12 - missing or contradictory filled quantities never establish zero-fill cleanup
+  ---
+  duration_ms: 0.278792
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 12
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 77.565458

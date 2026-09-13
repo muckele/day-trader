@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const PositionClose = require('../models/PositionClose');
 const AccountCapacity = require('../models/AccountCapacity');
 const SpendingBucket = require('../models/SpendingBucket');
 const OrderProtection = require('../models/OrderProtection');
@@ -25,7 +26,7 @@ const {
 } = require('./recommendationEngine');
 
 const TRADING_INDEX_MODELS = [
-  AccountCapacity, SpendingBucket, OrderProtection, OrderProtectionLock,
+  PositionClose, AccountCapacity, SpendingBucket, OrderProtection, OrderProtectionLock,
   NotificationOutbox,
   BrokerOrder,
   Fill,
@@ -168,7 +169,7 @@ async function dropIndexIfExists(model, name, logger = console) {
     return true;
   } catch (err) {
     const message = String(err?.message || '');
-    if (err?.code === 27 || /index not found|index does not exist/i.test(message)) {
+    if ([26, 27].includes(err?.code) || /index not found|index does not exist|ns not found/i.test(message)) {
       return false;
     }
     logger.error(`[indexes] ${model.modelName || 'model'} legacy index drop failed:`, message || err);

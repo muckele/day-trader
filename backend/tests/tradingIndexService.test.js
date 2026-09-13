@@ -205,3 +205,11 @@ test('ensureRoboAuditLogIndexes converts existing TTL index to configured retent
   ]);
   assert.deepEqual(calls.at(-1), ['createIndexes']);
 });
+
+test('fresh database without legacy collections still creates required strategy indexes', async () => {
+  let created = 0;
+  const model = { find: () => createFindChain([]), createIndexes: async () => { created += 1; }, collection: { dropIndex: async () => { throw Object.assign(new Error('ns not found'), { code: 26 }); } } };
+  const result = await ensureStrategyTelemetryIndexes({ StrategyRunModel: model, StrategyParameterVersionModel: model, UserModel: model, logger: { error() {} } });
+  assert.equal(result[0].ok, true);
+  assert.equal(created, 2);
+});

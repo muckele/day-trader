@@ -679,16 +679,40 @@ router.post('/positions/:symbol/close', sensitiveRateLimit({ max: 12 }), async (
     if (!user) return res.status(401).json({ message: 'User not found.' });
     if (req.body?.environment === 'live') return res.status(403).json({ message: 'This release is paper-only.' });
     const broker = createAlpacaBroker({ mode: 'paper' });
-    const positions = await broker.getPositions();
     const symbol = req.params.symbol.toUpperCase();
-    const position = positions.find(p => p.symbol === symbol);
-    const qty = Number(req.body?.close?.qty || position?.qty);
     const lifecycle = await require('../services/orderLifecycleService').getOrderLifecycle({ broker });
-    const result = await lifecycle.submit({ userId: String(user._id), origin: 'manual-close',
-      idempotencyKey: req.get('Idempotency-Key') || req.body?.idempotencyKey,
-      orderInput: { symbol, assetClass: 'stocks', side: 'sell', qty, orderType: 'market', timeInForce: 'day' } });
+    const result = await lifecycle.closePosition({ userId: String(user._id), symbol, qty: req.body?.close?.qty,
+      idempotencyKey: req.get('Idempotency-Key') || req.body?.idempotencyKey });
     res.json(result);
   } catch (err) { handleRouteError(err, res, next); }
+});
+
+router.get('/position-closes', async (req, res, next) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({message:'User not found.'});
+    const closes = await require('../models/PositionClose').find({userId:String(user._id),accountId:process.env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID}).sort({updatedAt:-1}).limit(100).lean();
+    res.json({closes,executionSource:'alpaca-paper'});
+  } catch(err) {handleRouteError(err,res,next);}
+});
+router.post('/cash/synchronize', sensitiveRateLimit({max:12}), async (req,res,next)=>{
+  try {
+    if (!await getCurrentUser(req)) return res.status(401).json({message:'User not found.'});
+    const lifecycle = await require('../services/orderLifecycleService').getOrderLifecycle();
+    res.json(await lifecycle.synchronizeCash());
+  } catch(err) {handleRouteError(err,res,next);}
+});
+
+router.get('/notifications', async (req, res, next) => {
+  try {
+    if (!await getCurrentUser(req)) return res.status(401).json({ message: 'User not found.' });
+    const accountId = process.env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID;
+    if (!accountId) return res.status(503).json({ message: 'Expected paper account is not configured.' });
+    const events = await require('../models/NotificationOutbox').find({ accountId, environment: 'paper' })
+      .select('subject state attempts nextAttemptAt providerAcceptedAt lastError createdAt updatedAt')
+      .sort({ createdAt: -1 }).limit(50).lean();
+    res.json({ events, executionSource: 'alpaca-paper' });
+  } catch (error) { next(error); }
 });
 
 router.get('/audit', async (req, res, next) => {
@@ -698,7 +722,7 @@ router.get('/audit', async (req, res, next) => {
     const limit = Math.min(Math.max(Number(req.query.limit || 100), 1), 500);
     const logs = await RoboAuditLog.find({
       userId: user._id,
-      eventType: /^robotrader_/
+      eventType: /^(robotrader_|order_lifecycle$|order_protection_state$|position_close_state$|account_cash_synchronized$)/
     }).sort({ createdAt: -1 }).limit(limit).lean();
     res.json({ events: logs });
   } catch (err) {

@@ -22,7 +22,30 @@ test('real replica-set financial lifecycle',async t=>{
  await t.test('weekly and monthly limits bind concurrent requests independently',async()=>{for(const field of ['weeklyLimit','monthlyLimit']){await reset();const f=fixture({loadSettings:async()=>({...settings,dailyLimit:1000,weeklyLimit:1000,monthlyLimit:1000,[field]:100})}),service=f.service();const out=await Promise.allSettled([service.submit(request('weekly-a')),service.submit(request('weekly-b','robo'))]);assert.equal(out.filter(x=>x.status==='fulfilled').length,1);assert.equal(f.calls,1);}});
  await t.test('old-period uncertainty remains counted in fresh day/week/month',async()=>{await reset();let instant=new Date('2026-08-31T12:00:00Z');const f=fixture({timeout:true,miss:true,now:()=>instant}),service=f.service();await service.submit(request('old'));instant=new Date('2026-10-05T12:00:00Z');await assert.rejects(service.submit(request('new')),/spending limit/);assert.equal(f.calls,1);assert.equal((await Capacity.findOne()).reservedCents,6000);});
  await t.test('reducing exit bypasses exhausted spending and daily loss thresholds',async()=>{await reset();const f=fixture({loadSettings:async()=>({...settings,dailyLimit:0,weeklyLimit:0,monthlyLimit:0,maxDailyLoss:1})});f.broker.getAccount=async()=>({id:'test-paper',cash:'0.00',equity:'50.00',last_equity:'100.00'});const out=await f.service().submit({...request('exit'),orderInput:{symbol:'AAPL',side:'sell',qty:2,orderType:'market'}});assert.equal(out.intent.status,'acknowledged');assert.equal(f.calls,1);assert.equal((await Capacity.findOne()).reservedCents,0);});
- await t.test('production factory requires positive complete risk settings by default',async()=>{await reset();const {getOrderLifecycle}=require('../services/orderLifecycleService');const f=fixture();const make=loadSettings=>getOrderLifecycle({broker:f.broker,ownerId,expectedAccountId:'test-paper',loadSettings});await assert.rejects(make(async()=>({...settings,maxTradeAmount:0})).submit(request()),/Currency/);assert.equal(f.calls,0);const configured={...settings,maxTradeAmount:100,maxPositionSize:1000,maxDailyLoss:100,maxOpenPositions:5,maxTradesPerDay:3};await assert.rejects(make(async()=>configured).submit(request()),/account risk context/);f.broker.getAccount=async()=>({id:'test-paper',cash:'1000.00',status:'ACTIVE',equity:'1000.00',last_equity:'1000.00'});f.broker.getPositions=async()=>[];const out=await make(async()=>configured).submit(request());assert.equal(out.intent.status,'acknowledged');});
+ await t.test('production factory requires positive complete risk settings by default',async()=>{
+  await reset();
+  const {executionReadiness}=require('../services/executionReadiness');
+  await executionReadiness.bootstrap(async()=>[{ok:true}],async()=>{});
+  const {getOrderLifecycle}=require('../services/orderLifecycleService');
+  const f=fixture();
+  const make=loadSettings=>getOrderLifecycle({broker:f.broker,ownerId,expectedAccountId:'test-paper',loadSettings});
+  await assert.rejects(make(async()=>({...settings,maxTradeAmount:0})).submit(request('invalid-limit')),/Currency/);
+  assert.equal(f.calls,0);
+  const configured={...settings,maxTradeAmount:100,maxPositionSize:1000,maxDailyLoss:100,maxOpenPositions:5,maxTradesPerDay:3};
+  await assert.rejects(make(async()=>configured).submit(request('incomplete-account')),/account risk context/);
+  assert.equal(f.calls,0);
+  f.broker.getAccount=async()=>({id:'test-paper',cash:'1000.00',status:'ACTIVE',equity:'1000.00',last_equity:'1000.00'});
+  f.broker.getPositions=async()=>[];
+  for(const key of ['invalid-limit','incomplete-account']){
+   const retry=await make(async()=>configured).submit(request(key));
+   assert.equal(retry.intent.status,'rejected');
+   assert.equal(retry.intent.reservedCents,0);
+   assert.equal(f.calls,0);
+  }
+  const out=await make(async()=>configured).submit(request('valid-risk-context'));
+  assert.equal(out.intent.status,'acknowledged');
+  assert.equal(f.calls,1);
+ });
  await t.test('uncertain, submitting and rejected local states have durable outbox events',async()=>{await reset();const Outbox=require('../models/NotificationOutbox');const f=fixture({timeout:true,miss:true});const out=await f.service().submit(request('audit'));for(const status of ['reserved','submitting','submission_uncertain'])assert.ok(await Outbox.exists({eventKey:`lifecycle:${out.intent._id}:${status}:0`}));const g=fixture();await assert.rejects(g.service().submit({...request('blocked','manual',2),beforeSubmit:async()=>{throw new Error('stop')}}));const rejected=await Intent.findOne({idempotencyKey:'blocked'});assert.ok(await Outbox.exists({eventKey:`lifecycle:${rejected._id}:rejected:0`}));});
  await t.test('final lease/control callback prevents POST after intervening protection check',async()=>{await reset();let allowed=true,protectionChecks=0,controlChecks=0;const f=fixture({beforeEntry:async()=>{if(++protectionChecks===2)allowed=false;}});await assert.rejects(f.service().submit({...request('lease-lost','robo'),beforeSubmit:async()=>{controlChecks++;if(!allowed)throw new Error('worker lease lost');}}),/worker lease lost/);assert.equal(protectionChecks,2);assert.equal(controlChecks,2);assert.equal(f.calls,0);assert.equal((await Capacity.findOne()).reservedCents,0);assert.equal((await Intent.findOne()).status,'rejected');});
  await t.test('partial fill replacement binds cumulative chain without double charging',async()=>{await reset();const f=fixture(),s=f.service();const out=await s.submit(request());const raw=[...f.orders.values()][0];Object.assign(raw,{filled_qty:'2',filled_avg_price:'10.00',status:'partially_filled'});await s.reconcile({intentId:out.intent._id});await s.replace({intentId:out.intent._id,idempotencyKey:'r1',changes:{qty:5}});const successor=[...f.orders.values()][1];Object.assign(successor,{filled_qty:'5',filled_avg_price:'10.00',status:'filled'});await s.reconcile({intentId:out.intent._id});assert.equal((await Bucket.findOne({period:'day'})).spentCents,5000);assert.equal((await Capacity.findOne()).reservedCents,0);assert.equal(await BrokerOrder.countDocuments(),2);});

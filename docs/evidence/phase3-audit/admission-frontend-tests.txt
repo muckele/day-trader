@@ -1,0 +1,20 @@
+
+> frontend@0.1.0 test
+> react-scripts test --watchAll=false --runInBand src/utils/paperOrderRequest.test.js
+
+PASS src/utils/paperOrderRequest.test.js
+  ✓ retry after lost response reuses the same stable request key (6 ms)
+  ✓ changed quantity creates a different logical request (1 ms)
+  ✓ uncertain states do not claim broker acknowledgement or fill (1 ms)
+  ✓ parallel duplicate actions share one in-flight HTTP request
+  ✓ explicit preparation after terminal response creates one new key without submitting (2 ms)
+  ✓ uncertain request cannot be replaced with a fresh key or different economic payload (1 ms)
+  ✓ refresh binds persisted server status only to matching request identity
+  ✓ explicit durable rejection outcome permits corrected ticket after pre-admission risk refusal (1 ms)
+  ✓ HTTP error status alone and a foreign rejection identity remain uncertain
+
+Test Suites: 1 passed, 1 total
+Tests:       9 passed, 9 total
+Snapshots:   0 total
+Time:        0.5 s, estimated 1 s
+Ran all test suites matching /src\/utils\/paperOrderRequest.test.js/i.

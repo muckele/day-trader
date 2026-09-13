@@ -68,6 +68,8 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
       if (!held) throw new Error('Protection lease lost.');
     };
     try {
+      const closing = await require('../models/PositionClose').findOne({ accountId: expectedAccountId, symbol: intent.symbol, active: true });
+      if (closing) return { state: 'close_pending', error: closing.error || 'Coordinated close reserves protection management.' };
       let record = await Protection.findOneAndUpdate({ intentId }, { $setOnInsert: {
         accountId: expectedAccountId, userId: ownerId, symbol: intent.symbol, state: 'required'
       } }, { upsert: true, new: true });
@@ -141,7 +143,7 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
   }
   return { reconcile, assertProtected };
 }
-async function withProtectionAccountLock({ accountId, symbol }, fn) {
+async function withProtectionAccountLock({ accountId, symbol, coordinatedClose = false }, fn) {
   const owner = randomUUID();
   try {
     await OrderProtectionLock.findOneAndUpdate({ accountId, $or: [
@@ -157,9 +159,10 @@ async function withProtectionAccountLock({ accountId, symbol }, fn) {
   }, 15000);
   heartbeat.unref?.();
   try {
+    if (!coordinatedClose && await require('../models/PositionClose').exists({ accountId, ...(symbol ? { symbol } : {}), active: true })) throw Object.assign(new Error('A coordinated close reserves this position.'), { status: 409, code: 'EXIT_CLOSE_RESERVED' });
     const reserved = await OrderProtection.exists({ accountId, ...(symbol ? { symbol } : {}),
       $or: [{ confirmedQty: { $gt: 0 } }, { state: { $in: ['submitting', 'uncertain', 'cancel_pending'] } }] });
-    if (reserved) throw Object.assign(new Error('Protective orders reserve this position; reconcile or cancel the linked stop before another exit.'), { status: 409, code: 'EXIT_PROTECTION_RESERVED' });
+    if (reserved && !coordinatedClose) throw Object.assign(new Error('Protective orders reserve this position; reconcile or cancel the linked stop before another exit.'), { status: 409, code: 'EXIT_PROTECTION_RESERVED' });
     return await fn(async () => {
       if (!await OrderProtectionLock.exists({ accountId, owner, expiresAt: { $gt: new Date() } })) throw new Error('Exit lease lost.');
     });

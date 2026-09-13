@@ -435,3 +435,19 @@ test('startRoboScheduler skips ticks when DB is unavailable and requirement is e
     assert.ok(reconciled > 0);
   } finally { stop(); restore(); }
 });
+
+test('close recovery runs independently while entry worker is blocked and reconciliation disabled', async t => {
+ const recovery = require('../services/positionCloseRecovery');
+ const restore = preserveEnv(['OWNER_USER_ID','ROBO_SCHEDULER_DISABLED','ROBOTRADER_WORKER_DISABLED','ROBOTRADER_RECONCILIATION_DISABLED']);
+ process.env.OWNER_USER_ID='507f1f77bcf86cd799439011';delete process.env.ROBO_SCHEDULER_DISABLED;delete process.env.ROBOTRADER_WORKER_DISABLED;process.env.ROBOTRADER_RECONCILIATION_DISABLED='true';
+ let release;let entered=false;let recoveries=0;
+ t.mock.method(recovery,'recoverPositionCloses',async()=>{recoveries++;});
+ t.mock.method(roboEngine,'cleanupSignalExecutions',async()=>({deletedCount:0}));
+ t.mock.method(roboTraderWorker,'cleanupRoboTradeDecisions',async()=>({deletedCount:0}));
+ t.mock.method(roboTraderWorker,'cleanupRoboAuditLogs',async()=>({deletedCount:0}));
+ t.mock.method(require('../services/roboNotificationService'),'runNotificationTick',async()=>{});
+ t.mock.method(roboTraderWorker,'runWorkerTick',async()=>{entered=true;await new Promise(r=>{release=r;});});
+ const stop=startRoboScheduler({intervalMs:10000,closeRecoveryIntervalMs:10,startupDelayMs:1,isDbReady:()=>true});
+ try {assert.ok(await waitFor(()=>entered));assert.ok(await waitFor(()=>recoveries>=2));}
+ finally {stop();release?.();await new Promise(r=>setTimeout(r,20));restore();}
+});

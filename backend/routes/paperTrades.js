@@ -69,6 +69,7 @@ router.post('/order', async (req, res) => {
     }
     res.status(err.statusCode || err.status || 400).json({
       error: err.message,
+      admissionOutcome: err.admissionOutcome || undefined,
       order: err.paperOrder || undefined,
       brokerOrder: err.brokerOrder || undefined
     });

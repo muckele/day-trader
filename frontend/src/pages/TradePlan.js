@@ -1,3 +1,4 @@
+import PaperOrderIntentPanel from '../components/PaperOrderIntentPanel';
 import { submitPaperOrder, paperOrderStatusMessage } from '../utils/paperOrderRequest';
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
@@ -28,7 +29,7 @@ export default function TradePlan() {
   const [executing, setExecuting] = useState(false);
   const [executionQty, setExecutionQty] = useState('');
   const [executionAssetClass, setExecutionAssetClass] = useState('equity');
-  const [executionOrderType, setExecutionOrderType] = useState('market');
+  const [executionOrderType, setExecutionOrderType] = useState('limit');
   const [executionLimitPrice, setExecutionLimitPrice] = useState('');
   const [executionStopTriggerPrice, setExecutionStopTriggerPrice] = useState('');
   const [executionTimeInForce, setExecutionTimeInForce] = useState('day');
@@ -37,7 +38,7 @@ export default function TradePlan() {
   const [executionStopLossPrice, setExecutionStopLossPrice] = useState('');
   const [executionTrailingStopPct, setExecutionTrailingStopPct] = useState('');
   const [executionMaxPricePerShare, setExecutionMaxPricePerShare] = useState('');
-  const [executionAllowExtendedHours, setExecutionAllowExtendedHours] = useState(true);
+  const [executionAllowExtendedHours, setExecutionAllowExtendedHours] = useState(false);
 
   const closeExecutionModal = () => {
     setSelectedIdea(null);
@@ -53,7 +54,7 @@ export default function TradePlan() {
     setExecutionStopLossPrice('');
     setExecutionTrailingStopPct('');
     setExecutionMaxPricePerShare('');
-    setExecutionAllowExtendedHours(true);
+    setExecutionAllowExtendedHours(false);
   };
 
   const fetchPlan = async (rescore = false) => {
@@ -125,8 +126,8 @@ export default function TradePlan() {
       const recommendedQty = Number(res.data?.projectedStats?.recommendedQty || 0);
       setExecutionQty(recommendedQty > 0 ? String(recommendedQty) : '');
       setExecutionAssetClass(looksCryptoSymbol(idea.symbol) ? 'crypto' : 'equity');
-      setExecutionOrderType('market');
-      setExecutionLimitPrice('');
+      setExecutionOrderType('limit');
+      setExecutionLimitPrice(idea.entry ? String(idea.entry) : '');
       setExecutionStopTriggerPrice('');
       setExecutionTimeInForce('day');
       setExecutionGoodTilDate('');
@@ -134,7 +135,7 @@ export default function TradePlan() {
       setExecutionStopLossPrice(idea.stop ? String(idea.stop) : '');
       setExecutionTrailingStopPct('');
       setExecutionMaxPricePerShare('');
-      setExecutionAllowExtendedHours(true);
+      setExecutionAllowExtendedHours(false);
     } catch (err) {
       emitToast({ type: 'error', message: getApiError(err) });
       setExecutionCheck(null);
@@ -218,7 +219,7 @@ export default function TradePlan() {
         goodTilDate: executionTimeInForce === 'gtd' ? executionGoodTilDate : null,
         limitPrice: (executionOrderType === 'limit' || executionOrderType === 'stop_limit') ? parsedLimitPrice : null,
         stopPrice: executionOrderType === 'stop_limit' ? parsedStopTriggerPrice : selectedIdea.stop,
-        takeProfitPrice: executionTakeProfitPrice !== '' ? parsedTakeProfitPrice : null,
+        takeProfitPrice: null,
         stopLossPrice: executionStopLossPrice !== '' ? parsedStopLossPrice : null,
         trailingStopPct: executionTrailingStopPct !== '' ? parsedTrailingStopPct : null,
         maxPricePerShare: side === 'buy' && executionMaxPricePerShare !== '' ? parsedMaxPricePerShare : null,
@@ -232,7 +233,7 @@ export default function TradePlan() {
           tradeIdeaId: selectedIdea._id || null,
           researchSnapshot: selectedIdea.researchSnapshot || null
         }
-      });
+      }, { surface: 'trade-plan' });
       const status = String(res.data?.order?.status || '').toLowerCase();
       if (status === 'rejected') {
         emitToast({
@@ -283,10 +284,11 @@ export default function TradePlan() {
         <div>
           <p className="rt-eyebrow">Trade Plan</p>
           <h1 className="rt-title">Daily Playbook</h1>
+          <PaperOrderIntentPanel surface="trade-plan" />
         </div>
         <div className="flex items-center gap-2">
           <Badge variant={status === 'OPEN' ? 'success' : 'neutral'}>
-            {status === 'OPEN' ? 'Market Open' : 'Market Closed'}
+            {status === 'OPEN' ? 'Market Open' : status === 'CLOSED' ? 'Market Closed' : 'Market status unavailable'}
           </Badge>
           <Button
             variant="secondary"
@@ -637,11 +639,12 @@ export default function TradePlan() {
                   </div>
                 )}
                 <div>
-                  <label className="text-slate-500">Take-Profit Price ($)</label>
+                  <label className="text-slate-500">Research Target ($; not submitted)</label>
                   <input
                     type="number"
                     min="0.01"
                     step="0.01"
+                    disabled
                     value={executionTakeProfitPrice}
                     onChange={event => setExecutionTakeProfitPrice(event.target.value)}
                     placeholder="Optional"
@@ -689,14 +692,14 @@ export default function TradePlan() {
                 <label className="flex items-center gap-2">
                   <input
                     type="checkbox"
+                    disabled
                     checked={executionAllowExtendedHours}
                     onChange={event => setExecutionAllowExtendedHours(event.target.checked)}
-                    disabled={executionAssetClass === 'crypto'}
                   />
-                  Allow extended-hours fills when market is closed
+                  Extended-hours execution unavailable in this release
                 </label>
                 {executionAssetClass === 'equity' && status !== 'OPEN' && (
-                  <p className="text-amber-600">Market is currently closed.</p>
+                  <p className="text-amber-600">{status === 'CLOSED' ? 'Market is currently closed.' : 'Market status is unavailable.'}</p>
                 )}
                 {executionAssetClass === 'crypto' && (
                   <p className="text-emerald-500">Crypto trades are evaluated as 24/7 market.</p>

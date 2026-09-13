@@ -1,0 +1,16 @@
+{
+  "dryRun": true,
+  "networkRequests": 0,
+  "origin": "https://paper-api.alpaca.markets",
+  "expectedAccountId": "dedicated-paper-account",
+  "maxNotional": 10,
+  "order": {
+    "symbol": "AAPL",
+    "qty": "1",
+    "side": "buy",
+    "type": "limit",
+    "limit_price": "1.00",
+    "time_in_force": "day",
+    "client_order_id": "phase3-02aeaae8-d993-49f8-b85b-806c5d692f5a"
+  }
+}

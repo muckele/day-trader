@@ -37,7 +37,8 @@ async function reconcileRoboOrders({ mode = 'paper', limit = 100, userId = proce
       updated.push(String(intent._id));
     } catch (error) { discrepancies.push({ intentId: String(intent._id), reason: error.message }); }
   }
-  return { ok: discrepancies.length === 0, environment: mode, executionSource: 'alpaca-paper',
+  const closes = lifecycle.resumeCloses ? await lifecycle.resumeCloses() : [];
+  return { closes, ok: discrepancies.length === 0, environment: mode, executionSource: 'alpaca-paper',
     updatedCount: updated.length, discrepancyCount: discrepancies.length, updated, discrepancies };
 }
 module.exports = { reconcileRoboOrders, submitProtectiveStopForEntry, submitMissingProtectiveStops, createOrderProtection };

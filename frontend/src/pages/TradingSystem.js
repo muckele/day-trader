@@ -279,6 +279,7 @@ export default function TradingSystem() {
             <div>
               <p className="rt-section-title">Recent Strategy Runs</p>
               <p className="text-xs text-[#8ba09f]">Backtests and robo cycles with parameter-version linkage.</p>
+              <p className="text-xs text-amber-500 mt-2" data-testid="backtest-assumptions">Historical backtests are illustrative simulations: optimistic fills at the same close used to generate the signal, one share per trade on a $100,000 baseline, no fees or slippage, and assumed 2% entry-price risk for R multiples. They do not represent Alpaca fills or an executable performance forecast.</p>
             </div>
             <Badge variant="neutral">{strategyRuns.length} records</Badge>
           </div>

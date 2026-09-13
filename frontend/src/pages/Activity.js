@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
+import NotificationStatusPanel from '../components/NotificationStatusPanel';
 import Button from '../components/ui/Button';
 import Skeleton from '../components/ui/Skeleton';
 import { getCache, setCache } from '../utils/cache';
@@ -14,6 +15,7 @@ function formatTime(value) {
 }
 
 function formatMoney(value) {
+  if (value == null || value === '') return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric.toFixed(2) : null;
 }
@@ -163,12 +165,12 @@ export default function Activity() {
               <div
                 key={`${item.type}-${item._id}`}
                 className={`rt-panel p-3 transition ${
-                  item.type === 'trade'
+                  item.type === 'trade' && item.executionSource === 'local-simulation'
                     ? 'hover:bg-[#172126] cursor-pointer'
                     : ''
                 }`}
                 onClick={() => {
-                  if (item.type === 'trade') {
+                  if (item.type === 'trade' && item.executionSource === 'local-simulation') {
                     openJournal(item);
                   }
                 }}
@@ -178,15 +180,16 @@ export default function Activity() {
                   <p className="text-xs text-slate-500">{formatTime(item.timestamp)}</p>
                 </div>
                 <p className="text-sm text-[#b8c8c7]">
-                  {item.side.toUpperCase()} {item.qty}{' '}
+                  {item.side?.toUpperCase()} {item.qty}{item.type === 'order' ? ' requested' : ' filled'}{' '}
                   {item.type === 'order'
-                    ? (formatMoney(item.fillPrice)
+                    ? (Number(item.filledQty) > 0 && formatMoney(item.fillPrice)
                       ? `@ $${formatMoney(item.fillPrice)}`
-                      : (formatMoney(item.notional) ? `· Notional $${formatMoney(item.notional)}` : '· Pending fill'))
+                      : '· Pending fill')
                     : `@ $${formatMoney(item.price) || '--'}`}
                 </p>
                 {item.type === 'order' && (
                   <p className="text-xs text-[#8ba09f]">
+                    Filled {item.filledQty ?? (item.status === 'filled' && item.executionSource === 'local-simulation' ? item.qty : 0)} of {item.qty} requested shares ·{' '}
                     {String(item.orderType || 'market').toUpperCase()} · {String(item.status || '--').toUpperCase()}
                     {Number.isFinite(Number(item.effectiveSlippageBps))
                       ? ` · Slippage ${Number(item.effectiveSlippageBps).toFixed(2)} bps`
@@ -198,10 +201,10 @@ export default function Activity() {
                 )}
                 {item.type === 'trade' && (
                   <p className={`text-xs ${item.realizedPnl >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                    Realized P/L {item.realizedPnl.toFixed(2)}
+                    {formatMoney(item.realizedPnl) === null ? 'Realized P/L unavailable' : `Realized P/L $${formatMoney(item.realizedPnl)}`}
                   </p>
                 )}
-                <p className="text-xs text-[#657778] uppercase mt-1">{item.type}</p>
+                <p className="text-xs text-[#657778] uppercase mt-1">{item.executionSource === 'alpaca-paper' ? 'Alpaca paper' : item.executionSource === 'local-simulation' ? 'Local simulator' : 'Source unavailable'} · {item.type === 'trade' ? 'fill' : 'order'}</p>
               </div>
             ))}
           </div>
@@ -209,6 +212,8 @@ export default function Activity() {
           <p className="text-sm text-slate-500">No activity yet.</p>
         )}
       </Card>
+
+      <NotificationStatusPanel />
 
       {selectedTrade && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center px-4 z-50">

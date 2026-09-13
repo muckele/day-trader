@@ -1,3 +1,5 @@
+import { marketFreshness } from '../utils/marketFreshness';
+import { useMarketStatus } from '../hooks/useMarketStatus';
 // src/pages/Home.js
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
@@ -31,10 +33,7 @@ const WATCHLIST_UNIVERSE = [
 
 export default function Home() {
   const [trades, setTrades]   = useState([]);
-  const [marketStatus, setMarketStatus] = useState('CLOSED');
-  const [nextOpen, setNextOpen] = useState(null);
-  const [nextClose, setNextClose] = useState(null);
-  const [countdown, setCountdown] = useState('');
+  const { status: marketStatus, nextClose, countdown } = useMarketStatus();
   const [watchlist, setWatchlist] = useState([]);
   const [watchlistSymbols, setWatchlistSymbols] = useState([]);
   const [pinnedSymbols, setPinnedSymbols] = useState([]);
@@ -68,9 +67,6 @@ export default function Home() {
       const applyRecommendationsPayload = payload => {
         const isDataUnavailable = payload?.warning === 'DATA_UNAVAILABLE';
         setTrades(isDataUnavailable ? [] : (payload?.recommendations || []));
-        setMarketStatus(payload?.marketStatus || 'CLOSED');
-        setNextOpen(payload?.nextOpen || null);
-        setNextClose(payload?.nextClose || null);
         setRecommendationWarning(
           isDataUnavailable ? (payload?.message || 'Could not fetch daily bars') : ''
         );
@@ -202,28 +198,6 @@ export default function Home() {
     fetchMarketData();
   }, [watchlistSymbols]);
 
-  useEffect(() => {
-    if (marketStatus !== 'CLOSED' || !nextOpen) {
-      setCountdown('');
-      return;
-    }
-
-    const updateCountdown = () => {
-      const diff = new Date(nextOpen).getTime() - Date.now();
-      if (diff <= 0) {
-        setCountdown('Opening soon');
-        return;
-      }
-      const hours = Math.floor(diff / (1000 * 60 * 60));
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      setCountdown(`${hours}h ${minutes}m`);
-    };
-
-    updateCountdown();
-    const interval = setInterval(updateCountdown, 60 * 1000);
-    return () => clearInterval(interval);
-  }, [marketStatus, nextOpen]);
-
   const sortedSymbols = useMemo(() => {
     const pinned = pinnedSymbols.filter(symbol => watchlistSymbols.includes(symbol));
     const rest = watchlistSymbols.filter(symbol => !pinnedSymbols.includes(symbol));
@@ -263,8 +237,9 @@ export default function Home() {
       const isUp = (quote.change || 0) >= 0;
       const priceValue = Number(quote.price);
       const changePctValue = Number(quote.changePercent);
-      const displayPrice = Number.isFinite(priceValue) ? `$${priceValue.toFixed(2)}` : '--';
-      const displayChangePct = Number.isFinite(changePctValue)
+      const freshness = marketFreshness(quote.price, quote.asOf);
+      const displayPrice = freshness !== 'unavailable' ? `$${priceValue.toFixed(2)}` : 'Quote unavailable';
+      const displayChangePct = quote.changePercent != null && Number.isFinite(changePctValue)
         ? `${changePctValue >= 0 ? '+' : ''}${changePctValue.toFixed(2)}%`
         : '--';
 
@@ -295,8 +270,10 @@ export default function Home() {
             <p className="text-sm font-semibold text-[#edf5f4]">
               {displayPrice}
             </p>
+            {freshness === 'stale' && <p className="text-xs text-[#ffd77a]">Stale quote · over 15 minutes old</p>}
+            {quote.asOf && <p className="text-xs text-[#8ba09f]">As of {new Date(quote.asOf).toLocaleString()}</p>}
             <p className={`text-xs font-medium ${isUp ? 'text-[#5dff90]' : 'text-[#ff8ea4]'}`}>
-              {displayChangePct}
+              {freshness === 'unavailable' ? '--' : displayChangePct}
             </p>
           </div>
           <div className="col-span-3 flex items-center gap-1 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition">
@@ -419,7 +396,7 @@ export default function Home() {
           )}
         </div>
         <Badge variant={marketStatus === 'OPEN' ? 'success' : 'neutral'}>
-          {marketStatus === 'OPEN' ? 'OPEN' : 'CLOSED'}
+          {marketStatus === 'OPEN' ? 'OPEN' : marketStatus === 'CLOSED' ? 'CLOSED' : 'STATUS UNAVAILABLE'}
         </Badge>
       </Card>
 
@@ -492,6 +469,7 @@ export default function Home() {
               )}
             </div>
           </div>
+          {!visibleRecs.length && <p className="text-sm text-[#8ba09f]">No eligible recommendations are available. No trade is suggested.</p>}
           <div className="grid gap-6 grid-cols-1 sm:grid-cols-2">
             {visibleRecs.map((rec) => {
               const isBuy = rec.bias === 'LONG';

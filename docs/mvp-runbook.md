@@ -2,7 +2,7 @@
 
 ## Release gate
 
-Current status: IMPLEMENTATION INCOMPLETE; NO-GO for unattended trading or deployment. The following commands cover implemented setup and checks. They do not authorize external orders or claim full MVP acceptance. Live execution is blocked independently of flags.
+Phase 3 local release status is recorded in `docs/evidence/verification/report.json`; only an exit-zero complete verifier earns VERIFIED RELEASE CANDIDATE. External paper acceptance, external SMTP receipt and deployed operation remain NOT RUN and require separate authorization. Live execution is blocked independently of flags.
 
 ## Local setup and configuration
 
@@ -43,7 +43,7 @@ docker exec day-trader-mvp-local mongosh --quiet --eval 'rs.initiate({_id:"mvp",
 node scripts/verify-mvp.mjs
 ```
 
-Wait for MongoDB to start before initiating. Reports are written to `docs/evidence/verification/`. The default command exits nonzero while complete lifecycle/concurrency/full-stack E2E acceptance is unimplemented, even when the implemented checks pass. `node scripts/verify-mvp.mjs --checks-only` explicitly evaluates only implemented deterministic checks; it never marks a release candidate. It installs committed lockfiles and runs backend, frontend, build and real MongoDB/HTTP integration tests with a scrubbed environment.
+Wait for MongoDB to start before initiating and for `db.hello().isWritablePrimary` before verification. Install matching Chromium first with `node frontend/node_modules/@playwright/test/cli.js install --with-deps chromium` (omit `--with-deps` on macOS). OpenSSL is required for the ephemeral local SMTP certificate. Reports are written to `docs/evidence/verification/`. The verifier installs committed lockfiles and runs all backend, Mongo, frontend, production-build, local SMTP, process and full-stack browser checks with a scrubbed environment. Every required gate must execute and pass without skipped/flaky acceptance tests. `--checks-only` no longer bypasses release requirements. External acceptance remains separately NOT RUN. An existing Chromium binary may be selected with `PLAYWRIGHT_CHROMIUM_EXECUTABLE`; record its path/version with the run.
 
 ```sh
 docker stop day-trader-mvp-local
@@ -53,25 +53,38 @@ Only stop the named test-owned container. Never drop application databases or re
 
 ## Browser verification
 
-The existing Playwright suite plus release-scope cases uses API fixtures. It is useful for UI regression but does not establish real broker/auth/database lifecycle E2E:
+The Phase 3 release suite uses the production frontend, actual login form, real backend and isolated Mongo, and only replaces external provider HTTP/SMTP boundaries:
 
 ```sh
-npm run test:e2e --prefix frontend
+node frontend/node_modules/@playwright/test/cli.js test --config=scripts/acceptance/playwright.config.cjs
+node --test scripts/acceptance/process.test.cjs
 ```
 
-Install the matching Playwright Chromium when needed. In constrained environments a separate local test configuration may be needed; record it with the evidence. Do not inject authentication tokens and call that a real login acceptance test.
+Run after `npm run build --prefix frontend` with the test replica set running. The older `npm run test:e2e --prefix frontend` API-fixture suite remains UI regression evidence only; it is not the release acceptance gate. Browser credentials are issued by real login, never fabricated or injected. The historical non-owner negative HTTP test uses a fixture credential in a Node client only.
 
 ## External paper acceptance
 
-Full external acceptance tooling remains unimplemented. Do not treat the existing `alpaca:check` connectivity script as order/fill acceptance. Required next work: explicit opt-in, allowlisted dedicated paper account, capped exposure, stable test-owned IDs, uncertainty recovery and cleanup restricted to test-created orders. Only after that code is reviewed and authorization is granted should any external order be sent. No external orders or emails were sent by this implementation session.
+`backend/scripts/external-paper-acceptance.js` is implemented and tested locally. Its dry-run makes zero network requests:
+
+```sh
+node backend/scripts/external-paper-acceptance.js --dry-run \
+  --expected-account-id dedicated-paper-account \
+  --paper-origin https://paper-api.alpaca.markets \
+  --symbol-allowlist AAPL --symbol AAPL \
+  --max-notional 10.00 --limit-price 1.00 --quantity 1 --test-prefix phase3
+```
+
+Only after separate explicit authorization, replace `--dry-run` with `--authorize-external-paper-test`, replace the placeholder account ID with the verified dedicated paper account ID, and provide APCA credentials through a protected environment. Reserve that account exclusively for the test; it must have no positions or open orders. The command prints a unique test client ID, checks account/market/asset readiness, makes at most one bounded buy-limit POST, looks up that same identity, and cancels only that exact test-owned order. It never resets an account, cancels all orders or liquidates positions. A $1 limit is deliberately unlikely to fill; this checks acknowledgement/status, not a guaranteed fill.
+
+Exit 0 means dry-run or confirmed terminal cleanup with zero fills; exit 2 means filled shares remain or cancellation is unconfirmed; exit 1 means a guard/provider/transport failure. Reconcile the printed client ID before another run after any uncertainty. Retained filled shares require an explicit operator decision. External Alpaca orders and external SMTP have not been run in Phase 3.
 
 ## Startup, deployment checks and rollback
 
 Local processes: `npm start --prefix backend`, `npm start --prefix frontend`. `/health` is minimal process liveness. Authenticated `/api/readiness` reports index/write bootstrap state, configuration presence, and outstanding release blockers; a process responding does not mean it is ready to trade. Detailed broker/worker status remains owner-only under `/api/robotrader`.
 
-Fly's existing `auto_stop_machines=false` and `min_machines_running=1` preserve always-on backend capability. No Fly deployment was performed. Before a future authorized deployment, verify secrets, exact origins and cookie behavior, majority database writes, usable unique indexes, capacity, expected account, notification transport and independent reconciliation health. Configure GitHub branch protection to require `MVP deterministic checks / checks`, disallow force push, and require review; configured workflow is not evidence of a passing GitHub run.
+Fly's existing `auto_stop_machines=false` and `min_machines_running=1` preserve always-on backend capability. No Fly deployment was performed. Before a future authorized deployment, verify secrets, exact origins and cookie behavior, majority database writes, usable unique indexes, capacity, expected account, notification transport and independent reconciliation health. Configure GitHub branch protection to require `MVP local release acceptance / checks`, disallow force push, and require review; configured workflow is not evidence of a passing GitHub run.
 
-Production deployment command, only after separate approval and a passing release gate: `cd backend && fly deploy`. Run owner login, readiness, broker identity, scheduler/logout, reconciliation, notification and emergency-stop acceptance on that exact artifact before enabling persistent automation. Do not deploy current incomplete work.
+Production deployment command, only after separate approval and a passing release gate: `cd backend && fly deploy`. Run owner login, readiness, broker identity, scheduler/logout, reconciliation, notification and emergency-stop acceptance on that exact artifact before enabling persistent automation. A local release candidate alone does not authorize deployment or persistent activation.
 
 Rollback: disable automation first and retain audit/order history, preserve unresolved client IDs, restore the previous verified image using Fly's release tooling and known immutable image reference, then reconcile outstanding orders before resuming. Do not restore a database snapshot blindly over accepted broker orders. Reconnect reruns index/write readiness; index failures keep broker writes blocked.
 
@@ -88,6 +101,14 @@ Set positive daily/weekly/monthly entry spending limits in RoboTrader settings b
 
 Use a stable Idempotency-Key for every entry/close and replacement. Never create another key merely to recover a timeout. Reconciliation looks up the persisted client ID and never reposts; unresolved submissions move to reconciliation_required after five minutes while capacity remains held. Do not delete intents, fills, locks or spending documents to clear an operational block.
 
-Managed protective stops resize by confirmed cancellation then a new durable generation. Unresolved protection blocks new automated risk and creates audit/outbox alerts. A conflicting manual exit is blocked while a protective reservation exists; a coordinated stop-cancel/close workflow remains a release acceptance item. Emergency stop disables automation and discovers app-owned entry groups from durable intents, preserving protective sells.
+Managed protective stops resize by confirmed cancellation then a new durable generation. Unresolved protection blocks new automated risk and creates audit/outbox alerts. Use Portfolio → Review close SYMBOL → Confirm coordinated close. The close holds an account exit lease, discovers only app-owned protections, requests cancellation and verifies terminal broker state before sizing a reducing order from the actual remaining whole-share position. Unrelated exits block the close. Uncertain cancellation remains visible and retains the close request identity; use Refresh/Retry coordinated close rather than a new key. Emergency stop disables automation and discovers app-owned entry groups from durable intents, preserving protective sells.
 
-This phase deliberately supports only one non-increasing replacement with unchanged protective terms. Cash capacity does not automatically rise after sales/deposits. Full-stack and external acceptance remain required before operation; no unattended activation or deployment was performed.
+This phase deliberately supports only one non-increasing replacement with unchanged protective terms. Cash capacity increases only through authenticated `POST /api/robotrader/cash/synchronize` with the normal owner session and same-origin request. This operation verifies fresh broker cash, requires no unresolved local buy/reservation or open broker buy, and serializes with reservations in Mongo. It replaces the cash ceiling using absolute confirmed cash plus previously consumed cash accounting; it never adds locally assumed sale proceeds or resets day/week/month spending. Repeating synchronization does not double-credit. Invalid/stale cash blocks new entries.
+
+Coordinated closes have a two-minute deadline, processed by an independent 30-second recovery tick. Expired unfilled closes are canceled and terminal status confirmed before remaining protection is restored. Protection restoration remains durably scheduled until broker coverage is confirmed, including accepted-stop timeout recovery. Entry disable and ordinary reconciliation disable do not stop close recovery; disabling the entire scheduler does. Broker/database outages can extend recovery, so unresolved close/protection states require operator attention and must not be treated as flat/protected.
+
+After a paper request reaches a terminal state, “Prepare another identical order” records a new deliberate intent without submitting. “Submit prepared order” then uses its new request/client identity. Retries, reloads and double-clicks reuse the original identity; do not clear browser request state to escape uncertainty.
+
+Activity shows notification states separately: queued, sending, retry scheduled, provider accepted and failed. Provider acceptance does not prove inbox receipt. Robo audit includes canonical lifecycle, protection and coordinated-close events.
+
+No unattended external activation or deployment was performed.

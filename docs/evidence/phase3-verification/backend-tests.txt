@@ -1,0 +1,1900 @@
+TAP version 13
+# Subtest: getAccountIdForUser prefers username for stable account scoping across token versions
+ok 1 - getAccountIdForUser prefers username for stable account scoping across token versions
+  ---
+  duration_ms: 1.007541
+  ...
+# Subtest: getRequestAccountId falls back to default only when no authenticated user identity exists
+ok 2 - getRequestAccountId falls back to default only when no authenticated user identity exists
+  ---
+  duration_ms: 0.1945
+  ...
+# Subtest: manual adapter preserves owner and stable key and never invents a filled trade
+ok 3 - manual adapter preserves owner and stable key and never invents a filled trade
+  ---
+  duration_ms: 0.657125
+  ...
+# Subtest: manual response serializes mongoose intent and exposes only broker-issued ID
+ok 4 - manual response serializes mongoose intent and exposes only broker-issued ID
+  ---
+  duration_ms: 3.287625
+  ...
+# Subtest: Alpaca portfolio uses only broker account/positions and labels unknown P&L
+ok 5 - Alpaca portfolio uses only broker account/positions and labels unknown P&L
+  ---
+  duration_ms: 13.396958
+  ...
+# Subtest: Alpaca reads reject account mismatch instead of exposing the wrong portfolio
+ok 6 - Alpaca reads reject account mismatch instead of exposing the wrong portfolio
+  ---
+  duration_ms: 0.2745
+  ...
+# Subtest: Alpaca account unknown cash is unavailable rather than zero
+ok 7 - Alpaca account unknown cash is unavailable rather than zero
+  ---
+  duration_ms: 1.156
+  ...
+# Subtest: fill reader returns actual strict-schema lifecycle fills and excludes simulator/other account records
+ok 8 - fill reader returns actual strict-schema lifecycle fills and excludes simulator/other account records
+  ---
+  duration_ms: 2.542209
+  ...
+# Subtest: buildAlpacaOrderPayload creates an equity market order without invalid extended-hours flag
+ok 9 - buildAlpacaOrderPayload creates an equity market order without invalid extended-hours flag
+  ---
+  duration_ms: 0.959292
+  ...
+# Subtest: buildAlpacaOrderPayload allows extended-hours only for equity limit day/gtc orders
+ok 10 - buildAlpacaOrderPayload allows extended-hours only for equity limit day/gtc orders
+  ---
+  duration_ms: 0.125042
+  ...
+# Subtest: buildAlpacaOrderPayload formats crypto symbols and requires crypto-compatible TIF
+ok 11 - buildAlpacaOrderPayload formats crypto symbols and requires crypto-compatible TIF
+  ---
+  duration_ms: 0.226042
+  ...
+# Subtest: buildAlpacaOrderPayload rejects invalid Alpaca order combinations before submit
+ok 12 - buildAlpacaOrderPayload rejects invalid Alpaca order combinations before submit
+  ---
+  duration_ms: 0.114667
+  ...
+# Subtest: submitAlpacaPaperOrder posts to the paper endpoint and rejects live endpoints
+ok 13 - submitAlpacaPaperOrder posts to the paper endpoint and rejects live endpoints
+  ---
+  duration_ms: 0.474416
+  ...
+# Subtest: submitAlpacaPaperOrder can refresh broker status after submit
+ok 14 - submitAlpacaPaperOrder can refresh broker status after submit
+  ---
+  duration_ms: 0.349083
+  ...
+# Subtest: shouldSyncPaperTradesToAlpaca parses explicit enable flag
+ok 15 - shouldSyncPaperTradesToAlpaca parses explicit enable flag
+  ---
+  duration_ms: 0.080125
+  ...
+# Subtest: getAlpacaTradingConfig normalizes APCA_BASE_URL with or without /v2
+ok 16 - getAlpacaTradingConfig normalizes APCA_BASE_URL with or without /v2
+  ---
+  duration_ms: 0.052209
+  ...
+# Subtest: analyzeDeterministic returns required payload fields
+ok 17 - analyzeDeterministic returns required payload fields
+  ---
+  duration_ms: 11.744708
+  ...
+# Subtest: analyzeDeterministic classifies TREND_PULLBACK for synthetic uptrend pullback
+ok 18 - analyzeDeterministic classifies TREND_PULLBACK for synthetic uptrend pullback
+  ---
+  duration_ms: 0.317542
+  ...
+# Subtest: analyzeDeterministic classifies MEAN_REVERSION for choppy oversold series
+ok 19 - analyzeDeterministic classifies MEAN_REVERSION for choppy oversold series
+  ---
+  duration_ms: 0.31075
+  ...
+# Subtest: confidenceScore stays in range and drops when quality gate fails
+ok 20 - confidenceScore stays in range and drops when quality gate fails
+  ---
+  duration_ms: 0.495167
+  ...
+# Subtest: computeDrawdownSeries returns correct max drawdown
+ok 21 - computeDrawdownSeries returns correct max drawdown
+  ---
+  duration_ms: 0.63825
+  ...
+# Subtest: aggregateStrategies groups trades correctly
+ok 22 - aggregateStrategies groups trades correctly
+  ---
+  duration_ms: 0.16575
+  ...
+# Subtest: aggregateRegimes maps regime buckets
+ok 23 - aggregateRegimes maps regime buckets
+  ---
+  duration_ms: 0.163167
+  ...
+# Subtest: computeRMultiple returns null when no stop
+ok 24 - computeRMultiple returns null when no stop
+  ---
+  duration_ms: 0.102916
+  ...
+# Subtest: computeRMultiple calculates correctly with stop
+ok 25 - computeRMultiple calculates correctly with stop
+  ---
+  duration_ms: 0.0575
+  ...
+# Subtest: buildSnapshot returns required fields
+ok 26 - buildSnapshot returns required fields
+  ---
+  duration_ms: 2.97325
+  ...
+# Subtest: buildSnapshot caps sharpeLike at 5
+ok 27 - buildSnapshot caps sharpeLike at 5
+  ---
+  duration_ms: 0.207416
+  ...
+# Subtest: analyze route returns deterministic analysis payload
+ok 28 - analyze route returns deterministic analysis payload
+  ---
+  duration_ms: 0.861166
+  ...
+# Subtest: analyze route returns 200 ok:false for NO_DATA
+ok 29 - analyze route returns 200 ok:false for NO_DATA
+  ---
+  duration_ms: 0.172875
+  ...
+# Subtest: backtest SMA_CROSS produces trades and metrics
+ok 30 - backtest SMA_CROSS produces trades and metrics
+  ---
+  duration_ms: 2.184208
+  ...
+# Subtest: backtest results disclose optimistic same-close execution and omitted trading costs
+ok 31 - backtest results disclose optimistic same-close execution and omitted trading costs
+  ---
+  duration_ms: 0.925292
+  ...
+# Subtest: trusted paper origin excludes lookalikes, credentials, paths and URL decorations
+ok 32 - trusted paper origin excludes lookalikes, credentials, paths and URL decorations
+  ---
+  duration_ms: 0.6385
+  ...
+# Subtest: release flags cannot enable live or advanced instruments
+ok 33 - release flags cannot enable live or advanced instruments
+  ---
+  duration_ms: 0.636875
+  ...
+# Subtest: submitOrder checks designated account before write and disables redirects
+ok 34 - submitOrder checks designated account before write and disables redirects
+  ---
+  duration_ms: 2.909
+  ...
+# Subtest: cancelOrder checks designated account before write and disables redirects
+ok 35 - cancelOrder checks designated account before write and disables redirects
+  ---
+  duration_ms: 0.181584
+  ...
+# Subtest: cancelAllOrders checks designated account before write and disables redirects
+ok 36 - cancelAllOrders checks designated account before write and disables redirects
+  ---
+  duration_ms: 0.244334
+  ...
+# Subtest: replaceOrder checks designated account before write and disables redirects
+ok 37 - replaceOrder checks designated account before write and disables redirects
+  ---
+  duration_ms: 0.187
+  ...
+# Subtest: closePosition checks designated account before write and disables redirects
+ok 38 - closePosition checks designated account before write and disables redirects
+  ---
+  duration_ms: 0.1435
+  ...
+# Subtest: missing account binding and live mode fail before any HTTP call
+ok 39 - missing account binding and live mode fail before any HTTP call
+  ---
+  duration_ms: 0.206042
+  ...
+# Subtest: manual client verifies account identity and never sends redirected writes
+ok 40 - manual client verifies account identity and never sends redirected writes
+  ---
+  duration_ms: 0.44275
+  ...
+# Subtest: failed identity lookup blocks writes; changing broker identity is rechecked on each call
+ok 41 - failed identity lookup blocks writes; changing broker identity is rechecked on each call
+  ---
+  duration_ms: 0.214167
+  ...
+# Subtest: configured malicious endpoints never receive credentials even with injected test transport
+ok 42 - configured malicious endpoints never receive credentials even with injected test transport
+  ---
+  duration_ms: 0.282708
+  ...
+# Subtest: stored feature flags cannot override paper-only release restrictions
+ok 43 - stored feature flags cannot override paper-only release restrictions
+  ---
+  duration_ms: 2.301916
+  ...
+# Subtest: trade policy rejects lookalike and live endpoints despite explicitly supplied live flags
+ok 44 - trade policy rejects lookalike and live endpoints despite explicitly supplied live flags
+  ---
+  duration_ms: 3.062541
+  ...
+# Subtest: company route returns company payload from Alpaca asset endpoint
+ok 45 - company route returns company payload from Alpaca asset endpoint
+  ---
+  duration_ms: 0.901458
+  ...
+# Subtest: company route returns 404 when asset is not found
+ok 46 - company route returns 404 when asset is not found
+  ---
+  duration_ms: 0.455167
+  ...
+# Subtest: debug bars route returns summary fields for latest bar
+ok 47 - debug bars route returns summary fields for latest bar
+  ---
+  duration_ms: 1.009625
+  ...
+# Subtest: debug bars route returns explicit empty payload when bars are empty
+ok 48 - debug bars route returns explicit empty payload when bars are empty
+  ---
+  duration_ms: 0.153416
+  ...
+# Subtest: debug bars route returns 200 DATA_UNAVAILABLE payload
+ok 49 - debug bars route returns 200 DATA_UNAVAILABLE payload
+  ---
+  duration_ms: 0.187291
+  ...
+# Subtest: unexpected provider errors never expose credentials or request config
+ok 50 - unexpected provider errors never expose credentials or request config
+  ---
+  duration_ms: 0.693709
+  ...
+# Subtest: execution gate blocks when tradeCount < 30
+ok 51 - execution gate blocks when tradeCount < 30
+  ---
+  duration_ms: 2.91025
+  ...
+# Subtest: execution gate blocks when Sharpe-like ratio too low
+ok 52 - execution gate blocks when Sharpe-like ratio too low
+  ---
+  duration_ms: 0.339708
+  ...
+# Subtest: execution gate blocks when daily drawdown exceeds 1.5%
+ok 53 - execution gate blocks when daily drawdown exceeds 1.5%
+  ---
+  duration_ms: 0.272
+  ...
+# Subtest: execution gate allows when all conditions satisfied
+ok 54 - execution gate allows when all conditions satisfied
+  ---
+  duration_ms: 0.227208
+  ...
+# Subtest: execution gate circuit breaker blocks on consecutive losses
+ok 55 - execution gate circuit breaker blocks on consecutive losses
+  ---
+  duration_ms: 0.394958
+  ...
+# Subtest: calculateStrategyStats caps sharpe-like at 5
+ok 56 - calculateStrategyStats caps sharpe-like at 5
+  ---
+  duration_ms: 0.954833
+  ...
+# Subtest: fresh broker clock overrides closed local Sunday calendar for paper execution
+ok 57 - fresh broker clock overrides closed local Sunday calendar for paper execution
+  ---
+  duration_ms: 2.606125
+  ...
+# Subtest: local simulation uses calendar without reading broker
+ok 58 - local simulation uses calendar without reading broker
+  ---
+  duration_ms: 29.750834
+  ...
+# Subtest: stale malformed and unavailable broker clocks fail closed without calendar fallback
+ok 59 - stale malformed and unavailable broker clocks fail closed without calendar fallback
+  ---
+  duration_ms: 0.389917
+  ...
+# Subtest: stored trade plan remains readable on outage and generation reports 503 unavailable
+ok 60 - stored trade plan remains readable on outage and generation reports 503 unavailable
+  ---
+  duration_ms: 666.496708
+  ...
+# Subtest: execution stays blocked until indexes and write probe succeed and resets on disconnect
+ok 61 - execution stays blocked until indexes and write probe succeed and resets on disconnect
+  ---
+  duration_ms: 2.477083
+  ...
+# Subtest: manual broker write is blocked when readiness is lost during account identity lookup
+ok 62 - manual broker write is blocked when readiness is lost during account identity lookup
+  ---
+  duration_ms: 78.715584
+  ...
+# Subtest: dry run makes zero network calls even without credentials or authorization
+ok 63 - dry run makes zero network calls even without credentials or authorization
+  ---
+  duration_ms: 1.354917
+  ...
+# Subtest: all preflight safety failures occur without network access
+ok 64 - all preflight safety failures occur without network access
+  ---
+  duration_ms: 1.182208
+  ...
+# Subtest: client IDs are unique and broker-length bounded
+ok 65 - client IDs are unique and broker-length bounded
+  ---
+  duration_ms: 0.437417
+  ...
+# Subtest: account identity/readiness/market/nonempty account prevent submission
+ok 66 - account identity/readiness/market/nonempty account prevent submission
+  ---
+  duration_ms: 0.374708
+  ...
+# Subtest: one bounded POST followed by exact test-owned cancel and terminal lookup
+ok 67 - one bounded POST followed by exact test-owned cancel and terminal lookup
+  ---
+  duration_ms: 0.460667
+  ...
+# Subtest: ambiguous POST reconciles by same client ID without retry
+ok 68 - ambiguous POST reconciles by same client ID without retry
+  ---
+  duration_ms: 0.107709
+  ...
+# Subtest: foreign or altered broker resource is never canceled
+ok 69 - foreign or altered broker resource is never canceled
+  ---
+  duration_ms: 1.362458
+  ...
+# Subtest: uncertain cancellation is bounded and requires operator reconciliation
+ok 70 - uncertain cancellation is bounded and requires operator reconciliation
+  ---
+  duration_ms: 0.319084
+  ...
+# Subtest: filled position is disclosed and never liquidated
+ok 71 - filled position is disclosed and never liquidated
+  ---
+  duration_ms: 0.483583
+  ...
+# Subtest: unknown duplicate and missing CLI options fail
+ok 72 - unknown duplicate and missing CLI options fail
+  ---
+  duration_ms: 0.852583
+  ...
+# Subtest: transport rejects untrusted origins before fetch
+ok 73 - transport rejects untrusted origins before fetch
+  ---
+  duration_ms: 0.351833
+  ...
+# Subtest: missing or contradictory filled quantities never establish zero-fill cleanup
+ok 74 - missing or contradictory filled quantities never establish zero-fill cleanup
+  ---
+  duration_ms: 0.346542
+  ...
+# Subtest: evaluateGuardrails blocks oversized positions
+ok 75 - evaluateGuardrails blocks oversized positions
+  ---
+  duration_ms: 0.647083
+  ...
+# Subtest: evaluateGuardrails blocks daily loss limit
+ok 76 - evaluateGuardrails blocks daily loss limit
+  ---
+  duration_ms: 0.070792
+  ...
+# Subtest: evaluateGuardrails blocks cooldown
+ok 77 - evaluateGuardrails blocks cooldown
+  ---
+  duration_ms: 0.815708
+  ...
+# Subtest: updateCooldownState triggers after three losses
+ok 78 - updateCooldownState triggers after three losses
+  ---
+  duration_ms: 0.111084
+  ...
+# Subtest: Alpaca paper dispatch preserves acknowledged through common lifecycle without simulator access
+ok 79 - Alpaca paper dispatch preserves acknowledged through common lifecycle without simulator access
+  ---
+  duration_ms: 7.281834
+  ...
+# Subtest: Alpaca paper dispatch preserves submission_uncertain through common lifecycle without simulator access
+ok 80 - Alpaca paper dispatch preserves submission_uncertain through common lifecycle without simulator access
+  ---
+  duration_ms: 0.313167
+  ...
+# Subtest: equity quotes retain provider timestamps and missing quotes never become zero-priced data
+ok 81 - equity quotes retain provider timestamps and missing quotes never become zero-priced data
+  ---
+  duration_ms: 1.861
+  ...
+# Subtest: unconfigured quote and sparkline provider fails instead of fabricating market prices
+ok 82 - unconfigured quote and sparkline provider fails instead of fabricating market prices
+  ---
+  duration_ms: 1.057792
+  ...
+# market intraday error: Could not fetch intraday bars for AAPL: No intraday bars returned
+# market historical error: Could not fetch daily bars for AAPL: No daily bars returned
+# Subtest: market intraday route returns data on happy path
+ok 83 - market intraday route returns data on happy path
+  ---
+  duration_ms: 75.850458
+  ...
+# Subtest: market intraday route degrades gracefully on DATA_UNAVAILABLE
+ok 84 - market intraday route degrades gracefully on DATA_UNAVAILABLE
+  ---
+  duration_ms: 1.89825
+  ...
+# Subtest: market historical route degrades gracefully on DATA_UNAVAILABLE
+ok 85 - market historical route degrades gracefully on DATA_UNAVAILABLE
+  ---
+  duration_ms: 1.479291
+  ...
+# Subtest: Alpaca mode market status uses provider clock even when local calendar differs
+ok 86 - Alpaca mode market status uses provider clock even when local calendar differs
+  ---
+  duration_ms: 1.997542
+  ...
+# Subtest: unavailable or stale Alpaca clock never falls back to a closed local calendar
+ok 87 - unavailable or stale Alpaca clock never falls back to a closed local calendar
+  ---
+  duration_ms: 0.299125
+  ...
+# Subtest: buildMongoConnectionTargets prefers local Mongo first in development
+ok 88 - buildMongoConnectionTargets prefers local Mongo first in development
+  ---
+  duration_ms: 0.904959
+  ...
+# Subtest: buildMongoConnectionTargets excludes local Mongo in production by default
+ok 89 - buildMongoConnectionTargets excludes local Mongo in production by default
+  ---
+  duration_ms: 0.136
+  ...
+# Subtest: buildMongoConnectionTargets can place local Mongo after Atlas when preferred off in development
+ok 90 - buildMongoConnectionTargets can place local Mongo after Atlas when preferred off in development
+  ---
+  duration_ms: 0.128541
+  ...
+# Subtest: extractSrvHost reads hostname from SRV uri
+ok 91 - extractSrvHost reads hostname from SRV uri
+  ---
+  duration_ms: 0.730459
+  ...
+# Subtest: normalizeMongoIpFamily only accepts IPv4 or IPv6
+ok 92 - normalizeMongoIpFamily only accepts IPv4 or IPv6
+  ---
+  duration_ms: 0.0785
+  ...
+# Subtest: buildMongoConnectOptions only sets family when valid
+ok 93 - buildMongoConnectOptions only sets family when valid
+  ---
+  duration_ms: 0.3765
+  ...
+# Subtest: mongoState tracks failure metadata for health responses
+ok 94 - mongoState tracks failure metadata for health responses
+  ---
+  duration_ms: 2.328042
+  ...
+# Subtest: mongoState clears failure metadata after a successful connection
+ok 95 - mongoState clears failure metadata after a successful connection
+  ---
+  duration_ms: 0.426916
+  ...
+# Subtest: notification sweep advances cursor instead of repeatedly overlooking older records
+ok 96 - notification sweep advances cursor instead of repeatedly overlooking older records
+  ---
+  duration_ms: 1.135125
+  ...
+# Subtest: uncertainty generates a distinct notification from original pending intent
+ok 97 - uncertainty generates a distinct notification from original pending intent
+  ---
+  duration_ms: 0.133
+  ...
+# Subtest: exact currency and UTC ISO boundaries
+ok 98 - exact currency and UTC ISO boundaries
+  ---
+  duration_ms: 1.773625
+  ...
+# Subtest: entry requires bounded whole-share equity limit
+ok 99 - entry requires bounded whole-share equity limit
+  ---
+  duration_ms: 0.214292
+  ...
+# Subtest: broker cumulative VWAP supports sub-cent precision with exact half-up cents
+ok 100 - broker cumulative VWAP supports sub-cent precision with exact half-up cents
+  ---
+  duration_ms: 0.187291
+  ...
+# Subtest: owner is rejected when authentication database is disconnected
+ok 101 - owner is rejected when authentication database is disconnected
+  ---
+  duration_ms: 4.980542
+  ...
+# Subtest: pre-existing non-owner signed token cannot access protected routes
+ok 102 - pre-existing non-owner signed token cannot access protected routes
+  ---
+  duration_ms: 0.980208
+  ...
+# Subtest: missing operator owner binding fails closed
+ok 103 - missing operator owner binding fails closed
+  ---
+  duration_ms: 0.495875
+  ...
+# Subtest: revoked session version cannot access owner data
+ok 104 - revoked session version cannot access owner data
+  ---
+  duration_ms: 0.818417
+  ...
+# Subtest: legacy session lacking revocation version must sign in again
+ok 105 - legacy session lacking revocation version must sign in again
+  ---
+  duration_ms: 0.948833
+  ...
+# Subtest: current owner session with connected database is accepted
+ok 106 - current owner session with connected database is accepted
+  ---
+  duration_ms: 1.450875
+  ...
+# Subtest: database query failure fails closed without exposing driver errors
+ok 107 - database query failure fails closed without exposing driver errors
+  ---
+  duration_ms: 1.14175
+  ...
+# Subtest: unconfigured JWT secret fails closed in development too
+ok 108 - unconfigured JWT secret fails closed in development too
+  ---
+  duration_ms: 0.6725
+  ...
+# Subtest: public registration is unavailable even without DB or owner config
+ok 109 - public registration is unavailable even without DB or owner config
+  ---
+  duration_ms: 2.496708
+  ...
+# Subtest: non-owner password login never issues a session
+ok 110 - non-owner password login never issues a session
+  ---
+  duration_ms: 115.784375
+  ...
+# Subtest: owner login issues versioned session and logout invalidates replay
+ok 111 - owner login issues versioned session and logout invalidates replay
+  ---
+  duration_ms: 12.24775
+  ...
+# Subtest: logout persistence failure cannot claim successful revocation
+ok 112 - logout persistence failure cannot claim successful revocation
+  ---
+  duration_ms: 1.344125
+  ...
+# Subtest: operator can resolve an explicit existing identity without modifying it
+ok 113 - operator can resolve an explicit existing identity without modifying it
+  ---
+  duration_ms: 0.647042
+  ...
+# Subtest: invalid or missing existing owner is refused
+ok 114 - invalid or missing existing owner is refused
+  ---
+  duration_ms: 0.360375
+  ...
+# Subtest: new owner is created with password hash and no automatic binding
+ok 115 - new owner is created with password hash and no automatic binding
+  ---
+  duration_ms: 1703.935666
+  ...
+# Subtest: weak or missing credentials never create an owner
+ok 116 - weak or missing credentials never create an owner
+  ---
+  duration_ms: 1.246167
+  ...
+# Subtest: normalizeOrderInput accepts fractional quantity and limit settings
+ok 117 - normalizeOrderInput accepts fractional quantity and limit settings
+  ---
+  duration_ms: 0.768708
+  ...
+# Subtest: normalizeOrderInput accepts crypto settings with higher precision
+ok 118 - normalizeOrderInput accepts crypto settings with higher precision
+  ---
+  duration_ms: 0.108167
+  ...
+# Subtest: normalizeOrderInput maps default crypto day TIF to Alpaca-compatible gtc
+ok 119 - normalizeOrderInput maps default crypto day TIF to Alpaca-compatible gtc
+  ---
+  duration_ms: 0.067542
+  ...
+# Subtest: normalizeOrderInput rejects crypto GTD orders
+ok 120 - normalizeOrderInput rejects crypto GTD orders
+  ---
+  duration_ms: 0.1795
+  ...
+# Subtest: normalizeOrderInput rejects quantities with too many decimals
+ok 121 - normalizeOrderInput rejects quantities with too many decimals
+  ---
+  duration_ms: 0.087292
+  ...
+# Subtest: normalizeOrderInput validates stop-limit requirements
+ok 122 - normalizeOrderInput validates stop-limit requirements
+  ---
+  duration_ms: 0.062625
+  ...
+# Subtest: enforceMarketHours blocks orders when market closed and extended disabled
+ok 123 - enforceMarketHours blocks orders when market closed and extended disabled
+  ---
+  duration_ms: 0.082125
+  ...
+# Subtest: enforceMarketHours allows extended session when market closed
+ok 124 - enforceMarketHours allows extended session when market closed
+  ---
+  duration_ms: 0.05425
+  ...
+# Subtest: enforceMarketHours treats crypto as always open
+ok 125 - enforceMarketHours treats crypto as always open
+  ---
+  duration_ms: 0.124583
+  ...
+# Subtest: enforcePriceControls applies limit and max price constraints for buys
+ok 126 - enforcePriceControls applies limit and max price constraints for buys
+  ---
+  duration_ms: 0.18825
+  ...
+# Subtest: Alpaca paper order status helpers preserve open broker states
+ok 127 - Alpaca paper order status helpers preserve open broker states
+  ---
+  duration_ms: 0.09375
+  ...
+# Subtest: fractional equity entries do not submit unsupported Alpaca attached exits
+ok 128 - fractional equity entries do not submit unsupported Alpaca attached exits
+  ---
+  duration_ms: 0.07025
+  ...
+# Subtest: reconcileAlpacaPaperOrder keeps accepted broker orders open locally
+ok 129 - reconcileAlpacaPaperOrder keeps accepted broker orders open locally
+  ---
+  duration_ms: 0.134125
+  ...
+# Subtest: PaperTrade enforces one persisted trade per paper order
+ok 130 - PaperTrade enforces one persisted trade per paper order
+  ---
+  duration_ms: 0.154208
+  ...
+# Subtest: reconcileAlpacaPaperOrder creates a local trade for partial fills
+ok 131 - reconcileAlpacaPaperOrder creates a local trade for partial fills
+  ---
+  duration_ms: 0.160084
+  ...
+# Subtest: applyTradeToPosition handles long lifecycle
+ok 132 - applyTradeToPosition handles long lifecycle
+  ---
+  duration_ms: 1.49
+  ...
+# Subtest: applyTradeToPosition handles short lifecycle
+ok 133 - applyTradeToPosition handles short lifecycle
+  ---
+  duration_ms: 0.197584
+  ...
+# Subtest: private trading routes require authentication middleware
+ok 134 - private trading routes require authentication middleware
+  ---
+  duration_ms: 0.60075
+  ...
+# Subtest: quality gate blocks low dollar volume
+ok 135 - quality gate blocks low dollar volume
+  ---
+  duration_ms: 0.744375
+  ...
+# Subtest: quality gate blocks high ATR percent
+ok 136 - quality gate blocks high ATR percent
+  ---
+  duration_ms: 0.074709
+  ...
+# Subtest: rate limiter prunes expired buckets on subsequent traffic
+ok 137 - rate limiter prunes expired buckets on subsequent traffic
+  ---
+  duration_ms: 6.473208
+  ...
+# Subtest: rate limiter keeps bucket storage bounded
+ok 138 - rate limiter keeps bucket storage bounded
+  ---
+  duration_ms: 0.621792
+  ...
+# Subtest: recommend route returns 200 with warning when daily bars are unavailable
+ok 139 - recommend route returns 200 with warning when daily bars are unavailable
+  ---
+  duration_ms: 93.818291
+  ...
+# Subtest: recommend symbol route returns 200 with warning when daily bars are unavailable
+ok 140 - recommend symbol route returns 200 with warning when daily bars are unavailable
+  ---
+  duration_ms: 0.927292
+  ...
+# Subtest: generateRecommendationLists returns categorized multifactor ideas
+ok 141 - generateRecommendationLists returns categorized multifactor ideas
+  ---
+  duration_ms: 92.559291
+  ...
+# Subtest: persistSnapshot upserts one retained recommendation snapshot per daily key
+ok 142 - persistSnapshot upserts one retained recommendation snapshot per daily key
+  ---
+  duration_ms: 2.7255
+  ...
+# Subtest: generateRecommendationLists sends low-quality symbols to do-not-trade list
+ok 143 - generateRecommendationLists sends low-quality symbols to do-not-trade list
+  ---
+  duration_ms: 2.152166
+  ...
+# Subtest: recommendation schema validates build output
+ok 144 - recommendation schema validates build output
+  ---
+  duration_ms: 1.192167
+  ...
+# Subtest: classifyTrend returns TREND with strong spread and slope
+ok 145 - classifyTrend returns TREND with strong spread and slope
+  ---
+  duration_ms: 0.587584
+  ...
+# Subtest: classifyTrend returns CHOP with weak spread
+ok 146 - classifyTrend returns CHOP with weak spread
+  ---
+  duration_ms: 0.064291
+  ...
+# Subtest: classifyVolatility returns EXPANSION when ATR pct exceeds vol proxy
+ok 147 - classifyVolatility returns EXPANSION when ATR pct exceeds vol proxy
+  ---
+  duration_ms: 0.060166
+  ...
+# Subtest: requireMongo passes through when mongo is ready
+ok 148 - requireMongo passes through when mongo is ready
+  ---
+  duration_ms: 0.789209
+  ...
+# Subtest: requireMongo returns 503 payload when mongo is unavailable
+ok 149 - requireMongo returns 503 payload when mongo is unavailable
+  ---
+  duration_ms: 0.422834
+  ...
+# Subtest: isSingleExpiresAtIndex detects the TTL candidate key only
+ok 150 - isSingleExpiresAtIndex detects the TTL candidate key only
+  ---
+  duration_ms: 0.592084
+  ...
+# Subtest: ensureResearchSnapshotTtlIndex converts an existing expiresAt index to TTL
+ok 151 - ensureResearchSnapshotTtlIndex converts an existing expiresAt index to TTL
+  ---
+  duration_ms: 0.43475
+  ...
+# Subtest: ensureResearchSnapshotTtlIndex recreates the TTL index when collMod fails
+ok 152 - ensureResearchSnapshotTtlIndex recreates the TTL index when collMod fails
+  ---
+  duration_ms: 0.185375
+  ...
+# Subtest: ensureResearchSnapshotTtlIndex creates indexes when the collection does not exist yet
+ok 153 - ensureResearchSnapshotTtlIndex creates indexes when the collection does not exist yet
+  ---
+  duration_ms: 0.163666
+  ...
+# Subtest: research service computes stock technical summary fields
+ok 154 - research service computes stock technical summary fields
+  ---
+  duration_ms: 4.401333
+  ...
+# Subtest: research service builds pro chart timeframes with indicators and markers
+ok 155 - research service builds pro chart timeframes with indicators and markers
+  ---
+  duration_ms: 170.456458
+  ...
+# Subtest: research screener filters momentum, sentiment, volume, sector, and trend
+ok 156 - research screener filters momentum, sentiment, volume, sector, and trend
+  ---
+  duration_ms: 4.444917
+  ...
+# Subtest: research screener treats empty numeric filters as disabled filters
+ok 157 - research screener treats empty numeric filters as disabled filters
+  ---
+  duration_ms: 1.162792
+  ...
+# Subtest: research watchlist summary aggregates screener rows and event risks
+ok 158 - research watchlist summary aggregates screener rows and event risks
+  ---
+  duration_ms: 3.463792
+  ...
+# Subtest: research service excludes chart markers outside the visible bar range
+ok 159 - research service excludes chart markers outside the visible bar range
+  ---
+  duration_ms: 36.699834
+  ...
+# Subtest: research service normalizes news with sentiment and category
+ok 160 - research service normalizes news with sentiment and category
+  ---
+  duration_ms: 0.452041
+  ...
+# Subtest: research intelligence clusters duplicate headlines and preserves citations
+ok 161 - research intelligence clusters duplicate headlines and preserves citations
+  ---
+  duration_ms: 1.232458
+  ...
+# Subtest: research service builds a balanced stock thesis from technicals and news
+ok 162 - research service builds a balanced stock thesis from technicals and news
+  ---
+  duration_ms: 0.638083
+  ...
+# Subtest: research intelligence uses AI output when a client is configured and strips profit promises
+ok 163 - research intelligence uses AI output when a client is configured and strips profit promises
+  ---
+  duration_ms: 1.591459
+  ...
+# Subtest: research intelligence reads AI model configuration at call time
+ok 164 - research intelligence reads AI model configuration at call time
+  ---
+  duration_ms: 1.364916
+  ...
+# Subtest: research sentiment scorer distinguishes negative headlines
+ok 165 - research sentiment scorer distinguishes negative headlines
+  ---
+  duration_ms: 0.068666
+  ...
+# Subtest: research service normalizes corporate event payloads
+ok 166 - research service normalizes corporate event payloads
+  ---
+  duration_ms: 0.218458
+  ...
+# Subtest: research event fallback ids are stable when provider ids are missing
+ok 167 - research event fallback ids are stable when provider ids are missing
+  ---
+  duration_ms: 0.078791
+  ...
+# Subtest: research service emits stale warnings for missing provider data
+ok 168 - research service emits stale warnings for missing provider data
+  ---
+  duration_ms: 0.275666
+  ...
+# Subtest: research service only warns for requested data scopes
+ok 169 - research service only warns for requested data scopes
+  ---
+  duration_ms: 0.065084
+  ...
+# Subtest: research compare returns row objects after parallel fetches
+ok 170 - research compare returns row objects after parallel fetches
+  ---
+  duration_ms: 2.224333
+  ...
+# Subtest: research trade preview builds an eligible paper ticket with a captured snapshot
+ok 171 - research trade preview builds an eligible paper ticket with a captured snapshot
+  ---
+  duration_ms: 3.017667
+  ...
+# Subtest: research trade preview blocks weak reward-risk tickets
+ok 172 - research trade preview blocks weak reward-risk tickets
+  ---
+  duration_ms: 0.276125
+  ...
+# Subtest: research trade preview derives position percent from explicit quantity
+ok 173 - research trade preview derives position percent from explicit quantity
+  ---
+  duration_ms: 0.126875
+  ...
+# Subtest: research trade idea carries thesis source and snapshot into the trade plan payload
+ok 174 - research trade idea carries thesis source and snapshot into the trade plan payload
+  ---
+  duration_ms: 0.154
+  ...
+# Subtest: createTradePlanFromResearch creates a plan with a research thesis idea
+ok 175 - createTradePlanFromResearch creates a plan with a research thesis idea
+  ---
+  duration_ms: 55.567208
+  ...
+# Subtest: createTradePlanFromResearch refreshes an existing research thesis idea and rank
+ok 176 - createTradePlanFromResearch refreshes an existing research thesis idea and rank
+  ---
+  duration_ms: 5.825917
+  ...
+# Subtest: trade and paper order schemas persist research workflow metadata
+ok 177 - trade and paper order schemas persist research workflow metadata
+  ---
+  duration_ms: 0.145125
+  ...
+# Subtest: evaluateUnifiedRisk blocks when projected symbol exposure exceeds cap
+ok 178 - evaluateUnifiedRisk blocks when projected symbol exposure exceeds cap
+  ---
+  duration_ms: 1.726667
+  ...
+# Subtest: evaluateUnifiedRisk blocks when projected VaR exceeds limit
+ok 179 - evaluateUnifiedRisk blocks when projected VaR exceeds limit
+  ---
+  duration_ms: 0.553542
+  ...
+# Subtest: evaluateUnifiedRisk allows valid crypto trade under separate limits
+ok 180 - evaluateUnifiedRisk allows valid crypto trade under separate limits
+  ---
+  duration_ms: 0.417791
+  ...
+# Subtest: acknowledgement and confirmed fills have separate stable event identities
+ok 181 - acknowledgement and confirmed fills have separate stable event identities
+  ---
+  duration_ms: 1.371708
+  ...
+# Subtest: SMTP failure schedules retry without changing an order or leaking error text
+ok 182 - SMTP failure schedules retry without changing an order or leaking error text
+  ---
+  duration_ms: 10.644292
+  ...
+# Subtest: provider acceptance is distinct from recipient receipt
+ok 183 - provider acceptance is distinct from recipient receipt
+  ---
+  duration_ms: 1.276458
+  ...
+# Subtest: GET /settings returns robo settings and usage payload
+ok 184 - GET /settings returns robo settings and usage payload
+  ---
+  duration_ms: 1.876708
+  ...
+# Subtest: PUT /settings updates robo settings and returns updated usage
+ok 185 - PUT /settings updates robo settings and returns updated usage
+  ---
+  duration_ms: 1.0165
+  ...
+# Subtest: GET /audit returns robo audit events list
+ok 186 - GET /audit returns robo audit events list
+  ---
+  duration_ms: 1.283875
+  ...
+# Subtest: GET /status returns user robo status and scheduler details
+ok 187 - GET /status returns user robo status and scheduler details
+  ---
+  duration_ms: 0.711334
+  ...
+# Subtest: POST /run-once rejects legacy execution with canonical migration path
+ok 188 - POST /run-once rejects legacy execution with canonical migration path
+  ---
+  duration_ms: 0.5955
+  ...
+# Subtest: POST /run_once and /runOnce aliases reject legacy execution
+ok 189 - POST /run_once and /runOnce aliases reject legacy execution
+  ---
+  duration_ms: 0.499334
+  ...
+# Subtest: legacy settings cannot enable automation
+ok 190 - legacy settings cannot enable automation
+  ---
+  duration_ms: 0.216
+  ...
+# Subtest: startRoboScheduler disables legacy entries even with opt-in and runs retention cleanup
+ok 191 - startRoboScheduler disables legacy entries even with opt-in and runs retention cleanup
+  ---
+  duration_ms: 35.667958
+  ...
+# Subtest: startRoboScheduler defaults to Phase 1 worker without running legacy scheduler
+ok 192 - startRoboScheduler defaults to Phase 1 worker without running legacy scheduler
+  ---
+  duration_ms: 91.930875
+  ...
+# Subtest: getScheduledReconciliationModes keeps paper only without live opt-in
+ok 193 - getScheduledReconciliationModes keeps paper only without live opt-in
+  ---
+  duration_ms: 1.694167
+  ...
+# Subtest: getScheduledReconciliationModes blocks live when explicitly enabled by env
+ok 194 - getScheduledReconciliationModes blocks live when explicitly enabled by env
+  ---
+  duration_ms: 0.147042
+  ...
+# Subtest: getScheduledReconciliationModes keeps paper only when live credentials are missing
+ok 195 - getScheduledReconciliationModes keeps paper only when live credentials are missing
+  ---
+  duration_ms: 0.2005
+  ...
+# Subtest: getScheduledReconciliationModes blocks live when a live-enabled setting exists
+ok 196 - getScheduledReconciliationModes blocks live when a live-enabled setting exists
+  ---
+  duration_ms: 0.082875
+  ...
+# Subtest: startRoboScheduler reconciles paper only when live reconciliation is not enabled
+ok 197 - startRoboScheduler reconciles paper only when live reconciliation is not enabled
+  ---
+  duration_ms: 76.237166
+  ...
+# Subtest: startRoboScheduler blocks live reconciliation despite explicit enable flag
+ok 198 - startRoboScheduler blocks live reconciliation despite explicit enable flag
+  ---
+  duration_ms: 76.913875
+  ...
+# Subtest: startRoboScheduler returns no-op when disabled
+ok 199 - startRoboScheduler returns no-op when disabled
+  ---
+  duration_ms: 73.555
+  ...
+# Subtest: startRoboScheduler skips ticks when DB is unavailable and requirement is enabled
+ok 200 - startRoboScheduler skips ticks when DB is unavailable and requirement is enabled
+  ---
+  duration_ms: 80.968292
+  ...
+# RoboTrader entry worker failed: entry failed
+# Subtest: entry failure does not starve paper reconciliation
+ok 201 - entry failure does not starve paper reconciliation
+  ---
+  duration_ms: 10.969
+  ...
+# Subtest: close recovery runs independently while entry worker is blocked and reconciliation disabled
+ok 202 - close recovery runs independently while entry worker is blocked and reconciliation disabled
+  ---
+  duration_ms: 34.248708
+  ...
+# Subtest: getBucketStart returns UTC day/week/month anchors
+ok 203 - getBucketStart returns UTC day/week/month anchors
+  ---
+  duration_ms: 1.776291
+  ...
+# Subtest: evaluateNotionalAgainstLimits detects daily/weekly/monthly violations
+ok 204 - evaluateNotionalAgainstLimits detects daily/weekly/monthly violations
+  ---
+  duration_ms: 0.373917
+  ...
+# Subtest: buildAutoSignalForUser selects strongest candidate from multi-symbol universe with sell support
+ok 205 - buildAutoSignalForUser selects strongest candidate from multi-symbol universe with sell support
+  ---
+  duration_ms: 0.5855
+  ...
+# Subtest: buildAutoSignalForUser maps short/cover aliases to canonical sides
+ok 206 - buildAutoSignalForUser maps short/cover aliases to canonical sides
+  ---
+  duration_ms: 0.386166
+  ...
+# Subtest: buildAutoSignalForUser avoids recently traded symbol when alternatives exist
+ok 207 - buildAutoSignalForUser avoids recently traded symbol when alternatives exist
+  ---
+  duration_ms: 1.076708
+  ...
+# Subtest: runSchedulerTick uses auto-generated multi-symbol signals
+ok 208 - runSchedulerTick uses auto-generated multi-symbol signals
+  ---
+  duration_ms: 4.196917
+  ...
+# Subtest: runRoboTradeForUser skips execution and logs when robo is disabled
+ok 209 - runRoboTradeForUser skips execution and logs when robo is disabled
+  ---
+  duration_ms: 0.211333
+  ...
+# Subtest: runRoboTradeForUser skips while circuit breaker is active
+ok 210 - runRoboTradeForUser skips while circuit breaker is active
+  ---
+  duration_ms: 0.141584
+  ...
+# Subtest: runRoboTradeForUser skips when execution cooldown is active
+ok 211 - runRoboTradeForUser skips when execution cooldown is active
+  ---
+  duration_ms: 0.357083
+  ...
+# Subtest: runRoboTradeForUser skips when max executions per day is reached
+ok 212 - runRoboTradeForUser skips when max executions per day is reached
+  ---
+  duration_ms: 0.244042
+  ...
+# Subtest: runRoboTradeForUser uses settings maxTradesPerDay when no env cap is configured
+ok 213 - runRoboTradeForUser uses settings maxTradesPerDay when no env cap is configured
+  ---
+  duration_ms: 0.255292
+  ...
+# Subtest: runRoboTradeForUser skips when kill switch is enabled
+ok 214 - runRoboTradeForUser skips when kill switch is enabled
+  ---
+  duration_ms: 0.108458
+  ...
+# Subtest: runRoboTradeForUser skips short execution when policy flags disable short-selling
+ok 215 - runRoboTradeForUser skips short execution when policy flags disable short-selling
+  ---
+  duration_ms: 0.324917
+  ...
+# Subtest: runRoboTradeForUser skips when symbol cooldown is active
+ok 216 - runRoboTradeForUser skips when symbol cooldown is active
+  ---
+  duration_ms: 0.433375
+  ...
+# Subtest: runRoboTradeForUser applies the default symbol cooldown when env is unset
+ok 217 - runRoboTradeForUser applies the default symbol cooldown when env is unset
+  ---
+  duration_ms: 2.409125
+  ...
+# Subtest: runRoboTradeForUser skips when strategy daily limit is reached
+ok 218 - runRoboTradeForUser skips when strategy daily limit is reached
+  ---
+  duration_ms: 1.250708
+  ...
+# Subtest: runRoboTradeForUser executes trade, updates usage, and sends email
+ok 219 - runRoboTradeForUser executes trade, updates usage, and sends email
+  ---
+  duration_ms: 0.974
+  ...
+# Subtest: runRoboTradeForUser rejects short signals even when the legacy environment flag is enabled
+ok 220 - runRoboTradeForUser rejects short signals even when the legacy environment flag is enabled
+  ---
+  duration_ms: 0.485375
+  ...
+# Subtest: runRoboTradeForUser executes via Alpaca backend when configured
+ok 221 - runRoboTradeForUser executes via Alpaca backend when configured
+  ---
+  duration_ms: 2.933042
+  ...
+# Subtest: runRoboTradeForUser resets circuit-breaker state after successful trade
+ok 222 - runRoboTradeForUser resets circuit-breaker state after successful trade
+  ---
+  duration_ms: 1.571
+  ...
+# Subtest: runRoboTradeForUser arms circuit breaker after consecutive execution failures
+ok 223 - runRoboTradeForUser arms circuit breaker after consecutive execution failures
+  ---
+  duration_ms: 1.334625
+  ...
+# Subtest: runRoboTradeForUser skips trade when limit would be exceeded
+ok 224 - runRoboTradeForUser skips trade when limit would be exceeded
+  ---
+  duration_ms: 0.34725
+  ...
+# Subtest: runRoboTradeForUser skips duplicate signalId and does not place order
+ok 225 - runRoboTradeForUser skips duplicate signalId and does not place order
+  ---
+  duration_ms: 1.269833
+  ...
+# Subtest: cleanupSignalExecutions deletes stale completed signal records
+ok 226 - cleanupSignalExecutions deletes stale completed signal records
+  ---
+  duration_ms: 0.12525
+  ...
+# Subtest: cleanupSignalExecutions falls back to default retention when invalid value is provided
+ok 227 - cleanupSignalExecutions falls back to default retention when invalid value is provided
+  ---
+  duration_ms: 0.074292
+  ...
+# Subtest: robotrader alpaca broker sanitizes order replacement payloads
+ok 228 - robotrader alpaca broker sanitizes order replacement payloads
+  ---
+  duration_ms: 14.997959
+  ...
+# Subtest: robotrader alpaca broker rejects unsafe replacement payloads
+ok 229 - robotrader alpaca broker rejects unsafe replacement payloads
+  ---
+  duration_ms: 0.29175
+  ...
+# Subtest: alpaca capability matrix rejects unsupported crypto combinations
+ok 230 - alpaca capability matrix rejects unsupported crypto combinations
+  ---
+  duration_ms: 0.791875
+  ...
+# Subtest: alpaca capability matrix rejects invalid options fields
+ok 231 - alpaca capability matrix rejects invalid options fields
+  ---
+  duration_ms: 0.090709
+  ...
+# Subtest: robotrader alpaca order builder emits valid bracket equity payload
+ok 232 - robotrader alpaca order builder emits valid bracket equity payload
+  ---
+  duration_ms: 0.306583
+  ...
+# Subtest: robotrader alpaca order builder emits valid fractional simple equity payload
+ok 233 - robotrader alpaca order builder emits valid fractional simple equity payload
+  ---
+  duration_ms: 0.179167
+  ...
+# Subtest: alpaca capability matrix rejects notional bracket orders
+ok 234 - alpaca capability matrix rejects notional bracket orders
+  ---
+  duration_ms: 0.083959
+  ...
+# Subtest: alpaca capability matrix rejects advanced equity extended-hours orders
+ok 235 - alpaca capability matrix rejects advanced equity extended-hours orders
+  ---
+  duration_ms: 0.069459
+  ...
+# Subtest: alpaca capability matrix validates advanced equity order legs
+ok 236 - alpaca capability matrix validates advanced equity order legs
+  ---
+  duration_ms: 0.15
+  ...
+# Subtest: alpaca capability matrix allows fractional simple equity limit day orders
+ok 237 - alpaca capability matrix allows fractional simple equity limit day orders
+  ---
+  duration_ms: 0.056042
+  ...
+# Subtest: alpaca capability matrix allows equity notional limit day orders
+ok 238 - alpaca capability matrix allows equity notional limit day orders
+  ---
+  duration_ms: 0.173708
+  ...
+# Subtest: alpaca capability matrix rejects unsupported equity notional order types
+ok 239 - alpaca capability matrix rejects unsupported equity notional order types
+  ---
+  duration_ms: 0.120667
+  ...
+# Subtest: alpaca capability matrix rejects fractional equity advanced order classes
+ok 240 - alpaca capability matrix rejects fractional equity advanced order classes
+  ---
+  duration_ms: 0.122333
+  ...
+# Subtest: alpaca capability matrix rejects fractional equity non-day orders
+ok 241 - alpaca capability matrix rejects fractional equity non-day orders
+  ---
+  duration_ms: 0.059
+  ...
+# Subtest: robotrader reconciliation projects authoritative confirmed fills without simulator execution
+ok 242 - robotrader reconciliation projects authoritative confirmed fills without simulator execution
+  ---
+  duration_ms: 1.037416
+  ...
+# Subtest: robotrader reconciliation delegates uncertain client ID recovery and keeps unresolved state
+ok 243 - robotrader reconciliation delegates uncertain client ID recovery and keeps unresolved state
+  ---
+  duration_ms: 0.141542
+  ...
+# Subtest: robotrader reconciliation scopes authoritative intents by owner/account without importing unattributed orphans
+ok 244 - robotrader reconciliation scopes authoritative intents by owner/account without importing unattributed orphans
+  ---
+  duration_ms: 0.085625
+  ...
+# Subtest: fractional automated entries explicitly reject and legacy fractional projections cannot submit stops
+ok 245 - fractional automated entries explicitly reject and legacy fractional projections cannot submit stops
+  ---
+  duration_ms: 0.283125
+  ...
+# Subtest: duplicate reconciliation reuses the logical intent and never directly creates a protective exit
+ok 246 - duplicate reconciliation reuses the logical intent and never directly creates a protective exit
+  ---
+  duration_ms: 0.179167
+  ...
+# Subtest: reconciliation errors remain visible and do not fabricate terminal broker status
+ok 247 - reconciliation errors remain visible and do not fabricate terminal broker status
+  ---
+  duration_ms: 0.172833
+  ...
+# Subtest: robotrader risk gate approves a valid paper stock trade
+ok 248 - robotrader risk gate approves a valid paper stock trade
+  ---
+  duration_ms: 9.786375
+  ...
+# Subtest: robotrader risk gate rejects simple fractional stock entries with internal risk stop
+ok 249 - robotrader risk gate rejects simple fractional stock entries with internal risk stop
+  ---
+  duration_ms: 0.855833
+  ...
+# Subtest: robotrader risk gate rejects fractionals when Alpaca asset is not fractionable
+ok 250 - robotrader risk gate rejects fractionals when Alpaca asset is not fractionable
+  ---
+  duration_ms: 2.789791
+  ...
+# Subtest: robotrader risk gate rejects when Alpaca asset lookup fails
+ok 251 - robotrader risk gate rejects when Alpaca asset lookup fails
+  ---
+  duration_ms: 0.182542
+  ...
+# Subtest: robotrader risk gate rejects when Alpaca asset is not tradable
+ok 252 - robotrader risk gate rejects when Alpaca asset is not tradable
+  ---
+  duration_ms: 0.179667
+  ...
+# Subtest: robotrader risk gate rejects disabled and duplicate trades
+ok 253 - robotrader risk gate rejects disabled and duplicate trades
+  ---
+  duration_ms: 0.122
+  ...
+# Subtest: robotrader risk gate rejects live trading without explicit opt-in
+ok 254 - robotrader risk gate rejects live trading without explicit opt-in
+  ---
+  duration_ms: 0.145792
+  ...
+# Subtest: robotrader risk gate rejects sell orders that would open shorts when disabled
+ok 255 - robotrader risk gate rejects sell orders that would open shorts when disabled
+  ---
+  duration_ms: 0.181708
+  ...
+# Subtest: robotrader risk gate rejects fractional short-opening stock orders
+ok 256 - robotrader risk gate rejects fractional short-opening stock orders
+  ---
+  duration_ms: 40.523209
+  ...
+# Subtest: robotrader risk gate allows risk-reducing exits when exposure caps are already full
+ok 257 - robotrader risk gate allows risk-reducing exits when exposure caps are already full
+  ---
+  duration_ms: 1.656208
+  ...
+# Subtest: robotrader risk gate rejects overselling a long position when short selling is disabled
+ok 258 - robotrader risk gate rejects overselling a long position when short selling is disabled
+  ---
+  duration_ms: 0.586625
+  ...
+# Subtest: robotrader risk gate allows a full long exit without short selling enabled
+ok 259 - robotrader risk gate allows a full long exit without short selling enabled
+  ---
+  duration_ms: 6.484416
+  ...
+# Subtest: robotrader risk gate allows buy-to-cover exits even when buying power is low
+ok 260 - robotrader risk gate allows buy-to-cover exits even when buying power is low
+  ---
+  duration_ms: 3.472417
+  ...
+# Subtest: robotrader risk gate rejects stock orders when the market is closed and order is not extended-hours valid
+ok 261 - robotrader risk gate rejects stock orders when the market is closed and order is not extended-hours valid
+  ---
+  duration_ms: 0.517166
+  ...
+# Subtest: robotrader risk gate blocks extended-hours entries that require broker stop protection
+ok 262 - robotrader risk gate blocks extended-hours entries that require broker stop protection
+  ---
+  duration_ms: 2.633709
+  ...
+# Subtest: robotrader risk gate allows extended-hours risk-reducing exits even with protection marker
+ok 263 - robotrader risk gate allows extended-hours risk-reducing exits even with protection marker
+  ---
+  duration_ms: 1.275416
+  ...
+# Subtest: risk gate fails closed for unknown clock
+ok 264 - risk gate fails closed for unknown clock
+  ---
+  duration_ms: 0.32725
+  ...
+# Subtest: risk gate fails closed for unknown asset
+ok 265 - risk gate fails closed for unknown asset
+  ---
+  duration_ms: 0.225375
+  ...
+# Subtest: risk gate fails closed for unknown equity
+ok 266 - risk gate fails closed for unknown equity
+  ---
+  duration_ms: 0.075125
+  ...
+# Subtest: risk gate fails closed for cash insufficient despite margin buying power
+ok 267 - risk gate fails closed for cash insufficient despite margin buying power
+  ---
+  duration_ms: 0.116417
+  ...
+# Subtest: risk gate fails closed for live explicit flag
+ok 268 - risk gate fails closed for live explicit flag
+  ---
+  duration_ms: 0.059
+  ...
+# Subtest: risk gate fails closed for extended-hours entry
+ok 269 - risk gate fails closed for extended-hours entry
+  ---
+  duration_ms: 0.077667
+  ...
+# Subtest: risk gate admits capped whole-share managed protection and rejects invalid stop terms
+ok 270 - risk gate admits capped whole-share managed protection and rejects invalid stop terms
+  ---
+  duration_ms: 0.491084
+  ...
+# Subtest: GET /robotrader/settings returns extended settings payload
+ok 271 - GET /robotrader/settings returns extended settings payload
+  ---
+  duration_ms: 0.998333
+  ...
+# Subtest: POST /robotrader/reconcile blocks requested live mode without explicit opt-in
+ok 272 - POST /robotrader/reconcile blocks requested live mode without explicit opt-in
+  ---
+  duration_ms: 0.226333
+  ...
+# Subtest: GET /robotrader/decisions/:decisionId returns decision detail with linked orders
+ok 273 - GET /robotrader/decisions/:decisionId returns decision detail with linked orders
+  ---
+  duration_ms: 0.204916
+  ...
+# Subtest: GET /robotrader/reconciliation-status summarizes local order matching state
+ok 274 - GET /robotrader/reconciliation-status summarizes local order matching state
+  ---
+  duration_ms: 46.799125
+  ...
+# Subtest: POST /robotrader/reconciliation/archive-history archives terminal historical records only
+ok 275 - POST /robotrader/reconciliation/archive-history archives terminal historical records only
+  ---
+  duration_ms: 18.986667
+  ...
+# Subtest: GET /robotrader/decisions and orders scope list queries by environment
+ok 276 - GET /robotrader/decisions and orders scope list queries by environment
+  ---
+  duration_ms: 0.358
+  ...
+# Subtest: POST /robotrader/run-once-paper requires RoboTrader to be enabled
+ok 277 - POST /robotrader/run-once-paper requires RoboTrader to be enabled
+  ---
+  duration_ms: 0.208542
+  ...
+# Subtest: GET /robotrader/performance blocks live account reads without explicit opt-in
+ok 278 - GET /robotrader/performance blocks live account reads without explicit opt-in
+  ---
+  duration_ms: 0.169583
+  ...
+# Subtest: GET /robotrader/performance scopes decisions and orders by environment
+ok 279 - GET /robotrader/performance scopes decisions and orders by environment
+  ---
+  duration_ms: 2.292208
+  ...
+# Subtest: robotrader settings default to paper mode with live trading disabled
+ok 280 - robotrader settings default to paper mode with live trading disabled
+  ---
+  duration_ms: 1.010792
+  ...
+# Subtest: robotrader settings rejects live even with confirmation
+ok 281 - robotrader settings rejects live even with confirmation
+  ---
+  duration_ms: 0.280792
+  ...
+# Subtest: robotrader settings normalizes symbols and asset classes
+ok 282 - robotrader settings normalizes symbols and asset classes
+  ---
+  duration_ms: 0.109417
+  ...
+# Subtest: robotrader settings sanitizes boolean string values
+ok 283 - robotrader settings sanitizes boolean string values
+  ---
+  duration_ms: 33.488375
+  ...
+# Subtest: robotrader settings recovers from concurrent default create race
+ok 284 - robotrader settings recovers from concurrent default create race
+  ---
+  duration_ms: 0.591
+  ...
+# Subtest: owner explicit enable clears stop pause but preserves circuit pauses
+ok 285 - owner explicit enable clears stop pause but preserves circuit pauses
+  ---
+  duration_ms: 0.380709
+  ...
+# Subtest: unsupported automated settings rejected: {"allowFractionalShares":true}
+ok 286 - unsupported automated settings rejected: {"allowFractionalShares":true}
+  ---
+  duration_ms: 0.864125
+  ...
+# Subtest: unsupported automated settings rejected: {"allowExtendedHours":true}
+ok 287 - unsupported automated settings rejected: {"allowExtendedHours":true}
+  ---
+  duration_ms: 0.076917
+  ...
+# Subtest: unsupported automated settings rejected: {"allowCryptoTrading":true}
+ok 288 - unsupported automated settings rejected: {"allowCryptoTrading":true}
+  ---
+  duration_ms: 0.182417
+  ...
+# Subtest: unsupported automated settings rejected: {"allowOptionsTrading":true}
+ok 289 - unsupported automated settings rejected: {"allowOptionsTrading":true}
+  ---
+  duration_ms: 0.141375
+  ...
+# Subtest: unsupported automated settings rejected: {"allowShortSelling":true}
+ok 290 - unsupported automated settings rejected: {"allowShortSelling":true}
+  ---
+  duration_ms: 0.056042
+  ...
+# Subtest: unsupported automated settings rejected: {"allowedAssetClasses":["crypto"]}
+ok 291 - unsupported automated settings rejected: {"allowedAssetClasses":["crypto"]}
+  ---
+  duration_ms: 0.055459
+  ...
+# Subtest: spending limits persist cents and reject invalid configuration
+ok 292 - spending limits persist cents and reject invalid configuration
+  ---
+  duration_ms: 0.12675
+  ...
+# Subtest: strategy engine uses simple market orders for fractional stock sizing
+ok 293 - strategy engine uses simple market orders for fractional stock sizing
+  ---
+  duration_ms: 2.121041
+  ...
+# Subtest: strategy engine keeps broker bracket protection for whole-share stock sizing
+ok 294 - strategy engine keeps broker bracket protection for whole-share stock sizing
+  ---
+  duration_ms: 0.864375
+  ...
+# (node:47878) ExperimentalWarning: The MockTimers API is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: robotrader worker saves approved decisions and submitted orders
+ok 295 - robotrader worker saves approved decisions and submitted orders
+  ---
+  duration_ms: 19.666292
+  ...
+# Subtest: robotrader worker keeps failed submissions reconcilable by client order id
+ok 296 - robotrader worker keeps failed submissions reconcilable by client order id
+  ---
+  duration_ms: 1.552084
+  ...
+# Subtest: robotrader worker marks explicit broker rejections terminal
+ok 297 - robotrader worker marks explicit broker rejections terminal
+  ---
+  duration_ms: 1.078792
+  ...
+# Subtest: robotrader paper preview evaluates without saving or submitting orders
+ok 298 - robotrader paper preview evaluates without saving or submitting orders
+  ---
+  duration_ms: 0.854625
+  ...
+# Subtest: robotrader worker saves rejected decisions without submitting orders
+ok 299 - robotrader worker saves rejected decisions without submitting orders
+  ---
+  duration_ms: 0.666041
+  ...
+# Subtest: robotrader decision cleanup deletes stale unlinked decisions only
+ok 300 - robotrader decision cleanup deletes stale unlinked decisions only
+  ---
+  duration_ms: 1.532167
+  ...
+# Subtest: robotrader decision cleanup defaults to three-day retention
+ok 301 - robotrader decision cleanup defaults to three-day retention
+  ---
+  duration_ms: 1.101792
+  ...
+# Subtest: robotrader audit cleanup deletes old audit logs by retention cutoff
+ok 302 - robotrader audit cleanup deletes old audit logs by retention cutoff
+  ---
+  duration_ms: 0.194375
+  ...
+# Subtest: robotrader worker tick finds enabled users
+ok 303 - robotrader worker tick finds enabled users
+  ---
+  duration_ms: 0.63825
+  ...
+# Subtest: robotrader worker tick dedupes duplicate enabled settings for a user
+ok 304 - robotrader worker tick dedupes duplicate enabled settings for a user
+  ---
+  duration_ms: 0.345875
+  ...
+# Subtest: robotrader worker blocks live mode before broker access without explicit opt-in
+ok 305 - robotrader worker blocks live mode before broker access without explicit opt-in
+  ---
+  duration_ms: 0.16075
+  ...
+# Subtest: robotrader worker blocks live despite explicit opt-in
+ok 306 - robotrader worker blocks live despite explicit opt-in
+  ---
+  duration_ms: 9.969042
+  ...
+# Subtest: robotrader paper preview scopes recent orders to paper environment
+ok 307 - robotrader paper preview scopes recent orders to paper environment
+  ---
+  duration_ms: 0.346167
+  ...
+# Subtest: robotrader emergency stop cancels only locally owned open orders
+ok 308 - robotrader emergency stop cancels only locally owned open orders
+  ---
+  duration_ms: 0.564042
+  ...
+# Subtest: robotrader worker skips when a per-user lock is already held
+ok 309 - robotrader worker skips when a per-user lock is already held
+  ---
+  duration_ms: 0.130333
+  ...
+# Subtest: robotrader worker lock TTL falls back when env value is invalid
+ok 310 - robotrader worker lock TTL falls back when env value is invalid
+  ---
+  duration_ms: 0.147959
+  ...
+# Subtest: robotrader worker converts stock orders to valid extended-hours limit orders
+ok 311 - robotrader worker converts stock orders to valid extended-hours limit orders
+  ---
+  duration_ms: 0.126708
+  ...
+# Subtest: worker telemetry never writes control flags
+ok 312 - worker telemetry never writes control flags
+  ---
+  duration_ms: 0.479541
+  ...
+# Subtest: disable during research prevents submission even for run-once
+ok 313 - disable during research prevents submission even for run-once
+  ---
+  duration_ms: 10.424958
+  ...
+# Subtest: projection persistence failure cannot turn an authoritative acknowledgement into rejection
+ok 314 - projection persistence failure cannot turn an authoritative acknowledgement into rejection
+  ---
+  duration_ms: 0.636542
+  ...
+# Subtest: lease refresh rejects lost ownership and includes expiry predicate
+ok 315 - lease refresh rejects lost ownership and includes expiry predicate
+  ---
+  duration_ms: 0.240875
+  ...
+# Subtest: lease renewal failure after research blocks the broker write
+ok 316 - lease renewal failure after research blocks the broker write
+  ---
+  duration_ms: 0.2945
+  ...
+# Subtest: scheduler excludes pre-existing non-owner settings even if enabled
+ok 317 - scheduler excludes pre-existing non-owner settings even if enabled
+  ---
+  duration_ms: 0.076459
+  ...
+# Subtest: emergency stop preserves protective sells and partially filled bracket parents
+ok 318 - emergency stop preserves protective sells and partially filled bracket parents
+  ---
+  duration_ms: 0.128334
+  ...
+# Subtest: heartbeat remembers renewal failure even before submission recheck
+ok 319 - heartbeat remembers renewal failure even before submission recheck
+  ---
+  duration_ms: 76.124667
+  ...
+# Subtest: fresh risk rejection after research blocks the final broker write
+ok 320 - fresh risk rejection after research blocks the final broker write
+  ---
+  duration_ms: 0.375041
+  ...
+# Subtest: submission audit failure retains accepted status without another broker write
+ok 321 - submission audit failure retains accepted status without another broker write
+  ---
+  duration_ms: 0.564417
+  ...
+# Subtest: emergency stop finds intent after projection loss and cancels only entry remainder through lifecycle
+ok 322 - emergency stop finds intent after projection loss and cancels only entry remainder through lifecycle
+  ---
+  duration_ms: 0.20225
+  ...
+# Subtest: emergency stop reconciles submission_uncertain broker acceptance before cancellation without projection
+ok 323 - emergency stop reconciles submission_uncertain broker acceptance before cancellation without projection
+  ---
+  duration_ms: 0.149792
+  ...
+# Subtest: emergency stop reconciles replacement broker acceptance before cancellation without projection
+ok 324 - emergency stop reconciles replacement broker acceptance before cancellation without projection
+  ---
+  duration_ms: 0.323208
+  ...
+# Subtest: session cookie parser reads encoded cookie values
+ok 325 - session cookie parser reads encoded cookie values
+  ---
+  duration_ms: 1.478333
+  ...
+# Subtest: session token reader prefers bearer token when present
+ok 326 - session token reader prefers bearer token when present
+  ---
+  duration_ms: 0.248958
+  ...
+# Subtest: production session cookies are httpOnly, secure, and cross-site capable
+ok 327 - production session cookies are httpOnly, secure, and cross-site capable
+  ---
+  duration_ms: 0.158167
+  ...
+# Subtest: simulator execution quality never substitutes Alpaca telemetry
+ok 328 - simulator execution quality never substitutes Alpaca telemetry
+  ---
+  duration_ms: 1.059917
+  ...
+# Subtest: simulator strategy performance excludes Alpaca realized P&L
+ok 329 - simulator strategy performance excludes Alpaca realized P&L
+  ---
+  duration_ms: 0.150167
+  ...
+# Subtest: journal listing selects only simulator trades and labels results
+ok 330 - journal listing selects only simulator trades and labels results
+  ---
+  duration_ms: 0.455041
+  ...
+# Subtest: simulator snapshots exclude legacy equity with unknown execution source
+ok 331 - simulator snapshots exclude legacy equity with unknown execution source
+  ---
+  duration_ms: 7.278541
+  ...
+# Subtest: journal cannot read or write an Alpaca trade through a simulator ID route
+ok 332 - journal cannot read or write an Alpaca trade through a simulator ID route
+  ---
+  duration_ms: 0.539166
+  ...
+# Subtest: normalizeAccountId rejects empty scope values
+ok 333 - normalizeAccountId rejects empty scope values
+  ---
+  duration_ms: 0.639333
+  ...
+# Subtest: listRecentStrategyRuns filters by account scope and caps limit
+ok 334 - listRecentStrategyRuns filters by account scope and caps limit
+  ---
+  duration_ms: 0.531292
+  ...
+# Subtest: listRecentParameterVersions filters by account scope
+ok 335 - listRecentParameterVersions filters by account scope
+  ---
+  duration_ms: 0.129625
+  ...
+# Subtest: createStrategyRun writes account scope to run and parameter version
+ok 336 - createStrategyRun writes account scope to run and parameter version
+  ---
+  duration_ms: 0.585584
+  ...
+# Subtest: fetchDaily retries without feed when first response has bars:null
+ok 337 - fetchDaily retries without feed when first response has bars:null
+  ---
+  duration_ms: 2.153667
+  ...
+# Subtest: fetchIntraday retries without feed when first response has bars:null
+ok 338 - fetchIntraday retries without feed when first response has bars:null
+  ---
+  duration_ms: 0.643916
+  ...
+# Subtest: plan generation blocked when market is closed
+ok 339 - plan generation blocked when market is closed
+  ---
+  duration_ms: 0.5625
+  ...
+# Subtest: applyExposureCap enforces total exposure limit
+ok 340 - applyExposureCap enforces total exposure limit
+  ---
+  duration_ms: 0.101208
+  ...
+# Subtest: rankStrategies orders by higher expectancy and win rate
+ok 341 - rankStrategies orders by higher expectancy and win rate
+  ---
+  duration_ms: 0.441959
+  ...
+# Subtest: strategy excluded when tradeCount < 15
+ok 342 - strategy excluded when tradeCount < 15
+  ---
+  duration_ms: 0.090833
+  ...
+# Subtest: strategy excluded when expectancy <= 0
+ok 343 - strategy excluded when expectancy <= 0
+  ---
+  duration_ms: 0.137
+  ...
+# Subtest: strategy excluded when Sharpe-like ratio too low
+ok 344 - strategy excluded when Sharpe-like ratio too low
+  ---
+  duration_ms: 0.075583
+  ...
+# Subtest: strategy excluded when variance too high
+ok 345 - strategy excluded when variance too high
+  ---
+  duration_ms: 0.07525
+  ...
+# Subtest: rankStrategies caps sharpe-like before normalization
+ok 346 - rankStrategies caps sharpe-like before normalization
+  ---
+  duration_ms: 0.080625
+  ...
+# Subtest: score reduced when recent performance is weak
+ok 347 - score reduced when recent performance is weak
+  ---
+  duration_ms: 0.659625
+  ...
+# Subtest: plan contains no ideas if no viable strategies
+ok 348 - plan contains no ideas if no viable strategies
+  ---
+  duration_ms: 0.155958
+  ...
+# Subtest: ranking produces zero list when dataset empty
+ok 349 - ranking produces zero list when dataset empty
+  ---
+  duration_ms: 0.108083
+  ...
+# Subtest: applyTradeToPlan links matching trade to idea
+ok 350 - applyTradeToPlan links matching trade to idea
+  ---
+  duration_ms: 0.183125
+  ...
+# Subtest: detectMissedWinners counts unexecuted ideas hitting target
+ok 351 - detectMissedWinners counts unexecuted ideas hitting target
+  ---
+  duration_ms: 9.764583
+  ...
+# Subtest: paper trade routes require auth middleware
+ok 352 - paper trade routes require auth middleware
+  ---
+  duration_ms: 0.594125
+  ...
+# Subtest: trade execute route uses paper broker persistence pipeline
+ok 353 - trade execute route uses paper broker persistence pipeline
+  ---
+  duration_ms: 0.386459
+  ...
+# Subtest: paper order route does not duplicate already recorded rejected broker orders
+ok 354 - paper order route does not duplicate already recorded rejected broker orders
+  ---
+  duration_ms: 0.240917
+  ...
+# Subtest: buildTradingConfig applies conservative default feature flags
+ok 355 - buildTradingConfig applies conservative default feature flags
+  ---
+  duration_ms: 0.84175
+  ...
+# Subtest: classifyInstrumentPolicy identifies ETFs and leveraged/inverse ETFs
+ok 356 - classifyInstrumentPolicy identifies ETFs and leveraged/inverse ETFs
+  ---
+  duration_ms: 0.124
+  ...
+# Subtest: ensureTradingIndexes attempts every configured trading model
+ok 357 - ensureTradingIndexes attempts every configured trading model
+  ---
+  duration_ms: 4.46525
+  ...
+# Subtest: backfillStrategyRunAccountIds derives account scope from known users and fallback ids
+ok 358 - backfillStrategyRunAccountIds derives account scope from known users and fallback ids
+  ---
+  duration_ms: 0.328792
+  ...
+# Subtest: backfillStrategyParameterAccountIds uses the referencing run account when unambiguous
+ok 359 - backfillStrategyParameterAccountIds uses the referencing run account when unambiguous
+  ---
+  duration_ms: 0.163209
+  ...
+# Subtest: ensureStrategyTelemetryIndexes drops legacy global indexes and creates scoped indexes
+ok 360 - ensureStrategyTelemetryIndexes drops legacy global indexes and creates scoped indexes
+  ---
+  duration_ms: 0.201
+  ...
+# Subtest: backfillRecommendationSnapshots adds unique legacy keys and TTL dates
+ok 361 - backfillRecommendationSnapshots adds unique legacy keys and TTL dates
+  ---
+  duration_ms: 7.878375
+  ...
+# Subtest: isSingleCreatedAtIndex detects the audit TTL candidate key only
+ok 362 - isSingleCreatedAtIndex detects the audit TTL candidate key only
+  ---
+  duration_ms: 0.623834
+  ...
+# Subtest: ensureRoboAuditLogIndexes converts existing TTL index to configured retention
+ok 363 - ensureRoboAuditLogIndexes converts existing TTL index to configured retention
+  ---
+  duration_ms: 0.922375
+  ...
+# Subtest: fresh database without legacy collections still creates required strategy indexes
+ok 364 - fresh database without legacy collections still creates required strategy indexes
+  ---
+  duration_ms: 0.560625
+  ...
+# Subtest: trading-system status route returns config, flags, and strategies
+ok 365 - trading-system status route returns config, flags, and strategies
+  ---
+  duration_ms: 1.159875
+  ...
+# Subtest: trading-system strategy-runs route returns a schema-shaped payload
+ok 366 - trading-system strategy-runs route returns a schema-shaped payload
+  ---
+  duration_ms: 0.140625
+  ...
+# Subtest: trading-system strategy-parameters route returns a schema-shaped payload
+ok 367 - trading-system strategy-parameters route returns a schema-shaped payload
+  ---
+  duration_ms: 0.147833
+  ...
+# Subtest: trading-system execution route returns summary, orders, and fills
+ok 368 - trading-system execution route returns summary, orders, and fills
+  ---
+  duration_ms: 0.45
+  ...
+# Subtest: market quotes route rejects oversized symbol batches before provider calls
+ok 369 - market quotes route rejects oversized symbol batches before provider calls
+  ---
+  duration_ms: 55.6185
+  ...
+# Subtest: market bars route caps provider limit and validates timeframe
+ok 370 - market bars route caps provider limit and validates timeframe
+  ---
+  duration_ms: 5.281833
+  ...
+# Subtest: market intraday and historical routes reject invalid symbols before provider calls
+ok 371 - market intraday and historical routes reject invalid symbols before provider calls
+  ---
+  duration_ms: 1.540542
+  ...
+# Subtest: journal search escapes regex metacharacters and caps length
+ok 372 - journal search escapes regex metacharacters and caps length
+  ---
+  duration_ms: 47.349458
+  ...
+# Subtest: trade plan history clamps day range and caps provider symbol fanout
+ok 373 - trade plan history clamps day range and caps provider symbol fanout
+  ---
+  duration_ms: 4.098792
+  ...
+# Subtest: parseHeaderOrigin normalizes referer URLs to origins
+ok 374 - parseHeaderOrigin normalizes referer URLs to origins
+  ---
+  duration_ms: 0.729917
+  ...
+# Subtest: unsafe method origin guard allows bearer-token API calls without browser origin
+ok 375 - unsafe method origin guard allows bearer-token API calls without browser origin
+  ---
+  duration_ms: 0.199583
+  ...
+# Subtest: unsafe method origin guard rejects cookie-authenticated posts without a trusted origin
+ok 376 - unsafe method origin guard rejects cookie-authenticated posts without a trusted origin
+  ---
+  duration_ms: 0.120208
+  ...
+# Subtest: unsafe method origin guard allows cookie-authenticated posts from configured frontend origin
+ok 377 - unsafe method origin guard allows cookie-authenticated posts from configured frontend origin
+  ---
+  duration_ms: 0.083042
+  ...
+1..377
+# tests 377
+# suites 0
+# pass 377
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2655.463375

@@ -1,0 +1,12 @@
+{
+  "yamlParsed": true,
+  "manualDispatch": true,
+  "pullRequest": true,
+  "readOnly": true,
+  "noSecrets": true,
+  "noPrivilegedPREvent": true,
+  "fullVerifier": true,
+  "chromiumInstalled": true,
+  "mongoPrimaryWait": true
+}
+Hosted GitHub Actions NOT RUN. No push performed. YAML + bounded semantic validation, not actionlint or remote-run proof.

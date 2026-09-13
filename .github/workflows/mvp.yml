@@ -1,14 +1,15 @@
-name: MVP deterministic checks
+name: MVP local release acceptance
 on:
   pull_request:
   push:
     branches: [main, master]
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,6 +19,11 @@ jobs:
           cache-dependency-path: |
             backend/package-lock.json
             frontend/package-lock.json
+      - name: Install test runner and Chromium
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx --no-install playwright install --with-deps chromium
       - name: Start isolated MongoDB replica set
         run: |
           docker run -d --rm --name day-trader-mvp-ci -p 127.0.0.1:27189:27017 mongo:7 --replSet mvp --bind_ip_all
@@ -26,13 +32,23 @@ jobs:
             sleep 1
           done
           docker exec day-trader-mvp-ci mongosh --quiet --eval 'rs.initiate({_id:"mvp",members:[{_id:0,host:"localhost:27017"}]})'
-      - name: Run implemented deterministic checks
-        run: node scripts/verify-mvp.mjs --checks-only
+          for attempt in $(seq 1 30); do
+            if docker exec day-trader-mvp-ci mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)'; then break; fi
+            sleep 1
+          done
+          docker exec day-trader-mvp-ci mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)'
+      - name: Run complete deterministic local release acceptance
+        run: node scripts/verify-mvp.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: mvp-verification
-          path: docs/evidence/verification/
+          path: |
+            docs/evidence/verification/
+            docs/evidence/phase3-browser-artifacts/
+            docs/evidence/phase3-browser-report.json
+            docs/evidence/phase3-process-report.json
+            test-results/
       - name: Remove only test container
         if: always()
         run: docker stop day-trader-mvp-ci || true

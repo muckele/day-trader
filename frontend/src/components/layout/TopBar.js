@@ -4,7 +4,7 @@ import Badge from '../ui/Badge';
 import { useMarketStatus } from '../../hooks/useMarketStatus';
 
 export default function TopBar() {
-  const { status, nextOpen, nextClose, countdown } = useMarketStatus();
+  const { status, source, nextOpen, nextClose, countdown } = useMarketStatus();
 
   const isOpen = status === 'OPEN';
   const nextTime = isOpen ? nextClose : nextOpen;
@@ -22,9 +22,10 @@ export default function TopBar() {
             </span>
           </div>
           <Badge variant={isOpen ? 'success' : 'neutral'}>
-            {isOpen ? 'Market Open' : 'Market Closed'}
+            {isOpen ? 'Market Open' : status === 'CLOSED' ? 'Market Closed' : status === 'LOADING' ? 'Market status loading' : 'Market status unavailable'}
           </Badge>
-          {nextTime && (
+          {source && <span className="text-xs text-[#8ba09f]">{source === 'alpaca-clock' ? 'Alpaca clock' : 'Local calendar'}</span>}
+          {['OPEN', 'CLOSED'].includes(status) && nextTime && (
             <span className="text-xs text-[#a9b8b8] tracking-wide">
               {isOpen ? 'Closes' : 'Opens'} {new Date(nextTime).toLocaleTimeString()}
               {countdown ? ` · ${countdown}` : ''}

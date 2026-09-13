@@ -1,0 +1,612 @@
+Continue the Day Trader owner-only Alpaca PAPER MVP from the completed Phase 2 financial-integrity checkpoint.
+
+REPOSITORY:
+`/Users/Matt/Projects/day-trader`
+
+GITHUB:
+`muckele/day-trader`
+
+BRANCH:
+`codex/owner-paper-mvp`
+
+CURRENT VERIFIED PHASE 2 SHA:
+`0dcc4d0dad7f47768a5613573b0a828bda0667ff`
+
+Phase 2 is committed and the working tree was clean at handoff.
+
+Do NOT restart the architecture or rewrite the durable order lifecycle unless testing proves a specific defect.
+
+Read first:
+
+* `docs/mvp-checkpoint.md`
+* `docs/mvp-scope.md`
+* `docs/mvp-plan.md`
+* `docs/mvp-acceptance.md`
+* `docs/mvp-verification.md`
+* `docs/mvp-runbook.md`
+* `docs/evidence/phase2-review.md`
+* `docs/evidence/phase2-dependencies.md`
+* `docs/evidence/phase2-verification/command.txt`
+
+Also inspect the Phase 2 implementation, especially:
+
+* `backend/services/orderLifecycleService.js`
+* `backend/services/orderProtectionService.js`
+* spending/capacity services and models
+* account lease/locking code
+* RoboTrader worker/reconciliation
+* manual Alpaca execution paths
+* emergency stop
+* notification outbox
+* owner authentication
+* frontend trading/RoboTrader screens
+* `scripts/verify-mvp.mjs`
+* existing Playwright tests
+* GitHub Actions configuration
+
+============================================================
+
+1. PHASE 3 GOAL
+   ============================================================
+
+The goal is to convert the currently verified implementation into a
+FULL-STACK RELEASE CANDIDATE for the defined OWNER-ONLY ALPACA PAPER MVP.
+
+This phase must prove that the system works through its actual user-facing
+and process boundaries.
+
+The principal acceptance path is:
+
+REAL BROWSER
+→ REAL FRONTEND
+→ REAL AUTHENTICATION
+→ REAL BACKEND
+→ REAL MONGODB
+→ CONTROLLED ALPACA TEST ADAPTER
+→ REAL ORDER-LIFECYCLE SERVICES
+→ RECONCILIATION
+→ UI STATE
+
+Do not replace that chain with browser-level mocked API responses.
+
+External Alpaca orders, external SMTP mail, and production deployment are
+NOT authorized in this phase.
+
+============================================================
+2. PRESERVE PHASE 2
+===================
+
+Before changing code:
+
+1. Verify branch and HEAD.
+2. Verify the working tree is clean.
+3. Confirm HEAD equals or descends from:
+   `0dcc4d0dad7f47768a5613573b0a828bda0667ff`
+4. Run enough Phase 2 verification to establish that the baseline is still
+   healthy.
+5. Record the Phase 3 starting SHA.
+
+Do not reset or discard Phase 2 work.
+
+If baseline tests fail before Phase 3 changes, diagnose that separately and
+do not conceal it as a Phase 3 failure.
+
+============================================================
+3. BUILD A TRUE FULL-STACK TEST HARNESS
+=======================================
+
+Create a deterministic release-acceptance environment that launches:
+
+* disposable MongoDB replica set
+* backend server
+* frontend application
+* controlled local Alpaca-compatible HTTP test server
+* controlled local email-capture/test transport where appropriate
+* Playwright browser
+
+Use the real application authentication flow.
+
+Do NOT:
+
+* inject a fake JWT directly into localStorage for tests claimed as full-stack
+* intercept every application API request in Playwright and manufacture
+  success responses
+* bypass MongoDB
+* bypass `orderLifecycleService`
+* bypass broker destination/account validation
+* weaken paper-only controls
+
+External providers may be replaced ONLY at their actual provider boundaries.
+
+The controlled Alpaca adapter/server should support enough of the Trading API
+contract to exercise:
+
+* account lookup
+* market clock
+* asset lookup
+* order create
+* order lookup
+* client_order_id lookup
+* order list
+* cancel
+* replace
+* positions
+* partial fills
+* final fills
+* rejected orders
+* delayed acknowledgement
+* ambiguous timeout after acceptance
+* protective-order behavior
+
+Make scenarios deterministic and programmable from the test harness.
+
+============================================================
+4. FULL-STACK OWNER AUTHENTICATION ACCEPTANCE
+=============================================
+
+Test through the browser and actual backend/database:
+
+A. Owner can log in through the real login form.
+
+B. Protected routes are unavailable before authentication.
+
+C. Public registration remains unavailable.
+
+D. A pre-existing non-owner user cannot:
+
+* view Alpaca account data
+* view owner portfolio
+* submit orders
+* modify RoboTrader
+* invoke emergency controls
+* view sensitive trading-system state
+
+E. Logout invalidates the session server-side.
+
+F. An old/revoked session cannot regain access merely by restoring browser
+storage/cookies.
+
+G. Session expiration produces a truthful UI state and sends the user back
+through authentication without fabricating portfolio/account data.
+
+============================================================
+5. FULL-STACK MANUAL PAPER ORDER ACCEPTANCE
+===========================================
+
+Through the actual browser:
+
+1. Log in as owner.
+2. Navigate to an actual supported stock.
+3. Open the manual paper-trade workflow.
+4. Submit a valid whole-share long stock entry.
+5. Verify the controlled broker receives exactly ONE order.
+6. Verify the UI initially distinguishes submission/acknowledgement from fill.
+7. Cause a partial fill from the broker adapter.
+8. Verify order/activity/portfolio state.
+9. Cause the remainder to fill.
+10. Verify final quantity, fill data, and spending accounting.
+11. Refresh the browser.
+12. Verify state survives reload and is derived from persisted broker-backed
+    records rather than client state.
+
+Add browser acceptance for:
+
+* broker rejection
+* ambiguous broker timeout after acceptance
+* duplicate click
+* page reload while submission is uncertain
+* canceled order
+* partial fill then cancellation
+
+A duplicate browser action or retry must not generate a second broker POST for
+the same logical request.
+
+============================================================
+6. FULL-STACK RESEARCH / TRADE-PLAN ACCEPTANCE
+==============================================
+
+Exercise at least one real browser workflow that begins from research or a
+trade plan and reaches the same durable Alpaca-backed lifecycle.
+
+Verify:
+
+* research provenance/timestamps are visible
+* trade eligibility is truthful
+* “no trade” is handled correctly
+* the order uses the shared durable lifecycle
+* spending controls apply exactly as they do to manual/Robo entries
+* UI distinguishes recommendation from execution
+* submission does not imply fill
+
+Do not add strategy features for this phase.
+
+============================================================
+7. FULL-STACK ROBOTRADER ACCEPTANCE
+===================================
+
+Prove RoboTrader runs independently of the browser.
+
+Required acceptance:
+
+1. Owner logs in.
+2. Configure conservative test limits.
+3. Persist RoboTrader settings.
+4. Enable RoboTrader.
+5. Confirm UI accurately reports effective state.
+6. Log out.
+7. Close the browser page/context.
+8. Allow backend worker to run independently.
+9. Provide deterministic market/research conditions through provider
+   boundaries so exactly one eligible entry exists.
+10. Verify exactly one broker submission.
+11. Verify durable decision, intent, broker order, reservation, audit, and
+    notification records.
+12. Reopen browser.
+13. Log in.
+14. Verify the resulting state is visible.
+
+Also prove that when there is no eligible trade, RoboTrader abstains without
+fabricating activity.
+
+============================================================
+8. DISABLE AND EMERGENCY-STOP RACES
+===================================
+
+Create deterministic end-to-end/process tests for:
+
+A. Disable while research is running.
+
+B. Disable after research but immediately before broker submission.
+
+C. Emergency stop while an entry is broker-acknowledged but unfilled.
+
+D. Emergency stop during submission uncertainty.
+
+E. Worker loses lease immediately before submission.
+
+F. Worker loses lease after decision persistence but before broker POST.
+
+G. Two worker processes attempt the same account concurrently.
+
+Required invariants:
+
+* no new exposure after current control state says stop
+* no second broker submission
+* protective/reducing orders remain permitted where required
+* unresolved states remain visible and auditable
+* reconciliation continues when entries are disabled
+
+Use multiple real Node processes where that is necessary to prove the locking
+contract. Do not prove process safety only with two async functions in one
+process.
+
+============================================================
+9. COORDINATED MANUAL EXIT WORKFLOW
+===================================
+
+Resolve the remaining Phase 2 limitation where an existing protective
+reservation/order can conflict with a manual position close.
+
+Implement a safe coordinated close workflow.
+
+The owner should be able to intentionally close an Alpaca-paper position
+without creating duplicate or oversized exits.
+
+Required sequence should safely coordinate:
+
+* existing protective order discovery
+* cancellation request where appropriate
+* confirmation or uncertain-cancel state
+* actual remaining position quantity
+* close submission
+* reconciliation
+
+Do not:
+
+* send a full close while a full-size protective exit can still independently
+  execute
+* assume cancellation succeeded because a DELETE request returned
+* cancel unrelated broker orders
+* silently leave the position unprotected for an unbounded period
+
+If cancellation state is uncertain, fail safely and surface the condition.
+
+Add browser + backend regression coverage.
+
+============================================================
+10. CASH RESYNCHRONIZATION
+==========================
+
+Address the documented conservative Phase 2 behavior around available cash.
+
+Do not simply add sale proceeds immediately from local assumptions.
+
+Design a safe resynchronization rule using confirmed broker/account state.
+
+Requirements:
+
+* spending-period usage remains historically consumed
+* selling does NOT reset day/week/month spending budgets
+* confirmed account cash can refresh the separate cash-capacity constraint
+* deposits/withdrawals are recognized only from trustworthy broker state
+* an unknown/stale account state fails closed for new entries
+* synchronization cannot double-credit sale proceeds
+* concurrent resynchronization and reservations remain safe
+
+Clearly separate:
+
+A. period spending budget
+B. current broker cash available for non-leveraged purchases
+
+Add real Mongo concurrency tests.
+
+============================================================
+11. IDENTICAL ORDER USER INTENT
+===============================
+
+Resolve the browser behavior where an identical payload may retain its
+session request key.
+
+The system needs to distinguish:
+
+A. accidental duplicate/retry of the SAME user intent
+
+from:
+
+B. a deliberate NEW order with identical economic parameters.
+
+Design an explicit UI/request-intent mechanism.
+
+A deliberate second identical order must require a new explicit user action
+after the prior logical request is visibly resolved or otherwise safely
+distinguished.
+
+Do not solve this by making every click generate a fresh idempotency key;
+that would defeat duplicate-click protection.
+
+Add Playwright coverage for:
+
+* double-click same action → one logical/broker order
+* retry after ambiguous response → same logical order
+* deliberate second identical order after appropriate user action →
+  new logical order and new client_order_id
+
+============================================================
+12. SMTP / NOTIFICATION ACCEPTANCE
+==================================
+
+Use the real notification-outbox code with a controlled local SMTP/capture
+boundary.
+
+Verify:
+
+* order acknowledgement event
+* partial/final fill behavior
+* rejection
+* submission uncertainty
+* protection failure
+* retry after temporary mail failure
+* restart recovery
+* no duplicate notification from repeated reconciliation
+
+UI/audit records must distinguish:
+
+* notification queued
+* provider accepted
+* failed/retrying
+
+Do not claim inbox receipt from provider acceptance.
+
+External SMTP delivery is still not authorized.
+
+============================================================
+13. CORE SCREEN AND DATA-INTEGRITY ACCEPTANCE
+=============================================
+
+Through actual frontend/backend APIs verify:
+
+* Home/watchlist
+* Stock
+* Research
+* Trade Plan
+* Portfolio
+* Activity
+* Analytics
+* RoboTrader
+* Trading System
+
+Each must correctly handle:
+
+* loading
+* valid data
+* empty state
+* stale/unavailable upstream data
+* authentication expiration
+* backend failure
+
+Verify simulator and Alpaca-paper records cannot be accidentally combined into
+one misleading balance, P&L, position, fill list, or performance curve.
+
+Ensure the execution source is obvious to the user.
+
+Audit research provenance and timestamps.
+
+Audit backtest accounting enough to ensure obvious:
+
+* look-ahead contamination
+* same-bar impossible fills
+* missing fees/slippage assumptions
+* misleading performance labels
+
+are either corrected or explicitly disclosed.
+
+Do not turn this into a research-platform rewrite.
+
+============================================================
+14. DEPENDENCY / BUILD SECURITY REVIEW
+======================================
+
+Re-run dependency audits.
+
+For each remaining high finding, determine:
+
+* direct or transitive dependency
+* runtime or dev/build-only exposure
+* reachable exploit surface in this application
+* available non-breaking remediation
+* whether it blocks the defined paper MVP
+
+Make targeted compatible upgrades where safe and verified.
+
+Do NOT:
+
+* use `npm audit fix --force`
+* perform a major React/build-system migration merely to obtain a lower count
+* declare findings harmless without analysis
+
+Document deferred risks precisely.
+
+============================================================
+15. CI ACCEPTANCE
+=================
+
+Verify the GitHub Actions workflow itself is syntactically valid and matches
+the local release verification commands.
+
+If GitHub tooling/access permits pushing the branch and running CI WITHOUT
+deploying or performing external broker actions, prepare the branch and report
+the exact action required.
+
+Do not push unless the operator has already authorized it.
+
+Do not claim CI passed until an actual GitHub Actions run passes.
+
+Ensure untrusted pull-request jobs cannot access brokerage/SMTP secrets.
+
+============================================================
+16. GUARDED EXTERNAL PAPER ACCEPTANCE TOOL
+==========================================
+
+IMPLEMENT the external acceptance command, but DO NOT RUN it against Alpaca.
+
+The tool must require explicit opt-in, for example:
+
+`--authorize-external-paper-test`
+
+and should refuse execution without all safety requirements.
+
+It must require:
+
+* expected dedicated Alpaca paper account ID
+* exact trusted paper endpoint
+* explicit test symbol allowlist
+* explicit maximum test notional
+* unique test prefix/client IDs
+* clean identification of test-created orders
+* cleanup restricted to those test-owned resources
+* dry-run mode
+* no account reset
+* no broad cancel-all
+* no broad position liquidation
+
+The acceptance flow should be able to verify:
+
+* account identity
+* paper endpoint
+* account/market readiness
+* one deliberately bounded test order
+* broker acknowledgement
+* status lookup/reconciliation
+* controlled cleanup of only test-owned resources
+
+Never use available credentials as implicit authorization to execute it.
+
+Document the exact operator command for later authorized use.
+
+============================================================
+17. RELEASE VERIFIER
+====================
+
+Extend:
+
+`scripts/verify-mvp.mjs`
+
+The verifier should now include the deterministic full-stack acceptance suite.
+
+It must fail if required deterministic acceptance is incomplete.
+
+External Alpaca and real SMTP receipt checks must be reported separately as
+EXTERNAL ACCEPTANCE NOT RUN / BLOCKED BY AUTHORIZATION, rather than faked.
+
+Define the local release-candidate threshold explicitly.
+
+Expected status after successful Phase 3 local work:
+
+`VERIFIED RELEASE CANDIDATE`
+
+ONLY if all required deterministic local tests actually pass.
+
+Do not call it:
+
+`DEPLOYED PAPER MVP VERIFIED`
+
+without:
+
+* authorized external Alpaca acceptance
+* deployed-environment acceptance
+* required operational checks
+
+============================================================
+18. FINAL REVIEW
+================
+
+Before declaring Phase 3 complete:
+
+1. Run all backend tests.
+2. Run all real Mongo suites.
+3. Run all process/concurrency suites.
+4. Run all frontend tests.
+5. Run the production frontend build.
+6. Run Playwright full-stack acceptance.
+7. Run verifier-script tests.
+8. Run complete `verify-mvp`.
+9. Inspect dependency findings.
+10. Inspect final diff.
+11. Scan for secrets.
+12. Update:
+
+    * `docs/mvp-acceptance.md`
+    * `docs/mvp-verification.md`
+    * `docs/mvp-checkpoint.md`
+    * `docs/mvp-runbook.md`
+13. Commit internally consistent Phase 3 work.
+
+Final response must state:
+
+* starting SHA
+* final SHA
+* commits created
+* dirty-tree state
+* exact tests and actual counts
+* Playwright full-stack scenarios passed/failed
+* multi-process race scenarios passed/failed
+* coordinated close behavior
+* cash resynchronization behavior
+* duplicate-versus-new-identical-order behavior
+* SMTP capture behavior
+* dependency findings and dispositions
+* complete verifier exit code
+* external acceptance tool path
+* whether external acceptance was run
+* whether anything was deployed
+* explicit confirmation that live trading remains disabled
+* exact remaining blockers
+* GO / NO-GO for `VERIFIED RELEASE CANDIDATE`
+
+Do not provide a percentage estimate.
+
+No external brokerage order, external SMTP delivery, production deployment,
+live trading, or persistent production activation is authorized by this prompt.
+
+Begin by verifying the clean Phase 2 baseline and constructing the real
+full-stack acceptance harness.

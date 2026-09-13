@@ -1,0 +1,13 @@
+▶ Phase 3 real Mongo outbox and local STARTTLS SMTP acceptance
+  ✔ acknowledgement partial final rejection uncertainty and protection events preserve queued/accepted distinction and deduplicate (1448.056083ms)
+  ✔ temporary SMTP DATA failure persists retry and new process accepts later without duplicate (910.195458ms)
+  ✔ killed process leaves sending lease then fresh worker recovers expired claim (1048.051625ms)
+✔ Phase 3 real Mongo outbox and local STARTTLS SMTP acceptance (3694.481708ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3893.80825

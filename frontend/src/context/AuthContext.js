@@ -16,7 +16,7 @@ export function AuthProvider({ children }) {
       return res.data.user || null;
     } catch (err) {
       setUser(null);
-      setStatus('anonymous');
+      setStatus([401, 403].includes(err.response?.status) ? 'anonymous' : 'unavailable');
       return null;
     }
   }, []);

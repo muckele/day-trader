@@ -12,10 +12,30 @@ const {DEFAULT_RECOMMENDATION_UNIVERSE}=require('../config/tradingConfig');
 const SOURCE='alpaca-paper';
 const terminal=new Set(['filled','canceled','cancelled','expired','rejected']);
 const hash=x=>crypto.createHash('sha256').update(JSON.stringify(x)).digest('hex');
-function createOrderLifecycle({broker,ownerId,expectedAccountId,loadSettings=async()=>null,now=()=>new Date(),afterBrokerSubmit,afterReconcile,beforeEntry,strictRisk=false,uncertaintyMs=300000}={}) {
+function createOrderLifecycle({broker,ownerId,expectedAccountId,loadSettings=async()=>null,now=()=>new Date(),afterBrokerSubmit,afterReconcile,beforeEntry,beforeAdmission,strictRisk=false,uncertaintyMs=300000}={}) {
  if(!broker||!ownerId||!expectedAccountId)throw fail('Owner and expected paper account are required.');
  const scope={accountId:expectedAccountId,executionSource:SOURCE};
  async function transaction(fn){const s=await mongoose.startSession();try{let result;await s.withTransaction(async()=>{result=await fn(s);});return result;}finally{await s.endSession();}}
+ async function freshCashAccount(){
+  const started=Date.now();const a=await account();
+  if(Date.now()-started>15000 || a.stale===true || a.timestamp && (!Number.isFinite(Date.parse(a.timestamp)) || Math.abs(Date.now()-Date.parse(a.timestamp))>60000))throw fail('Fresh broker cash snapshot required.','CASH_STALE');
+  cents(a.cash,true);return a;
+ }
+ async function synchronizeCash(){return transaction(async s=>{
+  const cap=await lock(s);
+  if(cap.reservedCents!==0 || await OrderIntent.exists({...scope,side:'buy',status:{$nin:[...terminal]}}).session(s))throw fail('Cash synchronization requires no unresolved entries.','CASH_UNRESOLVED');
+  // The account read is inside the same transaction that serializes all reservations/fills.
+  // Replacement of the cash baseline is absolute, never a local sale-proceeds increment.
+  if(!broker.listOrders)throw fail('Complete broker entry discovery required.');
+  const open=await broker.listOrders({status:'open',nested:true,limit:500});
+  const flatten=orders=>orders.flatMap(o=>[o,...flatten(o.legs||[])]);
+  if(!Array.isArray(open)||open.length>=500||flatten(open).some(o=>o.side==='buy'))throw fail('Unresolved broker entries prevent cash synchronization.','CASH_UNRESOLVED');
+  const a=await freshCashAccount(),cash=cents(a.cash,true),cashSyncedAt=new Date();
+  if(!Number.isSafeInteger(cash+cap.spentCents))throw fail('Cash exceeds safe monetary precision.');
+  await AccountCapacity.updateOne({_id:cap._id},{$set:{cashFloorCents:cash+cap.spentCents,brokerCashCents:cash,cashSyncedAt}},{session:s});
+  await Audit.create([{userId:ownerId,eventType:'account_cash_synchronized',payload:{accountId:expectedAccountId,brokerCashCents:cash,historicalSpentCents:cap.spentCents,cashSyncedAt}}],{session:s});
+  return {executionSource:SOURCE,brokerCashCents:cash,reservedCents:cap.reservedCents,historicalSpentCents:cap.spentCents,cashSyncedAt};
+ });}
  async function owned(id,session){const q=OrderIntent.findOne({...scope,_id:id,userId:String(ownerId)});if(session)q.session(session);const i=await q;if(!i)throw fail('Order intent not found.','ORDER_NOT_FOUND');return i;}
  async function result(i){const order=await BrokerOrder.findOne({...scope,intentId:i._id}).sort({createdAt:-1});return {intent:i,order,brokerOrder:order,executionSource:SOURCE};}
  async function account(){if(broker.mode && broker.mode!=='paper')throw fail('Paper mode required.');const a=await broker.getAccount();if(String(a.id)!==String(expectedAccountId)||a.trading_blocked||a.account_blocked)throw fail('Expected paper account is unavailable.');return a;}
@@ -30,7 +50,7 @@ function createOrderLifecycle({broker,ownerId,expectedAccountId,loadSettings=asy
   for(const [period,key]of Object.entries(i.periodKeys||{}))await SpendingBucket.updateOne({accountId:expectedAccountId,period,key},{$inc:{reservedCents:deltaReserve,spentCents:deltaSpent}},{upsert:true,session:s});
  }
  async function reserve(i,amount,settings,a,s){
-  const cap=await lock(s);const cash=cents(a.cash,true);const floor=Math.min(cap.cashFloorCents??cash,cash+cap.spentCents);
+  const cap=await lock(s);const cash=cents((await freshCashAccount()).cash,true);const floor=Math.min(cap.cashFloorCents??cash,cash+cap.spentCents);
   if(amount+cap.reservedCents+cap.spentCents>floor)throw fail('Insufficient unreserved cash.','CASH_LIMIT');
   await AccountCapacity.updateOne({_id:cap._id},{$set:{cashFloorCents:floor}},{session:s});
   for(const [period,key]of Object.entries(i.periodKeys)){
@@ -45,6 +65,7 @@ function createOrderLifecycle({broker,ownerId,expectedAccountId,loadSettings=asy
   if(typeof idempotencyKey!=='string'||!idempotencyKey.trim()||idempotencyKey.length>128)throw fail('Stable idempotency key required.');
   const normalized=normalizeOrder(orderInput),fingerprint=hash(normalized);const key={...scope,environment:'paper',idempotencyKey};
   let previous=await OrderIntent.findOne(key);if(previous){if(previous.payloadFingerprint!==fingerprint)throw fail('Idempotency key payload conflict.','IDEMPOTENCY_CONFLICT');return result(previous);}
+  if(beforeAdmission)await beforeAdmission();
   const a=await account(),settings=await loadSettings(userId);
   if(normalized.side==='buy'&&broker.getClock){const clock=await broker.getClock();if(!clock.is_open||!clock.timestamp||Math.abs(now()-new Date(clock.timestamp))>60000)throw fail('Fresh open market clock required.');}
   if(settings?.mode && settings.mode!=='paper')throw fail('Persisted settings must select paper mode.');
@@ -139,17 +160,42 @@ function createOrderLifecycle({broker,ownerId,expectedAccountId,loadSettings=asy
   try{const raw=await broker.replaceOrder(b.externalOrderId,{qty:normalized.qty,limit_price:normalized.limitPrice,client_order_id:clientOrderId});brokerResponded=true;await ingest(intentId,raw.order||raw);}catch(e){if(!brokerResponded&&[400,403,422].includes(e.response?.status)){await transaction(async s=>{await lock(s);const current=await owned(intentId,s);const release=Math.min(current.reservedCents,current.replacement.additionalCents);await adjust(current,-release,0,s);current.reservedCents-=release;current.status=current.filledQty?'partially_filled':'acknowledged';current.replacement={...current.replacement,status:'rejected'};current.rejectionReason=String(e.message).slice(0,500);await current.save({session:s});await event(current,s,'replacement_rejected');});}else await transaction(async s=>{await lock(s);const current=await owned(intentId,s);current.rejectionReason=String(e.message).slice(0,500);await current.save({session:s});await event(current,s,'replacement_uncertain');});}
   return result(await owned(intentId));
  }
- async function submit(request={}){
-  if(request.orderInput?.side!=='sell')return submitUnlocked(request);
-  const {withProtectionAccountLock}=require('./orderProtectionService');
-  return withProtectionAccountLock({accountId:expectedAccountId,symbol:String(request.orderInput.symbol||'').toUpperCase()},assertLease=>submitUnlocked({...request,beforeBrokerWrite:assertLease,beforeSubmit:async()=>{if(request.beforeSubmit)await request.beforeSubmit();await assertLease();}}));
+ // Persist a negative admission decision under the same unique identity and account
+ // transaction as successful admission. A concurrent retry cannot later submit this key.
+ async function recordAdmissionRejection(request,error){
+  if(!['ORDER_INVALID','CASH_LIMIT','SPENDING_LIMIT'].includes(error.code)||String(request.userId)!==String(ownerId)||typeof request.idempotencyKey!=='string'||!request.idempotencyKey.trim()||request.idempotencyKey.length>128)return;
+  let normalized;try{normalized=normalizeOrder(request.orderInput);}catch{return;}
+  const key={...scope,environment:'paper',idempotencyKey:request.idempotencyKey},fingerprint=hash(normalized);
+  const rejected=await transaction(async s=>{
+   await lock(s);
+   let current=await OrderIntent.findOne(key).session(s);
+   if(!current){
+    [current]=await OrderIntent.create([{...key,userId:String(ownerId),origin:request.origin||'manual',broker:'alpaca',...normalized,orderInput:normalized,payloadFingerprint:fingerprint,clientOrderId:`mvp-${hash([expectedAccountId,request.idempotencyKey]).slice(0,40)}`,status:'rejected',rejectionReason:String(error.message).slice(0,500),periodKeys:periodKeys(now())}],{session:s});
+    await event(current,s,'admission_rejected');
+   }
+   if(current.payloadFingerprint!==fingerprint||current.status!=='rejected'||current.filledQty!==0||current.reservedCents!==0||await BrokerOrder.exists({...scope,intentId:current._id}).session(s))return null;
+   return current;
+  });
+  if(rejected){error.admissionOutcome={state:'rejected_without_submission',idempotencyKey:request.idempotencyKey,intentId:String(rejected._id)};error.paperOrder=rejected;}
  }
- return {submit,reconcile,cancel,replace};
+ async function submit(request={}){
+  try{
+   if(request.orderInput?.side!=='sell')return await submitUnlocked(request);
+   const {withProtectionAccountLock}=require('./orderProtectionService');
+   return await withProtectionAccountLock({accountId:expectedAccountId,symbol:String(request.orderInput.symbol||'').toUpperCase()},assertLease=>submitUnlocked({...request,beforeBrokerWrite:assertLease,beforeSubmit:async()=>{if(request.beforeSubmit)await request.beforeSubmit();await assertLease();}}));
+  }catch(error){
+   // Failure to durably confirm rejection leaves the caller uncertain; never infer it from HTTP status.
+   await recordAdmissionRejection(request,error).catch(()=>{});
+   throw error;
+  }
+ }
+ const closeService=require('./positionCloseService').createPositionCloseService({broker,ownerId,expectedAccountId,submit:submitUnlocked,reconcile,cancel,beforeAdmission,now});
+ return {submit,reconcile,cancel,replace,synchronizeCash,closePosition:closeService.closePosition,resumeCloses:closeService.resumeCloses};
 }
 function getOrderLifecycle(deps={}) {
  const {createAlpacaBroker}=require('../robotrader/alpacaBroker');const RoboSettings=require('../models/RoboSettings');
  const broker=deps.broker||createAlpacaBroker({mode:'paper'}),ownerId=deps.ownerId||process.env.OWNER_USER_ID,expectedAccountId=deps.expectedAccountId||process.env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID;
  const protection=require('./orderProtectionService').createOrderProtection({broker,ownerId,expectedAccountId});
- return createOrderLifecycle({broker,ownerId,expectedAccountId,loadSettings:userId=>RoboSettings.findOne({userId}).lean(),afterReconcile:({intent})=>protection.reconcile({intentId:intent._id}),beforeEntry:()=>protection.assertProtected(),strictRisk:true,...deps});
+ return createOrderLifecycle({broker,ownerId,expectedAccountId,loadSettings:userId=>RoboSettings.findOne({userId}).lean(),afterReconcile:({intent})=>protection.reconcile({intentId:intent._id}),beforeEntry:()=>protection.assertProtected(),beforeAdmission:()=>require('./executionReadiness').executionReadiness.assertReady(),strictRisk:true,...deps});
 }
 module.exports={createOrderLifecycle,getOrderLifecycle};

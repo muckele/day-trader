@@ -121,6 +121,16 @@ function backtestStrategy(bars, strategyId) {
   const metrics = computeMetrics({ trades, equityCurve });
   return {
     strategyId,
+    executionSource: 'historical-simulation',
+    assumptions: {
+      fillTiming: 'same_signal_bar_close',
+      sharesPerTrade: 1,
+      startingEquity,
+      commissionPerTrade: 0,
+      slippageBps: 0,
+      riskPerSharePct: 2,
+      warning: 'Illustrative historical simulation: signals use the current close and assume fills at that same close. This optimistic timing is not an executable fill model. One share per trade on a $100,000 baseline; no commissions, fees, or slippage. R multiples assume 2% entry-price risk.'
+    },
     trades,
     equityCurve,
     ...metrics

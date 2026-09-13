@@ -1,0 +1,13 @@
+
+> frontend@0.1.0 test
+> react-scripts test --watchAll=false --runInBand src/utils/paperOrderRequest.test.js src/components/PaperOrderIntentPanel.test.js src/pages/Stock.test.js
+
+PASS src/pages/Stock.test.js
+PASS src/utils/paperOrderRequest.test.js
+PASS src/components/PaperOrderIntentPanel.test.js
+
+Test Suites: 3 passed, 3 total
+Tests:       16 passed, 16 total
+Snapshots:   0 total
+Time:        1.044 s
+Ran all test suites matching /src\/utils\/paperOrderRequest.test.js|src\/components\/PaperOrderIntentPanel.test.js|src\/pages\/Stock.test.js/i.

@@ -4,7 +4,7 @@ const requireMongo = require('../middleware/requireMongo');
 const TradePlan = require('../models/TradePlan');
 const TradePlanLog = require('../models/TradePlanLog');
 const PaperTrade = require('../models/PaperTrade');
-const { getMarketStatus } = require('../utils/marketStatus');
+const { getExecutionMarketStatus } = require('../services/executionMarketStatus');
 const { fetchDaily } = require('../tradeLogic');
 const {
   getPlanDate,
@@ -30,7 +30,7 @@ function clampPositiveInt(value, { fallback, max }) {
 router.get('/today', async (req, res, next) => {
   try {
     const accountId = getRequestAccountId(req);
-    const status = getMarketStatus();
+    const status = await getExecutionMarketStatus();
     const date = getPlanDate();
     const plan = await TradePlan.findOne({ accountId, date }).lean();
     if (!plan) {
@@ -42,7 +42,7 @@ router.get('/today', async (req, res, next) => {
       });
     }
 
-    if (req.query.rescore === '1') {
+    if (req.query.rescore === '1' && status.status !== 'UNAVAILABLE') {
       const updated = await rescoreTradePlan(plan, accountId);
       return res.json({
         plan: updated,
@@ -65,8 +65,9 @@ router.get('/today', async (req, res, next) => {
 
 router.post('/generate', async (req, res, next) => {
   const accountId = getRequestAccountId(req);
+  let status;
   try {
-    const status = getMarketStatus();
+    status = await getExecutionMarketStatus();
     const date = getPlanDate();
 
     if (status.status !== 'OPEN') {
@@ -75,9 +76,9 @@ router.post('/generate', async (req, res, next) => {
         date,
         marketStatus: status.status,
         status: 'BLOCKED',
-        reason: 'Market is closed.'
+        reason: status.status === 'UNAVAILABLE' ? status.error : 'Market is closed.'
       });
-      return res.status(400).json({ error: 'Market is closed. Plan generation is disabled.' });
+      return res.status(status.status === 'UNAVAILABLE' ? 503 : 400).json({ error: status.status === 'UNAVAILABLE' ? 'Fresh Alpaca market status is unavailable. Plan generation is disabled.' : 'Market is closed. Plan generation is disabled.', marketStatus: status.status });
     }
 
     const existing = await TradePlan.findOne({ accountId, date }).lean();
@@ -106,7 +107,7 @@ router.post('/generate', async (req, res, next) => {
     await TradePlanLog.create({
       accountId,
       date: getPlanDate(),
-      marketStatus: getMarketStatus().status,
+      marketStatus: status?.status || 'UNAVAILABLE',
       status: 'FAILED',
       reason: err.message
     });

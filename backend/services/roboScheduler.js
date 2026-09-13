@@ -1,3 +1,4 @@
+const closeRecovery = require('./positionCloseRecovery');
 const roboNotifications = require('./roboNotificationService');
 const roboEngine = require('./roboTraderEngine');
 const mongoose = require('mongoose');
@@ -74,6 +75,7 @@ async function getScheduledReconciliationModes() {
 
 function startRoboScheduler({
   intervalMs = 60 * 1000,
+  closeRecoveryIntervalMs = 30 * 1000,
   cleanupIntervalMs = Number(process.env.ROBO_SIGNAL_CLEANUP_INTERVAL_MS) || (6 * 60 * 60 * 1000),
   reconciliationIntervalMs = Number(process.env.ROBOTRADER_RECONCILIATION_INTERVAL_MS) || (5 * 60 * 1000),
   retentionDays = process.env.ROBO_SIGNAL_RETENTION_DAYS,
@@ -216,9 +218,21 @@ function startRoboScheduler({
     }
   };
 
+  // Exit recovery has its own timer so slow research cannot extend an unprotected close gap.
+  let recoveringCloses = false;
+  const recoverCloses = async () => {
+    if(stopped || recoveringCloses || !isDbReady() || !process.env.OWNER_USER_ID)return;
+    recoveringCloses = true;
+    try {await closeRecovery.recoverPositionCloses();}
+    catch(error){schedulerState.lastError = `Close recovery: ${error.message}`;console.error('Position close recovery failed:',error.message);}
+    finally {recoveringCloses = false;}
+  };
+  const closeTimer=setInterval(recoverCloses,toFinitePositiveInt(closeRecoveryIntervalMs,30000));
+
   // slight startup delay to avoid competing with cold-start tasks
   const startTimeout = setTimeout(() => {
     tick();
+    recoverCloses();
   }, toFinitePositiveInt(startupDelayMs, 5000));
   const timer = setInterval(tick, tickEveryMs);
 
@@ -227,6 +241,7 @@ function startRoboScheduler({
     schedulerState.enabled = false;
     clearTimeout(startTimeout);
     clearInterval(timer);
+    clearInterval(closeTimer);
   };
 }
 

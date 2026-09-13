@@ -1,3 +1,5 @@
+import { marketFreshness } from '../utils/marketFreshness';
+import PaperOrderIntentPanel from '../components/PaperOrderIntentPanel';
 import { submitPaperOrder, paperOrderStatusMessage } from '../utils/paperOrderRequest';
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
@@ -53,7 +55,7 @@ export default function Stock() {
   const [tradeSide, setTradeSide] = useState('buy');
   const [tradeQty, setTradeQty] = useState(1);
   const [tradeAssetClass, setTradeAssetClass] = useState(looksCryptoSymbol(symbol) ? 'crypto' : 'equity');
-  const [tradeOrderType, setTradeOrderType] = useState('market');
+  const [tradeOrderType, setTradeOrderType] = useState('limit');
   const [tradeLimitPrice, setTradeLimitPrice] = useState('');
   const [tradeStopTriggerPrice, setTradeStopTriggerPrice] = useState('');
   const [tradeTimeInForce, setTradeTimeInForce] = useState('day');
@@ -62,7 +64,7 @@ export default function Stock() {
   const [tradeStopLossPrice, setTradeStopLossPrice] = useState('');
   const [tradeTrailingStopPct, setTradeTrailingStopPct] = useState('');
   const [maxPricePerShare, setMaxPricePerShare] = useState('');
-  const [allowExtendedHours, setAllowExtendedHours] = useState(true);
+  const [allowExtendedHours, setAllowExtendedHours] = useState(false);
   const [tradeError, setTradeError] = useState('');
   const [tradeResult, setTradeResult] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -292,6 +294,9 @@ export default function Stock() {
     }));
   }, [historical, intraday, timeframe]);
 
+  const lastBar = chartData[chartData.length - 1];
+  const barFreshness = marketFreshness(lastBar?.close, lastBar?.rawTime);
+
   const priceInfo = useMemo(() => {
     if (!chartData.length) return null;
     const first = chartData[0].close;
@@ -466,7 +471,7 @@ export default function Stock() {
         strategyId: recommendation?.strategy?.strategyId || null,
         setupType: recommendation?.setupType || null,
         strategyTags: recommendation?.strategy?.tags || null
-      });
+      }, { surface: 'stock' });
       setTradeResult(res.data);
       setAccount(res.data.account || account);
       setConfirmOpen(false);
@@ -567,6 +572,9 @@ export default function Stock() {
               ))}
             </div>
 
+            <p className="mb-2 text-sm text-[#8ba09f]" data-testid="stock-price-freshness">
+              {barFreshness === 'unavailable' ? 'Price history unavailable. No current price is available.' : `${barFreshness === 'stale' ? 'Stale price history · over 15 minutes old. ' : ''}Last chart observation: ${new Date(lastBar.rawTime).toLocaleString()}. Historical bar closes are not executable quotes.`}
+            </p>
             <div className="relative h-64">
               {chartLoading && (
                 <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/70 dark:bg-slate-900/70">
@@ -964,7 +972,7 @@ export default function Stock() {
             </label>
             {tradeAssetClass === 'equity' && marketStatus !== 'OPEN' && (
               <p className="mt-2 text-xs text-amber-600">
-                Market is currently closed.
+                {marketStatus === 'CLOSED' ? 'Market is currently closed.' : 'Market status is unavailable.'}
               </p>
             )}
             {tradeAssetClass === 'crypto' && (
@@ -981,6 +989,7 @@ export default function Stock() {
             >
               Review Paper Trade
             </Button>
+            <PaperOrderIntentPanel surface="stock" symbol={symbol} />
             {tradeError && <p className="text-xs text-red-600 mt-2">{tradeError}</p>}
             {tradeResult && (
               <div className="mt-3 text-xs text-slate-600 dark:text-slate-400">

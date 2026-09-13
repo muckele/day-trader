@@ -1,0 +1,13 @@
+
+Running 8 tests using 1 worker
+
+  ✓  1 scripts/acceptance/screens.spec.cjs:31:1 › core screen empty persisted data remains explicit and source separated (3.5s)
+  ✓  2 scripts/acceptance/screens.spec.cjs:41:1 › core screen valid broker records never enter simulator performance (3.8s)
+  ✓  3 scripts/acceptance/screens.spec.cjs:88:1 › each core screen exposes a loading state before its actual data response (23.3s)
+  ✓  4 scripts/acceptance/screens.spec.cjs:107:1 › all core screens reject expired authentic sessions without showing cached private data (2.8s)
+  ✓  5 scripts/acceptance/screens.spec.cjs:118:1 › all core screens show backend unavailable rather than false logout or fabricated data (6.0s)
+  ✓  6 scripts/acceptance/screens.spec.cjs:132:1 › provider outage is explicit while persisted simulator and plan screens stay source honest (3.1s)
+  ✓  7 scripts/acceptance/screens.spec.cjs:156:3 › emptyMarketData: all core screens preserve source and expose unavailable research context (3.0s)
+  ✓  8 scripts/acceptance/screens.spec.cjs:156:3 › staleMarketData: all core screens preserve source and expose unavailable research context (3.2s)
+
+  8 passed (50.0s)

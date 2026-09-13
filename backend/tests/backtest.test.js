@@ -23,3 +23,15 @@ test('backtest SMA_CROSS produces trades and metrics', () => {
   assert.ok(Array.isArray(result.trades));
   assert.ok(Array.isArray(result.equityCurve));
 });
+
+test('backtest results disclose optimistic same-close execution and omitted trading costs', () => {
+  const bars = Array.from({ length: 60 }, (_, i) => ({ t: new Date(2020, 0, i + 1).toISOString(), c: 100 + i }));
+  const result = backtestStrategy(bars, 'SMA_CROSS');
+  assert.equal(result.executionSource, 'historical-simulation');
+  assert.equal(result.assumptions.fillTiming, 'same_signal_bar_close');
+  assert.equal(result.assumptions.sharesPerTrade, 1);
+  assert.equal(result.assumptions.startingEquity, 100000);
+  assert.equal(result.assumptions.commissionPerTrade, 0);
+  assert.equal(result.assumptions.slippageBps, 0);
+  assert.match(result.assumptions.warning, /optimistic/i);
+});

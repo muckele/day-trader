@@ -1,3 +1,5 @@
+import { researchPaperTicket } from '../utils/researchPaperTicket';
+import PaperOrderIntentPanel from '../components/PaperOrderIntentPanel';
 import { submitPaperOrder, paperOrderStatusMessage } from '../utils/paperOrderRequest';
 import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
@@ -27,10 +29,10 @@ const TREND_OPTIONS = ['any', 'uptrend', 'mixed', 'downtrend', 'insufficient_dat
 const DEFAULT_TRADE_TICKET = {
   side: 'buy',
   qty: '',
-  orderType: 'market',
+  orderType: 'limit',
   limitPrice: '',
   positionSizePct: '',
-  allowExtendedHours: true
+  allowExtendedHours: false
 };
 
 function normalizeSymbol(value) {
@@ -321,7 +323,7 @@ export default function Research() {
         emitToast({ type: 'error', message: 'Risk checks must pass before submitting a paper trade.' });
         return;
       }
-      const ticket = preview.ticket;
+      const ticket = researchPaperTicket(preview.ticket);
       const res = await submitPaperOrder({
         symbol: ticket.symbol,
         assetClass: ticket.assetClass,
@@ -344,7 +346,7 @@ export default function Research() {
           researchSnapshot: preview.researchSnapshot,
           riskPreview: preview.risk
         }
-      });
+      }, { surface: 'research' });
       const status = String(res.data?.order?.status || '').toLowerCase();
       emitToast({
         type: status === 'rejected' ? 'error' : 'success',
@@ -514,7 +516,10 @@ export default function Research() {
               <p className="rt-label">Data Quality</p>
               <p className="mt-1 text-sm text-[#ffd77a]">{qualityWarnings[0]}</p>
               {qualityWarnings.length > 1 && (
-                <p className="mt-1 text-xs text-[#b8c8c7]">{qualityWarnings.length - 1} additional freshness warning{qualityWarnings.length > 2 ? 's' : ''} available in provider status.</p>
+                <details className="mt-2 text-xs text-[#b8c8c7]">
+                  <summary className="cursor-pointer">Show {qualityWarnings.length - 1} additional freshness warnings</summary>
+                  <ul className="mt-2 list-disc pl-4 space-y-1">{qualityWarnings.slice(1).map(warning => <li key={warning}>{warning}</li>)}</ul>
+                </details>
               )}
             </div>
             <Badge variant={cacheStatus === 'hit' ? 'success' : (cacheStatus === 'stale_hit' ? 'warning' : 'neutral')}>
@@ -899,13 +904,14 @@ export default function Research() {
                         <label className="flex items-center gap-3 rounded-lg border border-[#26363c] bg-[#0b1012] px-3 py-3 text-sm font-semibold text-[#d9e5e4]">
                           <input
                             type="checkbox"
+                            disabled
                             checked={tradeTicket.allowExtendedHours}
                             onChange={event => {
                               setTradeTicket(prev => ({ ...prev, allowExtendedHours: event.target.checked }));
                               setTradePreview(null);
                             }}
                           />
-                          Extended hours
+                          Extended hours unavailable in this release
                         </label>
                         <div className="flex flex-wrap gap-2 md:col-span-2 xl:col-span-4">
                           <Button type="submit" disabled={loadingTradePreview}>
@@ -927,6 +933,8 @@ export default function Research() {
                           >
                             {submittingPaperTrade ? 'Submitting...' : 'Submit Paper Trade'}
                           </Button>
+                          <p className="text-xs text-slate-500">Execution submits a regular-hours limit entry with a managed protective stop. The research target is informational; no take-profit order is submitted.</p>
+                          <PaperOrderIntentPanel surface="research" symbol={selectedSymbol} />
                         </div>
                       </form>
                     </div>
@@ -934,7 +942,7 @@ export default function Research() {
                     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                       <Metric label="Entry" value={formatCurrency(tradePreview?.ticket?.entryPrice)} />
                       <Metric label="Stop" value={formatCurrency(tradePreview?.ticket?.stopLossPrice)} />
-                      <Metric label="Target" value={formatCurrency(tradePreview?.ticket?.takeProfitPrice)} accent />
+                      <Metric label="Research target (not an exit order)" value={formatCurrency(tradePreview?.ticket?.takeProfitPrice)} accent />
                       <Metric label="Reward/Risk" value={getTicketValue(tradePreview?.ticket?.rewardRiskRatio)} />
                       <Metric label="Quantity" value={getTicketValue(tradePreview?.ticket?.qty)} />
                       <Metric label="Notional" value={formatCurrency(tradePreview?.ticket?.plannedNotional)} />

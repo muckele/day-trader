@@ -7,32 +7,36 @@ import { emitToast } from '../utils/toast';
 const CACHE_KEY = 'market-status';
 
 export function useMarketStatus() {
-  const [status, setStatus] = useState('CLOSED');
+  const [status, setStatus] = useState('LOADING');
+  const [source, setSource] = useState(null);
   const [nextOpen, setNextOpen] = useState(null);
   const [nextClose, setNextClose] = useState(null);
   const [countdown, setCountdown] = useState('');
 
   useEffect(() => {
+    let active = true;
+    const apply = data => {
+      if (!active) return;
+      setStatus(['OPEN', 'CLOSED'].includes(data?.status) ? data.status : 'UNAVAILABLE');
+      setSource(data?.source || null);
+      setNextOpen(data?.nextOpen || null);
+      setNextClose(data?.nextClose || null);
+    };
     const fetchStatus = async () => {
       const cached = getCache(CACHE_KEY);
-      if (cached) {
-        setStatus(cached.status);
-        setNextOpen(cached.nextOpen);
-        setNextClose(cached.nextClose);
-        return;
-      }
+      if (cached) { apply(cached); return; }
       try {
         const res = await axios.get('/api/market/status');
-        setStatus(res.data.status);
-        setNextOpen(res.data.nextOpen);
-        setNextClose(res.data.nextClose);
-        setCache(CACHE_KEY, res.data, 30 * 1000);
+        apply(res.data);
+        if (active) setCache(CACHE_KEY, res.data, 30 * 1000);
       } catch (err) {
-        emitToast({ type: 'error', message: getApiError(err) });
+        apply({ status: 'UNAVAILABLE', source: err.response?.data?.source });
+        if (active) emitToast({ type: 'error', message: getApiError(err) });
       }
     };
-
     fetchStatus();
+    const interval = setInterval(fetchStatus, 30000);
+    return () => { active = false; clearInterval(interval); };
   }, []);
 
   useEffect(() => {
@@ -57,5 +61,5 @@ export function useMarketStatus() {
     return () => clearInterval(interval);
   }, [status, nextOpen]);
 
-  return { status, nextOpen, nextClose, countdown };
+  return { status, source, nextOpen, nextClose, countdown };
 }

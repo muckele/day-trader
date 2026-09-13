@@ -1,5 +1,7 @@
 # Owner-only paper MVP implementation plan
 
+Historical foundation/Phase2 plan below. Phase3 continuation and completed local tasks are in `superpowers/plans/2026-09-13-phase3-release-acceptance.md`; current release status and external gates are in `mvp-checkpoint.md` and `mvp-verification.md`. The unchecked historical entries below are preserved as planning history, not the current acceptance ledger.
+
 **Goal:** Complete and verify the existing application against mvp-request.txt.
 **Architecture:** Retain React, Express, MongoDB and Fly. Consolidate safety at broker boundaries and deterministic policy; use existing worker/order persistence.
 **Spec:** mvp-request.txt

@@ -18,3 +18,15 @@ test('Alpaca account unknown cash is unavailable rather than zero', async () => 
   const service = createAlpacaPortfolio({ expectedAccountId: 'bound', broker: { getAccount: async () => ({ id: 'bound', cash: null }), getPositions: async () => [] } });
   assert.equal((await service.getAccount()).cash, null);
 });
+test('fill reader returns actual strict-schema lifecycle fills and excludes simulator/other account records', async t => {
+  const Fill = require('../models/Fill');
+  const fill = new Fill({ accountId: 'bound', broker: 'alpaca', executionSource: 'alpaca-paper', environment: 'paper', symbol: 'AAPL', side: 'buy', qty: 2, price: 100 }).toObject();
+  assert.equal(fill.environment, undefined, 'Fill persists source, not an environment field');
+  const rows = [fill, { ...fill, accountId: 'other' }, { ...fill, broker: 'paper', executionSource: 'local-simulation' }];
+  t.mock.method(Fill, 'find', query => ({ sort: () => ({ limit: () => ({ lean: async () => rows.filter(row => Object.entries(query).every(([key, value]) => row[key] === value)) }) }) }));
+  const service = createAlpacaPortfolio({ expectedAccountId: 'bound', broker: { getAccount: async () => ({ id: 'bound' }) } });
+  const trades = await service.getTrades();
+  assert.equal(trades.length, 1);
+  assert.equal(trades[0].qty, 2);
+  assert.equal(trades[0].executionSource, 'alpaca-paper');
+});

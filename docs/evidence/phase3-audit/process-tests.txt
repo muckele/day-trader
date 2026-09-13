@@ -1,0 +1,17 @@
+✔ real worker process abstains on flat provider research without fabricating execution (1354.678208ms)
+✔ two real worker processes contend for one account and create one durable entry (1755.33025ms)
+✔ disable while research is running prevents any broker POST in a separate worker process (1638.518ms)
+✔ disable immediately before broker submission prevents any broker POST in a separate worker process (1667.532292ms)
+✔ worker lease loss after decision persistence prevents a broker POST across process boundary (1791.06125ms)
+✔ worker lease loss immediately before broker submission prevents a broker POST across process boundary (1901.657667ms)
+✔ emergency stop cancels only the owned acknowledged entry and reconciliation continues disabled (2535.245583ms)
+✔ emergency stop cancels only the owned uncertain entry and reconciliation continues disabled (2300.556417ms)
+✔ owner browser enables then logs out and closes; independent worker persists entry visible after new login (4559.616958ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 19642.466792

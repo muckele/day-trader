@@ -1,3 +1,4 @@
+import PositionCloseDialog from '../components/PositionCloseDialog';
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip } from 'recharts';
@@ -11,13 +12,14 @@ import { getApiError } from '../utils/api';
 import { emitToast } from '../utils/toast';
 
 function formatCurrency(value) {
-  if (value === null || value === undefined) return '--';
+  if (value === null || value === undefined || value === '' || !Number.isFinite(Number(value))) return '--';
   return `$${Number(value).toFixed(2)}`;
 }
 
 export default function Portfolio() {
   const navigate = useNavigate();
   const [account, setAccount] = useState(null);
+  const [closingSymbol, setClosingSymbol] = useState(null);
   const [equity, setEquity] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -174,6 +176,7 @@ export default function Portfolio() {
                   <th className="py-2">Avg Cost</th>
                   <th className="py-2">Price</th>
                   <th className="py-2">Unrealized P/L</th>
+                  {account.executionSource === 'alpaca-paper' && <th className="py-2">Close</th>}
                 </tr>
               </thead>
               <tbody>
@@ -184,8 +187,9 @@ export default function Portfolio() {
                     <td className="py-2">{formatCurrency(pos.avgCost)}</td>
                     <td className="py-2">{formatCurrency(pos.marketPrice)}</td>
                     <td className={`py-2 ${pos.unrealizedPnl >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                      {formatCurrency(pos.unrealizedPnl)} ({pos.unrealizedPnlPct.toFixed(2)}%)
+                      {formatCurrency(pos.unrealizedPnl)} ({pos.unrealizedPnlPct != null && Number.isFinite(Number(pos.unrealizedPnlPct)) ? `${Number(pos.unrealizedPnlPct).toFixed(2)}%` : 'percentage unavailable'})
                     </td>
+                    {account.executionSource === 'alpaca-paper' && <td className="py-2"><Button variant="secondary" size="sm" onClick={() => setClosingSymbol(pos.symbol)}>Review close {pos.symbol}</Button></td>}
                   </tr>
                 ))}
               </tbody>
@@ -201,8 +205,9 @@ export default function Portfolio() {
         )}
       </Card>
 
+      {account.executionSource === 'local-simulation' && (
       <Card className="p-6">
-        <p className="text-sm font-semibold text-slate-900 dark:text-white mb-3">Risk Settings</p>
+        <p className="text-sm font-semibold text-slate-900 dark:text-white mb-3">Local Simulator Risk Settings</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-slate-600 dark:text-slate-300">
           <div>
             <p className="text-xs text-slate-500">Max Position</p>
@@ -254,6 +259,8 @@ export default function Portfolio() {
           </div>
         </div>
       </Card>
+      )}
+      {closingSymbol && <PositionCloseDialog symbol={closingSymbol} onDismiss={() => { setClosingSymbol(null); setReloadKey(value => value + 1); }} />}
     </div>
   );
 }

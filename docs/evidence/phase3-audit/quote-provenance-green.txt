@@ -1,0 +1,37 @@
+TAP version 13
+# Subtest: equity quotes retain provider timestamps and missing quotes never become zero-priced data
+ok 1 - equity quotes retain provider timestamps and missing quotes never become zero-priced data
+  ---
+  duration_ms: 1.77225
+  ...
+# Subtest: unconfigured quote and sparkline provider fails instead of fabricating market prices
+ok 2 - unconfigured quote and sparkline provider fails instead of fabricating market prices
+  ---
+  duration_ms: 1.040625
+  ...
+# market intraday error: Could not fetch intraday bars for AAPL: No intraday bars returned
+# market historical error: Could not fetch daily bars for AAPL: No daily bars returned
+# Subtest: market intraday route returns data on happy path
+ok 3 - market intraday route returns data on happy path
+  ---
+  duration_ms: 25.169958
+  ...
+# Subtest: market intraday route degrades gracefully on DATA_UNAVAILABLE
+ok 4 - market intraday route degrades gracefully on DATA_UNAVAILABLE
+  ---
+  duration_ms: 1.398583
+  ...
+# Subtest: market historical route degrades gracefully on DATA_UNAVAILABLE
+ok 5 - market historical route degrades gracefully on DATA_UNAVAILABLE
+  ---
+  duration_ms: 0.536708
+  ...
+1..5
+# tests 5
+# suites 0
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 96.974709
