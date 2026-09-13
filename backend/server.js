@@ -2,7 +2,7 @@
 
 // 1. Load environment variables for local/dev workflows only.
 // Production should rely on the runtime environment or Fly secrets rather than a bundled `.env`.
-if (process.env.NODE_ENV !== 'production') {
+if (!process.env.NODE_ENV || process.env.NODE_ENV === 'development') {
   require('dotenv').config();
 }
 
@@ -12,6 +12,7 @@ const mongoose = require('mongoose');
 const requireMongo = require('./middleware/requireMongo');
 const mongoState = require('./utils/mongoState');
 const { ensureTradingIndexes } = require('./services/tradingIndexService');
+const { executionReadiness } = require('./services/executionReadiness');
 const { ensureResearchIndexes } = require('./services/researchIndexService');
 const { buildMongoConnectionTargets } = require('./utils/mongoConnectionConfig');
 const {
@@ -100,6 +101,18 @@ function scheduleMongoReconnect() {
   }, MONGO_RETRY_MS);
 }
 
+async function bootstrapExecutionReadiness() {
+  await executionReadiness.bootstrap(
+    async () => (await Promise.all([ensureTradingIndexes(), ensureResearchIndexes()])).flat(),
+    async () => {
+      await mongoose.connection.collection('operationalreadiness').updateOne(
+        { _id: 'execution-write-probe' }, { $set: { checkedAt: new Date() } },
+        { upsert: true, writeConcern: { w: 'majority' } }
+      );
+    }
+  );
+}
+
 async function connectMongo() {
   if (!mongoConnectionConfig.targets.length) {
     console.warn('⚠️ No MongoDB connection targets configured. Running without database connectivity.');
@@ -143,17 +156,7 @@ async function connectMongo() {
         } else {
           console.log('✅ MongoDB connected');
         }
-        Promise.all([
-          ensureTradingIndexes(),
-          ensureResearchIndexes()
-        ]).then(resultGroups => resultGroups.flat()).then(results => {
-          const failed = results.filter(result => !result.ok);
-          if (failed.length) {
-            console.error(`⚠️ Index bootstrap completed with ${failed.length} failure(s).`);
-          }
-        }).catch(indexErr => {
-          console.error('⚠️ Index bootstrap failed:', indexErr?.message || indexErr);
-        });
+        await bootstrapExecutionReadiness();
         return;
       } catch (err) {
         lastErr = err;
@@ -174,7 +177,7 @@ async function connectMongo() {
 
     throw lastErr || new Error('MongoDB connection failed');
   } catch (err) {
-    console.error('❌ MongoDB connection error:', err);
+    console.error('❌ MongoDB connection failed; connection details suppressed.');
     const hint = getMongoTroubleshootingHint(err);
     mongoState.markMongoFailed(err, hint);
     if (hint) {
@@ -187,12 +190,18 @@ async function connectMongo() {
   }
 }
 
+mongoose.connection.on('reconnected', () => {
+  bootstrapExecutionReadiness().catch(() => executionReadiness.invalidate());
+});
+
 mongoose.connection.on('disconnected', () => {
+  executionReadiness.invalidate();
   console.warn('⚠️ MongoDB disconnected');
   scheduleMongoReconnect();
 });
 
 mongoose.connection.on('error', err => {
+  executionReadiness.invalidate();
   console.error('❌ MongoDB driver error:', err?.message || err);
   mongoState.markMongoFailed(err, getMongoTroubleshootingHint(err));
 });
@@ -205,18 +214,13 @@ const cors      = require('cors');
 const axios     = require('axios');
 const { ensureSlowBufferCompat } = require('./utils/nodeCompat');
 ensureSlowBufferCompat();
-const jwt       = require('jsonwebtoken');
-const bcrypt    = require('bcryptjs');
 const { createRateLimit } = require('./middleware/rateLimit');
 const { createUnsafeMethodOriginGuard } = require('./middleware/unsafeMethodOriginGuard');
-const { clearSessionCookie, setSessionCookie } = require('./utils/sessionCookie');
+const authHandlers = require('./routes/auth');
 
 // 4. Import your models, trade logic & auth middleware
-const User                = require('./models/User');
-const Log                 = require('./models/Log');
 const { getRecommendations, fetchIntraday } = require('./tradeLogic');
 const auth                = require('./middleware/auth');      // ← imported
-const { getJwtSecret }    = require('./middleware/auth');
 const debugRoutes         = require('./routes/debug');
 const { startRoboScheduler } = require('./services/roboScheduler');
 
@@ -268,33 +272,20 @@ const authRateLimit = createRateLimit({
   message: 'Too many authentication attempts. Try again shortly.'
 });
 
-function normalizeUsername(value) {
-  return String(value || '').trim();
-}
-
-function validateCredentials({ username, password, email, requireEmail = false }) {
-  const errors = [];
-  const normalizedUsername = normalizeUsername(username);
-  const normalizedEmail = String(email || '').trim().toLowerCase();
-  const passwordValue = typeof password === 'string' ? password : '';
-
-  if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(normalizedUsername)) {
-    errors.push('Username must be 3-32 characters using letters, numbers, underscores, periods, or dashes.');
-  }
-  if (requireEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-    errors.push('A valid email is required.');
-  }
-  if (passwordValue.length < 10 || !/[A-Za-z]/.test(passwordValue) || !/[0-9]/.test(passwordValue)) {
-    errors.push('Password must be at least 10 characters and include a letter and a number.');
-  }
-
-  return {
-    errors,
-    normalizedUsername,
-    normalizedEmail,
-    passwordValue
-  };
-}
+// Only login and the disabled registration endpoint are unauthenticated under /api.
+app.post('/api/register', authRateLimit, authHandlers.register);
+app.post('/api/login', authRateLimit, authHandlers.login);
+app.use('/api', auth);
+app.get('/api/readiness', (req, res) => {
+  const persistence = executionReadiness.snapshot();
+  res.status(persistence.ready ? 200 : 503).json({
+    persistence, executionEnvironment: 'alpaca-paper',
+    releaseReady: false,
+    releaseBlockers: ['Atomic spending and full lifecycle acceptance remain incomplete'],
+    notificationConfigured: Boolean(process.env.SMTP_HOST && process.env.ROBO_NOTIFICATION_RECIPIENT),
+    accountBindingConfigured: Boolean(process.env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID)
+  });
+});
 
 // 7. Mount the Alpaca trade routes
 //    All routes defined in routes/trade.js are now under /api/trade
@@ -320,65 +311,6 @@ app.use('/api/research', require('./routes/research'));
 app.use('/api/recommendations', publicDataRateLimit, require('./routes/recommend'));
 
 
-// ─── 8. REGISTER ────────────────────────────────────────────────────────────────
-app.post('/api/register', authRateLimit, requireMongo, async (req, res, next) => {
-  try {
-    const { username, password, email } = req.body;
-    const validation = validateCredentials({ username, password, email, requireEmail: true });
-    if (validation.errors.length) {
-      return res.status(400).json({ message: validation.errors[0], errors: validation.errors });
-    }
-    const hash = await bcrypt.hash(validation.passwordValue, 10);
-    await User.create({
-      username: validation.normalizedUsername,
-      email: validation.normalizedEmail,
-      hash
-    });
-    res.json({ message: 'User registered successfully' });
-  } catch (err) {
-    if (err.code === 11000) {
-      return res.status(409).json({ message: 'Username or email already taken' });
-    }
-    next(err);
-  }
-});
-
-// ─── 9. LOGIN ──────────────────────────────────────────────────────────────────
-app.post('/api/login', authRateLimit, requireMongo, async (req, res, next) => {
-  try {
-    const { username, password } = req.body;
-    const normalizedUsername = normalizeUsername(username);
-    if (!normalizedUsername || typeof password !== 'string' || !password) {
-      return res.status(400).json({ message: 'Username and password are required.' });
-    }
-    const user = await User.findOne({ username: normalizedUsername });
-    if (!user) {
-      return res.status(401).json({ message: 'Invalid credentials' });
-    }
-    const valid = await bcrypt.compare(password, user.hash);
-    if (!valid) {
-      return res.status(401).json({ message: 'Invalid credentials' });
-    }
-    const token = jwt.sign(
-      { sub: String(user._id), userId: String(user._id), username: user.username },
-      getJwtSecret(),
-      { expiresIn: '1h' }
-    );
-    setSessionCookie(res, token);
-    const payload = {
-      user: {
-        id: String(user._id),
-        username: user.username,
-        email: user.email || null
-      }
-    };
-    if (!isProduction) payload.token = token;
-    res.json(payload);
-  } catch (err) {
-    next(err);
-  }
-});
-
 app.get('/api/me', auth, async (req, res) => {
   res.json({
     user: {
@@ -391,17 +323,7 @@ app.get('/api/me', auth, async (req, res) => {
 });
 
 // ─── 10. LOGOUT ────────────────────────────────────────────────────────────────
-app.post('/api/logout', auth, async (req, res, next) => {
-  try {
-    clearSessionCookie(res);
-    if (mongoose.connection.readyState === 1) {
-      await Log.create({ username: req.user.username, action: 'logout' });
-    }
-    res.json({ message: 'Logged out successfully' });
-  } catch (err) {
-    next(err);
-  }
-});
+app.post('/api/logout', authHandlers.logout);
 
 // ─── 11. PUBLIC ENDPOINTS ────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
@@ -409,13 +331,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    asOf: new Date().toISOString(),
-    services: {
-      mongo: mongoState.getMongoServiceState()
-    }
-  });
+  res.json({ status: 'ok' });
 });
 
 app.get('/api/recommend/:symbol', publicDataRateLimit, async (req, res, next) => {
@@ -438,7 +354,7 @@ app.get('/api/intraday/:symbol', publicDataRateLimit, async (req, res, next) => 
 
 // ─── 12. ERROR HANDLER ───────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
-  console.error(err);
+  console.error('Request failed; provider details suppressed.');
   const message = String(err?.message || 'Unexpected server error');
   const name = String(err?.name || '');
   const isMongoUnavailable =
@@ -452,12 +368,21 @@ app.use((err, req, res, next) => {
     return res.status(503).json(mongoState.createMongoUnavailablePayload());
   }
 
-  res.status(500).json({ message });
+  const safe = require('./utils/errorResponse').safeErrorResponse(err);
+  res.status(safe.status).json({ message: safe.message });
 });
 
 // ─── 13. START SERVER ───────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, '0.0.0.0', () =>
+const server = app.listen(PORT, '0.0.0.0', () =>
   console.log(`Day Trader API listening on http://0.0.0.0:${PORT}`)
 );
-startRoboScheduler();
+const stopScheduler = startRoboScheduler();
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    executionReadiness.invalidate();
+    stopScheduler();
+    server.close(() => mongoose.disconnect().finally(() => process.exit(0)));
+    setTimeout(() => process.exit(1), 25000).unref();
+  });
+}

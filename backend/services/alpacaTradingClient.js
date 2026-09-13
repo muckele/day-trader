@@ -1,4 +1,6 @@
 const axios = require('axios');
+const { executionReadiness } = require('./executionReadiness');
+const { isPaperTradingEndpoint, assertPaperConfig, verifyPaperAccount } = require('./alpacaSafety');
 
 const DEFAULT_ALPACA_PAPER_BASE_URL = 'https://paper-api.alpaca.markets';
 const EQUITY_ORDER_TYPES = ['market', 'limit', 'stop', 'stop_limit', 'trailing_stop'];
@@ -21,7 +23,8 @@ function getAlpacaTradingConfig(env = process.env) {
     || DEFAULT_ALPACA_PAPER_BASE_URL
   ).replace(/\/$/, '');
   return {
-    baseUrl: rawBaseUrl.replace(/\/v2\/?$/, ''),
+    baseUrl: isPaperTradingEndpoint(rawBaseUrl) ? DEFAULT_ALPACA_PAPER_BASE_URL : rawBaseUrl,
+    expectedAccountId: env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID || '',
     apiKey: env.BROKER_API_KEY || env.APCA_API_KEY_ID || env.ALPACA_API_KEY || '',
     apiSecret:
       env.BROKER_API_SECRET
@@ -29,10 +32,6 @@ function getAlpacaTradingConfig(env = process.env) {
       || env.ALPACA_API_SECRET
       || ''
   };
-}
-
-function isPaperTradingEndpoint(baseUrl) {
-  return String(baseUrl || '').toLowerCase().includes('paper-api.alpaca.markets');
 }
 
 function shouldSyncPaperTradesToAlpaca(env = process.env) {
@@ -168,26 +167,20 @@ function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function assertAlpacaPaperConfig(config) {
-  if (!config.apiKey || !config.apiSecret) {
-    throw new Error('Alpaca API credentials are not configured.');
-  }
-  if (!isPaperTradingEndpoint(config.baseUrl)) {
-    throw new Error('Alpaca paper sync requires APCA_BASE_URL/ALPACA_BASE_URL to use https://paper-api.alpaca.markets.');
-  }
-}
+function assertAlpacaPaperConfig(config) { assertPaperConfig(config); }
 
 async function readAlpacaPaperOrder(orderId, { httpClient = axios, env = process.env } = {}) {
   const config = getAlpacaTradingConfig(env);
   assertAlpacaPaperConfig(config);
 
   const response = await httpClient.get(
-    `${config.baseUrl}/v2/orders/${orderId}`,
+    `${config.baseUrl}/v2/orders/${encodeURIComponent(orderId)}`,
     {
       headers: {
         'APCA-API-KEY-ID': config.apiKey,
         'APCA-API-SECRET-KEY': config.apiSecret
       },
+      maxRedirects: 0,
       timeout: 20000
     }
   );
@@ -227,7 +220,16 @@ async function submitAlpacaPaperOrder(
   const config = getAlpacaTradingConfig(env);
   assertAlpacaPaperConfig(config);
 
+  if (httpClient === axios) executionReadiness.assertReady();
   const payload = buildAlpacaOrderPayload(orderInput);
+  await verifyPaperAccount(config, async () => {
+    const response = await httpClient.get(`${config.baseUrl}/v2/account`, {
+      headers: { 'APCA-API-KEY-ID': config.apiKey, 'APCA-API-SECRET-KEY': config.apiSecret },
+      maxRedirects: 0, timeout: 20000
+    });
+    return response?.data;
+  });
+  if (httpClient === axios) executionReadiness.assertReady();
   try {
     const response = await httpClient.post(
       `${config.baseUrl}/v2/orders`,
@@ -237,6 +239,7 @@ async function submitAlpacaPaperOrder(
           'APCA-API-KEY-ID': config.apiKey,
           'APCA-API-SECRET-KEY': config.apiSecret
         },
+        maxRedirects: 0,
         timeout: 20000
       }
     );

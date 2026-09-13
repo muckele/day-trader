@@ -25,6 +25,7 @@
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.13.3",
+    "nodemailer": "10.0.9",
     "openai": "^4.96.2"
   }
 }

@@ -1,4 +1,5 @@
 const test = require('node:test');
+process.env.OWNER_USER_ID = 'user-worker';
 const assert = require('node:assert/strict');
 const { mapSettings } = require('../robotrader/settingsService');
 const {
@@ -27,6 +28,7 @@ function createDeps({ approved = true } = {}) {
   const auditEvents = [];
   const brokerSubmissions = [];
   const deps = {
+    RoboLock: { findOneAndUpdate: async () => ({}), updateOne: async () => ({ matchedCount: 1 }) },
     RoboSettings: {
       find: () => chain([{ userId: 'user-worker', isEnabled: true }]),
       updateOne: async () => ({ matchedCount: 1 })
@@ -405,7 +407,7 @@ test('robotrader worker blocks live mode before broker access without explicit o
   assert.equal(context.auditEvents.some(event => event.eventType === 'robotrader_live_blocked'), true);
 });
 
-test('robotrader worker scopes recent orders to the active live environment', async () => {
+test('robotrader worker blocks live despite explicit opt-in', async () => {
   const context = createDeps({ approved: true });
   const findQueries = [];
   context.deps.RoboTradeOrder.find = query => {
@@ -432,10 +434,9 @@ test('robotrader worker scopes recent orders to the active live environment', as
 
   const result = await runRoboTraderForUser({ userId: 'user-worker', modeOverride: 'live', runOnce: true }, context.deps);
 
-  assert.equal(result.ok, true);
-  assert.equal(findQueries.length, 1);
-  assert.equal(findQueries[0].userId, 'user-worker');
-  assert.equal(findQueries[0].environment, 'live');
+  assert.equal(result.ok, false);
+  assert.equal(findQueries.length, 0);
+  assert.equal(context.brokerSubmissions.length, 0);
 });
 
 test('robotrader paper preview scopes recent orders to paper environment', async () => {
@@ -495,12 +496,14 @@ test('robotrader emergency stop cancels only locally owned open orders', async (
         return [
           {
             id: 'alpaca-owned-1',
+            side: 'buy', filled_qty: '0',
             client_order_id: 'daytrader-robotrader-owned-1',
             symbol: 'AAPL',
             status: 'accepted'
           },
           {
             id: 'alpaca-owned-2',
+            side: 'buy', filled_qty: '0',
             client_order_id: 'daytrader-robotrader-owned-2',
             symbol: 'MSFT',
             status: 'new'
@@ -542,7 +545,7 @@ test('robotrader emergency stop cancels only locally owned open orders', async (
   assert.equal(updateCalls[0].query.userId, 'user-worker');
   assert.equal(updateCalls[0].query.environment, 'paper');
   assert.deepEqual(updateCalls[0].query.status, { $nin: ['filled', 'canceled', 'cancelled', 'expired', 'rejected'] });
-  assert.equal(updateCalls[0].update.$set.status, 'canceled');
+  assert.equal(updateCalls[0].update.$set.status, 'pending_cancel');
   assert.equal(
     context.auditEvents.some(event => event.eventType === 'robotrader_emergency_stop_unowned_broker_orders'),
     true
@@ -601,4 +604,113 @@ test('robotrader worker converts stock orders to valid extended-hours limit orde
   assert.equal(order.takeProfit, null);
   assert.equal(order.riskStopPrice, 190);
   assert.equal(order.requiresRegularSessionForProtection, true);
+});
+
+test('worker telemetry never writes control flags', async () => {
+  const { deps } = createDeps();
+  const writes = [];
+  deps.RoboSettings.updateOne = async (query, update) => { writes.push(update.$set); };
+  await runRoboTraderForUser({ userId: 'user-worker' }, deps);
+  assert.deepEqual(Object.keys(writes[0]), ['lastRunAt']);
+});
+
+test('disable during research prevents submission even for run-once', async () => {
+  const context = createDeps();
+  const read = context.deps.getOrCreateRoboTraderSettings;
+  let disabled = false;
+  context.deps.getOrCreateRoboTraderSettings = async id => ({ ...await read(id), isEnabled: !disabled, enabled: !disabled });
+  const research = context.deps.buildResearchBatch;
+  context.deps.buildResearchBatch = async (...args) => { disabled = true; return research(...args); };
+  await assert.rejects(runRoboTraderForUser({ userId: 'user-worker', runOnce: true }, context.deps), /controls changed/i);
+  assert.equal(context.brokerSubmissions.length, 0);
+});
+
+test('accepted order save failure preserves acknowledgement and never becomes rejected', async () => {
+  const context = createDeps();
+  const create = context.deps.RoboTradeOrder.create;
+  context.deps.RoboTradeOrder.create = async input => {
+    const doc = await create(input);
+    doc.save = async () => { throw new Error('database unavailable'); };
+    return doc;
+  };
+  const result = await runRoboTraderForUser({ userId: 'user-worker' }, context.deps);
+  assert.equal(result.submittedOrder.status, 'accepted');
+  assert.equal(result.submittedOrder.reconciliationStatus, 'acknowledgement_persistence_failed');
+  assert.equal(context.brokerSubmissions.length, 1);
+  assert.equal(context.auditEvents.some(e => e.eventType === 'robotrader_order_rejected'), false);
+});
+
+test('lease refresh rejects lost ownership and includes expiry predicate', async () => {
+  const { refreshWorkerLock } = require('../robotrader/worker');
+  const now = new Date();
+  let filter;
+  await assert.rejects(refreshWorkerLock('user-worker', 'owner-token', now, {
+    RoboLock: { updateOne: async query => { filter = query; return { matchedCount: 0 }; } }
+  }), /lease lost or expired/i);
+  assert.equal(filter.owner, 'owner-token');
+  assert.deepEqual(filter.lockedUntil, { $gt: now });
+});
+
+test('lease renewal failure after research blocks the broker write', async () => {
+  const context = createDeps();
+  context.deps.refreshWorkerLock = async () => { throw new Error('lease lost'); };
+  await assert.rejects(runRoboTraderForUser({ userId: 'user-worker' }, context.deps), /lease lost/);
+  assert.equal(context.brokerSubmissions.length, 0);
+});
+
+test('scheduler excludes pre-existing non-owner settings even if enabled', async () => {
+  const context = createDeps();
+  context.deps.RoboSettings.find = query => {
+    assert.equal(query.userId, 'user-worker');
+    return chain([{ userId: 'non-owner', isEnabled: true }]);
+  };
+  const result = await runWorkerTick(context.deps);
+  assert.equal(result.usersChecked, 0);
+  assert.equal(context.brokerSubmissions.length, 0);
+});
+
+test('emergency stop preserves protective sells and partially filled bracket parents', async () => {
+  const context = createDeps();
+  const orders = [
+    { id: 'protective', side: 'sell', filled_qty: '0' },
+    { id: 'partial-parent', side: 'buy', filled_qty: '1', order_class: 'bracket' }
+  ];
+  context.deps.RoboTradeOrder.find = () => chain(orders.map(order => ({ externalOrderId: order.id })));
+  const cancels = [];
+  context.deps.createAlpacaBroker = () => ({ listOrders: async () => orders, cancelOrder: async id => { cancels.push(id); } });
+  const result = await emergencyStop({ userId: 'user-worker', cancelOpenOrders: true }, context.deps);
+  assert.deepEqual(cancels, []);
+  assert.equal(result.preservedOrders.length, 2);
+});
+
+test('heartbeat remembers renewal failure even before submission recheck', async t => {
+  const { startWorkerLockHeartbeat } = require('../robotrader/worker');
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const stop = startWorkerLockHeartbeat('user-worker', 'unique-owner', {
+    RoboLock: { updateOne: async () => { throw new Error('renewal database failure'); } }
+  });
+  t.mock.timers.tick(600000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.throws(() => stop.assertOwned(), /renewal database failure/);
+  stop();
+});
+
+test('fresh risk rejection after research blocks the final broker write', async () => {
+  const context = createDeps();
+  let evaluations = 0;
+  context.deps.evaluateRoboRisk = () => ({ approved: ++evaluations === 1, checks: [], rejectionReasons: ['cash changed'] });
+  await assert.rejects(runRoboTraderForUser({ userId: 'user-worker' }, context.deps), /risk changed/);
+  assert.equal(context.brokerSubmissions.length, 0);
+});
+
+test('submission audit failure retains accepted status without another broker write', async () => {
+  const context = createDeps();
+  context.deps.RoboAuditLog.create = async event => {
+    if (event.eventType === 'robotrader_order_submitted') throw new Error('audit failed');
+    return event;
+  };
+  context.deps.enqueueOrderNotification = async () => { throw new Error('outbox failed'); };
+  const result = await runRoboTraderForUser({ userId: 'user-worker' }, context.deps);
+  assert.equal(result.submittedOrder.status, 'accepted');
+  assert.equal(context.brokerSubmissions.length, 1);
 });

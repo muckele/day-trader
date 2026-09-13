@@ -16,7 +16,7 @@ const DEFAULT_ROBOTRADER_SETTINGS = Object.freeze({
   maxOpenPositions: 5,
   maxTradesPerDay: 3,
   allowShortSelling: false,
-  allowFractionalShares: true,
+  allowFractionalShares: false,
   allowExtendedHours: false,
   allowOptionsTrading: false,
   allowCryptoTrading: false,
@@ -97,7 +97,7 @@ function mapSettings(settingsDoc) {
     maxOpenPositions: Math.max(0, Math.floor(toFiniteNumber(doc.maxOpenPositions, DEFAULT_ROBOTRADER_SETTINGS.maxOpenPositions))),
     maxTradesPerDay: Math.max(0, Math.floor(toFiniteNumber(doc.maxTradesPerDay, DEFAULT_ROBOTRADER_SETTINGS.maxTradesPerDay))),
     allowShortSelling: Boolean(doc.allowShortSelling),
-    allowFractionalShares: doc.allowFractionalShares !== false,
+    allowFractionalShares: false,
     allowExtendedHours: Boolean(doc.allowExtendedHours),
     allowOptionsTrading: Boolean(doc.allowOptionsTrading),
     allowCryptoTrading: Boolean(doc.allowCryptoTrading),
@@ -126,33 +126,20 @@ function sanitizeSettingsUpdate(input = {}, current = {}) {
     update.isEnabled = enabled;
     update.enabled = enabled;
     if (!enabled && input.pausedReason === undefined) update.pausedReason = 'Disabled by user.';
+    if (enabled && input.pausedReason === undefined && ['Emergency stop triggered.', 'Disabled by user.'].includes(current.pausedReason)) update.pausedReason = null;
   }
 
-  if (input.mode !== undefined) {
-    const mode = normalizeMode(input.mode);
-    if (mode === 'live') {
-      const liveOptIn = sanitizeBoolean(
-        input.liveTradingExplicitlyEnabled,
-        Boolean(current.liveTradingExplicitlyEnabled)
-      );
-      if (!liveOptIn || input.confirmLiveTrading !== LIVE_CONFIRMATION_TEXT) {
-        const err = new Error('Live trading requires explicit confirmation before it can be enabled.');
-        err.status = 400;
-        throw err;
-      }
-      update.liveTradingExplicitlyEnabled = true;
-    }
-    update.mode = mode;
+  const reject = message => { const error = new Error(message); error.status = 400; throw error; };
+  if ((input.mode !== undefined && String(input.mode).toLowerCase() !== 'paper') || sanitizeBoolean(input.liveTradingExplicitlyEnabled, false)) {
+    reject('This release is paper-only; live trading cannot be enabled.');
   }
-
-  if (input.liveTradingExplicitlyEnabled !== undefined && input.mode === undefined) {
-    const requested = sanitizeBoolean(input.liveTradingExplicitlyEnabled, false);
-    if (requested && input.confirmLiveTrading !== LIVE_CONFIRMATION_TEXT) {
-      const err = new Error('Live trading requires explicit confirmation before it can be enabled.');
-      err.status = 400;
-      throw err;
-    }
-    update.liveTradingExplicitlyEnabled = requested;
+  if (input.mode !== undefined) update.mode = 'paper';
+  if (input.liveTradingExplicitlyEnabled !== undefined) update.liveTradingExplicitlyEnabled = false;
+  for (const flag of ['allowShortSelling', 'allowFractionalShares', 'allowExtendedHours', 'allowOptionsTrading', 'allowCryptoTrading']) {
+    if (input[flag] !== undefined && sanitizeBoolean(input[flag], false)) reject(`${flag} is outside the automated MVP scope.`);
+  }
+  if (input.allowedAssetClasses !== undefined && normalizeAssetClasses(input.allowedAssetClasses).some(asset => asset !== 'stocks')) {
+    reject('The automated MVP supports stocks and ordinary ETFs only.');
   }
 
   if (input.allowedAssetClasses !== undefined) update.allowedAssetClasses = normalizeAssetClasses(input.allowedAssetClasses);

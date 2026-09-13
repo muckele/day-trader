@@ -1,3 +1,4 @@
+const { enqueueOrderNotification } = require('../services/roboNotificationService');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
 const RoboAuditLog = require('../models/RoboAuditLog');
 const { createAlpacaBroker } = require('./alpacaBroker');
@@ -112,6 +113,9 @@ async function applyAlpacaOrder(localOrder, alpacaOrder, deps) {
     lastReconciledAt: new Date()
   });
   await localOrder.save();
+  if (typeof deps.enqueueOrderNotification === 'function') {
+    await deps.enqueueOrderNotification(localOrder).catch(() => {});
+  }
   await writeAudit(localOrder.userId, 'robotrader_order_status_changed', {
     orderId: localOrder.externalOrderId,
     clientOrderId: localOrder.clientOrderId,
@@ -474,6 +478,7 @@ async function reconcileRoboOrders({
 }
 
 const defaultDeps = {
+  enqueueOrderNotification,
   RoboTradeOrder,
   RoboAuditLog,
   createAlpacaBroker,

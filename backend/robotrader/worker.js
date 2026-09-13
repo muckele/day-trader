@@ -1,3 +1,5 @@
+const { randomUUID } = require('node:crypto');
+const { enqueueOrderNotification } = require('../services/roboNotificationService');
 const RoboSettings = require('../models/RoboSettings');
 const RoboTradeDecision = require('../models/RoboTradeDecision');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
@@ -211,7 +213,7 @@ async function writeAudit(userId, eventType, payload, deps) {
 }
 
 async function acquireWorkerLock(userId, owner, now = new Date(), deps = defaultDeps) {
-  if (!deps.RoboLock?.findOneAndUpdate) return true;
+  if (!deps.RoboLock?.findOneAndUpdate) return false;
   const lockedUntil = new Date(now.getTime() + WORKER_LOCK_TTL_MS);
   try {
     const lock = await deps.RoboLock.findOneAndUpdate(
@@ -249,21 +251,25 @@ async function releaseWorkerLock(userId, owner, deps = defaultDeps) {
 }
 
 async function refreshWorkerLock(userId, owner, now = new Date(), deps = defaultDeps) {
-  if (!deps.RoboLock?.updateOne) return;
-  await deps.RoboLock.updateOne(
-    { userId, owner },
+  if (!deps.RoboLock?.updateOne) throw new Error('Worker lease unavailable.');
+  const result = await deps.RoboLock.updateOne(
+    { userId, owner, lockedUntil: { $gt: now } },
     { $set: { lockedUntil: new Date(now.getTime() + WORKER_LOCK_TTL_MS) } }
   );
+  if (result?.matchedCount !== 1) throw new Error('Worker lease lost or expired.');
 }
 
 function startWorkerLockHeartbeat(userId, owner, deps = defaultDeps) {
   if (!deps.RoboLock?.updateOne) return () => {};
   const intervalMs = Math.max(15 * 1000, Math.floor(WORKER_LOCK_TTL_MS / 3));
+  let lost = null;
   const timer = setInterval(() => {
-    refreshWorkerLock(userId, owner, new Date(), deps).catch(() => {});
+    refreshWorkerLock(userId, owner, new Date(), deps).catch(error => { lost = error; });
   }, intervalMs);
   if (typeof timer.unref === 'function') timer.unref();
-  return () => clearInterval(timer);
+  const stop = () => clearInterval(timer);
+  stop.assertOwned = () => { if (lost) throw lost; };
+  return stop;
 }
 
 function getNestedPrice(input, objectKey, fieldKey) {
@@ -583,6 +589,7 @@ async function submitApprovedOrder({
   riskResult,
   broker,
   now,
+  beforeSubmit,
   deps
 }) {
   const clientOrderId = orderInput.clientOrderId || orderInput.client_order_id || deps.buildClientOrderId({
@@ -619,10 +626,21 @@ async function submitApprovedOrder({
   });
 
   try {
+    await beforeSubmit();
+  } catch (error) {
+    pendingOrder.status = 'rejected';
+    pendingOrder.reconciliationStatus = 'blocked_before_submission';
+    pendingOrder.discrepancy = error.message;
+    await pendingOrder.save();
+    throw error;
+  }
+  let acknowledged = false;
+  try {
     const result = await broker.submitOrder({
       ...orderInput,
       clientOrderId: pendingOrder.clientOrderId
     });
+    acknowledged = true;
     const order = result.order || {};
     pendingOrder.externalOrderId = order.id || null;
     pendingOrder.clientOrderId = order.client_order_id || result.payload?.client_order_id || pendingOrder.clientOrderId;
@@ -664,8 +682,19 @@ async function submitApprovedOrder({
       status: pendingOrder.status,
       environment
     }, deps);
+    await deps.enqueueOrderNotification?.(pendingOrder, { now }).catch(() => {});
     return pendingOrder;
   } catch (err) {
+    if (acknowledged) {
+      pendingOrder.reconciliationStatus = 'acknowledgement_persistence_failed';
+      pendingOrder.discrepancy = 'Broker accepted the order; local persistence or audit failed. Reconciliation required.';
+      await pendingOrder.save().catch(() => {});
+      await writeAudit(userId, 'robotrader_order_acknowledgement_error', {
+        clientOrderId: pendingOrder.clientOrderId, orderId: pendingOrder.externalOrderId, environment
+      }, deps).catch(() => {});
+      await deps.enqueueOrderNotification?.(pendingOrder, { now }).catch(() => {});
+      return pendingOrder;
+    }
     const ambiguousSubmit = deps.isAmbiguousSubmitError(err);
     const brokerError = buildBrokerErrorSnapshot(err);
     const brokerErrorMessage = brokerError.message || 'Alpaca order submission failed.';
@@ -694,11 +723,15 @@ async function submitApprovedOrder({
       ambiguousSubmit,
       environment
     }, deps);
+    await deps.enqueueOrderNotification?.(pendingOrder, { now }).catch(() => {});
     return pendingOrder;
   }
 }
 
 async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = false, now = new Date() } = {}, deps = defaultDeps) {
+  if (!process.env.OWNER_USER_ID || String(userId) !== process.env.OWNER_USER_ID.trim()) {
+    return { ok: false, skipped: true, reason: 'OWNER_REQUIRED' };
+  }
   const settingsDoc = await deps.getOrCreateRoboTraderSettings(userId);
   const settings = deps.mapSettings(settingsDoc);
   const environment = modeOverride || settings.mode || 'paper';
@@ -714,9 +747,9 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
     return { ok: false, skipped: true, reason: 'USER_NOT_FOUND', runId };
   }
 
-  if (environment === 'live' && (settings.mode !== 'live' || !settings.liveTradingExplicitlyEnabled)) {
+  if (environment !== 'paper' || settings.mode !== 'paper') {
     await writeAudit(userId, 'robotrader_live_blocked', {
-      reason: 'Live trading requires explicit user opt-in before broker access or order submission.',
+      reason: 'Live trading is disabled for this paper-only release.',
       runId,
       at: now.toISOString()
     }, deps);
@@ -732,10 +765,10 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
     return { ok: false, skipped: true, reason: 'ROBOTRADER_DISABLED', runId };
   }
 
-  const lockOwner = runId;
+  const lockOwner = randomUUID();
   const lockAcquired = typeof deps.acquireWorkerLock === 'function'
-    ? await deps.acquireWorkerLock(userId, lockOwner, now, deps)
-    : await acquireWorkerLock(userId, lockOwner, now, deps);
+    ? await deps.acquireWorkerLock(userId, lockOwner, new Date(), deps)
+    : await acquireWorkerLock(userId, lockOwner, new Date(), deps);
   if (!lockAcquired) {
     await writeAudit(userId, 'robotrader_worker_locked', {
       reason: 'Another RoboTrader worker run is already active for this user.',
@@ -865,13 +898,40 @@ async function runRoboTraderForUser({ userId, modeOverride = null, runOnce = fal
       riskResult,
       broker,
       now,
+      beforeSubmit: async () => {
+        const [latestAccount, latestPositions, latestOrders, latestClock] = await Promise.all([
+          broker.getAccount(), broker.getPositions(), broker.listOrders({ status: 'open', limit: 100, nested: true }),
+          typeof broker.getClock === 'function' ? broker.getClock() : Promise.resolve(null)
+        ]);
+        const latestAsset = await loadAssetMetadataForRisk(orderInput.symbol, orderInput.assetClass, broker);
+        const fresh = deps.mapSettings(await deps.getOrCreateRoboTraderSettings(userId));
+        const controls = value => {
+          const { lastRunAt, updatedAt, createdAt, ...rest } = value;
+          return JSON.stringify(rest);
+        };
+        if (!fresh.isEnabled || fresh.pausedReason || (fresh.pausedUntil && new Date(fresh.pausedUntil) > new Date())
+          || fresh.mode !== 'paper' || controls(fresh) !== controls(settings)) {
+          throw new Error('RoboTrader controls changed; new entry blocked.');
+        }
+        const latestRisk = deps.evaluateRoboRisk({
+          settings: fresh, account: latestAccount, positions: (latestPositions || []).map(normalizeAlpacaPosition),
+          openOrders: (latestOrders || []).map(normalizeAlpacaOrder), recentOrders, tradesToday,
+          dailyPnl: Number(latestAccount.equity) - Number(latestAccount.last_equity),
+          decision, orderInput, asset: latestAsset.asset, assetLookupError: latestAsset.assetLookupError,
+          environment, marketClock: latestClock, now: new Date()
+        });
+        if (!latestRisk.approved) throw new Error(`RoboTrader risk changed: ${(latestRisk.rejectionReasons || []).join(' ')}`);
+        stopLockHeartbeat.assertOwned?.();
+        await (deps.refreshWorkerLock || refreshWorkerLock)(userId, lockOwner, new Date(), deps);
+        stopLockHeartbeat.assertOwned?.();
+      },
       deps
     });
   }
 
   await deps.RoboSettings.updateOne(
     { userId },
-    { $set: { lastRunAt: now, enabled: settings.isEnabled, isEnabled: settings.isEnabled } }
+    { $set: { lastRunAt: now } }
   );
   await writeAudit(userId, 'robotrader_worker_run', {
     runId,
@@ -1057,7 +1117,10 @@ async function previewRoboTraderForUser({
 }
 
 async function runWorkerTick(deps = defaultDeps) {
+  const ownerId = String(process.env.OWNER_USER_ID || '').trim();
+  if (!ownerId) return { ok: false, usersChecked: 0, reason: 'OWNER_REQUIRED', results: [] };
   const query = deps.RoboSettings.find({
+    userId: ownerId,
     $or: [{ isEnabled: true }, { enabled: true }]
   });
   const enabledSettings = typeof query?.sort === 'function'
@@ -1066,7 +1129,7 @@ async function runWorkerTick(deps = defaultDeps) {
   const settingsByUser = new Map();
   for (const settings of (Array.isArray(enabledSettings) ? enabledSettings : [])) {
     const userId = String(settings.userId || '');
-    if (!userId || settingsByUser.has(userId)) continue;
+    if (userId !== ownerId || settingsByUser.has(userId)) continue;
     settingsByUser.set(userId, settings);
   }
   const results = [];
@@ -1095,11 +1158,13 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
     pausedReason: 'Emergency stop triggered.'
   });
   let canceled = [];
+  const preservedOrders = [];
   let cancelErrors = [];
   let unownedBrokerOrders = [];
   let cancelError = null;
   if (cancelOpenOrders) {
     try {
+      if (environment !== 'paper') throw new Error('Emergency-stop broker writes are paper-only.');
       const broker = deps.createAlpacaBroker({ mode: environment });
       let localOpenOrdersQuery = deps.RoboTradeOrder.find({
         userId,
@@ -1127,7 +1192,7 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
         if (clientOrderId) localOrdersByClientOrderId.set(clientOrderId, order);
       }
 
-      const openOrders = await broker.listOrders({ status: 'open', limit: 500 });
+      const openOrders = await broker.listOrders({ status: 'open', limit: 500, nested: true });
       const canceledExternalOrderIds = [];
       const canceledClientOrderIds = [];
       for (const order of openOrders || []) {
@@ -1142,6 +1207,12 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
           continue;
         }
 
+        if (String(order.side || localOrder.side || '').toLowerCase() !== 'buy'
+          || !Number.isFinite(Number(order.filled_qty)) || Number(order.filled_qty) > 0
+          || String(order.order_class || '').toLowerCase() === 'oco') {
+          preservedOrders.push({ id: externalOrderId, reason: 'Protection, filled exposure, or unknown order state; manual review required.' });
+          continue;
+        }
         const cancelTarget = externalOrderId || normalizeOrderIdentifier(localOrder.externalOrderId);
         if (!cancelTarget) continue;
         try {
@@ -1181,7 +1252,7 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
             status: { $nin: TERMINAL_ORDER_STATUSES },
             $or: updateMatches
           },
-          { $set: { status: 'canceled', canceledAt: new Date(), reconciliationStatus: 'emergency_stop' } }
+          { $set: { status: 'pending_cancel', reconciliationStatus: 'emergency_stop_cancel_requested' } }
         );
       }
       if (cancelErrors.length) {
@@ -1195,6 +1266,7 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
   await writeAudit(userId, 'robotrader_emergency_stop', {
     cancelOpenOrders,
     canceledOrderIds: canceled,
+    preservedOrders,
     unownedBrokerOrders,
     cancelErrors,
     cancelError
@@ -1203,6 +1275,7 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
   return {
     settings: deps.mapSettings(settings),
     canceledOrderIds: canceled,
+    preservedOrders,
     unownedBrokerOrders,
     cancelErrors,
     cancelError
@@ -1210,6 +1283,7 @@ async function emergencyStop({ userId, cancelOpenOrders = false, environment = '
 }
 
 const defaultDeps = {
+  enqueueOrderNotification,
   RoboSettings,
   RoboTradeDecision,
   RoboTradeOrder,

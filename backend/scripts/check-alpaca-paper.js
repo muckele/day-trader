@@ -44,6 +44,7 @@ async function main() {
 
   const accountRes = await axios.get(`${config.baseUrl}/v2/account`, {
     headers,
+    maxRedirects: 0,
     timeout: 20000
   });
   const ordersRes = await axios.get(`${config.baseUrl}/v2/orders`, {
@@ -53,6 +54,7 @@ async function main() {
       limit: 1,
       direction: 'desc'
     },
+    maxRedirects: 0,
     timeout: 20000
   });
 

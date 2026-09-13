@@ -14,12 +14,14 @@ const RoboTradeOrder = require('../models/RoboTradeOrder');
 const StrategyParameterVersion = require('../models/StrategyParameterVersion');
 const StrategyRun = require('../models/StrategyRun');
 const User = require('../models/User');
+const NotificationOutbox = require('../models/NotificationOutbox');
 const { getAccountIdForUser } = require('../utils/accountScope');
 const {
   getSnapshotExpiry
 } = require('./recommendationEngine');
 
 const TRADING_INDEX_MODELS = [
+  NotificationOutbox,
   BrokerOrder,
   Fill,
   OrderIntent,

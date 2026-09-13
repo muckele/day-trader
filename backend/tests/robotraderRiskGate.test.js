@@ -46,8 +46,10 @@ const baseOrder = {
 
 test('robotrader risk gate approves a valid paper stock trade', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: baseSettings,
-    account: { buying_power: '5000', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '5000', status: 'ACTIVE' },
     positions: [],
     openOrders: [],
     recentOrders: [],
@@ -62,10 +64,12 @@ test('robotrader risk gate approves a valid paper stock trade', () => {
   assert.equal(result.rejectionReasons.length, 0);
 });
 
-test('robotrader risk gate approves simple fractional stock entries with internal risk stop', () => {
+test('robotrader risk gate rejects simple fractional stock entries with internal risk stop', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: baseSettings,
-    account: { buying_power: '5000', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '5000', status: 'ACTIVE' },
     positions: [],
     openOrders: [],
     recentOrders: [],
@@ -83,14 +87,16 @@ test('robotrader risk gate approves simple fractional stock entries with interna
     environment: 'paper'
   });
 
-  assert.equal(result.approved, true);
-  assert.equal(result.rejectionReasons.length, 0);
+  assert.equal(result.approved, false);
+  assert.ok(result.rejectionReasons.some(reason => /whole-share/.test(reason)));
 });
 
 test('robotrader risk gate rejects fractionals when Alpaca asset is not fractionable', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: baseSettings,
-    account: { buying_power: '5000', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '5000', status: 'ACTIVE' },
     positions: [],
     openOrders: [],
     recentOrders: [],
@@ -115,8 +121,10 @@ test('robotrader risk gate rejects fractionals when Alpaca asset is not fraction
 
 test('robotrader risk gate rejects when Alpaca asset lookup fails', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: baseSettings,
-    account: { buying_power: '5000', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '5000', status: 'ACTIVE' },
     positions: [],
     openOrders: [],
     recentOrders: [],
@@ -134,8 +142,10 @@ test('robotrader risk gate rejects when Alpaca asset lookup fails', () => {
 
 test('robotrader risk gate rejects when Alpaca asset is not tradable', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: baseSettings,
-    account: { buying_power: '5000', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '5000', status: 'ACTIVE' },
     positions: [],
     openOrders: [],
     recentOrders: [],
@@ -153,8 +163,10 @@ test('robotrader risk gate rejects when Alpaca asset is not tradable', () => {
 
 test('robotrader risk gate rejects disabled and duplicate trades', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: { ...baseSettings, isEnabled: false },
-    account: { buying_power: '5000', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '5000', status: 'ACTIVE' },
     positions: [],
     openOrders: [{ symbol: 'AAPL', status: 'new' }],
     recentOrders: [],
@@ -172,8 +184,10 @@ test('robotrader risk gate rejects disabled and duplicate trades', () => {
 
 test('robotrader risk gate rejects live trading without explicit opt-in', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: { ...baseSettings, mode: 'live', liveTradingExplicitlyEnabled: false },
-    account: { buying_power: '5000', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '5000', status: 'ACTIVE' },
     positions: [],
     openOrders: [],
     recentOrders: [],
@@ -185,13 +199,15 @@ test('robotrader risk gate rejects live trading without explicit opt-in', () => 
   });
 
   assert.equal(result.approved, false);
-  assert.ok(result.rejectionReasons.includes('Live trading is not explicitly enabled by the user.'));
+  assert.ok(result.rejectionReasons.includes('Live trading is disabled for this paper-only release.'));
 });
 
 test('robotrader risk gate rejects sell orders that would open shorts when disabled', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: baseSettings,
-    account: { buying_power: '5000', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '5000', status: 'ACTIVE' },
     positions: [],
     openOrders: [],
     recentOrders: [],
@@ -208,8 +224,10 @@ test('robotrader risk gate rejects sell orders that would open shorts when disab
 
 test('robotrader risk gate rejects fractional short-opening stock orders', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: { ...baseSettings, allowShortSelling: true },
-    account: { buying_power: '5000', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '5000', status: 'ACTIVE' },
     positions: [],
     openOrders: [],
     recentOrders: [],
@@ -234,13 +252,15 @@ test('robotrader risk gate rejects fractional short-opening stock orders', () =>
 
 test('robotrader risk gate allows risk-reducing exits when exposure caps are already full', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: {
       ...baseSettings,
       maxTradeAmount: 100,
       maxPositionSize: 100,
       maxOpenPositions: 1
     },
-    account: { buying_power: '50', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '50', status: 'ACTIVE' },
     positions: [{ symbol: 'AAPL', qty: 10, market_value: 2000 }],
     openOrders: [],
     recentOrders: [],
@@ -265,11 +285,13 @@ test('robotrader risk gate allows risk-reducing exits when exposure caps are alr
 
 test('robotrader risk gate rejects overselling a long position when short selling is disabled', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: {
       ...baseSettings,
       maxTradeAmount: 5000
     },
-    account: { buying_power: '5000', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '5000', status: 'ACTIVE' },
     positions: [{ symbol: 'AAPL', qty: 5, market_value: 1000 }],
     openOrders: [],
     recentOrders: [],
@@ -293,12 +315,14 @@ test('robotrader risk gate rejects overselling a long position when short sellin
 
 test('robotrader risk gate allows a full long exit without short selling enabled', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: {
       ...baseSettings,
       maxTradeAmount: 100,
       maxPositionSize: 100
     },
-    account: { buying_power: '0', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '0', status: 'ACTIVE' },
     positions: [{ symbol: 'AAPL', qty: 5, market_value: 1000 }],
     openOrders: [],
     recentOrders: [],
@@ -323,13 +347,15 @@ test('robotrader risk gate allows a full long exit without short selling enabled
 
 test('robotrader risk gate allows buy-to-cover exits even when buying power is low', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: {
       ...baseSettings,
       allowShortSelling: true,
       maxTradeAmount: 100,
       maxPositionSize: 100
     },
-    account: { buying_power: '0', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '0', status: 'ACTIVE' },
     positions: [{ symbol: 'AAPL', qty: -5, market_value: 1000 }],
     openOrders: [],
     recentOrders: [],
@@ -354,8 +380,10 @@ test('robotrader risk gate allows buy-to-cover exits even when buying power is l
 
 test('robotrader risk gate rejects stock orders when the market is closed and order is not extended-hours valid', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: baseSettings,
-    account: { buying_power: '5000', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '5000', status: 'ACTIVE' },
     positions: [],
     openOrders: [],
     recentOrders: [],
@@ -373,8 +401,10 @@ test('robotrader risk gate rejects stock orders when the market is closed and or
 
 test('robotrader risk gate blocks extended-hours entries that require broker stop protection', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: { ...baseSettings, allowExtendedHours: true },
-    account: { buying_power: '5000', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '5000', status: 'ACTIVE' },
     positions: [],
     openOrders: [],
     recentOrders: [],
@@ -404,8 +434,10 @@ test('robotrader risk gate blocks extended-hours entries that require broker sto
 
 test('robotrader risk gate allows extended-hours risk-reducing exits even with protection marker', () => {
   const result = evaluateRoboRisk({
+    asset: { tradable: true, status: 'active' },
+    marketClock: { is_open: true },
     settings: { ...baseSettings, allowExtendedHours: true },
-    account: { buying_power: '0', status: 'ACTIVE' },
+    account: { cash: '5000', equity: '10000', last_equity: '10000', buying_power: '0', status: 'ACTIVE' },
     positions: [{ symbol: 'AAPL', qty: 5, market_value: 1000 }],
     openOrders: [],
     recentOrders: [],
@@ -432,3 +464,17 @@ test('robotrader risk gate allows extended-hours risk-reducing exits even with p
   assert.equal(result.approved, true);
   assert.equal(result.rejectionReasons.length, 0);
 });
+
+for (const [name, overrides] of [
+  ['unknown clock', { marketClock: null }],
+  ['unknown asset', { asset: null }],
+  ['unknown equity', { account: { cash: 5000, status: 'ACTIVE' } }],
+  ['cash insufficient despite margin buying power', { account: { cash: 10, buying_power: 5000, equity: 10000, last_equity: 10000, status: 'ACTIVE' } }],
+  ['live explicit flag', { environment: 'live', settings: { ...baseSettings, mode: 'live', liveTradingExplicitlyEnabled: true } }],
+  ['extended-hours entry', { marketClock: { is_open: false }, settings: { ...baseSettings, allowExtendedHours: true }, orderInput: { ...baseOrder, extendedHours: true } }]
+]) {
+  test(`risk gate fails closed for ${name}`, () => {
+    const result = evaluateRoboRisk({ settings: baseSettings, account: { cash: 5000, equity: 10000, last_equity: 10000, status: 'ACTIVE' }, asset: { tradable: true, status: 'active' }, marketClock: { is_open: true }, decision: baseDecision, orderInput: baseOrder, ...overrides });
+    assert.equal(result.approved, false);
+  });
+}

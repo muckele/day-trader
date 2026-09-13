@@ -37,7 +37,7 @@ async function waitFor(condition, { timeoutMs = 1000, intervalMs = 10 } = {}) {
   return condition();
 }
 
-test('startRoboScheduler runs scheduler tick and retention cleanup', async t => {
+test('startRoboScheduler disables legacy entries even with opt-in and runs retention cleanup', async t => {
   const previousDisabled = process.env.ROBO_SCHEDULER_DISABLED;
   const previousRequireDb = process.env.ROBO_SCHEDULER_REQUIRE_DB;
   const previousWorkerDisabled = process.env.ROBOTRADER_WORKER_DISABLED;
@@ -81,8 +81,7 @@ test('startRoboScheduler runs scheduler tick and retention cleanup', async t => 
 
     await waitFor(
       () => (
-        tickCalls >= 2
-        && cleanupCalls.length >= 1
+        cleanupCalls.length >= 1
         && decisionCleanupCalls.length >= 1
         && auditCleanupCalls.length >= 1
       ),
@@ -90,7 +89,7 @@ test('startRoboScheduler runs scheduler tick and retention cleanup', async t => 
     );
     stop();
 
-    assert.ok(tickCalls >= 2);
+    assert.equal(tickCalls, 0);
     assert.ok(cleanupCalls.length >= 1);
     assert.equal(cleanupCalls[0].olderThanDays, 7);
     assert.ok(decisionCleanupCalls.length >= 1);
@@ -195,7 +194,7 @@ test('getScheduledReconciliationModes keeps paper only without live opt-in', asy
   }
 });
 
-test('getScheduledReconciliationModes adds live when explicitly enabled by env', async t => {
+test('getScheduledReconciliationModes blocks live when explicitly enabled by env', async t => {
   const restoreEnv = preserveEnv([
     'ROBOTRADER_LIVE_RECONCILIATION_DISABLED',
     'ROBOTRADER_LIVE_RECONCILIATION_ENABLED',
@@ -212,7 +211,7 @@ test('getScheduledReconciliationModes adds live when explicitly enabled by env',
 
   try {
     const modes = await getScheduledReconciliationModes();
-    assert.deepEqual(modes, ['paper', 'live']);
+    assert.deepEqual(modes, ['paper']);
   } finally {
     restoreEnv();
   }
@@ -241,7 +240,7 @@ test('getScheduledReconciliationModes keeps paper only when live credentials are
   }
 });
 
-test('getScheduledReconciliationModes adds live when a live-enabled setting exists', async t => {
+test('getScheduledReconciliationModes blocks live when a live-enabled setting exists', async t => {
   const restoreEnv = preserveEnv([
     'ROBOTRADER_LIVE_RECONCILIATION_DISABLED',
     'ROBOTRADER_LIVE_RECONCILIATION_ENABLED',
@@ -256,7 +255,7 @@ test('getScheduledReconciliationModes adds live when a live-enabled setting exis
 
   try {
     const modes = await getScheduledReconciliationModes();
-    assert.deepEqual(modes, ['paper', 'live']);
+    assert.deepEqual(modes, ['paper']);
   } finally {
     restoreEnv();
   }
@@ -311,7 +310,7 @@ test('startRoboScheduler reconciles paper only when live reconciliation is not e
   }
 });
 
-test('startRoboScheduler reconciles live when live reconciliation is explicitly enabled', async t => {
+test('startRoboScheduler blocks live reconciliation despite explicit enable flag', async t => {
   const restoreEnv = preserveEnv([
     'ROBO_SCHEDULER_DISABLED',
     'ROBO_SCHEDULER_REQUIRE_DB',
@@ -357,7 +356,7 @@ test('startRoboScheduler reconciles live when live reconciliation is explicitly 
     stop();
 
     assert.ok(reconciliationModes.includes('paper'));
-    assert.ok(reconciliationModes.includes('live'));
+    assert.equal(reconciliationModes.includes('live'), false);
   } finally {
     restoreEnv();
   }
@@ -417,4 +416,22 @@ test('startRoboScheduler skips ticks when DB is unavailable and requirement is e
     if (previousRequired === undefined) delete process.env.ROBO_SCHEDULER_REQUIRE_DB;
     else process.env.ROBO_SCHEDULER_REQUIRE_DB = previousRequired;
   }
+});
+
+ test('entry failure does not starve paper reconciliation', async t => {
+  const restore = preserveEnv(['ROBO_SCHEDULER_DISABLED', 'ROBOTRADER_WORKER_DISABLED', 'ROBOTRADER_RECONCILIATION_DISABLED']);
+  delete process.env.ROBO_SCHEDULER_DISABLED;
+  delete process.env.ROBOTRADER_WORKER_DISABLED;
+  delete process.env.ROBOTRADER_RECONCILIATION_DISABLED;
+  let reconciled = 0;
+  t.mock.method(roboTraderWorker, 'runWorkerTick', async () => { throw new Error('entry failed'); });
+  t.mock.method(roboEngine, 'cleanupSignalExecutions', async () => ({ deletedCount: 0 }));
+  t.mock.method(roboTraderWorker, 'cleanupRoboTradeDecisions', async () => ({ deletedCount: 0 }));
+  t.mock.method(roboTraderWorker, 'cleanupRoboAuditLogs', async () => ({ deletedCount: 0 }));
+  t.mock.method(roboReconciliation, 'reconcileRoboOrders', async () => { reconciled++; });
+  const stop = startRoboScheduler({ intervalMs: 20, startupDelayMs: 1, isDbReady: () => true });
+  try {
+    await waitFor(() => reconciled > 0);
+    assert.ok(reconciled > 0);
+  } finally { stop(); restore(); }
 });

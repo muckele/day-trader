@@ -49,13 +49,13 @@ function buildSymbolSet(primary, fallback = []) {
 
 function buildTradingConfig(env = process.env) {
   const paperTradingEnabled = parseBoolean(env.PAPER_TRADING_ENABLED, true);
-  const liveTradingEnabled = parseBoolean(env.LIVE_TRADING_ENABLED, false);
-  const shortSellingEnabled = parseBoolean(env.SHORT_SELLING_ENABLED, false);
-  const marginEnabled = parseBoolean(env.MARGIN_TRADING_ENABLED, false);
-  const optionsEnabled = parseBoolean(env.OPTIONS_TRADING_ENABLED, false);
-  const cryptoEnabled = parseBoolean(env.CRYPTO_TRADING_ENABLED, true);
-  const leveragedEtfEnabled = parseBoolean(env.LEVERAGED_ETF_ENABLED, false);
-  const inverseEtfEnabled = parseBoolean(env.INVERSE_ETF_ENABLED, false);
+  const liveTradingEnabled = false; // Immutable MVP release restriction.
+  const shortSellingEnabled = false; // Immutable MVP release restriction.
+  const marginEnabled = false; // Immutable MVP release restriction.
+  const optionsEnabled = false; // Immutable MVP release restriction.
+  const cryptoEnabled = false; // Immutable MVP release restriction.
+  const leveragedEtfEnabled = false; // Immutable MVP release restriction.
+  const inverseEtfEnabled = false; // Immutable MVP release restriction.
   const recommendationUniverse = parseCsv(
     env.RECOMMENDATION_UNIVERSE,
     DEFAULT_RECOMMENDATION_UNIVERSE

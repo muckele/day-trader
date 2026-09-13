@@ -1,4 +1,6 @@
 const axios = require('axios');
+const { executionReadiness } = require('../services/executionReadiness');
+const { assertPaperConfig, verifyPaperAccount } = require('../services/alpacaSafety');
 const {
   DEFAULT_ALPACA_PAPER_BASE_URL,
   isPaperTradingEndpoint
@@ -12,24 +14,11 @@ function firstValue(...values) {
 }
 
 function getAlpacaConfigForMode(mode = 'paper', env = process.env) {
-  const normalizedMode = mode === 'live' ? 'live' : 'paper';
-  if (normalizedMode === 'live') {
-    return {
-      mode: 'live',
-      baseUrl: String(firstValue(
-        env.APCA_LIVE_BASE_URL,
-        env.ALPACA_LIVE_BASE_URL,
-        env.ALPACA_BASE_URL,
-        env.APCA_BASE_URL,
-        DEFAULT_ALPACA_LIVE_BASE_URL
-      )).replace(/\/v2\/?$/, '').replace(/\/$/, ''),
-      apiKey: firstValue(env.APCA_LIVE_API_KEY_ID, env.ALPACA_LIVE_API_KEY, env.ALPACA_API_KEY) || '',
-      apiSecret: firstValue(env.APCA_LIVE_API_SECRET_KEY, env.ALPACA_LIVE_API_SECRET, env.ALPACA_API_SECRET) || ''
-    };
-  }
+  if (mode !== 'paper') throw Object.assign(new Error('This release is paper-only; live trading is disabled.'), { code: 'ALPACA_PAPER_ENDPOINT_REQUIRED' });
 
   return {
     mode: 'paper',
+    expectedAccountId: env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID || '',
     baseUrl: String(firstValue(
       env.APCA_PAPER_BASE_URL,
       env.ALPACA_PAPER_BASE_URL,
@@ -54,23 +43,7 @@ function getAlpacaConfigForMode(mode = 'paper', env = process.env) {
   };
 }
 
-function assertConfig(config) {
-  if (!config.apiKey || !config.apiSecret) {
-    const err = new Error(`Alpaca ${config.mode} credentials are not configured.`);
-    err.code = 'ALPACA_NOT_CONFIGURED';
-    throw err;
-  }
-  if (config.mode === 'paper' && !isPaperTradingEndpoint(config.baseUrl)) {
-    const err = new Error('Paper mode must use the Alpaca paper endpoint.');
-    err.code = 'ALPACA_PAPER_ENDPOINT_REQUIRED';
-    throw err;
-  }
-  if (config.mode === 'live' && isPaperTradingEndpoint(config.baseUrl)) {
-    const err = new Error('Live mode cannot use the Alpaca paper endpoint.');
-    err.code = 'ALPACA_LIVE_ENDPOINT_REQUIRED';
-    throw err;
-  }
-}
+function assertConfig(config) { assertPaperConfig(config); }
 
 function buildHeaders(config) {
   return {
@@ -143,12 +116,16 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
   const config = getAlpacaConfigForMode(mode, env);
   const request = async (method, path, data, options = {}) => {
     assertConfig(config);
+    if (method !== 'get' && httpClient === axios) executionReadiness.assertReady();
+    if (method !== 'get') await verifyPaperAccount(config, () => request('get', '/v2/account'));
+    if (method !== 'get' && httpClient === axios) executionReadiness.assertReady();
     const response = await httpClient({
       method,
       url: `${config.baseUrl}${path}`,
       data,
       params: options.params,
       headers: buildHeaders(config),
+      maxRedirects: 0,
       timeout: options.timeout || 20000
     });
     return response?.data || {};
@@ -157,19 +134,19 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
   return {
     mode: config.mode,
     baseUrl: config.baseUrl,
-    isConfigured: Boolean(config.apiKey && config.apiSecret),
+    isConfigured: Boolean(config.apiKey && config.apiSecret && config.expectedAccountId && isPaperTradingEndpoint(config.baseUrl)),
     getAccount: () => request('get', '/v2/account'),
     getClock: () => request('get', '/v2/clock'),
     getAsset: symbol => request('get', `/v2/assets/${encodeURIComponent(symbol)}`),
     getPositions: () => request('get', '/v2/positions'),
     listOrders: (params = {}) => request('get', '/v2/orders', null, { params }),
-    getOrder: orderId => request('get', `/v2/orders/${orderId}`),
+    getOrder: orderId => request('get', `/v2/orders/${encodeURIComponent(orderId)}`),
     getOrderByClientOrderId: clientOrderId => request('get', '/v2/orders:by_client_order_id', null, {
       params: { client_order_id: clientOrderId }
     }),
-    cancelOrder: orderId => request('delete', `/v2/orders/${orderId}`),
+    cancelOrder: orderId => request('delete', `/v2/orders/${encodeURIComponent(orderId)}`),
     cancelAllOrders: () => request('delete', '/v2/orders'),
-    replaceOrder: (orderId, payload) => request('patch', `/v2/orders/${orderId}`, sanitizeReplacementPayload(payload)),
+    replaceOrder: (orderId, payload) => request('patch', `/v2/orders/${encodeURIComponent(orderId)}`, sanitizeReplacementPayload(payload)),
     closePosition: (symbol, payload = {}) => request('delete', `/v2/positions/${encodeURIComponent(symbol)}`, payload),
     submitOrder: async input => {
       const built = buildRoboAlpacaOrderPayload(input);

@@ -131,6 +131,7 @@ test('buildAlpacaOrderPayload rejects invalid Alpaca order combinations before s
 test('submitAlpacaPaperOrder posts to the paper endpoint and rejects live endpoints', async () => {
   const calls = [];
   const httpClient = {
+    get: async () => ({ data: { id: 'test-account' } }),
     post: async (...args) => {
       calls.push(args);
       return {
@@ -156,6 +157,7 @@ test('submitAlpacaPaperOrder posts to the paper endpoint and rejects live endpoi
     {
       httpClient,
       env: {
+        ALPACA_EXPECTED_PAPER_ACCOUNT_ID: 'test-account',
         APCA_BASE_URL: 'https://paper-api.alpaca.markets',
         APCA_API_KEY_ID: 'key',
         APCA_API_SECRET_KEY: 'secret'
@@ -187,13 +189,14 @@ test('submitAlpacaPaperOrder posts to the paper endpoint and rejects live endpoi
         }
       }
     ),
-    /paper sync requires/
+    /exact Alpaca paper endpoint/
   );
 });
 
 test('submitAlpacaPaperOrder can refresh broker status after submit', async () => {
   const calls = [];
   const httpClient = {
+    get: async () => ({ data: { id: 'test-account' } }),
     post: async (...args) => {
       calls.push({ method: 'post', args });
       return {
@@ -205,6 +208,7 @@ test('submitAlpacaPaperOrder can refresh broker status after submit', async () =
       };
     },
     get: async (...args) => {
+      if (args[0].endsWith('/v2/account')) return { data: { id: 'test-account' } };
       calls.push({ method: 'get', args });
       return {
         data: {
@@ -230,6 +234,7 @@ test('submitAlpacaPaperOrder can refresh broker status after submit', async () =
     {
       httpClient,
       env: {
+        ALPACA_EXPECTED_PAPER_ACCOUNT_ID: 'test-account',
         APCA_BASE_URL: 'https://paper-api.alpaca.markets',
         APCA_API_KEY_ID: 'key',
         APCA_API_SECRET_KEY: 'secret'

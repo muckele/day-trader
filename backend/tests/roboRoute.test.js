@@ -189,7 +189,7 @@ test('GET /status returns user robo status and scheduler details', async t => {
   assert.ok(res.body.scheduler);
 });
 
-test('POST /run-once triggers one robo execution', async t => {
+test('POST /run-once rejects legacy execution with canonical migration path', async t => {
   const calls = [];
   t.mock.method(User, 'findOne', async () => ({ _id: 'user-5' }));
   t.mock.method(roboEngine, 'runRoboTradeForUser', async input => {
@@ -207,13 +207,12 @@ test('POST /run-once triggers one robo execution', async t => {
   });
 
   assert.equal(nextErr, null);
-  assert.equal(res.statusCode, 200);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].userId, 'user-5');
-  assert.equal(res.body.result.reason, 'LIMIT_EXCEEDED');
+  assert.equal(res.statusCode, 410);
+  assert.equal(calls.length, 0);
+  assert.equal(res.body.canonicalApi, '/api/robotrader');
 });
 
-test('POST /run_once and /runOnce aliases trigger one robo execution', async t => {
+test('POST /run_once and /runOnce aliases reject legacy execution', async t => {
   const calls = [];
   t.mock.method(User, 'findOne', async () => ({ _id: 'user-6' }));
   t.mock.method(roboEngine, 'runRoboTradeForUser', async input => {
@@ -237,9 +236,16 @@ test('POST /run_once and /runOnce aliases trigger one robo execution', async t =
   });
 
   assert.equal(nextErr, null);
-  assert.equal(res1.statusCode, 200);
-  assert.equal(res2.statusCode, 200);
-  assert.equal(calls.length, 2);
-  assert.equal(calls[0].userId, 'user-6');
-  assert.equal(calls[1].userId, 'user-6');
+  assert.equal(res1.statusCode, 410);
+  assert.equal(res2.statusCode, 410);
+  assert.equal(calls.length, 0);
+});
+
+test('legacy settings cannot enable automation', async t => {
+  let calls = 0;
+  t.mock.method(roboEngine, 'updateSettingsForUser', async () => { calls++; });
+  const res = createMockRes();
+  await getRouteHandler('/settings', 'put')({ body: { enabled: true } }, res, err => { throw err; });
+  assert.equal(res.statusCode, 410);
+  assert.equal(calls, 0);
 });

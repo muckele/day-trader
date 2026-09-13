@@ -63,6 +63,7 @@ router.get('/settings', auth, async (req, res, next) => {
 });
 
 router.put('/settings', auth, sensitiveRateLimit(), async (req, res, next) => {
+  if (req.body?.enabled !== undefined && req.body.enabled !== false) return legacyExecutionGone(res);
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ message: 'User not found.' });
@@ -116,21 +117,12 @@ router.get('/status', auth, async (req, res, next) => {
   }
 });
 
-async function runOnceHandler(req, res, next) {
-  try {
-    const user = await getCurrentUser(req);
-    if (!user) return res.status(401).json({ message: 'User not found.' });
+function legacyExecutionGone(res) {
+  return res.status(410).json({ message: 'Legacy automation is disabled. Use the canonical RoboTrader API.', canonicalApi: '/api/robotrader' });
+}
 
-    const signal = req.body?.signal || null;
-    const result = await roboEngine.runRoboTradeForUser({
-      userId: user._id,
-      accountId: getRequestAccountId(req),
-      signal
-    });
-    res.json({ result });
-  } catch (err) {
-    next(err);
-  }
+async function runOnceHandler(req, res) {
+  return legacyExecutionGone(res);
 }
 
 router.post('/run-once', auth, sensitiveRateLimit({ max: 6 }), runOnceHandler);

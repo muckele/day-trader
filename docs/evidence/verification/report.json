@@ -1,0 +1,185 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "runtime",
+      "code": 0,
+      "signal": null,
+      "durationMs": 33,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "-e",
+        "if (process.versions.node.split(\".\")[0] !== \"20\") { console.error(\"Required Node 20 to match Dockerfiles; got \" + process.version); process.exit(1); }"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/verification/runtime.log"
+    },
+    {
+      "name": "backend-install",
+      "code": 0,
+      "signal": null,
+      "durationMs": 1023,
+      "command": [
+        "npm",
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/verification/backend-install.log"
+    },
+    {
+      "name": "frontend-install",
+      "code": 0,
+      "signal": null,
+      "durationMs": 8667,
+      "command": [
+        "npm",
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/verification/frontend-install.log"
+    },
+    {
+      "name": "verification-tests",
+      "code": 0,
+      "signal": null,
+      "durationMs": 76,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "scripts/tests/verify-mvp.test.mjs"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/verification/verification-tests.log"
+    },
+    {
+      "name": "backend-tests",
+      "code": 0,
+      "signal": null,
+      "durationMs": 1664,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "tests/accountScope.test.js",
+        "tests/alpacaTradingClient.test.js",
+        "tests/analysisEngine.test.js",
+        "tests/analytics.test.js",
+        "tests/analyticsSnapshot.test.js",
+        "tests/analyzeRoute.test.js",
+        "tests/backtest.test.js",
+        "tests/brokerBoundarySafety.test.js",
+        "tests/companyRoute.test.js",
+        "tests/debugRoute.test.js",
+        "tests/errorResponse.test.js",
+        "tests/executionGate.test.js",
+        "tests/executionReadiness.test.js",
+        "tests/guardrails.test.js",
+        "tests/marketRoute.test.js",
+        "tests/mongoConnectionConfig.test.js",
+        "tests/mongoNetwork.test.js",
+        "tests/mongoState.test.js",
+        "tests/notificationRecovery.test.js",
+        "tests/ownerAccess.test.js",
+        "tests/ownerAuthRoutes.test.js",
+        "tests/ownerBootstrap.test.js",
+        "tests/paperBrokerClient.test.js",
+        "tests/paperMath.test.js",
+        "tests/privateRoutesAuth.test.js",
+        "tests/qualityGate.test.js",
+        "tests/rateLimit.test.js",
+        "tests/recommendRoute.test.js",
+        "tests/recommendationEngine.test.js",
+        "tests/recommendationSchema.test.js",
+        "tests/regimeDetector.test.js",
+        "tests/requireMongo.test.js",
+        "tests/researchIndexService.test.js",
+        "tests/researchService.test.js",
+        "tests/researchTradeWorkflowService.test.js",
+        "tests/riskEngine.test.js",
+        "tests/roboNotificationService.test.js",
+        "tests/roboRoute.test.js",
+        "tests/roboScheduler.test.js",
+        "tests/roboTraderEngine.test.js",
+        "tests/robotraderAlpacaBroker.test.js",
+        "tests/robotraderAlpacaCapabilities.test.js",
+        "tests/robotraderReconciliation.test.js",
+        "tests/robotraderRiskGate.test.js",
+        "tests/robotraderRoute.test.js",
+        "tests/robotraderSettings.test.js",
+        "tests/robotraderStrategyEngine.test.js",
+        "tests/robotraderWorker.test.js",
+        "tests/sessionCookie.test.js",
+        "tests/strategyRunService.test.js",
+        "tests/tradeLogic.test.js",
+        "tests/tradePlan.test.js",
+        "tests/tradeRoutes.test.js",
+        "tests/tradingConfig.test.js",
+        "tests/tradingIndexService.test.js",
+        "tests/tradingSystemRoute.test.js",
+        "tests/unsafeInputRoutes.test.js",
+        "tests/unsafeMethodOriginGuard.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/verification/backend-tests.log"
+    },
+    {
+      "name": "mongo-integration",
+      "code": 0,
+      "signal": null,
+      "durationMs": 624,
+      "command": [
+        "/private/tmp/day-trader-mvp-runtime/node_modules/node-bin-darwin-arm64/bin/node",
+        "--test",
+        "backend/integration/mvpPersistence.test.js"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/verification/mongo-integration.log"
+    },
+    {
+      "name": "frontend-tests",
+      "code": 0,
+      "signal": null,
+      "durationMs": 2378,
+      "command": [
+        "npm",
+        "test",
+        "--",
+        "--watchAll=false",
+        "--runInBand"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/verification/frontend-tests.log"
+    },
+    {
+      "name": "frontend-build",
+      "code": 0,
+      "signal": null,
+      "durationMs": 11353,
+      "command": [
+        "npm",
+        "run",
+        "build"
+      ],
+      "log": "/Users/Matt/Projects/day-trader/docs/evidence/verification/frontend-build.log"
+    }
+  ],
+  "requiredAcceptance": [
+    {
+      "name": "Mongo persistence, reservation and restart integration",
+      "status": "BLOCKED",
+      "reason": "Full lifecycle integration suite not implemented"
+    },
+    {
+      "name": "Actual frontend/backend/auth/database lifecycle E2E",
+      "status": "BLOCKED",
+      "reason": "Existing Playwright suite mocks API responses"
+    },
+    {
+      "name": "Fault/concurrency/protection acceptance",
+      "status": "BLOCKED",
+      "reason": "Complete acceptance coverage not implemented"
+    }
+  ],
+  "generatedAt": "2026-09-13T04:43:30.729Z",
+  "runtime": "v20.20.2",
+  "deterministicChecksPass": true,
+  "releaseCandidate": false
+}

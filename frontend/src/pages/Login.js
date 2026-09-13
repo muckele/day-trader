@@ -1,7 +1,7 @@
 // src/pages/Login.js
 import React, { useState } from 'react';
 import axios from 'axios';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import { getApiError } from '../utils/api';
@@ -53,10 +53,7 @@ export default function Login() {
           <Button type="submit">Log In</Button>
         </form>
         <p className="mt-4 text-center text-sm text-slate-500">
-          Don&apos;t have an account?{' '}
-          <Link to="/register" className="text-slate-900 dark:text-white underline">
-            Sign up
-          </Link>
+          Owner-only access is configured by the operator. Public registration is disabled.
         </p>
       </Card>
     </div>

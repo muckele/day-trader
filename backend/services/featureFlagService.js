@@ -1,6 +1,7 @@
 const FeatureFlag = require('../models/FeatureFlag');
 const mongoState = require('../utils/mongoState');
 const { getTradingConfig } = require('../config/tradingConfig');
+const RELEASE_DISABLED_FLAGS = new Set(['liveTradingEnabled', 'shortSellingEnabled', 'marginEnabled', 'optionsEnabled', 'cryptoEnabled', 'leveragedEtfEnabled', 'inverseEtfEnabled']);
 
 function buildDefaultFlags() {
   const config = getTradingConfig();
@@ -27,7 +28,7 @@ async function getFeatureFlagsSnapshot() {
   try {
     const docs = await FeatureFlag.find({ scope: 'global' }).lean();
     return docs.reduce((acc, doc) => {
-      if (!doc?.key) return acc;
+      if (!doc?.key || RELEASE_DISABLED_FLAGS.has(doc.key)) return acc;
       acc[doc.key] = Boolean(doc.enabled);
       return acc;
     }, { ...defaults });

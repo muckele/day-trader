@@ -1,4 +1,3 @@
-const axios = require('axios');
 const User = require('../models/User');
 const RoboSettings = require('../models/RoboSettings');
 const RoboUsage = require('../models/RoboUsage');
@@ -15,9 +14,9 @@ const { writeRiskEvent } = require('./riskEventService');
 const { createStrategyRun, finalizeStrategyRun } = require('./strategyRunService');
 const { recordFilledExecution, recordRejectedExecution } = require('./executionTelemetryService');
 const {
-  buildAlpacaOrderPayload,
   buildClientOrderId,
-  getAlpacaTradingConfig
+  getAlpacaTradingConfig,
+  submitAlpacaPaperOrder
 } = require('./alpacaTradingClient');
 
 const LOCK_TTL_MS = 30 * 1000;
@@ -114,29 +113,14 @@ async function placeAlpacaOrder({
   }
 
   try {
-    const payload = buildAlpacaOrderPayload({
-      symbol,
-      assetClass,
-      side,
-      qty,
-      orderType: 'market',
+    const result = await submitAlpacaPaperOrder({
+      symbol, assetClass, side, qty, orderType: 'market',
       timeInForce: assetClass === 'crypto' ? 'gtc' : 'day',
       allowExtendedHours,
       clientOrderId: buildClientOrderId({ origin: 'robo', symbol })
     });
-    const response = await axios.post(
-      `${config.baseUrl}/v2/orders`,
-      payload,
-      {
-        headers: {
-          'APCA-API-KEY-ID': config.apiKey,
-          'APCA-API-SECRET-KEY': config.apiSecret
-        },
-        timeout: 20000
-      }
-    );
-
-    const orderData = response?.data || {};
+    const payload = result.payload;
+    const orderData = result.order;
     const orderId = orderData.id || orderData.client_order_id || null;
     const fillPrice = Number(
       toFiniteNumber(orderData.filled_avg_price, estimatedPrice).toFixed(4)

@@ -1,0 +1,32 @@
+✔ owner is rejected when authentication database is disconnected (2.951459ms)
+✔ pre-existing non-owner signed token cannot access protected routes (0.467042ms)
+✔ missing operator owner binding fails closed (0.28275ms)
+✔ revoked session version cannot access owner data (0.5705ms)
+✔ legacy session lacking revocation version must sign in again (0.652833ms)
+✔ current owner session with connected database is accepted (2.180583ms)
+✔ database query failure fails closed without exposing driver errors (0.386958ms)
+✔ unconfigured JWT secret fails closed in development too (0.498917ms)
+✔ public registration is unavailable even without DB or owner config (1.743833ms)
+✔ non-owner password login never issues a session (7.313292ms)
+✔ owner login issues versioned session and logout invalidates replay (5.726208ms)
+✔ logout persistence failure cannot claim successful revocation (0.384334ms)
+✔ operator can resolve an explicit existing identity without modifying it (0.453917ms)
+✔ invalid or missing existing owner is refused (0.308542ms)
+✔ new owner is created with password hash and no automatic binding (530.281459ms)
+✔ weak or missing credentials never create an owner (0.4045ms)
+✔ private trading routes require authentication middleware (0.340334ms)
+✔ session cookie parser reads encoded cookie values (0.519375ms)
+✔ session token reader prefers bearer token when present (0.136084ms)
+✔ production session cookies are httpOnly, secure, and cross-site capable (0.071458ms)
+✔ parseHeaderOrigin normalizes referer URLs to origins (0.738792ms)
+✔ unsafe method origin guard allows bearer-token API calls without browser origin (0.37225ms)
+✔ unsafe method origin guard rejects cookie-authenticated posts without a trusted origin (0.26775ms)
+✔ unsafe method origin guard allows cookie-authenticated posts from configured frontend origin (0.100708ms)
+ℹ tests 24
+ℹ suites 0
+ℹ pass 24
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 762.721292

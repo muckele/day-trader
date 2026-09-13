@@ -1,0 +1,38 @@
+name: MVP deterministic checks
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - name: Start isolated MongoDB replica set
+        run: |
+          docker run -d --rm --name day-trader-mvp-ci -p 127.0.0.1:27189:27017 mongo:7 --replSet mvp --bind_ip_all
+          for attempt in $(seq 1 30); do
+            if docker exec day-trader-mvp-ci mongosh --quiet --eval 'db.adminCommand({ping:1})'; then break; fi
+            sleep 1
+          done
+          docker exec day-trader-mvp-ci mongosh --quiet --eval 'rs.initiate({_id:"mvp",members:[{_id:0,host:"localhost:27017"}]})'
+      - name: Run implemented deterministic checks
+        run: node scripts/verify-mvp.mjs --checks-only
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mvp-verification
+          path: docs/evidence/verification/
+      - name: Remove only test container
+        if: always()
+        run: docker stop day-trader-mvp-ci || true

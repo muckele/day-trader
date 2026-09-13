@@ -6,7 +6,6 @@ import Badge from '../components/ui/Badge';
 import Skeleton from '../components/ui/Skeleton';
 import { getApiError } from '../utils/api';
 
-const LIVE_CONFIRMATION_TEXT = 'I understand live trading risk';
 const RISK_DISCLOSURE = 'RoboTrader uses automated trading rules and market data to identify potential opportunities. Trading involves risk, including possible loss of principal. Past performance does not guarantee future results.';
 
 const defaultSettings = {
@@ -22,7 +21,7 @@ const defaultSettings = {
   maxOpenPositions: 5,
   maxTradesPerDay: 3,
   allowShortSelling: false,
-  allowFractionalShares: true,
+  allowFractionalShares: false,
   allowExtendedHours: false,
   allowOptionsTrading: false,
   allowCryptoTrading: false,
@@ -30,6 +29,17 @@ const defaultSettings = {
   requireManualApprovalAboveDollarAmount: 0,
   pausedReason: null,
   lastRunAt: null
+};
+
+const releasedScope = {
+  mode: 'paper',
+  liveTradingExplicitlyEnabled: false,
+  allowedAssetClasses: ['stocks'],
+  allowFractionalShares: false,
+  allowShortSelling: false,
+  allowExtendedHours: false,
+  allowOptionsTrading: false,
+  allowCryptoTrading: false
 };
 
 const RISK_PRESETS = [
@@ -51,7 +61,7 @@ const RISK_PRESETS = [
       allowedSymbols: ['AAPL', 'MSFT', 'SPY'],
       blockedSymbols: ['TSLA', 'GME'],
       allowShortSelling: false,
-      allowFractionalShares: true,
+      allowFractionalShares: false,
       allowExtendedHours: false,
       allowOptionsTrading: false,
       allowCryptoTrading: false
@@ -75,7 +85,7 @@ const RISK_PRESETS = [
       allowedSymbols: [],
       blockedSymbols: [],
       allowShortSelling: false,
-      allowFractionalShares: true,
+      allowFractionalShares: false,
       allowExtendedHours: false,
       allowOptionsTrading: false,
       allowCryptoTrading: false
@@ -99,7 +109,7 @@ const RISK_PRESETS = [
       allowedSymbols: [],
       blockedSymbols: [],
       allowShortSelling: false,
-      allowFractionalShares: true,
+      allowFractionalShares: false,
       allowExtendedHours: false,
       allowOptionsTrading: false,
       allowCryptoTrading: false
@@ -123,7 +133,7 @@ const RISK_PRESETS = [
       allowedSymbols: [],
       blockedSymbols: [],
       allowShortSelling: false,
-      allowFractionalShares: true,
+      allowFractionalShares: false,
       allowExtendedHours: false,
       allowOptionsTrading: false,
       allowCryptoTrading: false
@@ -233,7 +243,7 @@ function EmptyState({ children }) {
   );
 }
 
-function ToggleCard({ label, checked, onChange, tone = 'neutral' }) {
+function ToggleCard({ label, checked, onChange, disabled = false, tone = 'neutral' }) {
   const toneClass = checked && tone === 'danger'
     ? 'border-[#6a2b3a] bg-[#211116]'
     : checked && tone === 'warning'
@@ -249,6 +259,7 @@ function ToggleCard({ label, checked, onChange, tone = 'neutral' }) {
         type="checkbox"
         checked={checked}
         onChange={onChange}
+        disabled={disabled}
         className="h-4 w-4 accent-[#26d07c]"
       />
     </label>
@@ -265,7 +276,7 @@ export default function RoboTrader() {
   const [settings, setSettings] = useState(defaultSettings);
   const [allowedSymbolsText, setAllowedSymbolsText] = useState('');
   const [blockedSymbolsText, setBlockedSymbolsText] = useState('');
-  const [liveConfirmation, setLiveConfirmation] = useState('');
+  const [scopeWarning, setScopeWarning] = useState(false);
   const [decisions, setDecisions] = useState([]);
   const [orders, setOrders] = useState([]);
   const [audit, setAudit] = useState([]);
@@ -281,8 +292,12 @@ export default function RoboTrader() {
 
   const loadAll = useCallback(async () => {
     const settingsRes = await axios.get('/api/robotrader/settings');
-    const nextSettings = { ...defaultSettings, ...(settingsRes.data?.settings || {}) };
-    const environment = nextSettings.mode === 'live' ? 'live' : 'paper';
+    const savedSettings = settingsRes.data?.settings || {};
+    setScopeWarning(savedSettings.mode === 'live' || savedSettings.liveTradingExplicitlyEnabled ||
+      ['allowFractionalShares', 'allowShortSelling', 'allowExtendedHours', 'allowOptionsTrading', 'allowCryptoTrading'].some(key => savedSettings[key]) ||
+      (savedSettings.allowedAssetClasses || []).some(asset => asset !== 'stocks'));
+    const nextSettings = { ...defaultSettings, ...savedSettings, ...releasedScope };
+    const environment = 'paper';
     setSettings(nextSettings);
     setAllowedSymbolsText(toSymbolText(nextSettings.allowedSymbols));
     setBlockedSymbolsText(toSymbolText(nextSettings.blockedSymbols));
@@ -318,6 +333,10 @@ export default function RoboTrader() {
     applySettled(auditRes, 'audit log', data => setAudit(data.events || []));
     applySettled(healthRes, 'system health', data => setHealth(data || null));
     applySettled(reconciliationRes, 'reconciliation status', data => setReconciliation(data || null));
+    // A failed refresh must not leave earlier successful data looking current.
+    if (performanceRes.status === 'rejected') setPerformance(null);
+    if (healthRes.status === 'rejected') setHealth(null);
+    if (reconciliationRes.status === 'rejected') setReconciliation(null);
 
     if (failedSections.length) {
       setError(`Could not load ${failedSections.join(', ')}. RoboTrader settings are still loaded.`);
@@ -378,20 +397,11 @@ export default function RoboTrader() {
     setSettings(prev => ({ ...prev, [key]: value }));
   };
 
-  const toggleAssetClass = assetClass => {
-    setSettings(prev => {
-      const current = new Set(prev.allowedAssetClasses || []);
-      if (current.has(assetClass)) current.delete(assetClass);
-      else current.add(assetClass);
-      if (!current.size) current.add('stocks');
-      return { ...prev, allowedAssetClasses: [...current] };
-    });
-  };
-
   const applyPreset = preset => {
     setSettings(prev => ({
       ...prev,
       ...preset.values,
+      ...releasedScope,
       isEnabled: prev.isEnabled,
       pausedReason: prev.pausedReason,
       lastRunAt: prev.lastRunAt
@@ -403,19 +413,13 @@ export default function RoboTrader() {
     if (preset.values.blockedSymbols) {
       setBlockedSymbolsText(toSymbolText(preset.values.blockedSymbols));
     }
-    if (preset.values.mode !== 'live') {
-      setLiveConfirmation('');
-    }
   };
 
   const buildSettingsPayload = () => ({
     ...settings,
     allowedSymbols: fromSymbolText(allowedSymbolsText),
     blockedSymbols: fromSymbolText(blockedSymbolsText),
-    liveTradingExplicitlyEnabled: settings.mode === 'live'
-      ? settings.liveTradingExplicitlyEnabled
-      : false,
-    confirmLiveTrading: settings.mode === 'live' ? liveConfirmation : undefined
+    ...releasedScope
   });
 
   const refreshAfterAction = async message => {
@@ -602,6 +606,8 @@ export default function RoboTrader() {
     );
   }
 
+  const hasReconciliationCheck = Number.isFinite(Date.parse(health?.reconciliation?.lastReconciledAt));
+  const positionsAvailable = Array.isArray(performance?.positions) && !performance?.brokerError;
   const enabledVariant = settings.isEnabled ? 'success' : 'neutral';
   const modeVariant = settings.mode === 'live' ? 'danger' : 'solid';
   const canRunPaper = settings.isEnabled && settings.mode === 'paper' && !saving && !runningNow;
@@ -700,7 +706,7 @@ export default function RoboTrader() {
             <div className="flex items-center justify-between gap-3">
               <p className="rt-label">Alpaca Paper</p>
               <Badge variant={healthVariant(health?.alpaca?.paper?.connected && !health?.alpaca?.paper?.tradingBlocked, health?.alpaca?.paper?.connected)}>
-                {health?.alpaca?.paper?.connected ? 'Connected' : 'Offline'}
+                {health?.alpaca?.paper?.connected === true ? 'Connected' : health?.alpaca?.paper?.connected === false ? 'Offline' : 'Unknown'}
               </Badge>
             </div>
             <p className="mt-2 text-sm text-[#8ba09f]">
@@ -713,7 +719,7 @@ export default function RoboTrader() {
             <div className="flex items-center justify-between gap-3">
               <p className="rt-label">Worker</p>
               <Badge variant={healthVariant(health?.scheduler?.phase1WorkerEnabled, true)}>
-                {health?.scheduler?.phase1WorkerEnabled ? 'Enabled' : 'Disabled'}
+                {health?.scheduler?.phase1WorkerEnabled === true ? 'Enabled' : health?.scheduler?.phase1WorkerEnabled === false ? 'Disabled' : 'Unknown'}
               </Badge>
             </div>
             <p className="mt-2 text-sm text-[#8ba09f]">Last tick {formatDateTime(health?.scheduler?.lastPhase1WorkerAt || health?.scheduler?.lastTickAt)}</p>
@@ -721,11 +727,12 @@ export default function RoboTrader() {
           <div className="rt-metric">
             <div className="flex items-center justify-between gap-3">
               <p className="rt-label">Reconciliation</p>
-              <Badge variant={healthVariant(!health?.reconciliation?.latestDiscrepancy, Boolean(health?.reconciliation?.latestDiscrepancy))}>
-                {health?.reconciliation?.latestDiscrepancy ? 'Discrepancy' : 'Ready'}
+              <Badge variant={healthVariant(hasReconciliationCheck && !health?.reconciliation?.latestDiscrepancy, true)}>
+                {health?.reconciliation?.latestDiscrepancy ? 'Discrepancy' : hasReconciliationCheck ? 'Ready' : 'Unknown'}
               </Badge>
             </div>
             <p className="mt-2 text-sm text-[#8ba09f]">Last check {formatDateTime(health?.reconciliation?.lastReconciledAt)}</p>
+            {!hasReconciliationCheck && <p className="mt-2 text-sm text-[#ffd77a]">Reconciliation status unavailable.</p>}
           </div>
         </div>
 
@@ -834,62 +841,28 @@ export default function RoboTrader() {
         <div className="space-y-6">
           <Card className="p-5 md:p-6">
             <p className="rt-eyebrow">Mode</p>
-            <h2 className="rt-section-title mt-1">Paper and live trading controls</h2>
-
+            <h2 className="rt-section-title mt-1">Alpaca paper trading only</h2>
+            <p className="mt-3 text-sm text-[#8ba09f]">
+              Live trading is unavailable in this release. Orders use the operator-configured Alpaca paper account.
+            </p>
             <div className="mt-5 grid grid-cols-2 gap-2 rounded-lg border border-[#26363c] bg-[#0a1012] p-1">
-              {['paper', 'live'].map(mode => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => updateSetting('mode', mode)}
-                  className={`rounded-md px-3 py-2 text-sm font-bold capitalize transition ${
-                    settings.mode === mode
-                      ? mode === 'live'
-                        ? 'bg-[#3a1620] text-[#ffb5c2]'
-                        : 'bg-[#123323] text-[#8cf5bd]'
-                      : 'text-[#8ba09f] hover:bg-[#172126] hover:text-[#edf5f4]'
-                  }`}
-                >
-                  {mode}
-                </button>
-              ))}
+              <button type="button" aria-pressed="true" disabled className="rounded-md bg-[#123323] px-3 py-2 text-sm font-bold text-[#8cf5bd]">Paper</button>
+              <button type="button" disabled className="rounded-md px-3 py-2 text-sm font-bold text-[#8ba09f] opacity-50">Live — unavailable</button>
             </div>
-
-            <label className="mt-4 flex min-h-[4rem] items-center justify-between gap-4 rounded-lg border border-[#26363c] bg-[#0a1012] px-4 py-3">
-              <span>
-                <span className="block text-sm font-semibold text-[#edf5f4]">Live trading opt-in</span>
-                <span className="block text-xs text-[#8ba09f]">Live mode remains locked unless explicitly confirmed.</span>
-              </span>
-              <input
-                type="checkbox"
-                checked={settings.liveTradingExplicitlyEnabled}
-                onChange={event => updateSetting('liveTradingExplicitlyEnabled', event.target.checked)}
-                disabled={settings.mode !== 'live'}
-                className="h-4 w-4 accent-[#ff647c]"
-              />
-            </label>
-
-            <label className="mt-4 block">
-              <span className="rt-label">Live Confirmation</span>
-              <input
-                value={liveConfirmation}
-                onChange={event => setLiveConfirmation(event.target.value)}
-                disabled={settings.mode !== 'live'}
-                placeholder={LIVE_CONFIRMATION_TEXT}
-                className="rt-field mt-2"
-              />
-            </label>
-
-            {settings.mode === 'live' && (
-              <div className="mt-4 rounded-lg border border-[#6a2b3a] bg-[#211116] px-4 py-3 text-sm text-[#ffb5c2]">
-                Live mode will not save unless the opt-in box is checked and the confirmation text matches exactly.
-              </div>
+            {scopeWarning && (
+              <p role="status" className="mt-4 text-sm text-[#ffd77a]">
+                Saved settings include features outside this release. The form shows supported paper settings; save to replace the unsupported values. Server safety rules continue to block unsupported execution.
+              </p>
             )}
           </Card>
 
           <Card className="p-5 md:p-6">
             <p className="rt-eyebrow">Permissions</p>
             <h2 className="rt-section-title mt-1">Asset classes and execution options</h2>
+            <p className="mt-3 text-sm text-[#8ba09f]">
+              Automated entries support whole-share, long-only stocks and ordinary unleveraged ETFs during regular trading hours.
+              Fractional automation, extended hours, short selling, crypto and options are unavailable in this release.
+            </p>
 
             <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
               {['stocks', 'crypto', 'options'].map(assetClass => (
@@ -897,7 +870,7 @@ export default function RoboTrader() {
                   key={assetClass}
                   label={assetClass.charAt(0).toUpperCase() + assetClass.slice(1)}
                   checked={(settings.allowedAssetClasses || []).includes(assetClass)}
-                  onChange={() => toggleAssetClass(assetClass)}
+                  disabled
                   tone={assetClass === 'options' ? 'danger' : assetClass === 'crypto' ? 'warning' : 'neutral'}
                 />
               ))}
@@ -906,7 +879,7 @@ export default function RoboTrader() {
                   key={key}
                   label={label}
                   checked={Boolean(settings[key])}
-                  onChange={event => updateSetting(key, event.target.checked)}
+                  disabled
                   tone={tone}
                 />
               ))}
@@ -927,19 +900,19 @@ export default function RoboTrader() {
         <div className="mt-5 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
           <div className="rt-metric">
             <p className="rt-label">Decisions</p>
-            <p className="mt-2 text-2xl font-bold">{performance?.summary?.decisions ?? 0}</p>
+            <p className="mt-2 text-2xl font-bold">{performance?.summary?.decisions ?? 'Unavailable'}</p>
           </div>
           <div className="rt-metric">
             <p className="rt-label">Submitted</p>
-            <p className="mt-2 text-2xl font-bold">{performance?.summary?.submittedOrders ?? 0}</p>
+            <p className="mt-2 text-2xl font-bold">{performance?.summary?.submittedOrders ?? 'Unavailable'}</p>
           </div>
           <div className="rt-metric">
             <p className="rt-label">Filled</p>
-            <p className="mt-2 text-2xl font-bold text-[#77f0b2]">{performance?.summary?.filledOrders ?? 0}</p>
+            <p className="mt-2 text-2xl font-bold text-[#77f0b2]">{performance?.summary?.filledOrders ?? 'Unavailable'}</p>
           </div>
           <div className="rt-metric">
             <p className="rt-label">Rejected</p>
-            <p className="mt-2 text-2xl font-bold text-[#ffd77a]">{performance?.summary?.rejectedDecisions ?? 0}</p>
+            <p className="mt-2 text-2xl font-bold text-[#ffd77a]">{performance?.summary?.rejectedDecisions ?? 'Unavailable'}</p>
           </div>
           <div className="rt-metric">
             <p className="rt-label">Max Trade</p>
@@ -1047,15 +1020,15 @@ export default function RoboTrader() {
           <div className="mt-5 grid grid-cols-2 gap-3">
             <div className="rt-metric">
               <p className="rt-label">Current Tracked</p>
-              <p className="mt-2 text-2xl font-bold text-[#edf5f4]">{reconciliation?.summary?.total ?? 0}</p>
+              <p className="mt-2 text-2xl font-bold text-[#edf5f4]">{reconciliation?.summary?.total ?? 'Unavailable'}</p>
             </div>
             <div className="rt-metric">
               <p className="rt-label">Current Issues</p>
-              <p className="mt-2 text-2xl font-bold text-[#ffd77a]">{reconciliation?.summary?.discrepancies ?? 0}</p>
+              <p className="mt-2 text-2xl font-bold text-[#ffd77a]">{reconciliation?.summary?.discrepancies ?? 'Unavailable'}</p>
             </div>
             <div className="rt-metric">
               <p className="rt-label">Pending Broker</p>
-              <p className="mt-2 text-2xl font-bold text-[#edf5f4]">{reconciliation?.summary?.pending ?? 0}</p>
+              <p className="mt-2 text-2xl font-bold text-[#edf5f4]">{reconciliation?.summary?.pending ?? 'Unavailable'}</p>
             </div>
             <div className="rt-metric">
               <p className="rt-label">Last Check</p>
@@ -1063,7 +1036,9 @@ export default function RoboTrader() {
             </div>
           </div>
 
-          {(reconciliation?.summary?.discrepancies ?? 0) > 0 ? (
+          {reconciliation?.summary?.discrepancies == null ? (
+            <p className="mt-4 text-sm text-[#ffd77a]">Current reconciliation issues are unavailable.</p>
+          ) : reconciliation.summary.discrepancies > 0 ? (
             <div className="mt-4 rounded-lg border border-[#6f531d] bg-[#221a0e] px-4 py-3 text-sm text-[#ffd77a]">
               Current broker/local discrepancies need review before they are archived.
             </div>
@@ -1089,7 +1064,7 @@ export default function RoboTrader() {
               </div>
             ))}
             {!(reconciliation?.orders || []).length && (
-              <EmptyState>No current RoboTrader orders need reconciliation.</EmptyState>
+              <EmptyState>{Array.isArray(reconciliation?.orders) ? 'No current RoboTrader orders need reconciliation.' : 'Reconciliation orders unavailable.'}</EmptyState>
             )}
           </div>
 
@@ -1103,10 +1078,10 @@ export default function RoboTrader() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <Badge variant={reconciliation?.historicalSummary?.total ? 'warning' : 'neutral'}>
-                  {reconciliation?.historicalSummary?.total ?? 0} unarchived
+                  {reconciliation?.historicalSummary?.total ?? 'Unavailable'} unarchived
                 </Badge>
                 <Badge variant="neutral">
-                  {reconciliation?.historicalSummary?.archived ?? 0} archived
+                  {reconciliation?.historicalSummary?.archived ?? 'Unavailable'} archived
                 </Badge>
               </div>
             </div>
@@ -1132,7 +1107,7 @@ export default function RoboTrader() {
                 </div>
               ))}
               {!(reconciliation?.historicalDiscrepancies || []).length && (
-                <EmptyState>No unarchived historical reconciliation discrepancies.</EmptyState>
+                <EmptyState>{Array.isArray(reconciliation?.historicalDiscrepancies) ? 'No unarchived historical reconciliation discrepancies.' : 'Historical reconciliation data unavailable.'}</EmptyState>
               )}
             </div>
           </div>
@@ -1146,11 +1121,11 @@ export default function RoboTrader() {
               <p className="rt-eyebrow">Portfolio</p>
               <h2 className="rt-section-title mt-1">Current positions</h2>
             </div>
-            <Badge variant="neutral">{(performance?.positions || []).length} positions</Badge>
+            <Badge variant="neutral">{positionsAvailable ? `${performance.positions.length} positions` : 'Positions unavailable'}</Badge>
           </div>
 
           <div className="mt-5 overflow-x-auto">
-            {(performance?.positions || []).length ? (
+            {positionsAvailable && performance.positions.length ? (
               <table className="rt-table">
                 <thead>
                   <tr>
@@ -1172,7 +1147,7 @@ export default function RoboTrader() {
                 </tbody>
               </table>
             ) : (
-              <EmptyState>No positions returned.</EmptyState>
+              <EmptyState>{positionsAvailable ? 'No positions returned.' : 'Positions unavailable.'}</EmptyState>
             )}
           </div>
         </Card>

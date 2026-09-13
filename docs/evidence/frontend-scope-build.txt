@@ -1,0 +1,28 @@
+
+> frontend@0.1.0 build
+> react-scripts build
+
+(node:94689) [DEP0176] DeprecationWarning: fs.F_OK is deprecated, use fs.constants.F_OK instead
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Creating an optimized production build...
+Compiled successfully.
+
+File sizes after gzip:
+
+  236.35 kB (+5.11 kB)  build/static/js/main.a845efb3.js
+  7.62 kB (-2 B)        build/static/css/main.96065f88.css
+  1.77 kB               build/static/js/453.d855a71b.chunk.js
+
+The project was built assuming it is hosted at /.
+You can control this with the homepage field in your package.json.
+
+The build folder is ready to be deployed.
+You may serve it with a static server:
+
+  npm install -g serve
+  serve -s build
+
+Find out more about deployment here:
+
+  https://cra.link/deployment
+

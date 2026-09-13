@@ -1,0 +1,664 @@
+PROJECT: DAY TRADER — COMPLETE AND VERIFY THE PAPER-TRADING MVP
+REPOSITORY: muckele/day-trader
+
+You are working in my EXISTING application. Act as a senior full-stack
+engineer responsible for implementation, automated testing, trading-system
+reliability, security, and release readiness.
+
+This is an IMPLEMENTATION task, not merely an audit, proposed roadmap,
+or documentation task. Inspect the repository, establish a baseline,
+fix the confirmed MVP blockers, implement missing release requirements,
+and verify the result.
+
+Do not rebuild the application from scratch. Do not stop after producing
+a plan. Work through the implementation in bounded, testable phases.
+
+============================================================
+1. MVP SCOPE AND PRODUCT CONTRACT
+============================================================
+
+The target is Day Trader MVP v1: an OWNER-ONLY application connected to
+one designated Alpaca PAPER account.
+
+The owner must be able to:
+- Sign in securely.
+- Research supported stocks and ordinary, unleveraged ETFs.
+- View explainable recommendations with data timestamps and sources.
+- Submit and manage supported paper orders.
+- See broker-confirmed orders, fills, positions, and account performance.
+- Use the existing trade-plan and research-to-trade workflows.
+- Configure RoboTrader with enforceable risk and spending limits.
+- Enable server-side RoboTrader so it continues operating after logout
+  and when the browser is closed.
+- Receive actual email notifications for RoboTrader execution events.
+- Inspect decisions, rejection reasons, errors, and an audit trail.
+- Disable automation and use a reliable emergency stop.
+
+For this release:
+- Alpaca paper trading is the supported broker execution environment.
+- Live trading must be blocked at the server and broker-write layers.
+- Automated entries are limited to explicitly supported long-only stocks
+  and ordinary ETFs during regular trading hours, without leverage.
+- Do not expand into options, shorts, margin, leveraged/inverse ETFs,
+  overnight trading, or additional brokers.
+- Preserve existing advanced modules, but disable or clearly mark them
+  outside the released scope. Do not leave accessible unsafe endpoints.
+- Preserve existing local simulation features only when unmistakably
+  separated from Alpaca paper trading.
+- Fractional orders may remain supported only for verified combinations.
+  Where automated protection is not adequately implemented and tested,
+  disable fractional automation with a clear explanation rather than
+  silently sending unprotected orders.
+- Do not make profitability, hedge-fund-equivalence, or guaranteed-ROI
+  claims. Correct operation does not establish a profitable strategy.
+
+This is not a public multi-user launch. Do not implement subscriptions,
+billing, public onboarding, or brokerage OAuth as scope expansion.
+Document those as a separate future milestone.
+
+Keep the existing React, Node/Express, MongoDB/Mongoose, and deployment
+architecture unless a specific MVP blocker requires a targeted change.
+Do not migrate frameworks, databases, or hosting providers for preference.
+
+============================================================
+2. WORKING RULES
+============================================================
+
+Read the repository's applicable AGENTS.md files and existing instructions.
+
+Confirm the repository, working directory, branch, HEAD commit, and
+working-tree status before changing anything.
+
+A previous remote inspection examined commit:
+8e557f685c3112eedc2e44787fe7ee2b3adeb025
+
+That is a reference, not an instruction to reset or check out an old
+commit. Inspect the actual checkout and account for newer changes.
+
+Preserve unrelated work. Do not reset, force-push, discard files, or
+overwrite another developer's changes. Work on a suitable isolated branch
+or worktree when supported by the environment.
+
+Use test-driven fixes: reproduce a confirmed defect, add a regression
+test, implement the smallest correct fix, and run the relevant tests.
+
+Do not:
+- Weaken risk checks to make trades happen.
+- Delete tests or skip failures to obtain a green result.
+- Replace real failures with fabricated success responses.
+- Fabricate market data, broker fills, email delivery, or test evidence.
+- Add production authentication bypasses for testing.
+- Expose credentials in output, commits, browser bundles, or logs.
+- Run destructive database cleanup or reset any brokerage account.
+- Introduce paid services or change infrastructure billing without approval.
+- Deploy to production or enable persistent external automation without
+  explicit operator authorization.
+
+Routine code changes and local verification within this scope are
+authorized. Resolve nonessential ambiguities conservatively and continue.
+Ask only for genuinely required access, authorization, or irrecoverable
+ambiguities. An external blocker must not stop independent local work.
+
+============================================================
+3. BASELINE AUDIT AND EXECUTION PLAN
+============================================================
+
+Inspect the actual call paths, not just documentation or file names.
+
+Start with:
+- backend/server.js
+- backend/package.json and package-lock.json
+- frontend/package.json and package-lock.json
+- backend/robotrader/*
+- backend/services/roboScheduler.js
+- backend/services/roboTraderEngine.js
+- backend/services/roboEmail.js
+- backend/services/alpacaTradingClient.js
+- backend/paper/paperBrokerClient.js
+- backend/config/tradingConfig.js
+- backend/services/tradePolicyService.js
+- backend/services/tradingIndexService.js
+- backend/routes/robo.js
+- backend/routes/robotrader.js
+- backend/routes/trade.js
+- backend/routes/paperTrades.js
+- backend/routes/execution.js
+- backend/routes/tradePlan.js
+- backend/services/researchTradeWorkflowService.js
+- relevant models, authentication, account scoping, and frontend pages
+- backend/tests, frontend tests, and frontend/e2e
+- existing docs, Dockerfiles, Fly configuration, and environment examples
+
+Trace each execution route from browser or scheduler to the final broker
+write. Identify legacy paths, duplicated state, and bypasses.
+
+Run the available baseline tests and frontend production build using the
+repository-supported runtime and lockfiles. Record actual results.
+
+Tests must use isolated configuration and must not inherit real broker
+credentials or accidentally activate an external scheduler.
+
+Create and maintain:
+- docs/mvp-scope.md
+- docs/mvp-plan.md
+- docs/mvp-acceptance.md
+- docs/mvp-verification.md
+
+Keep these practical. The plan should contain bounded implementation tasks,
+file targets, dependencies, test cases, and acceptance criteria.
+
+Track each acceptance item as:
+NOT STARTED / IN PROGRESS / IMPLEMENTED / VERIFIED / BLOCKED.
+
+A file existing is not proof that its feature works.
+Prior completion percentages are not release evidence.
+
+After the initial audit and plan, begin implementing immediately.
+
+============================================================
+4. OWNER ACCESS, PAPER MODE, AND GLOBAL SAFETY
+============================================================
+
+Enforce owner-only access on the backend, not merely through hidden UI.
+
+Implement a secure operator-controlled owner bootstrap/binding mechanism.
+Do not automatically designate the first public signup as the owner.
+
+Disable public registration in the released configuration.
+Verify that pre-existing non-owner users and tokens cannot read the
+owner's broker data, submit orders, alter automation, or invoke controls.
+
+Bind the application to an expected Alpaca paper account identity.
+Account changes or unexpected credentials must fail closed for execution.
+
+Enforce the release's paper-only policy across:
+- Manual orders.
+- Trade-plan and research-originated orders.
+- Both Robo API families.
+- Scheduler and run-once execution.
+- Cancellation, replacement, and position-closing routes.
+- Reconciliation jobs that can create protective orders.
+- Scripts and administrative paths.
+
+A UI confirmation phrase or a per-user flag must not override the
+paper-only release restriction.
+
+Validate broker destinations using parsed, exact trusted origins.
+Do not rely on substring matching such as checking whether a URL contains
+"paper". Prevent unsafe redirects and client-supplied broker destinations.
+Use dependency injection for test adapters rather than weakening production
+destination checks.
+
+Audit production authentication, session expiration, logout, secure cookies,
+CSRF/origin protection, CORS, authorization, input validation, and rate
+limits. Preserve development compatibility without production bypasses.
+
+Use explicit update allowlists. Never blindly assign request bodies to
+security-sensitive or financial models.
+
+============================================================
+5. ONE RELIABLE ORDER LIFECYCLE
+============================================================
+
+Use the existing broker and persistence modules where possible.
+Do not create another parallel trading engine.
+
+Establish a clear authoritative lifecycle for Alpaca-backed orders across
+manual trading, trade plans, research, and RoboTrader.
+
+For each logical order:
+1. Validate authorization, account identity, mode, instrument, and inputs.
+2. Evaluate the applicable risk policy against fresh account state.
+3. Persist an intent and stable client_order_id before broker submission.
+4. Reserve applicable capacity atomically.
+5. Submit through the guarded Alpaca adapter.
+6. Persist broker acknowledgement.
+7. Reconcile status and fills idempotently.
+8. Update derived views and enqueue notifications.
+
+Distinguish intent, submission, acknowledgement, partial fill, full fill,
+cancellation, rejection, replacement, expiration, and uncertain outcomes.
+
+An accepted order is not a filled trade.
+Do not update positions or realized P&L from an assumed fill price.
+
+Handle:
+- Duplicate clicks and request retries.
+- Broker timeout after the broker accepted an order.
+- Restart between submission and local acknowledgement.
+- Local persistence or audit failure after broker acceptance.
+- Duplicate and out-of-order broker events.
+- Partial fills and partial-fill-then-cancel.
+- Replacement chains and nested protective orders.
+
+An error while saving an accepted order or writing an audit event must not
+misclassify the order as definitely rejected or trigger a new order.
+
+Persist and reuse the same client_order_id for retries of the same intent.
+Investigate uncertain submissions by client_order_id. Do not treat one
+temporary lookup miss as proof that the broker never accepted the order.
+
+Use broker account, environment, and stable execution identifiers in
+uniqueness and reconciliation rules.
+
+Ensure all necessary unique indexes exist and are usable before enabling
+execution. Index-bootstrap failures must affect execution readiness.
+
+Use suitable decimal handling for money, prices, and fractional quantities;
+apply broker precision rules without floating-point overspending.
+
+Separate local simulator records from Alpaca paper records in storage
+queries, calculations, APIs, and UI. Never combine them into one misleading
+portfolio or performance curve.
+
+============================================================
+6. ENFORCE THE ACTUAL RISK AND SPENDING LIMITS
+============================================================
+
+Trace every displayed setting from UI input through persistence to the
+ACTIVE worker and the final execution decision.
+
+Specifically inspect:
+- dailyLimit, weeklyLimit, monthlyLimit
+- maxTradeAmount and maxPositionSize
+- maxDailyLoss and maxTradesPerDay
+- maxOpenPositions
+- allowed and blocked symbols
+- asset-class restrictions
+- cooldowns, pause state, and failure circuit breakers
+- the global kill switch
+- manual-approval thresholds
+
+Do not count a limit as implemented because the legacy engine enforces it
+or because a model contains the field.
+
+Define spending limits separately from loss limits:
+- Specify the day/week/month timezone and boundary rules.
+- Count actual entry expenditure plus appropriate pending reservations.
+- Reserve capacity before broker writes to prevent concurrent overspending.
+- Reconcile reservations against fills and confirmed terminal states.
+- Define conservative handling of replacements and uncertain orders.
+- Do not replenish spending capacity simply because a position was sold.
+- Define zero, null, missing, and invalid values explicitly and safely.
+
+Use cash-aware sizing for this non-leveraged MVP rather than interpreting
+all margin buying power as spendable cash.
+
+Unknown account equity, P&L, tradability, market clock, or stale data must
+not be silently converted into favorable values that approve entries.
+
+Separate new-risk restrictions from risk-reducing exits. A reached loss
+limit, trade-count limit, or cooldown must not automatically prevent a
+valid protective exit. Account restrictions and order validity still apply.
+
+Ensure all applicable paths share the core safety rules. Explain any
+intentional manual-versus-automated policy differences.
+
+============================================================
+7. RELIABLE BACKGROUND EXECUTION AND EMERGENCY STOP
+============================================================
+
+RoboTrader must run on the backend independently of browser activity,
+session expiration, page polling, and user login state.
+
+Keep only one canonical automated-entry engine enabled in the MVP.
+Legacy routes must not bypass its controls or accidentally launch a
+second independent trading loop.
+
+Verify durable concurrency protection:
+- Account/environment-scoped locking.
+- Unique lock ownership.
+- Lease renewal and ownership checks.
+- Safe recovery after process death.
+- No continued submissions after a worker loses its lease.
+- Revalidation before broker submission.
+
+Fix any enable/disable race.
+
+In particular, inspect the worker's final RoboSettings.updateOne call:
+an older settings snapshot must not overwrite a newer disable, emergency
+stop, pause, mode change, or configuration update.
+
+Treat user control state separately from worker telemetry.
+A worker may update last-run information; it must not accidentally re-enable
+itself.
+
+Re-read or atomically validate current control state at the submission
+boundary. Test disable/emergency-stop during an in-flight research run.
+
+Emergency stop must:
+- Persistently block new automated exposure.
+- Survive reloads and backend restarts.
+- Cancel eligible app-owned entry/increase orders safely.
+- Preserve protective exits for existing positions.
+- Avoid touching unrelated broker orders.
+- Report already-in-flight requests and uncertain cancellation outcomes.
+- Require explicit owner action to resume.
+
+Account for broker-linked order groups: canceling one leg or a parent may
+affect other protection. Do not blindly cancel every open order.
+
+Flattening positions must be a separate, explicit, confirmed owner action,
+not an undocumented consequence of stopping automation.
+
+Reconciliation and necessary protection maintenance must remain functional
+when new entries are disabled. A failing entry loop must not starve them.
+
+On shutdown, stop scheduling new work and handle in-flight work safely.
+
+============================================================
+8. BROKER CONTRACTS AND PROTECTIVE EXITS
+============================================================
+
+Verify current Alpaca Trading API documentation for the exact products
+and account type used by this app.
+
+Do not confuse Trading API capabilities with Broker API partner features.
+Do not assume that a capability matrix in the repository is current.
+
+Reference:
+https://docs.alpaca.markets/us/docs/orders-at-alpaca
+https://docs.alpaca.markets/us/docs/fractional-trading
+https://docs.alpaca.markets/us/docs/working-with-orders
+
+Record the documentation reviewed, review date, and supported combinations.
+When documentation is inconsistent, fail closed for the uncertain feature
+and record the unresolved contract instead of guessing.
+
+Validate quantity/notional, order class, time-in-force, precision, session,
+asset eligibility, and protective-order compatibility.
+
+For automated entries:
+- Use supported broker-attached protection where appropriate.
+- Verify actual child-order state rather than assuming protection exists.
+- Handle partially filled entries.
+- Handle rejected, canceled, expired, or missing protective orders.
+- Avoid duplicate exits and exits larger than the remaining position.
+- Account for restart and reconciliation delay.
+- Clearly report unprotected exposure and block additional risk when
+  protection cannot be established.
+
+Do not call a stored stop price “broker-side protection”.
+Do not imply a stop order guarantees its execution price.
+
+Prefer a smaller verified automated-order scope over speculative support.
+Keep unsupported combinations disabled in both backend and UI.
+
+============================================================
+9. REAL EMAIL NOTIFICATIONS
+============================================================
+
+Trace notification delivery from the active RoboTrader order lifecycle.
+
+Inspect backend/services/roboEmail.js and backend/package.json.
+Verify that the selected SMTP implementation and required dependency are
+actually installed and included in the deployment artifact.
+
+Console logging is a development notification sink, not real email delivery.
+
+Implement or reuse a durable notification outbox with:
+- A stable event identity and deduplication.
+- Retry scheduling and bounded attempts.
+- Pending, provider-accepted, failed, and retryable states.
+- Redacted error reporting.
+- Recovery after restart.
+
+Notify the owner about automated order submissions and executions,
+clearly distinguishing acknowledgement from actual fills.
+Handle partial fills without uncontrolled email spam.
+Surface rejections, unresolved submissions, and protection failures.
+
+Include paper mode, symbol, side, quantity, confirmed versus estimated
+values, timestamp, strategy/reason, and broker order ID where available.
+
+An email failure must never roll back or resubmit a trade.
+Duplicate reconciliation must not create duplicate notification events.
+
+Do not claim exactly-once SMTP delivery when the transport cannot guarantee
+it. Distinguish local deduplication, provider acceptance, and verified receipt.
+
+Use a local email capture service or injected transport in automated tests.
+External email tests must go only to an explicitly configured test recipient.
+
+============================================================
+10. DATA, RESEARCH, AND USER EXPERIENCE
+============================================================
+
+Preserve and finish the existing core screens and workflows:
+Home/watchlist, Stock, Research, Trade Plan, Portfolio, Activity,
+Analytics, RoboTrader, and Trading System.
+
+Verify API contracts rather than assuming a page works because it renders.
+
+Every core view needs appropriate loading, empty, unavailable, and error
+states. Failed requests must not silently display fabricated zero balances,
+successful trades, healthy connections, or current-looking stale data.
+
+Display:
+- Alpaca paper versus local simulation.
+- Data timestamps and meaningful staleness warnings.
+- Order submission versus fill state.
+- Active limits and reasons for blocked decisions.
+- Worker heartbeat and last successful run.
+- Reconciliation and notification problems.
+- Effective enabled, disabled, paused, and emergency-stopped state.
+
+Verify refresh, logout/login, session expiration, direct navigation,
+repeated clicks, and narrow/mobile layouts.
+
+For research and recommendations:
+- Preserve source provenance and timestamps.
+- Keep deterministic fallback behavior honest when AI is unavailable.
+- Do not invent news or confidence evidence.
+- Treat confidence scores as heuristic unless empirically calibrated.
+- Allow “no trade” as a valid outcome.
+- Treat fetched news/text as untrusted data, never as instructions with
+  authority to change settings, reveal secrets, or place orders.
+- Keep trade approval in deterministic policy code, not solely in an LLM.
+- Bound provider requests, latency, retries, and optional AI usage.
+
+Audit backtesting for obvious look-ahead errors, misleading accounting,
+and unsupported claims. Label its assumptions and limitations.
+Do not expand into a new quantitative-research platform for this release.
+
+============================================================
+11. AUTOMATED VERIFICATION AND CI
+============================================================
+
+Create a reproducible verification command, preferably:
+
+node scripts/verify-mvp.mjs
+
+Implement that script; do not merely document an imaginary command.
+
+It should orchestrate the repository's actual checks, preserve failures,
+return a nonzero exit code on failure, and produce a readable report.
+
+Use the supported Node runtime, committed lockfiles, and npm ci.
+Keep test services and cleanup scoped to resources created by the test run.
+
+Required verification layers:
+
+A. Unit and regression tests
+Cover settings validation, budgets, risk decisions, quantity/price handling,
+authorization, mode restrictions, order-state transitions, retries,
+notification deduplication, and the disable-state race.
+
+B. Integration tests
+Use an isolated real MongoDB instance with the topology needed by the
+implementation and a controllable broker test adapter/server.
+Exercise actual indexes, persistence, concurrent requests, locking,
+reservations, reconciliation, and restart recovery.
+Mocks alone do not prove database atomicity.
+
+C. Frontend tests and production build
+Run the real frontend tests and build.
+Fix meaningful errors and assess dependency/security findings.
+Do not apply uncontrolled major upgrades or npm audit fix --force.
+
+D. Browser end-to-end tests
+Add coverage for:
+- Real login and protected navigation.
+- Non-owner denial.
+- Research/stock-to-paper-order workflow.
+- Pending, partial, and filled order display.
+- Portfolio and activity consistency.
+- RoboTrader settings persistence and limits.
+- Disable and emergency stop, including an in-flight run.
+- Backend execution after logout/browser closure.
+- Session expiration and failure states.
+- Clear disabled advanced/live functionality.
+
+At least the core lifecycle E2E must exercise the actual frontend, backend,
+authentication, and database. Stub external providers at their boundary.
+Do not substitute mocked browser API success responses or injected tokens
+for the entire end-to-end claim.
+
+E. Fault and concurrency tests
+Include:
+- Duplicate submit requests.
+- Broker acceptance followed by timeout.
+- Database failure before and after broker submission.
+- Two competing workers.
+- Lease loss.
+- Disable during research and immediately before submission.
+- Startup with unavailable indexes.
+- Restart with an unresolved order.
+- Partial fill followed by cancellation.
+- Protective-order failure.
+- Provider rate limiting and stale data.
+- Email failure after successful trade execution.
+- All entry controls reached while a valid reducing exit is needed.
+
+Add GitHub Actions for the deterministic checks and build.
+Run on pull requests and main-branch changes.
+External brokerage credentials must not be available to untrusted PR jobs.
+Upload useful reports and traces without secrets.
+
+Do not describe configured CI as passing CI unless the run actually passed.
+Document required branch-protection settings when administrative access is
+not available.
+
+============================================================
+12. EXTERNAL ACCEPTANCE AND DEPLOYMENT READINESS
+============================================================
+
+Prepare a separate opt-in external Alpaca paper acceptance command.
+
+It must require:
+- Explicit operator authorization/opt-in.
+- An allowlisted dedicated paper account identity.
+- Paper-only destination validation.
+- A small, explicitly configured maximum test exposure.
+- Unique test-owned order identifiers.
+- Cleanup restricted to test-created orders and positions.
+
+Finding credentials does not authorize external trading.
+Never reset an account or broadly cancel/close unrelated holdings.
+
+When authorized access is available, verify:
+1. Owner login and settings.
+2. Manual paper order acknowledgement and broker-confirmed lifecycle.
+3. RoboTrader enabled with bounded limits.
+4. Browser logout/closure.
+5. A backend-scheduled decision and, when a valid opportunity exists,
+   an Alpaca paper order.
+6. Reconciled order/position state and notifications.
+7. Emergency stop and restart behavior.
+
+Separate deterministic fixture-driven acceptance from real-market
+observation. Do not weaken production signals to force a trade.
+“No eligible trade” can verify abstention, but does not prove order/fill
+integration. Closed markets or missing credentials must remain explicit
+external blockers.
+
+Review existing Fly deployment configuration and Dockerfiles.
+Preserve always-on backend capability for logged-out automation.
+
+Verify or document:
+- Frontend/backend origin and cookie compatibility.
+- Required secrets, without printing their values.
+- Database connectivity AND write readiness.
+- Required unique indexes.
+- Storage/capacity diagnostics where available.
+- Broker account identity and paper mode.
+- Email transport configuration.
+- Worker/reconciliation health.
+- Safe startup, shutdown, and rollback.
+
+Separate process liveness from trading readiness.
+Do not return “ready to trade” merely because Express responds.
+Restrict detailed operational information to the owner.
+
+Do not automatically delete trading/audit history to solve storage issues.
+Any retention or cleanup tooling must be conservative, documented,
+dry-run-capable, and require explicit approval for destructive action.
+
+Create docs/mvp-runbook.md with exact commands for:
+- First local setup.
+- Environment configuration.
+- Owner bootstrap.
+- Deterministic verification.
+- Authorized external paper acceptance.
+- Deployment and post-deployment checks.
+- Emergency stop.
+- Recovery and rollback.
+
+No production deployment, external account reset, or unattended activation
+is authorized solely by this implementation task.
+
+============================================================
+13. COMPLETION STANDARD AND FINAL REPORT
+============================================================
+
+Work in this order:
+1. Baseline and executable plan.
+2. Owner isolation, paper-only enforcement, and critical safety defects.
+3. Order lifecycle, limits, worker controls, and reconciliation.
+4. Notifications and core UI/API integration.
+5. Automated verification and CI.
+6. External acceptance tooling, deployment readiness, and final review.
+
+Keep the acceptance checklist updated as you implement.
+After meaningful changes, run relevant tests.
+At the end, rerun the complete deterministic verification against the final
+code state and inspect the diff for regressions and exposed secrets.
+
+Do not stop simply because one phase is finished.
+Continue until the local implementation is complete or a concrete blocker
+prevents further progress.
+
+Use precise final statuses:
+- IMPLEMENTATION INCOMPLETE:
+  Code requirements remain unfinished.
+- IMPLEMENTED, NOT FULLY VERIFIED:
+  Code exists, but required deterministic checks are failing or blocked.
+- VERIFIED RELEASE CANDIDATE:
+  Required deterministic checks pass; external/deployment acceptance
+  remains pending.
+- DEPLOYED PAPER MVP VERIFIED:
+  Required code checks and authorized deployed paper acceptance have
+  actually passed, with evidence for the released artifact.
+
+A release candidate is not automatically a deployed MVP.
+A paper MVP is not approval for live trading or public multi-user access.
+
+Final report must include:
+- Repository, branch, starting SHA, final SHA, and dirty-tree status.
+- Implemented changes and important files.
+- Confirmed defects fixed, with regression tests.
+- Exact verification commands and actual results.
+- Test counts, failures, skips, and infrastructure limitations.
+- Links/paths to generated evidence.
+- External acceptance results, including what was not observed.
+- Remaining blockers and the smallest exact operator actions needed.
+- Explicit confirmation that live trading was not enabled.
+- A go/no-go decision for the defined owner-only paper MVP.
+
+Do not invent a completion percentage.
+Do not label blocked or skipped acceptance checks as passed.
+If a session limit is reached, save an accurate checkpoint with the next
+unfinished task and verification state instead of claiming completion.
+
+Begin by inspecting the repository and running the baseline.
+Then implement the plan.

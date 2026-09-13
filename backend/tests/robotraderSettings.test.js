@@ -16,33 +16,18 @@ test('robotrader settings default to paper mode with live trading disabled', () 
   assert.deepEqual(settings.allowedAssetClasses, ['stocks']);
 });
 
-test('robotrader settings validation requires explicit live confirmation', () => {
-  assert.throws(
-    () => sanitizeSettingsUpdate({
-      mode: 'live',
-      liveTradingExplicitlyEnabled: true
-    }),
-    /Live trading requires explicit confirmation/
-  );
-
-  const update = sanitizeSettingsUpdate({
-    mode: 'live',
-    liveTradingExplicitlyEnabled: true,
-    confirmLiveTrading: LIVE_CONFIRMATION_TEXT
-  });
-
-  assert.equal(update.mode, 'live');
-  assert.equal(update.liveTradingExplicitlyEnabled, true);
+test('robotrader settings rejects live even with confirmation', () => {
+  assert.throws(() => sanitizeSettingsUpdate({ mode: 'live', liveTradingExplicitlyEnabled: true, confirmLiveTrading: LIVE_CONFIRMATION_TEXT }), /paper-only/);
 });
 
 test('robotrader settings normalizes symbols and asset classes', () => {
   const update = sanitizeSettingsUpdate({
-    allowedAssetClasses: ['equity', 'crypto', 'option'],
+    allowedAssetClasses: ['equity'],
     allowedSymbols: 'aapl, msft, btc/usd',
     blockedSymbols: [' gme ', 'tsla!!']
   });
 
-  assert.deepEqual(update.allowedAssetClasses, ['stocks', 'crypto', 'options']);
+  assert.deepEqual(update.allowedAssetClasses, ['stocks']);
   assert.deepEqual(update.allowedSymbols, ['AAPL', 'MSFT', 'BTC/USD']);
   assert.deepEqual(update.blockedSymbols, ['GME', 'TSLA']);
 });
@@ -53,14 +38,14 @@ test('robotrader settings sanitizes boolean string values', () => {
     allowOptionsTrading: 'false',
     allowCryptoTrading: 'false',
     allowFractionalShares: 'false',
-    allowExtendedHours: 'true'
+    allowExtendedHours: 'false'
   });
 
   assert.equal(update.allowShortSelling, false);
   assert.equal(update.allowOptionsTrading, false);
   assert.equal(update.allowCryptoTrading, false);
   assert.equal(update.allowFractionalShares, false);
-  assert.equal(update.allowExtendedHours, true);
+  assert.equal(update.allowExtendedHours, false);
 });
 
 test('robotrader settings recovers from concurrent default create race', async t => {
@@ -84,3 +69,14 @@ test('robotrader settings recovers from concurrent default create race', async t
   assert.equal(settings.userId, 'race-user');
   assert.equal(findCount, 2);
 });
+
+test('owner explicit enable clears stop pause but preserves circuit pauses', () => {
+  assert.equal(sanitizeSettingsUpdate({ isEnabled: true }, { pausedReason: 'Emergency stop triggered.' }).pausedReason, null);
+  assert.equal(sanitizeSettingsUpdate({ isEnabled: true }, { pausedReason: 'Disabled by user.' }).pausedReason, null);
+  assert.equal(sanitizeSettingsUpdate({ isEnabled: true }, { pausedReason: 'Circuit breaker' }).pausedReason, undefined);
+});
+for (const input of [{ allowFractionalShares: true }, { allowExtendedHours: true }, { allowCryptoTrading: true }, { allowOptionsTrading: true }, { allowShortSelling: true }, { allowedAssetClasses: ['crypto'] }]) {
+  test(`unsupported automated settings rejected: ${JSON.stringify(input)}`, () => {
+    assert.throws(() => sanitizeSettingsUpdate(input), /MVP/);
+  });
+}

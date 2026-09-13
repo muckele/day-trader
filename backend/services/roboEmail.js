@@ -34,6 +34,10 @@ function getTransporter() {
     host: process.env.SMTP_HOST,
     port,
     secure: isSecurePort(port),
+    requireTLS: !isSecurePort(port),
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 30000,
     auth: process.env.SMTP_USER && process.env.SMTP_PASS
       ? {
           user: process.env.SMTP_USER,
@@ -112,6 +116,12 @@ async function sendTradeEmail({ to, details }) {
   throw err;
 }
 
-module.exports = {
-  sendTradeEmail
-};
+async function sendNotificationEmail({ to, subject, text }) {
+  if (!to || !process.env.SMTP_HOST) throw new Error('SMTP notification configuration is missing.');
+  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+  if (!from) throw new Error('SMTP sender is missing.');
+  const info = await getTransporter().sendMail({ from, to, subject, text });
+  return { provider: 'smtp', messageId: info.messageId || null, accepted: info.accepted || [] };
+}
+
+module.exports = { sendTradeEmail, sendNotificationEmail };

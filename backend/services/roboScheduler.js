@@ -1,3 +1,4 @@
+const roboNotifications = require('./roboNotificationService');
 const roboEngine = require('./roboTraderEngine');
 const mongoose = require('mongoose');
 const roboTraderWorker = require('../robotrader/worker');
@@ -60,37 +61,15 @@ function isPhase1WorkerEnabled() {
 }
 
 function isLegacySchedulerEnabled() {
-  if (isEnvTrue(process.env.ROBO_LEGACY_SCHEDULER_DISABLED)) return false;
-
-  const phase1Enabled = isPhase1WorkerEnabled();
-  const legacyExplicitlyEnabled = isEnvTrue(process.env.ROBO_LEGACY_SCHEDULER_ENABLED);
-  const dualAutomationAllowed = isEnvTrue(process.env.ROBO_ALLOW_DUAL_AUTOMATION);
-
-  return legacyExplicitlyEnabled && (!phase1Enabled || dualAutomationAllowed);
+  return false; // MVP has one canonical automated-entry engine.
 }
 
-async function isLiveReconciliationEnabled({
-  env = process.env,
-  RoboSettingsModel = RoboSettings
-} = {}) {
-  if (isEnvTrue(env.ROBOTRADER_LIVE_RECONCILIATION_DISABLED)) return false;
-  if (!hasLiveAlpacaConfig(env)) return false;
-  if (isEnvTrue(env.ROBOTRADER_LIVE_RECONCILIATION_ENABLED)) return true;
-
-  const query = RoboSettingsModel.exists({
-    mode: 'live',
-    liveTradingExplicitlyEnabled: true
-  });
-  const result = typeof query?.lean === 'function'
-    ? await query.lean()
-    : await query;
-  return Boolean(result);
+async function isLiveReconciliationEnabled() {
+  return false; // Reconciliation can write protective orders: paper-only too.
 }
 
-async function getScheduledReconciliationModes(options = {}) {
-  const modes = ['paper'];
-  if (await isLiveReconciliationEnabled(options)) modes.push('live');
-  return modes;
+async function getScheduledReconciliationModes() {
+  return ['paper'];
 }
 
 function startRoboScheduler({
@@ -120,8 +99,9 @@ function startRoboScheduler({
   let lastCleanupAt = 0;
   let lastReconciliationAt = 0;
   let running = false;
+  let stopped = false;
   const tick = async () => {
-    if (running) return;
+    if (running || stopped) return;
     running = true;
     schedulerState.running = true;
     schedulerState.lastTickAt = new Date();
@@ -151,11 +131,16 @@ function startRoboScheduler({
         schedulerState.lastLegacySchedulerAt = new Date();
       }
       if (shouldRunPhase1Worker && isDbReady()) {
-        await roboTraderWorker.runWorkerTick();
-        schedulerState.lastPhase1WorkerAt = new Date();
+        try {
+          await roboTraderWorker.runWorkerTick();
+          schedulerState.lastPhase1WorkerAt = new Date();
+          schedulerState.lastError = null;
+        } catch (err) {
+          schedulerState.lastError = err?.message || 'Entry worker failed';
+          console.error('RoboTrader entry worker failed:', err.message);
+        }
       }
-      schedulerState.lastSuccessAt = new Date();
-      schedulerState.lastError = null;
+      if (!schedulerState.lastError) schedulerState.lastSuccessAt = new Date();
       const nowMs = Date.now();
       if ((nowMs - lastCleanupAt) >= cleanupEveryMs) {
         lastCleanupAt = nowMs;
@@ -214,6 +199,13 @@ function startRoboScheduler({
           console.error('RoboTrader reconciliation failed:', err.message);
         }
       }
+      if (isDbReady() && String(process.env.OWNER_USER_ID || '').trim()) {
+        try {
+          await roboNotifications.runNotificationTick();
+        } catch (err) {
+          console.error('RoboTrader notification processing failed:', err.message);
+        }
+      }
     } catch (err) {
       schedulerState.lastError = err?.message || 'Unknown scheduler error';
       console.error('Robo scheduler tick failed:', err.message);
@@ -231,6 +223,8 @@ function startRoboScheduler({
   const timer = setInterval(tick, tickEveryMs);
 
   return () => {
+    stopped = true;
+    schedulerState.enabled = false;
     clearTimeout(startTimeout);
     clearInterval(timer);
   };

@@ -3,9 +3,7 @@ const { getFeatureFlagsSnapshot } = require('./featureFlagService');
 const { getRiskLimitsSnapshot } = require('./riskConfigService');
 const { getStrategyDefinition } = require('./strategyRegistry');
 
-function looksLikePaperEndpoint(baseUrl) {
-  return String(baseUrl || '').toLowerCase().includes('paper-api.alpaca.markets');
-}
+const { isPaperTradingEndpoint: looksLikePaperEndpoint } = require('./alpacaSafety');
 
 function toFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);
@@ -43,8 +41,8 @@ async function evaluateTradePolicy({
   const regimeKey = buildRegimeKey(regime);
   const strategy = strategyId ? await getStrategyDefinition(strategyId) : null;
 
-  if (executionBackend === 'alpaca' && !looksLikePaperEndpoint(alpacaBaseUrl) && !flags.liveTradingEnabled) {
-    reasons.push('Live Alpaca execution is disabled by feature flag.');
+  if (executionBackend === 'alpaca' && !looksLikePaperEndpoint(alpacaBaseUrl)) {
+    reasons.push('This release requires the exact Alpaca paper endpoint; live trading is disabled.');
   }
   if (!resolvedConfig.environment.paperTradingEnabled && executionBackend !== 'alpaca') {
     reasons.push('Paper trading is disabled in configuration.');

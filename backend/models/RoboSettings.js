@@ -20,7 +20,7 @@ const roboSettingsSchema = new mongoose.Schema(
     maxOpenPositions: { type: Number, default: 5 },
     maxTradesPerDay: { type: Number, default: 3 },
     allowShortSelling: { type: Boolean, default: false },
-    allowFractionalShares: { type: Boolean, default: true },
+    allowFractionalShares: { type: Boolean, default: false },
     allowExtendedHours: { type: Boolean, default: false },
     allowOptionsTrading: { type: Boolean, default: false },
     allowCryptoTrading: { type: Boolean, default: false },

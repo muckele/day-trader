@@ -264,11 +264,11 @@ test('runSchedulerTick uses auto-generated multi-symbol signals', async () => {
       if (Array.isArray(symbols) && symbols.length > 1) {
         return [
           { symbol: 'AAPL', price: 180, changePercent: 0.1 },
-          { symbol: 'TLT', price: 90, changePercent: -1.2 },
+          { symbol: 'TLT', price: 90, changePercent: 1.2 },
           { symbol: 'QQQ', price: 450, changePercent: 0.8 }
         ];
       }
-      return [{ symbol: 'TLT', price: 90, changePercent: -1.2 }];
+      return [{ symbol: 'TLT', price: 90, changePercent: 1.2 }];
     },
     emailService: {
       sendTradeEmail: async () => ({ provider: 'log', messageId: 'email-scheduler' })
@@ -279,7 +279,7 @@ test('runSchedulerTick uses auto-generated multi-symbol signals', async () => {
     await runSchedulerTick(deps);
     assert.equal(orderCalls.length, 1);
     assert.equal(orderCalls[0].symbol, 'TLT');
-    assert.equal(orderCalls[0].side, 'sell');
+    assert.equal(orderCalls[0].side, 'buy');
     assert.equal(events.some(event => event.eventType === 'trade_executed'), true);
   } finally {
     if (previousUniverse === undefined) delete process.env.ROBO_SIGNAL_UNIVERSE;
@@ -1016,7 +1016,7 @@ test('runRoboTradeForUser executes trade, updates usage, and sends email', async
   assert.ok(eventTypes.includes('email_sent'));
 });
 
-test('runRoboTradeForUser maps short signal side to sell execution', async () => {
+test('runRoboTradeForUser rejects short signals even when the legacy environment flag is enabled', async () => {
   const previousShortFlag = process.env.SHORT_SELLING_ENABLED;
   process.env.SHORT_SELLING_ENABLED = 'true';
   const events = [];
@@ -1092,15 +1092,10 @@ test('runRoboTradeForUser maps short signal side to sell execution', async () =>
       deps
     );
 
-    assert.equal(result.ok, true);
-    assert.equal(result.executed, true);
-    assert.equal(orderCalls.length, 1);
-    assert.equal(orderCalls[0].side, 'sell');
-    assert.equal(usageUpdates.length, 3);
-    usageUpdates.forEach(update => {
-      assert.equal(update.update.$inc.spentNotional, 0);
-    });
-    assert.equal(events.some(event => event.eventType === 'trade_executed'), true);
+    assert.equal(result.executed, false);
+    assert.equal(orderCalls.length, 0);
+    assert.equal(usageUpdates.length, 0);
+    assert.equal(events.some(event => event.eventType === 'trade_executed'), false);
   } finally {
     if (previousShortFlag === undefined) delete process.env.SHORT_SELLING_ENABLED;
     else process.env.SHORT_SELLING_ENABLED = previousShortFlag;
@@ -1108,6 +1103,12 @@ test('runRoboTradeForUser maps short signal side to sell execution', async () =>
 });
 
 test('runRoboTradeForUser executes via Alpaca backend when configured', async t => {
+  const { executionReadiness } = require('../services/executionReadiness');
+  await executionReadiness.bootstrap(async () => [{ ok: true }], async () => {});
+  t.after(() => executionReadiness.invalidate());
+  const previousAccountId = process.env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID;
+  process.env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID = 'test-account';
+  t.mock.method(axios, 'get', async () => ({ data: { id: 'test-account' } }));
   const previousBackend = process.env.ROBO_EXECUTION_BACKEND;
   const previousApiKey = process.env.APCA_API_KEY_ID;
   const previousApiSecret = process.env.APCA_API_SECRET_KEY;
@@ -1212,6 +1213,8 @@ test('runRoboTradeForUser executes via Alpaca backend when configured', async t 
     assert.equal(tradeEvent.payload.executionBackend, 'alpaca');
     assert.equal(tradeEvent.payload.orderId, 'alpaca-order-1');
   } finally {
+    if (previousAccountId === undefined) delete process.env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID;
+    else process.env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID = previousAccountId;
     if (previousBackend === undefined) delete process.env.ROBO_EXECUTION_BACKEND;
     else process.env.ROBO_EXECUTION_BACKEND = previousBackend;
     if (previousApiKey === undefined) delete process.env.APCA_API_KEY_ID;

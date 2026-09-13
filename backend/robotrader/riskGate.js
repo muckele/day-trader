@@ -37,7 +37,7 @@ function addCheck(checks, name, passed, message, severity = 'warning', metadata 
 }
 
 function getAccountBuyingPower(account = {}) {
-  return toFiniteNumber(account.buying_power ?? account.buyingPower ?? account.cash, 0);
+  return toFiniteNumber(account.cash, 0);
 }
 
 function isAccountRestricted(account = {}) {
@@ -202,7 +202,7 @@ function evaluateRoboRisk({
   });
   const marketIsOpen = marketClock
     ? Boolean(marketClock.is_open ?? marketClock.isOpen)
-    : true;
+    : false;
   const extendedHoursRequested = Boolean(orderInput.extendedHours || orderInput.extended_hours);
   const regularSessionProtectionRequired = Boolean(
     orderInput.requiresRegularSessionForProtection
@@ -215,10 +215,16 @@ function evaluateRoboRisk({
   };
 
   runCheck('robotrader_enabled', Boolean(settings.isEnabled || settings.enabled), 'RoboTrader is disabled.');
-  runCheck('mode_allowed', environment === 'paper' || (settings.mode === 'live' && settings.liveTradingExplicitlyEnabled), 'Live trading is not explicitly enabled by the user.');
+  runCheck('mode_allowed', environment === 'paper' && settings.mode === 'paper', 'Live trading is disabled for this paper-only release.');
   runCheck('mode_match', environment === 'paper' || settings.mode === environment, 'User is in paper/live mode mismatch.');
   runCheck('account_allowed', !isAccountRestricted(account), 'Alpaca account is restricted.');
   runCheck('symbol_present', Boolean(symbol), 'Symbol is required.');
+  runCheck('mvp_entry_scope', riskReducingOnly || (assetClass === 'stocks' && side === 'buy' && Number.isInteger(qty) && qty > 0 && !notional), 'Automated entries require long-only whole-share stocks or ordinary ETFs; fractional and notional automation is disabled.');
+  runCheck('entry_session', riskReducingOnly || (marketIsOpen && !extendedHoursRequested), 'Automated entries require a verified open regular market session.');
+  runCheck('entry_protection', riskReducingOnly || (['bracket', 'oto'].includes(orderInput.orderClass) && Boolean(orderInput.stopLoss || orderInput.stop_loss)), 'Automated entries require broker-attached stop protection.');
+  const knownNumber = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+  runCheck('account_data_known', riskReducingOnly || (knownNumber(account.equity) && Number(account.equity) > 0 && knownNumber(account.last_equity) && knownNumber(account.cash) && knownNumber(dailyPnl) && estimatedNotional > 0), 'Current equity, previous equity, cash, P&L, and positive entry value must be known.');
+
   runCheck(
     'asset_lookup',
     !assetLookupError,
@@ -228,7 +234,7 @@ function evaluateRoboRisk({
   );
   runCheck(
     'asset_tradable',
-    assetClass !== 'stocks' || !asset || (!hasExplicitFalse(asset.tradable) && isAssetStatusActive(asset)),
+    riskReducingOnly || (assetClass === 'stocks' && asset?.tradable === true && String(asset.status).toLowerCase() === 'active'),
     `${symbol} is not currently tradable on Alpaca.`,
     'warning',
     { tradable: asset?.tradable, status: asset?.status }
@@ -302,8 +308,8 @@ function evaluateRoboRisk({
 
   const capability = validateAlpacaOrderRequest(orderInput);
   runCheck('order_capability', capability.ok, capability.errors.join(' ') || 'Order capability allowed.');
-  runCheck('daily_loss_limit', Math.abs(Math.min(0, toFiniteNumber(dailyPnl, 0))) < toFiniteNumber(settings.maxDailyLoss, 0), 'Max daily loss is exceeded.');
-  runCheck('trades_per_day', toFiniteNumber(tradesToday, 0) < toFiniteNumber(settings.maxTradesPerDay, 0), 'Max trades per day is exceeded.');
+  runCheck('daily_loss_limit', riskReducingOnly || Math.abs(Math.min(0, toFiniteNumber(dailyPnl, 0))) < toFiniteNumber(settings.maxDailyLoss, 0), 'Max daily loss is exceeded.');
+  runCheck('trades_per_day', riskReducingOnly || toFiniteNumber(tradesToday, 0) < toFiniteNumber(settings.maxTradesPerDay, 0), 'Max trades per day is exceeded.');
   runCheck(
     'open_positions',
     riskReducingOnly || currentPositionQty !== 0 || countOpenPositions(positions) < toFiniteNumber(settings.maxOpenPositions, 0),
@@ -325,7 +331,7 @@ function evaluateRoboRisk({
   );
   runCheck('buying_power', side !== 'buy' || riskReducingOnly || estimatedNotional <= getAccountBuyingPower(account), 'Buying power is insufficient.');
   runCheck('duplicate_order', !hasDuplicateOpenOrder(symbol, openOrders), 'Trade duplicates an existing open order.');
-  runCheck('symbol_cooldown', !tradedTooRecently(symbol, recentOrders, now), 'The same symbol was traded too recently.');
+  runCheck('symbol_cooldown', riskReducingOnly || !tradedTooRecently(symbol, recentOrders, now), 'The same symbol was traded too recently.');
   runCheck(
     'confidence',
     toFiniteNumber(decision.confidenceScore, 0) >= confidenceMinimum,
