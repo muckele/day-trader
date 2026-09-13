@@ -2,7 +2,7 @@ name: MVP local release acceptance
 on:
   pull_request:
   push:
-    branches: [main, master]
+    branches: [main, master, codex/owner-paper-mvp]
   workflow_dispatch:
 permissions:
   contents: read
@@ -11,14 +11,46 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+        id: checkout
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify candidate identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "Expected SHA: $EXPECTED_SHA"
+          echo "Actual SHA:   $ACTUAL_SHA"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+      - name: Prepare fresh hosted evidence
+        id: evidence
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          rm -rf -- docs/evidence/hosted-ci/ docs/evidence/phase3-browser-artifacts/ \
+            docs/evidence/phase3-browser-report.json docs/evidence/phase3-process-report.json test-results/
+          mkdir -p docs/evidence/hosted-ci
+          {
+            printf 'expected_sha=%s\nactual_sha=%s\n' "$EXPECTED_SHA" "$(git rev-parse HEAD)"
+            printf 'run_id=%s\nrun_attempt=%s\nevent=%s\nref=%s\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_EVENT_NAME" "$GITHUB_REF"
+            printf 'runner_node=%s\n' "$(node --version)"
+            printf 'identity_only_is_not_acceptance=true\n'
+          } > docs/evidence/hosted-ci/identity.txt
+      - uses: actions/setup-node@v5
         with:
           node-version-file: '.nvmrc'
           cache: npm
           cache-dependency-path: |
             backend/package-lock.json
             frontend/package-lock.json
+      - name: Record acceptance Node version
+        run: node --version > docs/evidence/hosted-ci/acceptance-node.txt
       - name: Install test runner and Chromium
         working-directory: frontend
         run: |
@@ -38,13 +70,13 @@ jobs:
           done
           docker exec day-trader-mvp-ci mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)'
       - name: Run complete deterministic local release acceptance
-        run: node scripts/verify-mvp.mjs
-      - uses: actions/upload-artifact@v4
-        if: always()
+        run: node scripts/verify-mvp.mjs --report-dir docs/evidence/hosted-ci
+      - uses: actions/upload-artifact@v6
+        if: ${{ always() && steps.evidence.outcome == 'success' }}
         with:
           name: mvp-verification
           path: |
-            docs/evidence/verification/
+            docs/evidence/hosted-ci/
             docs/evidence/phase3-browser-artifacts/
             docs/evidence/phase3-browser-report.json
             docs/evidence/phase3-process-report.json
