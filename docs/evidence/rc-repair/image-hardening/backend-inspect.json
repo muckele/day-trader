@@ -1,0 +1,50 @@
+[
+    {
+        "Id": "sha256:7f640e73b61a18bb2ef2914dbef374ed89528aebe3a81e9fe9567f161a9a6019",
+        "RepoTags": [
+            "day-trader-rc-backend:hardened"
+        ],
+        "RepoDigests": [],
+        "Comment": "buildkit.dockerfile.v0",
+        "Created": "2026-09-13T19:05:03.991864055Z",
+        "Config": {
+            "User": "1000:1000",
+            "ExposedPorts": {
+                "8080/tcp": {}
+            },
+            "Env": [
+                "PATH=/usr/local/bin",
+                "NODE_ENV=production",
+                "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt"
+            ],
+            "Cmd": [
+                "/usr/local/bin/node",
+                "server.js"
+            ],
+            "WorkingDir": "/app",
+            "ArgsEscaped": true
+        },
+        "Architecture": "arm64",
+        "Os": "linux",
+        "Size": 182486583,
+        "GraphDriver": {
+            "Data": {
+                "LowerDir": "/var/lib/docker/overlay2/zje8pzi6psirto7rmtd297ndi/diff",
+                "MergedDir": "/var/lib/docker/overlay2/hbc7wyinc3gklzyb0vozpd2tk/merged",
+                "UpperDir": "/var/lib/docker/overlay2/hbc7wyinc3gklzyb0vozpd2tk/diff",
+                "WorkDir": "/var/lib/docker/overlay2/hbc7wyinc3gklzyb0vozpd2tk/work"
+            },
+            "Name": "overlay2"
+        },
+        "RootFS": {
+            "Type": "layers",
+            "Layers": [
+                "sha256:2b391457ac2b2d3de128a4fc7541f081d4b50f27c2ec2a5d063e0a9c17b9bde6",
+                "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef"
+            ]
+        },
+        "Metadata": {
+            "LastTagTime": "2026-09-13T19:05:04.501906222Z"
+        }
+    }
+]

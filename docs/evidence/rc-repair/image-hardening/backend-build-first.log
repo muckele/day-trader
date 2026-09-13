@@ -1,0 +1,157 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 944B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+#2 ...
+
+#3 [auth] library/node:pull token for registry-1.docker.io
+#3 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+#2 DONE 0.7s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 188B done
+#4 DONE 0.0s
+
+#5 [install 1/7] FROM docker.io/library/node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+#5 CACHED
+
+#6 [internal] load build context
+#6 transferring context: 16.55kB 0.0s done
+#6 DONE 0.0s
+
+#7 [install 2/7] RUN apt-get update  && apt-get upgrade -y  && apt-get install -y --no-install-recommends ca-certificates tzdata  && rm -rf /var/lib/apt/lists/*
+#7 0.416 Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+#7 0.450 Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+#7 0.464 Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]
+#7 0.595 Get:4 http://deb.debian.org/debian bookworm/main arm64 Packages [8689 kB]
+#7 0.788 Get:5 http://deb.debian.org/debian bookworm-updates/main arm64 Packages [6936 B]
+#7 0.789 Get:6 http://deb.debian.org/debian-security bookworm-security/main arm64 Packages [335 kB]
+#7 1.516 Fetched 9273 kB in 1s (7632 kB/s)
+#7 1.516 Reading package lists...
+#7 1.930 Reading package lists...
+#7 2.292 Building dependency tree...
+#7 2.397 Reading state information...
+#7 2.413 Calculating upgrade...
+#7 2.530 The following packages will be upgraded:
+#7 2.531   libpcre2-8-0
+#7 2.577 1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+#7 2.577 Need to get 231 kB of archives.
+#7 2.577 After this operation, 0 B of additional disk space will be used.
+#7 2.577 Get:1 http://deb.debian.org/debian-security bookworm-security/main arm64 libpcre2-8-0 arm64 10.42-1+deb12u1 [231 kB]
+#7 2.705 debconf: delaying package configuration, since apt-utils is not installed
+#7 2.730 Fetched 231 kB in 0s (3360 kB/s)
+#7 2.761 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 6090 files and directories currently installed.)
+#7 2.792 Preparing to unpack .../libpcre2-8-0_10.42-1+deb12u1_arm64.deb ...
+#7 2.807 Unpacking libpcre2-8-0:arm64 (10.42-1+deb12u1) over (10.42-1) ...
+#7 2.885 Setting up libpcre2-8-0:arm64 (10.42-1+deb12u1) ...
+#7 2.893 Processing triggers for libc-bin (2.36-9+deb12u14) ...
+#7 2.926 Reading package lists...
+#7 3.299 Building dependency tree...
+#7 3.404 Reading state information...
+#7 3.572 tzdata is already the newest version (2026b-0+deb12u1).
+#7 3.572 tzdata set to manually installed.
+#7 3.572 The following additional packages will be installed:
+#7 3.572   libssl3 openssl
+#7 3.604 The following NEW packages will be installed:
+#7 3.605   ca-certificates libssl3 openssl
+#7 3.647 0 upgraded, 3 newly installed, 0 to remove and 0 not upgraded.
+#7 3.647 Need to get 3391 kB of archives.
+#7 3.647 After this operation, 8934 kB of additional disk space will be used.
+#7 3.647 Get:1 http://deb.debian.org/debian bookworm/main arm64 libssl3 arm64 3.0.20-1~deb12u2 [1824 kB]
+#7 3.738 Get:2 http://deb.debian.org/debian bookworm/main arm64 openssl arm64 3.0.20-1~deb12u2 [1405 kB]
+#7 3.771 Get:3 http://deb.debian.org/debian-security bookworm-security/main arm64 ca-certificates all 20250419~deb12u1 [162 kB]
+#7 3.859 debconf: delaying package configuration, since apt-utils is not installed
+#7 3.889 Fetched 3391 kB in 0s (21.0 MB/s)
+#7 3.912 Selecting previously unselected package libssl3:arm64.
+#7 3.912 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 6090 files and directories currently installed.)
+#7 3.915 Preparing to unpack .../libssl3_3.0.20-1~deb12u2_arm64.deb ...
+#7 3.920 Unpacking libssl3:arm64 (3.0.20-1~deb12u2) ...
+#7 4.048 Selecting previously unselected package openssl.
+#7 4.050 Preparing to unpack .../openssl_3.0.20-1~deb12u2_arm64.deb ...
+#7 4.055 Unpacking openssl (3.0.20-1~deb12u2) ...
+#7 4.176 Selecting previously unselected package ca-certificates.
+#7 4.177 Preparing to unpack .../ca-certificates_20250419~deb12u1_all.deb ...
+#7 4.179 Unpacking ca-certificates (20250419~deb12u1) ...
+#7 4.282 Setting up libssl3:arm64 (3.0.20-1~deb12u2) ...
+#7 4.293 Setting up openssl (3.0.20-1~deb12u2) ...
+#7 4.303 Setting up ca-certificates (20250419~deb12u1) ...
+#7 4.354 debconf: unable to initialize frontend: Dialog
+#7 4.354 debconf: (TERM is not set, so the dialog frontend is not usable.)
+#7 4.354 debconf: falling back to frontend: Readline
+#7 4.354 debconf: unable to initialize frontend: Readline
+#7 4.354 debconf: (Can't locate Term/ReadLine.pm in @INC (you may need to install the Term::ReadLine module) (@INC contains: /etc/perl /usr/local/lib/aarch64-linux-gnu/perl/5.36.0 /usr/local/share/perl/5.36.0 /usr/lib/aarch64-linux-gnu/perl5/5.36 /usr/share/perl5 /usr/lib/aarch64-linux-gnu/perl-base /usr/lib/aarch64-linux-gnu/perl/5.36 /usr/share/perl/5.36 /usr/local/lib/site_perl) at /usr/share/perl5/Debconf/FrontEnd/Readline.pm line 7.)
+#7 4.354 debconf: falling back to frontend: Teletype
+#7 4.592 Updating certificates in /etc/ssl/certs...
+#7 4.890 150 added, 0 removed; done.
+#7 4.905 Processing triggers for libc-bin (2.36-9+deb12u14) ...
+#7 4.911 Processing triggers for ca-certificates (20250419~deb12u1) ...
+#7 4.914 Updating certificates in /etc/ssl/certs...
+#7 5.091 0 added, 0 removed; done.
+#7 5.091 Running hooks in /etc/ca-certificates/update.d...
+#7 5.091 done.
+#7 DONE 5.1s
+
+#8 [install 3/7] WORKDIR /app
+#8 DONE 0.0s
+
+#9 [install 4/7] COPY package*.json ./
+#9 DONE 0.0s
+
+#10 [install 5/7] RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+#10 1.723 npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+#10 2.291 
+#10 2.291 added 132 packages in 2s
+#10 2.293 npm notice
+#10 2.293 npm notice New major version of npm available! 11.19.0 -> 12.0.2
+#10 2.293 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+#10 2.293 npm notice To update run: npm install -g npm@12.0.2
+#10 2.293 npm notice
+#10 DONE 2.5s
+
+#11 [install 6/7] COPY . .
+#11 DONE 0.1s
+
+#12 [install 7/7] RUN node docker/assemble-runtime.cjs
+#12 1.814 /app/docker/assemble-runtime.cjs:57
+#12 1.814   if (!fs.existsSync(path.join(root, file))) throw new Error(`Node runtime closure missing ${file}`);
+#12 1.814                                              ^
+#12 1.814 
+#12 1.814 Error: Node runtime closure missing /lib/aarch64-linux-gnu/libstdc++.so.6
+#12 1.814     at Object.<anonymous> (/app/docker/assemble-runtime.cjs:57:52)
+#12 1.814     at Module._compile (node:internal/modules/cjs/loader:1929:14)
+#12 1.814     at Object..js (node:internal/modules/cjs/loader:2060:10)
+#12 1.814     at Module.load (node:internal/modules/cjs/loader:1651:32)
+#12 1.814     at Module._load (node:internal/modules/cjs/loader:1443:12)
+#12 1.814     at wrapModuleLoad (node:internal/modules/cjs/loader:261:19)
+#12 1.814     at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+#12 1.814     at node:internal/main/run_main_module:33:47
+#12 1.814 
+#12 1.814 Node.js v24.21.0
+#12 ERROR: process "/bin/sh -c node docker/assemble-runtime.cjs" did not complete successfully: exit code: 1
+------
+ > [install 7/7] RUN node docker/assemble-runtime.cjs:
+1.814     at Object.<anonymous> (/app/docker/assemble-runtime.cjs:57:52)
+1.814     at Module._compile (node:internal/modules/cjs/loader:1929:14)
+1.814     at Object..js (node:internal/modules/cjs/loader:2060:10)
+1.814     at Module.load (node:internal/modules/cjs/loader:1651:32)
+1.814     at Module._load (node:internal/modules/cjs/loader:1443:12)
+1.814     at wrapModuleLoad (node:internal/modules/cjs/loader:261:19)
+1.814     at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+1.814     at node:internal/main/run_main_module:33:47
+1.814 
+1.814 Node.js v24.21.0
+------
+Dockerfile:13
+--------------------
+  11 |     RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+  12 |     COPY . .
+  13 | >>> RUN node docker/assemble-runtime.cjs
+  14 |     
+  15 |     # Same official Node binary and Debian glibc; no Alpine/musl or custom binaries.
+--------------------
+ERROR: failed to build: failed to solve: process "/bin/sh -c node docker/assemble-runtime.cjs" did not complete successfully: exit code: 1

@@ -1,0 +1,109 @@
+{
+  "method": "System curl, HTTPS verification enabled; no authentication or local source data sent. Python urllib earlier failed local certificate trust; these retrievals use system trust.",
+  "records": [
+    {
+      "record": "CVE-2026-86145",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-86145",
+      "retrievedAt": "2026-09-13T18:51:45.337743+00:00",
+      "curlExit": 0,
+      "sha256": "2dc0e3f2c9cdf1610c5886ba6b3329d2a02bc8f31645753bd6fc4de5bd4275db",
+      "bytes": 4680
+    },
+    {
+      "record": "CVE-2026-89161",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-89161",
+      "retrievedAt": "2026-09-13T18:51:45.069765+00:00",
+      "curlExit": 0,
+      "sha256": "b36138f5656bb1bc7b1e90a3089e6fcbe06d2cd962c73ad05c74e071e6abd4ca",
+      "bytes": 4347
+    },
+    {
+      "record": "CVE-2026-12087",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-12087",
+      "retrievedAt": "2026-09-13T18:51:45.341667+00:00",
+      "curlExit": 0,
+      "sha256": "3ead60bbe81ac3a42c3e2622cbe21860855df479250e74c869b9600f85405be0",
+      "bytes": 6327
+    },
+    {
+      "record": "CVE-2026-13221",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-13221",
+      "retrievedAt": "2026-09-13T18:51:45.338010+00:00",
+      "curlExit": 0,
+      "sha256": "8780b5dd3189ed5a228e1ee2fd25bbdc9e7791471f5ae2ca71aebd7694054d89",
+      "bytes": 5392
+    },
+    {
+      "record": "CVE-2026-57432",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-57432",
+      "retrievedAt": "2026-09-13T18:51:45.483738+00:00",
+      "curlExit": 0,
+      "sha256": "8c9527cadcb7d4e9f0c2f2a5a1320acb9e334be1deaa5b8281d269d480b20127",
+      "bytes": 5231
+    },
+    {
+      "record": "CVE-2026-48962",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-48962",
+      "retrievedAt": "2026-09-13T18:51:45.811146+00:00",
+      "curlExit": 0,
+      "sha256": "9ece1ac5a7841598c3b05009b5e40ba982920164c67e5a19fe7f4dc1cdf9dfb2",
+      "bytes": 5642
+    },
+    {
+      "record": "CVE-2026-48959",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-48959",
+      "retrievedAt": "2026-09-13T18:51:45.811007+00:00",
+      "curlExit": 0,
+      "sha256": "fc3edaf616aa45ec9a9890afa78c74af77269f9ece3712ea688b84bba7e1547b",
+      "bytes": 5644
+    },
+    {
+      "record": "CVE-2026-85091",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-85091",
+      "retrievedAt": "2026-09-13T18:51:45.811196+00:00",
+      "curlExit": 0,
+      "sha256": "8b8edcc4b092a24472edf46c04ec6f58f58e324eee2db7976f80a0e3a089c07c",
+      "bytes": 4373
+    },
+    {
+      "record": "CVE-2026-78409",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-78409",
+      "retrievedAt": "2026-09-13T18:51:45.840642+00:00",
+      "curlExit": 0,
+      "sha256": "c35095807bd7e3e342f85d1e2679e123ca72b799431754efb5a2a57d5b7d9cb7",
+      "bytes": 4371
+    },
+    {
+      "record": "CVE-2026-78410",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-78410",
+      "retrievedAt": "2026-09-13T18:51:46.174672+00:00",
+      "curlExit": 0,
+      "sha256": "81eb19c238996cdcbae32e38ee2d490b6fbd81c8d0223aeaf649292c74b2179e",
+      "bytes": 4403
+    },
+    {
+      "record": "CVE-2026-78408",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-78408",
+      "retrievedAt": "2026-09-13T18:51:45.913237+00:00",
+      "curlExit": 0,
+      "sha256": "7e60e60c836b8474facedb4837a791746e48dbc79169dc487195ff53f717d46f",
+      "bytes": 4507
+    },
+    {
+      "record": "CVE-2026-76642",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-76642",
+      "retrievedAt": "2026-09-13T18:51:45.909014+00:00",
+      "curlExit": 0,
+      "sha256": "e8ba75517ab42b1ab2cd253a19ffaf750325951b5b33c7a2dc2dde02e23f0d60",
+      "bytes": 4378
+    },
+    {
+      "record": "DLA-4772-1",
+      "url": "https://security-tracker.debian.org/tracker/DLA-4772-1",
+      "retrievedAt": "2026-09-13T18:51:46.178590+00:00",
+      "curlExit": 0,
+      "sha256": "54b1a7fdf8a0e0b0dfb9f5629f120650838a67084e7465d5c5cacde508e3ae82",
+      "bytes": 2342
+    }
+  ]
+}

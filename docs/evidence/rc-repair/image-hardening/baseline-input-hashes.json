@@ -1,0 +1,14 @@
+{
+  "docs/evidence/rc-repair/image-scan/README.md": "3f77d63ab31e928429a8ec4fd092a43f01b5b4bdf41478ccff0311d9e698a511",
+  "docs/evidence/rc-repair/image-scan/authenticated-retry/backend.sarif.json": "3dc6739b1b62fb116eafa309ae38db94c82a40d2ca8eebc3dc43f9970b127426",
+  "docs/evidence/rc-repair/image-scan/authenticated-retry/frontend.sarif.json": "cc1097faa6f941889a103c9446c894fe69a2cee003a2b03452e2a8279996f88f",
+  "docs/evidence/rc-repair/image-scan/authenticated-retry/backend-findings.md": "0e306c8ad1649913cb6dc68e07359e3fbc113b3b3710ec412af1bbfc2c72f585",
+  "docs/evidence/rc-repair/image-scan/authenticated-retry/frontend-findings.md": "f9a0f5fa9ca0f0a24f1888b4fc3fada5726b64403a2ecfdcd3fa8cebd9a01f6e",
+  "docs/evidence/rc-repair/image-scan/authenticated-retry/critical-high-dispositions.md": "fa30178ca743d865b372c40c8416a6fbdaae6668ed4547b9e106e3119edfc122",
+  "docs/evidence/rc-repair/runtime-containers/README.md": "289bc0838d2baba42cf2ae8c39865840de5f3796a4001b89f48331363fef07b6",
+  "docs/runtime-setup.md": "5c55e1ee02382d13ee3dac10a1c0617fe5f4892de5e1f4d964c3add63d852652",
+  "docs/mvp-verification.md": "2258e6ddfaa5f6b19c47275254b4c27bc3d624f0673bfb3f39e46e4cc7c5bc3e",
+  "docs/mvp-acceptance.md": "084699d63e33216f260eff14f6557caf4933a4fceaeb96b48c88a5150d87f87c",
+  "docs/mvp-checkpoint.md": "2bf68a552358aa432744d92cdb555f6be17fef2955675dd25d1699b876a3b296",
+  "docs/mvp-runbook.md": "6424c4feb39fe7b64f040cf001813b86d69d48cb01ecbcb5f502b6b3676680ea"
+}

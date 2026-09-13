@@ -1,0 +1,468 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "fullName": "Docker Scout",
+          "informationUri": "https://docker.com/products/docker-scout",
+          "name": "docker scout",
+          "rules": [
+            {
+              "id": "CVE-2010-4756",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2010-4756"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2010-4756?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+              "help": {
+                "text": "The glob implementation in the GNU C Library (aka glibc or libc6) allows remote authenticated users to cause a denial of service (CPU and memory consumption) via crafted glob expressions that do not match any pathnames, as demonstrated by glob expressions in STAT commands to an FTP daemon, a different vulnerability than CVE-2010-2632.\n\n---\n- glibc <removed> (unimportant)\n- eglibc <unfixed> (unimportant)\nThat's standard POSIX behaviour implemented by (e)glibc. Applications using\nglob need to impose limits for themselves\n",
+                "markdown": "> The glob implementation in the GNU C Library (aka glibc or libc6) allows remote authenticated users to cause a denial of service (CPU and memory consumption) via crafted glob expressions that do not match any pathnames, as demonstrated by glob expressions in STAT commands to an FTP daemon, a different vulnerability than CVE-2010-2632.\n\n---\n- glibc <removed> (unimportant)\n- eglibc <unfixed> (unimportant)\nThat's standard POSIX behaviour implemented by (e)glibc. Applications using\nglob need to impose limits for themselves\n\n|                                                                                                        |\n|Package         pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  |\n|Affected range  >0                                                                                      |\n|Fixed version   not fixed                                                                               |\n"
+              },
+              "properties": {
+                "affected_version": ">0",
+                "cvssV3_severity": "LOW",
+                "fixed_version": "not fixed",
+                "purls": [
+                  "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+                ],
+                "security-severity": "3.1",
+                "tags": [
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2018-20796",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2018-20796"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2018-20796?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+              "help": {
+                "text": "In the GNU C Library (aka glibc or libc6) through 2.29, check_dst_limits_calc_pos_1 in posix/regexec.c has Uncontrolled Recursion, as demonstrated by '(\\227|)(\\\\1\\\\1|t1|\\\\\\2537)+' in grep.\n\n---\n- glibc <unfixed> (unimportant)\n- eglibc <removed> (unimportant)\nhttps://debbugs.gnu.org/cgi/bugreport.cgi?bug=34141\nhttps://lists.gnu.org/archive/html/bug-gnulib/2019-01/msg00108.html\nNo treated as vulnerability: https://sourceware.org/glibc/wiki/Security%20Exceptions\n",
+                "markdown": "> In the GNU C Library (aka glibc or libc6) through 2.29, check_dst_limits_calc_pos_1 in posix/regexec.c has Uncontrolled Recursion, as demonstrated by '(\\227|)(\\\\1\\\\1|t1|\\\\\\2537)+' in grep.\n\n---\n- glibc <unfixed> (unimportant)\n- eglibc <removed> (unimportant)\nhttps://debbugs.gnu.org/cgi/bugreport.cgi?bug=34141\nhttps://lists.gnu.org/archive/html/bug-gnulib/2019-01/msg00108.html\nNo treated as vulnerability: https://sourceware.org/glibc/wiki/Security%20Exceptions\n\n|                                                                                                        |\n|Package         pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  |\n|Affected range  >0                                                                                      |\n|Fixed version   not fixed                                                                               |\n"
+              },
+              "properties": {
+                "affected_version": ">0",
+                "cvssV3_severity": "LOW",
+                "fixed_version": "not fixed",
+                "purls": [
+                  "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+                ],
+                "security-severity": "3.1",
+                "tags": [
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2019-1010022",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2019-1010022"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2019-1010022?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+              "help": {
+                "text": "GNU Libc current is affected by: Mitigation bypass. The impact is: Attacker may bypass stack guard protection. The component is: nptl. The attack vector is: Exploit stack buffer overflow vulnerability and use this bypass vulnerability to bypass stack guard. NOTE: Upstream comments indicate \"this is being treated as a non-security bug and no real threat.\n\n---\n- glibc <unfixed> (unimportant)\nNot treated as a security issue by upstream\nhttps://sourceware.org/bugzilla/show_bug.cgi?id=22850\n",
+                "markdown": "> GNU Libc current is affected by: Mitigation bypass. The impact is: Attacker may bypass stack guard protection. The component is: nptl. The attack vector is: Exploit stack buffer overflow vulnerability and use this bypass vulnerability to bypass stack guard. NOTE: Upstream comments indicate \"this is being treated as a non-security bug and no real threat.\n\n---\n- glibc <unfixed> (unimportant)\nNot treated as a security issue by upstream\nhttps://sourceware.org/bugzilla/show_bug.cgi?id=22850\n\n|                                                                                                        |\n|Package         pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  |\n|Affected range  >0                                                                                      |\n|Fixed version   not fixed                                                                               |\n"
+              },
+              "properties": {
+                "affected_version": ">0",
+                "cvssV3_severity": "LOW",
+                "fixed_version": "not fixed",
+                "purls": [
+                  "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+                ],
+                "security-severity": "3.1",
+                "tags": [
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2019-1010023",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2019-1010023"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2019-1010023?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+              "help": {
+                "text": "GNU Libc current is affected by: Re-mapping current loaded library with malicious ELF file. The impact is: In worst case attacker may evaluate privileges. The component is: libld. The attack vector is: Attacker sends 2 ELF files to victim and asks to run ldd on it. ldd execute code. NOTE: Upstream comments indicate \"this is being treated as a non-security bug and no real threat.\n\n---\n- glibc <unfixed> (unimportant)\nNot treated as a security issue by upstream\nhttps://sourceware.org/bugzilla/show_bug.cgi?id=22851\n",
+                "markdown": "> GNU Libc current is affected by: Re-mapping current loaded library with malicious ELF file. The impact is: In worst case attacker may evaluate privileges. The component is: libld. The attack vector is: Attacker sends 2 ELF files to victim and asks to run ldd on it. ldd execute code. NOTE: Upstream comments indicate \"this is being treated as a non-security bug and no real threat.\n\n---\n- glibc <unfixed> (unimportant)\nNot treated as a security issue by upstream\nhttps://sourceware.org/bugzilla/show_bug.cgi?id=22851\n\n|                                                                                                        |\n|Package         pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  |\n|Affected range  >0                                                                                      |\n|Fixed version   not fixed                                                                               |\n"
+              },
+              "properties": {
+                "affected_version": ">0",
+                "cvssV3_severity": "LOW",
+                "fixed_version": "not fixed",
+                "purls": [
+                  "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+                ],
+                "security-severity": "3.1",
+                "tags": [
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2019-1010024",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2019-1010024"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2019-1010024?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+              "help": {
+                "text": "GNU Libc current is affected by: Mitigation bypass. The impact is: Attacker may bypass ASLR using cache of thread stack and heap. The component is: glibc. NOTE: Upstream comments indicate \"this is being treated as a non-security bug and no real threat.\n\n---\n- glibc <unfixed> (unimportant)\nNot treated as a security issue by upstream\nhttps://sourceware.org/bugzilla/show_bug.cgi?id=22852\n",
+                "markdown": "> GNU Libc current is affected by: Mitigation bypass. The impact is: Attacker may bypass ASLR using cache of thread stack and heap. The component is: glibc. NOTE: Upstream comments indicate \"this is being treated as a non-security bug and no real threat.\n\n---\n- glibc <unfixed> (unimportant)\nNot treated as a security issue by upstream\nhttps://sourceware.org/bugzilla/show_bug.cgi?id=22852\n\n|                                                                                                        |\n|Package         pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  |\n|Affected range  >0                                                                                      |\n|Fixed version   not fixed                                                                               |\n"
+              },
+              "properties": {
+                "affected_version": ">0",
+                "cvssV3_severity": "LOW",
+                "fixed_version": "not fixed",
+                "purls": [
+                  "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+                ],
+                "security-severity": "3.1",
+                "tags": [
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2019-1010025",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2019-1010025"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2019-1010025?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+              "help": {
+                "text": "GNU Libc current is affected by: Mitigation bypass. The impact is: Attacker may guess the heap addresses of pthread_created thread. The component is: glibc. NOTE: the vendor's position is \"ASLR bypass itself is not a vulnerability.\n\n---\n- glibc <unfixed> (unimportant)\nNot treated as a security issue by upstream\nhttps://sourceware.org/bugzilla/show_bug.cgi?id=22853\n",
+                "markdown": "> GNU Libc current is affected by: Mitigation bypass. The impact is: Attacker may guess the heap addresses of pthread_created thread. The component is: glibc. NOTE: the vendor's position is \"ASLR bypass itself is not a vulnerability.\n\n---\n- glibc <unfixed> (unimportant)\nNot treated as a security issue by upstream\nhttps://sourceware.org/bugzilla/show_bug.cgi?id=22853\n\n|                                                                                                        |\n|Package         pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  |\n|Affected range  >0                                                                                      |\n|Fixed version   not fixed                                                                               |\n"
+              },
+              "properties": {
+                "affected_version": ">0",
+                "cvssV3_severity": "LOW",
+                "fixed_version": "not fixed",
+                "purls": [
+                  "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+                ],
+                "security-severity": "3.1",
+                "tags": [
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2019-9192",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2019-9192"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2019-9192?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+              "help": {
+                "text": "In the GNU C Library (aka glibc or libc6) through 2.29, check_dst_limits_calc_pos_1 in posix/regexec.c has Uncontrolled Recursion, as demonstrated by '(|)(\\\\1\\\\1)*' in grep, a different issue than CVE-2018-20796. NOTE: the software maintainer disputes that this is a vulnerability because the behavior occurs only with a crafted pattern\n\n---\n- glibc <unfixed> (unimportant)\n- eglibc <removed> (unimportant)\nhttps://sourceware.org/bugzilla/show_bug.cgi?id=24269\n",
+                "markdown": "> In the GNU C Library (aka glibc or libc6) through 2.29, check_dst_limits_calc_pos_1 in posix/regexec.c has Uncontrolled Recursion, as demonstrated by '(|)(\\\\1\\\\1)*' in grep, a different issue than CVE-2018-20796. NOTE: the software maintainer disputes that this is a vulnerability because the behavior occurs only with a crafted pattern\n\n---\n- glibc <unfixed> (unimportant)\n- eglibc <removed> (unimportant)\nhttps://sourceware.org/bugzilla/show_bug.cgi?id=24269\n\n|                                                                                                        |\n|Package         pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  |\n|Affected range  >0                                                                                      |\n|Fixed version   not fixed                                                                               |\n"
+              },
+              "properties": {
+                "affected_version": ">0",
+                "cvssV3_severity": "LOW",
+                "fixed_version": "not fixed",
+                "purls": [
+                  "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+                ],
+                "security-severity": "3.1",
+                "tags": [
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2022-27943",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2022-27943"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2022-27943?s=debian&n=gcc-12&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+              "help": {
+                "text": "libiberty/rust-demangle.c in GNU GCC 11.2 allows stack consumption in demangle_const, as demonstrated by nm-new.\n\n---\n- gcc-12 <unfixed> (unimportant)\nNegligible security impact\nhttps://gcc.gnu.org/bugzilla/show_bug.cgi?id=105039\n",
+                "markdown": "> libiberty/rust-demangle.c in GNU GCC 11.2 allows stack consumption in demangle_const, as demonstrated by nm-new.\n\n---\n- gcc-12 <unfixed> (unimportant)\nNegligible security impact\nhttps://gcc.gnu.org/bugzilla/show_bug.cgi?id=105039\n\n|                                                                                                           |\n|Package         pkg:deb/debian/gcc-12@12.2.0-14%2Bdeb12u1?os_distro=bookworm&os_name=debian&os_version=12  |\n|Affected range  >0                                                                                         |\n|Fixed version   not fixed                                                                                  |\n"
+              },
+              "properties": {
+                "affected_version": ">0",
+                "cvssV3_severity": "LOW",
+                "fixed_version": "not fixed",
+                "purls": [
+                  "pkg:deb/debian/gcc-12@12.2.0-14%2Bdeb12u1?os_distro=bookworm&os_name=debian&os_version=12"
+                ],
+                "security-severity": "3.1",
+                "tags": [
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2026-89092",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "CVE-2026-89092"
+              },
+              "helpUri": "https://scout.docker.com/v/CVE-2026-89092?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+              "help": {
+                "text": "The nscd service in the GNU C Library 2.3.4 onwards may crash due to a  stack overflow when a malicious DNS server returns too large a response  for a DNS query, resulting in degraded DNS resolution for the system.    Exploitation of this bug needs a system that has nscd enabled and using  an untrusted DNS server for name resolution, with the compromised DNS  server being capable of processing records large enough to result in a  stack overflow in an nscd thread stack.  During experimentation, bind 9  was unable to handle large records, but that could change in future or  with a different name server.  In typical installations, nscd is  executed in an isolated context as its own user without a shell, due to  which any compromise of that service is isolated.    There is a remote possibility of nscd cache corruption if an attacker  manages to get the stack pointer into a desired point in the heap,  potentially resulting in other caches in nscd being overwritten with  corrupt data through the stack overflow, until the buggy code path  eventually results in a crash.    Finally, a crash in nscd may result in performance degradation when  resolving names, but it does not result in a denial of service.\n\n---\n- glibc <unfixed> (bug https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1147395)\n[trixie] - glibc <no-dsa> (Minor issue)\nhttps://sourceware.org/bugzilla/show_bug.cgi?id=34624\nhttps://sourceware.org/git/?p=glibc.git;a=blob;f=advisories/GLIBC-SA-2026-0016\n",
+                "markdown": "> The nscd service in the GNU C Library 2.3.4 onwards may crash due to a  stack overflow when a malicious DNS server returns too large a response  for a DNS query, resulting in degraded DNS resolution for the system.    Exploitation of this bug needs a system that has nscd enabled and using  an untrusted DNS server for name resolution, with the compromised DNS  server being capable of processing records large enough to result in a  stack overflow in an nscd thread stack.  During experimentation, bind 9  was unable to handle large records, but that could change in future or  with a different name server.  In typical installations, nscd is  executed in an isolated context as its own user without a shell, due to  which any compromise of that service is isolated.    There is a remote possibility of nscd cache corruption if an attacker  manages to get the stack pointer into a desired point in the heap,  potentially resulting in other caches in nscd being overwritten with  corrupt data through the stack overflow, until the buggy code path  eventually results in a crash.    Finally, a crash in nscd may result in performance degradation when  resolving names, but it does not result in a denial of service.\n\n---\n- glibc <unfixed> (bug https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1147395)\n[trixie] - glibc <no-dsa> (Minor issue)\nhttps://sourceware.org/bugzilla/show_bug.cgi?id=34624\nhttps://sourceware.org/git/?p=glibc.git;a=blob;f=advisories/GLIBC-SA-2026-0016\n\n|                                                                                                        |\n|Package         pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  |\n|Affected range  >0                                                                                      |\n|Fixed version   not fixed                                                                               |\n"
+              },
+              "properties": {
+                "affected_version": ">0",
+                "cvssV3_severity": "MEDIUM",
+                "fixed_version": "not fixed",
+                "purls": [
+                  "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+                ],
+                "security-severity": "4.2",
+                "tags": [
+                  "MEDIUM"
+                ]
+              }
+            }
+          ],
+          "version": "1.23.1"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CVE-2010-4756",
+          "ruleIndex": 0,
+          "kind": "fail",
+          "level": "note",
+          "message": {
+            "text": "Vulnerability    :CVE-2010-4756                                                                           \nSeverity         :LOW                                                                                     \nPackage          :pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  \nAffected range   :>0                                                                                      \nFixed version    :not fixed                                                                               \nEPSS Score       :0.026110                                                                                \nEPSS Percentile  :0.845380                                                                                \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/share/doc/libc6/copyright"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/var/lib/dpkg/status"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2018-20796",
+          "ruleIndex": 1,
+          "kind": "fail",
+          "level": "note",
+          "message": {
+            "text": "Vulnerability    :CVE-2018-20796                                                                          \nSeverity         :LOW                                                                                     \nPackage          :pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  \nAffected range   :>0                                                                                      \nFixed version    :not fixed                                                                               \nEPSS Score       :0.057570                                                                                \nEPSS Percentile  :0.926400                                                                                \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/share/doc/libc6/copyright"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/var/lib/dpkg/status"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2019-1010022",
+          "ruleIndex": 2,
+          "kind": "fail",
+          "level": "note",
+          "message": {
+            "text": "Vulnerability    :CVE-2019-1010022                                                                        \nSeverity         :LOW                                                                                     \nPackage          :pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  \nAffected range   :>0                                                                                      \nFixed version    :not fixed                                                                               \nEPSS Score       :0.032230                                                                                \nEPSS Percentile  :0.875190                                                                                \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/share/doc/libc6/copyright"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/var/lib/dpkg/status"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2019-1010023",
+          "ruleIndex": 3,
+          "kind": "fail",
+          "level": "note",
+          "message": {
+            "text": "Vulnerability    :CVE-2019-1010023                                                                        \nSeverity         :LOW                                                                                     \nPackage          :pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  \nAffected range   :>0                                                                                      \nFixed version    :not fixed                                                                               \nEPSS Score       :0.030440                                                                                \nEPSS Percentile  :0.867810                                                                                \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/share/doc/libc6/copyright"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/var/lib/dpkg/status"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2019-1010024",
+          "ruleIndex": 4,
+          "kind": "fail",
+          "level": "note",
+          "message": {
+            "text": "Vulnerability    :CVE-2019-1010024                                                                        \nSeverity         :LOW                                                                                     \nPackage          :pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  \nAffected range   :>0                                                                                      \nFixed version    :not fixed                                                                               \nEPSS Score       :0.031930                                                                                \nEPSS Percentile  :0.873860                                                                                \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/share/doc/libc6/copyright"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/var/lib/dpkg/status"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2019-1010025",
+          "ruleIndex": 5,
+          "kind": "fail",
+          "level": "note",
+          "message": {
+            "text": "Vulnerability    :CVE-2019-1010025                                                                        \nSeverity         :LOW                                                                                     \nPackage          :pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  \nAffected range   :>0                                                                                      \nFixed version    :not fixed                                                                               \nEPSS Score       :0.022670                                                                                \nEPSS Percentile  :0.820500                                                                                \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/share/doc/libc6/copyright"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/var/lib/dpkg/status"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2019-9192",
+          "ruleIndex": 6,
+          "kind": "fail",
+          "level": "note",
+          "message": {
+            "text": "Vulnerability    :CVE-2019-9192                                                                           \nSeverity         :LOW                                                                                     \nPackage          :pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  \nAffected range   :>0                                                                                      \nFixed version    :not fixed                                                                               \nEPSS Score       :0.024270                                                                                \nEPSS Percentile  :0.832970                                                                                \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/share/doc/libc6/copyright"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/var/lib/dpkg/status"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2022-27943",
+          "ruleIndex": 7,
+          "kind": "fail",
+          "level": "note",
+          "message": {
+            "text": "Vulnerability    :CVE-2022-27943                                                                             \nSeverity         :LOW                                                                                        \nPackage          :pkg:deb/debian/gcc-12@12.2.0-14%2Bdeb12u1?os_distro=bookworm&os_name=debian&os_version=12  \nAffected range   :>0                                                                                         \nFixed version    :not fixed                                                                                  \nEPSS Score       :0.009060                                                                                   \nEPSS Percentile  :0.578710                                                                                   \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/share/doc/libgcc-s1/copyright"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/share/doc/libstdc++6/copyright"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/var/lib/dpkg/status"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2026-89092",
+          "ruleIndex": 8,
+          "kind": "fail",
+          "level": "warning",
+          "message": {
+            "text": "Vulnerability    :CVE-2026-89092                                                                          \nSeverity         :MEDIUM                                                                                  \nPackage          :pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12  \nAffected range   :>0                                                                                      \nFixed version    :not fixed                                                                               \nEPSS Score       :0.002410                                                                                \nEPSS Percentile  :0.153210                                                                                \n"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/usr/share/doc/libc6/copyright"
+                }
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/var/lib/dpkg/status"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

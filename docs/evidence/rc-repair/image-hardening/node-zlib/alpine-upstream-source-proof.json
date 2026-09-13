@@ -1,0 +1,8 @@
+{
+  "url": "https://zlib.net/fossils/zlib-1.3.2.tar.gz",
+  "retrievedAt": "2026-09-13T19:12:41.417906+00:00",
+  "tarSha512": "70963771ea5d763614278a69b474f09b7d237ef8f53b675a10fe31d9923aeef601504b35d7ebd1b1e7f347e9ebb048e6b3b47fffdf137e7bdc7e8d5eb4ec4692",
+  "matchesOfficialAlpineAPKBUILD": true,
+  "extracted": "zlib-1.3.2/gzwrite.c",
+  "extractedSha256": "2ce783294c688330c716bfe106f43167d3dae5be84994176bc304d205d4f5b04"
+}

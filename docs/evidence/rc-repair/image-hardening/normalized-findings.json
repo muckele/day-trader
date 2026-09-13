@@ -1,0 +1,129 @@
+[
+  {
+    "image": "backend",
+    "cve": "CVE-2010-4756",
+    "severity": "LOW",
+    "packages": [
+      "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+    ],
+    "fixedVersion": "not fixed",
+    "advisory": "https://scout.docker.com/v/CVE-2010-4756?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+    "locations": [
+      "/usr/share/doc/libc6/copyright",
+      "/var/lib/dpkg/status"
+    ]
+  },
+  {
+    "image": "backend",
+    "cve": "CVE-2018-20796",
+    "severity": "LOW",
+    "packages": [
+      "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+    ],
+    "fixedVersion": "not fixed",
+    "advisory": "https://scout.docker.com/v/CVE-2018-20796?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+    "locations": [
+      "/usr/share/doc/libc6/copyright",
+      "/var/lib/dpkg/status"
+    ]
+  },
+  {
+    "image": "backend",
+    "cve": "CVE-2019-1010022",
+    "severity": "LOW",
+    "packages": [
+      "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+    ],
+    "fixedVersion": "not fixed",
+    "advisory": "https://scout.docker.com/v/CVE-2019-1010022?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+    "locations": [
+      "/usr/share/doc/libc6/copyright",
+      "/var/lib/dpkg/status"
+    ]
+  },
+  {
+    "image": "backend",
+    "cve": "CVE-2019-1010023",
+    "severity": "LOW",
+    "packages": [
+      "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+    ],
+    "fixedVersion": "not fixed",
+    "advisory": "https://scout.docker.com/v/CVE-2019-1010023?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+    "locations": [
+      "/usr/share/doc/libc6/copyright",
+      "/var/lib/dpkg/status"
+    ]
+  },
+  {
+    "image": "backend",
+    "cve": "CVE-2019-1010024",
+    "severity": "LOW",
+    "packages": [
+      "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+    ],
+    "fixedVersion": "not fixed",
+    "advisory": "https://scout.docker.com/v/CVE-2019-1010024?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+    "locations": [
+      "/usr/share/doc/libc6/copyright",
+      "/var/lib/dpkg/status"
+    ]
+  },
+  {
+    "image": "backend",
+    "cve": "CVE-2019-1010025",
+    "severity": "LOW",
+    "packages": [
+      "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+    ],
+    "fixedVersion": "not fixed",
+    "advisory": "https://scout.docker.com/v/CVE-2019-1010025?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+    "locations": [
+      "/usr/share/doc/libc6/copyright",
+      "/var/lib/dpkg/status"
+    ]
+  },
+  {
+    "image": "backend",
+    "cve": "CVE-2019-9192",
+    "severity": "LOW",
+    "packages": [
+      "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+    ],
+    "fixedVersion": "not fixed",
+    "advisory": "https://scout.docker.com/v/CVE-2019-9192?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+    "locations": [
+      "/usr/share/doc/libc6/copyright",
+      "/var/lib/dpkg/status"
+    ]
+  },
+  {
+    "image": "backend",
+    "cve": "CVE-2022-27943",
+    "severity": "LOW",
+    "packages": [
+      "pkg:deb/debian/gcc-12@12.2.0-14%2Bdeb12u1?os_distro=bookworm&os_name=debian&os_version=12"
+    ],
+    "fixedVersion": "not fixed",
+    "advisory": "https://scout.docker.com/v/CVE-2022-27943?s=debian&n=gcc-12&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+    "locations": [
+      "/usr/share/doc/libgcc-s1/copyright",
+      "/usr/share/doc/libstdc++6/copyright",
+      "/var/lib/dpkg/status"
+    ]
+  },
+  {
+    "image": "backend",
+    "cve": "CVE-2026-89092",
+    "severity": "MEDIUM",
+    "packages": [
+      "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+    ],
+    "fixedVersion": "not fixed",
+    "advisory": "https://scout.docker.com/v/CVE-2026-89092?s=debian&n=glibc&ns=debian&t=deb&osn=debian&osv=12&vr=%3E0",
+    "locations": [
+      "/usr/share/doc/libc6/copyright",
+      "/var/lib/dpkg/status"
+    ]
+  }
+]

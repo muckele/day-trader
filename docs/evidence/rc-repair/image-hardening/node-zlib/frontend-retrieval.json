@@ -1,0 +1,35 @@
+[
+  {
+    "file": "alpine-zlib-APKBUILD",
+    "url": "https://raw.githubusercontent.com/alpinelinux/aports/3.24-stable/main/zlib/APKBUILD",
+    "retrievedAt": "2026-09-13T19:10:19.485792+00:00",
+    "exit": 0,
+    "bytes": 924,
+    "sha256": "7b8d064be19f39b5e921e9e2dddb960964c6e159ca035848cc362375f0da9b9f"
+  },
+  {
+    "file": "alpine-zlib-secdb-selected.json",
+    "url": "https://secdb.alpinelinux.org/v3.24/main.json",
+    "retrievedAt": "2026-09-13T19:10:19.948661+00:00",
+    "exit": 0,
+    "bytes": 89726,
+    "sha256": "8e91e31a025dc73e9d73b0a43a73c8f5ff9bbb4e216fd9f44c0ff576f4af65e3",
+    "transformation": "Selected zlib package entry; recorded sha256 is complete downloaded response before selection"
+  },
+  {
+    "file": "nginx-gzip-filter.c",
+    "url": "https://raw.githubusercontent.com/nginx/nginx/release-1.30.4/src/http/modules/ngx_http_gzip_filter_module.c",
+    "retrievedAt": "2026-09-13T19:10:19.415804+00:00",
+    "exit": 0,
+    "bytes": 30432,
+    "sha256": "af26e144cb0254a90649ffb4a2b60fe2ed7fdc9d8ee21e7dfde89688b8a9a007"
+  },
+  {
+    "file": "nginx-gunzip-filter.c",
+    "url": "https://raw.githubusercontent.com/nginx/nginx/release-1.30.4/src/http/modules/ngx_http_gunzip_filter_module.c",
+    "retrievedAt": "2026-09-13T19:10:19.415149+00:00",
+    "exit": 0,
+    "bytes": 17183,
+    "sha256": "c89dc90685c52a8bc6b2cb31bae46caaa80866153b7e5f34040cde69a88ab8ad"
+  }
+]

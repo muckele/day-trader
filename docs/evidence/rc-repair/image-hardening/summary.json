@@ -1,0 +1,87 @@
+{
+  "startingSha": "b3a6163fe3b469b69b09c8e414e6c6a28629596a",
+  "candidateSourceSha": "6083c66184695ee4c31b2d617414ecd24d2b1035",
+  "combinedLocalDecision": "GO",
+  "imageSecurityGate": "PASS",
+  "scanGate": "COMPLETE",
+  "scout": {
+    "backend": {
+      "counts": {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 1,
+        "LOW": 8,
+        "UNSPECIFIED": 0
+      },
+      "total": 9,
+      "vulnerableSourcePackages": 2,
+      "analysisComplete": true,
+      "exitCode": 2
+    },
+    "frontend": {
+      "counts": {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "LOW": 0,
+        "UNSPECIFIED": 0
+      },
+      "total": 0,
+      "vulnerableSourcePackages": 0,
+      "analysisComplete": true,
+      "exitCode": 0
+    }
+  },
+  "priorCriticalHighRemoved": 20,
+  "supplementalCriticalHigh": [
+    {
+      "image": "backend",
+      "imageId": "sha256:7f640e73b61a18bb2ef2914dbef374ed89528aebe3a81e9fe9567f161a9a6019",
+      "cve": "CVE-2026-85091",
+      "severity": "HIGH (supplemental manual analysis; not a new Scout result)",
+      "package": "Node24.21.0 embedded zlib1.3.2.1-motley-8002e91",
+      "path": "/usr/local/bin/node",
+      "layerDiffId": "sha256:2b391457ac2b2d3de128a4fc7541f081d4b50f27c2ec2a5d063e0a9c17b9bde6",
+      "fixedVersion": "No supported verified vendor fix established",
+      "classification": "C. NOT REACHABLE \u2014 VERIFIED",
+      "prerequisites": "Nonblocking gzip-file write stalls with external-buffer remainder, followed by gzprintf/gzvprintf reaching unchecked gz_vacate memmove",
+      "exposure": "Present C API; exact standard Node bindings use Buffer deflate/inflate and no native/FFI app caller",
+      "evidence": "node-zlib/README.md",
+      "blocksExactLocalCandidate": false,
+      "ownerRiskAcceptanceRequired": false,
+      "remediation": "Preserve verified caller boundary, monitor upstream/vendor fixed release; revalidate or replace/update runtime if native/module/consumer/startup/advisory scope changes. Do not apply unreviewed upstream patch."
+    },
+    {
+      "image": "frontend",
+      "imageId": "sha256:a7aa7e54a5c65283c7851987f64cfa83352d40c9f11ea4fbac502e27ba1b5c2e",
+      "cve": "CVE-2026-85091",
+      "severity": "HIGH (supplemental manual analysis; not a new Scout result)",
+      "package": "Alpine zlib1.3.2-r0",
+      "path": "/usr/lib/libz.so.1.3.2",
+      "layerDiffId": "sha256:b2848c02ac6ff53d265469b5b30f649f335e546a83330cd8916d54e65e640409",
+      "fixedVersion": "No supported verified vendor fix established",
+      "classification": "C. NOT REACHABLE \u2014 VERIFIED",
+      "prerequisites": "Nonblocking gzip-file write stalls with external-buffer remainder, followed by gzprintf/gzvprintf reaching unchecked gz_vacate memmove",
+      "exposure": "Present library C API; no shipped ELF imports gz APIs; nginx source uses deflate/inflate and fixed static config loads no modules",
+      "evidence": "node-zlib/frontend-disposition.md",
+      "blocksExactLocalCandidate": false,
+      "ownerRiskAcceptanceRequired": false,
+      "remediation": "Preserve verified caller boundary, monitor upstream/vendor fixed release; revalidate or replace/update runtime if native/module/consumer/startup/advisory scope changes. Do not apply unreviewed upstream patch."
+    }
+  ],
+  "unresolvedDOrE": 0,
+  "ownerAcceptanceRequired": false,
+  "fullVerifier": {
+    "gatesPassed": 23,
+    "exitCode": 0
+  },
+  "containerAcceptance": {
+    "ok": true,
+    "exitCode": 0
+  },
+  "applicationAndDependencyGraphsUnchanged": true,
+  "masterBriefUntrackedUnchanged": true,
+  "historicalEvidenceUnchanged": true,
+  "externalAndDeployedAcceptance": "NOT RUN",
+  "scope": "Exact Linuxarm64 images, ordinary locked startup/configuration without native/FFI/module/preload injection; no deployed/operational/strategy/commercial acceptance"
+}

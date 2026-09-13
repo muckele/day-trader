@@ -1,0 +1,98 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 944B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 188B done
+#3 DONE 0.0s
+
+#4 [install 1/7] FROM docker.io/library/node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 18.15kB 0.0s done
+#5 DONE 0.0s
+
+#6 [install 4/7] COPY package*.json ./
+#6 CACHED
+
+#7 [install 2/7] RUN apt-get update  && apt-get upgrade -y  && apt-get install -y --no-install-recommends ca-certificates tzdata  && rm -rf /var/lib/apt/lists/*
+#7 CACHED
+
+#8 [install 3/7] WORKDIR /app
+#8 CACHED
+
+#9 [install 5/7] RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+#9 CACHED
+
+#10 [install 6/7] COPY . .
+#10 DONE 0.1s
+
+#11 [install 7/7] RUN node docker/assemble-runtime.cjs
+#11 2.622 dpkg-query: error: --status needs a valid package name but 'ca-certificates, openssl' is not: illegal package name in specifier 'ca-certificates, openssl': character ',' not allowed (only letters, digits and characters '-+._')
+#11 2.622 
+#11 2.622 Use --help for help about querying packages.
+#11 2.623 node:child_process:981
+#11 2.623     throw err;
+#11 2.623     ^
+#11 2.623 
+#11 2.623 Error: Command failed: dpkg-query -s ca-certificates, openssl
+#11 2.623 dpkg-query: error: --status needs a valid package name but 'ca-certificates, openssl' is not: illegal package name in specifier 'ca-certificates, openssl': character ',' not allowed (only letters, digits and characters '-+._')
+#11 2.623 
+#11 2.623 Use --help for help about querying packages.
+#11 2.623 
+#11 2.623     at genericNodeError (node:internal/errors:986:15)
+#11 2.623     at wrappedFn (node:internal/errors:540:14)
+#11 2.623     at checkExecSyncError (node:child_process:942:11)
+#11 2.623     at execFileSync (node:child_process:978:15)
+#11 2.623     at /app/docker/assemble-runtime.cjs:65:81
+#11 2.623     at Array.map (<anonymous>)
+#11 2.623     at Object.<anonymous> (/app/docker/assemble-runtime.cjs:65:69)
+#11 2.623     at Module._compile (node:internal/modules/cjs/loader:1929:14)
+#11 2.623     at Object..js (node:internal/modules/cjs/loader:2060:10)
+#11 2.623     at Module.load (node:internal/modules/cjs/loader:1651:32) {
+#11 2.623   status: 2,
+#11 2.623   signal: null,
+#11 2.623   output: [
+#11 2.623     null,
+#11 2.623     '',
+#11 2.623     "dpkg-query: error: --status needs a valid package name but 'ca-certificates, openssl' is not: illegal package name in specifier 'ca-certificates, openssl': character ',' not allowed (only letters, digits and characters '-+._')\n" +
+#11 2.623       '\n' +
+#11 2.623       'Use --help for help about querying packages.\n'
+#11 2.623   ],
+#11 2.623   pid: 604,
+#11 2.623   stdout: '',
+#11 2.623   stderr: "dpkg-query: error: --status needs a valid package name but 'ca-certificates, openssl' is not: illegal package name in specifier 'ca-certificates, openssl': character ',' not allowed (only letters, digits and characters '-+._')\n" +
+#11 2.623     '\n' +
+#11 2.623     'Use --help for help about querying packages.\n'
+#11 2.623 }
+#11 2.623 
+#11 2.623 Node.js v24.21.0
+#11 ERROR: process "/bin/sh -c node docker/assemble-runtime.cjs" did not complete successfully: exit code: 1
+------
+ > [install 7/7] RUN node docker/assemble-runtime.cjs:
+2.623       'Use --help for help about querying packages.\n'
+2.623   ],
+2.623   pid: 604,
+2.623   stdout: '',
+2.623   stderr: "dpkg-query: error: --status needs a valid package name but 'ca-certificates, openssl' is not: illegal package name in specifier 'ca-certificates, openssl': character ',' not allowed (only letters, digits and characters '-+._')\n" +
+2.623     '\n' +
+2.623     'Use --help for help about querying packages.\n'
+2.623 }
+2.623 
+2.623 Node.js v24.21.0
+------
+Dockerfile:13
+--------------------
+  11 |     RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+  12 |     COPY . .
+  13 | >>> RUN node docker/assemble-runtime.cjs
+  14 |     
+  15 |     # Same official Node binary and Debian glibc; no Alpine/musl or custom binaries.
+--------------------
+ERROR: failed to build: failed to solve: process "/bin/sh -c node docker/assemble-runtime.cjs" did not complete successfully: exit code: 1

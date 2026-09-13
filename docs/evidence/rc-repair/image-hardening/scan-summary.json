@@ -1,0 +1,28 @@
+{
+  "backend": {
+    "counts": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 8,
+      "UNSPECIFIED": 0
+    },
+    "total": 9,
+    "vulnerableSourcePackages": 2,
+    "analysisComplete": true,
+    "exitCode": 2
+  },
+  "frontend": {
+    "counts": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "UNSPECIFIED": 0
+    },
+    "total": 0,
+    "vulnerableSourcePackages": 0,
+    "analysisComplete": true,
+    "exitCode": 0
+  }
+}

@@ -1,0 +1,1455 @@
+{
+  "sha256": "0f8949d1028f6d61506b2d5bc57e7e6fe893d7b1997509b7847294fc9c616584",
+  "symbolTables": [
+    {
+      "name": ".dynsym",
+      "entries": 38892
+    },
+    {
+      "name": ".symtab",
+      "entries": 239295
+    }
+  ],
+  "gzipSymbols": [
+    {
+      "table": ".dynsym",
+      "name": "gzdopen",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25900480,
+      "size": 140
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzdirect",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25907344,
+      "size": 92
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzsetparams",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25912096,
+      "size": 284
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzoffset",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25902036,
+      "size": 116
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzeof",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25902160,
+      "size": 48
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzoffset64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25901920,
+      "size": 116
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzflush",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25911940,
+      "size": 148
+    },
+    {
+      "table": ".dynsym",
+      "name": "gztell64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25901792,
+      "size": 64
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzfwrite",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25909904,
+      "size": 176
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzfread",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25905712,
+      "size": 184
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzseek64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25900900,
+      "size": 444
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzgetc",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25905904,
+      "size": 180
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzgets",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25906912,
+      "size": 424
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzread",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25905488,
+      "size": 224
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzclose",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25899520,
+      "size": 36
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzungetc",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25906272,
+      "size": 632
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzerror",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25902208,
+      "size": 96
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzopen",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25900448,
+      "size": 12
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzseek",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25901344,
+      "size": 444
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzclearerr",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25902304,
+      "size": 124
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzwrite",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25909744,
+      "size": 152
+    },
+    {
+      "table": ".dynsym",
+      "name": "gztell",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25901856,
+      "size": 64
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzopen64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25900464,
+      "size": 12
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzclose_r",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25907440,
+      "size": 168
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzclose_w",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25912384,
+      "size": 220
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzgetc_",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25906084,
+      "size": 180
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzprintf",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25911200,
+      "size": 740
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzbuffer",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25900624,
+      "size": 76
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzputc",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25910080,
+      "size": 256
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzputs",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25910336,
+      "size": 184
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzrewind",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25900704,
+      "size": 196
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzvprintf",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25910528,
+      "size": 668
+    },
+    {
+      "table": ".symtab",
+      "name": "gzclose.c",
+      "binding": 0,
+      "type": 4,
+      "visibility": 0,
+      "section": 65521,
+      "address": 0,
+      "size": 0
+    },
+    {
+      "table": ".symtab",
+      "name": "gzlib.c",
+      "binding": 0,
+      "type": 4,
+      "visibility": 0,
+      "section": 65521,
+      "address": 0,
+      "size": 0
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_open",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25899568,
+      "size": 872
+    },
+    {
+      "table": ".symtab",
+      "name": "gzread.c",
+      "binding": 0,
+      "type": 4,
+      "visibility": 0,
+      "section": 65521,
+      "address": 0,
+      "size": 0
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_load",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25902704,
+      "size": 216
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_avail",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25902928,
+      "size": 460
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_look",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25903392,
+      "size": 476
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_decomp",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25903872,
+      "size": 552
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_fetch",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25904432,
+      "size": 220
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_skip",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25904656,
+      "size": 332
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_read",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25904992,
+      "size": 496
+    },
+    {
+      "table": ".symtab",
+      "name": "gzwrite.c",
+      "binding": 0,
+      "type": 4,
+      "visibility": 0,
+      "section": 65521,
+      "address": 0,
+      "size": 0
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_init",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25907616,
+      "size": 264
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_comp",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25907888,
+      "size": 584
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_comp.constprop.0",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25908480,
+      "size": 556
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_zero",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25909040,
+      "size": 212
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_write",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25909252,
+      "size": 488
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_intmax",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25902688,
+      "size": 8
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_error",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25902432,
+      "size": 256
+    },
+    {
+      "table": ".symtab",
+      "name": "gzgetc_",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25906084,
+      "size": 180
+    },
+    {
+      "table": ".symtab",
+      "name": "gzseek64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25900900,
+      "size": 444
+    },
+    {
+      "table": ".symtab",
+      "name": "gzprintf",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25911200,
+      "size": 740
+    },
+    {
+      "table": ".symtab",
+      "name": "gzdirect",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25907344,
+      "size": 92
+    },
+    {
+      "table": ".symtab",
+      "name": "gzgets",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25906912,
+      "size": 424
+    },
+    {
+      "table": ".symtab",
+      "name": "gzerror",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25902208,
+      "size": 96
+    },
+    {
+      "table": ".symtab",
+      "name": "gzoffset",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25902036,
+      "size": 116
+    },
+    {
+      "table": ".symtab",
+      "name": "gzclose_w",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25912384,
+      "size": 220
+    },
+    {
+      "table": ".symtab",
+      "name": "gzflush",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25911940,
+      "size": 148
+    },
+    {
+      "table": ".symtab",
+      "name": "gzclearerr",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25902304,
+      "size": 124
+    },
+    {
+      "table": ".symtab",
+      "name": "gzfread",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25905712,
+      "size": 184
+    },
+    {
+      "table": ".symtab",
+      "name": "gztell64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25901792,
+      "size": 64
+    },
+    {
+      "table": ".symtab",
+      "name": "gzclose",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25899520,
+      "size": 36
+    },
+    {
+      "table": ".symtab",
+      "name": "gzwrite",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25909744,
+      "size": 152
+    },
+    {
+      "table": ".symtab",
+      "name": "gzputs",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25910336,
+      "size": 184
+    },
+    {
+      "table": ".symtab",
+      "name": "gzeof",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25902160,
+      "size": 48
+    },
+    {
+      "table": ".symtab",
+      "name": "gzrewind",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25900704,
+      "size": 196
+    },
+    {
+      "table": ".symtab",
+      "name": "gzsetparams",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25912096,
+      "size": 284
+    },
+    {
+      "table": ".symtab",
+      "name": "gzopen64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25900464,
+      "size": 12
+    },
+    {
+      "table": ".symtab",
+      "name": "gzoffset64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25901920,
+      "size": 116
+    },
+    {
+      "table": ".symtab",
+      "name": "gzgetc",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25905904,
+      "size": 180
+    },
+    {
+      "table": ".symtab",
+      "name": "gzopen",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25900448,
+      "size": 12
+    },
+    {
+      "table": ".symtab",
+      "name": "gzread",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25905488,
+      "size": 224
+    },
+    {
+      "table": ".symtab",
+      "name": "gzvprintf",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25910528,
+      "size": 668
+    },
+    {
+      "table": ".symtab",
+      "name": "gzungetc",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25906272,
+      "size": 632
+    },
+    {
+      "table": ".symtab",
+      "name": "gzclose_r",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25907440,
+      "size": 168
+    },
+    {
+      "table": ".symtab",
+      "name": "gzfwrite",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25909904,
+      "size": 176
+    },
+    {
+      "table": ".symtab",
+      "name": "gzdopen",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25900480,
+      "size": 140
+    },
+    {
+      "table": ".symtab",
+      "name": "gzputc",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25910080,
+      "size": 256
+    },
+    {
+      "table": ".symtab",
+      "name": "gzbuffer",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25900624,
+      "size": 76
+    },
+    {
+      "table": ".symtab",
+      "name": "gzseek",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25901344,
+      "size": 444
+    },
+    {
+      "table": ".symtab",
+      "name": "gztell",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": 25901856,
+      "size": 64
+    }
+  ],
+  "directBranches": [
+    {
+      "address": "0x18b3214",
+      "caller": "gzclose",
+      "callee": "gzclose_w",
+      "instruction": "B"
+    },
+    {
+      "address": "0x18b3218",
+      "caller": "gzclose",
+      "callee": "gzclose_r",
+      "instruction": "B"
+    },
+    {
+      "address": "0x18b35a8",
+      "caller": "gzopen",
+      "callee": "gz_open",
+      "instruction": "B"
+    },
+    {
+      "address": "0x18b35b8",
+      "caller": "gzopen64",
+      "callee": "gz_open",
+      "instruction": "B"
+    },
+    {
+      "address": "0x18b3610",
+      "caller": "gzdopen",
+      "callee": "gz_open",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b3888",
+      "caller": "gzseek64",
+      "callee": "gzrewind",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b3a44",
+      "caller": "gzseek",
+      "callee": "gzrewind",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b3f3c",
+      "caller": "gz_load",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b3fe8",
+      "caller": "gz_avail",
+      "callee": "gz_load",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4188",
+      "caller": "gz_look",
+      "callee": "gz_avail",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b42c0",
+      "caller": "gz_look",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b42ec",
+      "caller": "gz_look",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4378",
+      "caller": "gz_decomp",
+      "callee": "gz_avail",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b441c",
+      "caller": "gz_decomp",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4460",
+      "caller": "gz_decomp",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b44e4",
+      "caller": "gz_decomp",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4568",
+      "caller": "gz_fetch",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4580",
+      "caller": "gz_fetch",
+      "callee": "gz_look",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b45cc",
+      "caller": "gz_fetch",
+      "callee": "gz_decomp",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b45f0",
+      "caller": "gz_fetch",
+      "callee": "gz_load",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b46b4",
+      "caller": "gz_skip",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b46c4",
+      "caller": "gz_skip",
+      "callee": "gz_look",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4718",
+      "caller": "gz_skip",
+      "callee": "gz_decomp",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4740",
+      "caller": "gz_skip",
+      "callee": "gz_load",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4874",
+      "caller": "gz_read",
+      "callee": "gz_decomp",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b48c8",
+      "caller": "gz_read",
+      "callee": "gz_fetch",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4918",
+      "caller": "gz_read",
+      "callee": "gz_load",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4924",
+      "caller": "gz_read",
+      "callee": "gz_skip",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b49a4",
+      "caller": "gzread",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b49b8",
+      "caller": "gzread",
+      "callee": "gz_read",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4a00",
+      "caller": "gzread",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4a1c",
+      "caller": "gzread",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4a88",
+      "caller": "gzfread",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4aac",
+      "caller": "gzfread",
+      "callee": "gz_read",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4ad4",
+      "caller": "gzfread",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4b38",
+      "caller": "gzgetc",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4b7c",
+      "caller": "gzgetc",
+      "callee": "gz_read",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4bec",
+      "caller": "gzgetc_",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4c30",
+      "caller": "gzgetc_",
+      "callee": "gz_read",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4cb4",
+      "caller": "gzungetc",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4d34",
+      "caller": "gzungetc",
+      "callee": "gz_load",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4dd4",
+      "caller": "gzungetc",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4de8",
+      "caller": "gzungetc",
+      "callee": "gz_look",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4e34",
+      "caller": "gzungetc",
+      "callee": "gz_decomp",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4e54",
+      "caller": "gzungetc",
+      "callee": "gz_look",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4ecc",
+      "caller": "gzungetc",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4f40",
+      "caller": "gzgets",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b4ff4",
+      "caller": "gzgets",
+      "callee": "gz_skip",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5054",
+      "caller": "gzgets",
+      "callee": "gz_fetch",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b50dc",
+      "caller": "gzdirect",
+      "callee": "gz_look",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5138",
+      "caller": "gzclose_r",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5278",
+      "caller": "gz_init",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b529c",
+      "caller": "gz_init",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5354",
+      "caller": "gz_comp",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5470",
+      "caller": "gz_comp",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b547c",
+      "caller": "gz_comp",
+      "callee": "gz_init",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b54e0",
+      "caller": "gz_comp",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b559c",
+      "caller": "gz_comp.constprop.0",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b55dc",
+      "caller": "gz_comp.constprop.0",
+      "callee": "gz_init",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b56b0",
+      "caller": "gz_comp.constprop.0",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5718",
+      "caller": "gz_comp.constprop.0",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5780",
+      "caller": "gz_zero",
+      "callee": "gz_comp.constprop.0",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b57c4",
+      "caller": "gz_zero",
+      "callee": "gz_comp.constprop.0",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b58b8",
+      "caller": "gz_write",
+      "callee": "gz_comp.constprop.0",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b590c",
+      "caller": "gz_write",
+      "callee": "gz_comp.constprop.0",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5948",
+      "caller": "gz_write",
+      "callee": "gz_init",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5974",
+      "caller": "gz_write",
+      "callee": "gz_zero",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b59b4",
+      "caller": "gz_write",
+      "callee": "gz_comp.constprop.0",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5a3c",
+      "caller": "gzwrite",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5a50",
+      "caller": "gzwrite",
+      "callee": "gz_write",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5a74",
+      "caller": "gzwrite",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5ae0",
+      "caller": "gzfwrite",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5b04",
+      "caller": "gzfwrite",
+      "callee": "gz_write",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5b2c",
+      "caller": "gzfwrite",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5b84",
+      "caller": "gzputc",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5c00",
+      "caller": "gzputc",
+      "callee": "gz_write",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5c20",
+      "caller": "gzputc",
+      "callee": "gz_zero",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5c88",
+      "caller": "gzputs",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5cb4",
+      "caller": "gzputs",
+      "callee": "gz_write",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5ce4",
+      "caller": "gzputs",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5d50",
+      "caller": "gzvprintf",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5d68",
+      "caller": "gzvprintf",
+      "callee": "gz_zero",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5e14",
+      "caller": "gzvprintf",
+      "callee": "gz_comp.constprop.0",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5e90",
+      "caller": "gzvprintf",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5ed4",
+      "caller": "gzvprintf",
+      "callee": "gz_init",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b5f30",
+      "caller": "gzvprintf",
+      "callee": "gz_comp.constprop.0",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b6038",
+      "caller": "gzprintf",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b6050",
+      "caller": "gzprintf",
+      "callee": "gz_zero",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b6100",
+      "caller": "gzprintf",
+      "callee": "gz_comp.constprop.0",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b617c",
+      "caller": "gzprintf",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b61c0",
+      "caller": "gzprintf",
+      "callee": "gz_init",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b6218",
+      "caller": "gzprintf",
+      "callee": "gz_comp.constprop.0",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b62c8",
+      "caller": "gzflush",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b62e0",
+      "caller": "gzflush",
+      "callee": "gz_zero",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b62f4",
+      "caller": "gzflush",
+      "callee": "gz_comp",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b636c",
+      "caller": "gzsetparams",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b63a4",
+      "caller": "gzsetparams",
+      "callee": "gz_comp",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b640c",
+      "caller": "gzsetparams",
+      "callee": "gz_zero",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b647c",
+      "caller": "gzclose_w",
+      "callee": "gz_comp",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b64b0",
+      "caller": "gzclose_w",
+      "callee": "gz_error",
+      "instruction": "BL"
+    },
+    {
+      "address": "0x18b64ec",
+      "caller": "gzclose_w",
+      "callee": "gz_zero",
+      "instruction": "BL"
+    }
+  ],
+  "nonGzipCallers": [],
+  "limitation": "Direct AArch64 B/BL only; indirect calls/function pointers are not resolved."
+}

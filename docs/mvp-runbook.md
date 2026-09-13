@@ -2,7 +2,7 @@
 
 ## Release gate
 
-Phase 3 local release status is recorded in `docs/evidence/verification/report.json`; only an exit-zero complete verifier earns VERIFIED RELEASE CANDIDATE. External paper acceptance, external SMTP receipt and deployed operation remain NOT RUN and require separate authorization. Live execution is blocked independently of flags.
+Current hardened local RC decision is recorded in `docs/evidence/rc-repair/image-hardening/README.md`: fresh complete verifier23/23 plus container/image acceptance and the image-security policy are required together. The historical Phase3 report does not alone grant current acceptance. External paper acceptance, external SMTP receipt and deployed operation remain NOT RUN and require separate authorization. Live execution is blocked independently of flags.
 
 ## Local setup and configuration
 
@@ -133,3 +133,9 @@ RC-001 and RC-002 are repaired locally. Use `node scripts/verify-mvp.mjs --repor
 The two local Linux candidate images passed build, isolated production startup and static navigation, but local RC remains NO-GO because image CVE analysis is approval-blocked. Automatic approval rejected Docker Scout's package-URL/layer-digest transfer to Docker's CVE service before execution. No scan metadata/source/image upload occurred. Obtain explicit authorization for that narrow metadata transfer and disposition the resulting reports before updating the decision. Do not substitute a registry/proxy/alternate scanner to bypass the rejection. Image inventory and pinned official versions are not a completed vulnerability scan. Candidate image IDs and fixture cleanup are recorded in `docs/evidence/rc-repair/runtime-containers/report.json`.
 
 Fresh npm audits are separate authorized operations and have completed: backend0 findings, frontend57 findings. Retain the current disposition; no forced toolchain migration is part of this repair. Hosted CI, external paper/SMTP acceptance, deployment and persistent activation still require separate authorization. Backup/restore, credential-revocation/recovery, deployment provenance, monitoring, strategy evaluation and commercial evidence remain separate master-brief gates.
+
+## Final-runtime operational boundary
+
+The hardened backend has no shell/package manager and runs as UID1000. Health/readiness tooling must invoke Node directly; authorized owner bootstrap can invoke `/usr/local/bin/node /app/scripts/bootstrap-owner.js` with protected external input. Never install repair packages into a running container. Rebuild through the reviewed Dockerfile and repeat the image/security gates. The current static frontend expects external same-origin API routing unless intentionally rebuilt with a public API origin; nginx alone does not proxy API requests.
+
+Before deployment, enforce the exact startup/configuration assumptions in the [zlib backend](evidence/rc-repair/image-hardening/node-zlib/README.md) and [frontend](evidence/rc-repair/image-hardening/node-zlib/frontend-disposition.md) dispositions. Added native libraries, preloads, FFI or nginx modules reopen the security gate. Local GO does not authorize activation or certify backup/restore, revocation, monitoring/soak, external account or inbox acceptance.

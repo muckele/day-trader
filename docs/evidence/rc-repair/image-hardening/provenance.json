@@ -1,0 +1,87 @@
+{
+  "startingSha": "b3a6163fe3b469b69b09c8e414e6c6a28629596a",
+  "candidateSourceSha": "6083c66184695ee4c31b2d617414ecd24d2b1035",
+  "buildBinding": "Built before the two implementation commits from their exact Dockerfile/helper/application bytes; committed source hashes and image app/source-map contents were compared. Documentation commits do not alter build inputs.",
+  "platform": "linux/arm64",
+  "builderBase": {
+    "reference": "node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553",
+    "arm64Manifest": "sha256:8d1405ad7696efa6941cb7745c2aa51d02549b900e4a40fdf212a1b5115dd1b9"
+  },
+  "frontendRuntimeBase": {
+    "reference": "nginx:1.30.4-alpine3.24-slim@sha256:77da26c31397bf6694b4bf93275f5b40b0b120ba1b8f114264b603e592c561d6",
+    "arm64Manifest": "sha256:65378e880e8603fcd86ff252bff7012b58bd572f5ef86622c3b643b43d013d7c"
+  },
+  "images": {
+    "backend": {
+      "id": "sha256:7f640e73b61a18bb2ef2914dbef374ed89528aebe3a81e9fe9567f161a9a6019",
+      "created": "2026-09-13T19:05:03.991864055Z",
+      "sizeBytes": 182486583,
+      "repoDigests": [],
+      "layers": [
+        "sha256:2b391457ac2b2d3de128a4fc7541f081d4b50f27c2ec2a5d063e0a9c17b9bde6",
+        "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef"
+      ],
+      "buildCommand": [
+        "env",
+        "BUILDX_CONFIG=/private/tmp/day-trader-rc-buildx",
+        "docker",
+        "build",
+        "--pull",
+        "--platform",
+        "linux/arm64",
+        "--progress",
+        "plain",
+        "--provenance=false",
+        "-t",
+        "day-trader-rc-backend:hardened",
+        "backend"
+      ],
+      "buildExitCode": 0
+    },
+    "frontend": {
+      "id": "sha256:a7aa7e54a5c65283c7851987f64cfa83352d40c9f11ea4fbac502e27ba1b5c2e",
+      "created": "2026-09-13T18:54:32.195344221Z",
+      "sizeBytes": 23964980,
+      "repoDigests": [],
+      "layers": [
+        "sha256:b2848c02ac6ff53d265469b5b30f649f335e546a83330cd8916d54e65e640409",
+        "sha256:8212bdb165b0586f391f54ffc70f14ae43e4393c3df2496e603141a5a60998d7",
+        "sha256:a59c8d557466fd8bbb7c64d9c1163c5f9606f90cc652509dd0166c84997ad8b6",
+        "sha256:2b61a5435ba9c5eb55533698219cc31dcdfe4bf7db34d41af4d66396c446561c",
+        "sha256:7d32403a892a9f50767259488f239390dd0389149f242d4eb410e45d4072c1cc",
+        "sha256:ba6a756d0c41d81b96946d639d99ab318be8c660541ae2abb2019755188936ad",
+        "sha256:1dd8012ac8ead4ae8f574d8699e550768dc84b5589c51a6cc54da23b66e79140",
+        "sha256:83132c6bc30cc2a16c2ebb23762d6cbaf91c951ae46feea88ba3903a51b58030",
+        "sha256:39fc68d19d60b4a7bb5263e8c94c28f5b0c182bc626c331b491db9349f101eed"
+      ],
+      "buildCommand": [
+        "env",
+        "BUILDX_CONFIG=/private/tmp/day-trader-rc-buildx",
+        "docker",
+        "build",
+        "--pull",
+        "--platform",
+        "linux/arm64",
+        "--progress",
+        "plain",
+        "--provenance=false",
+        "-t",
+        "day-trader-rc-frontend:hardened",
+        "frontend"
+      ],
+      "buildExitCode": 0
+    }
+  },
+  "files": {
+    "backend/Dockerfile": "09f66c83ae48d586bfb34a913f1f0df80c919d98e3261fa68f5da54f66fe3375",
+    "backend/docker/assemble-runtime.cjs": "cb6dbd5dcfc67eefc9b9570210cfe6618f7897f672d846deb77d9af4f8b9e30e",
+    "frontend/Dockerfile": "fbac55906577afaede3127117fbdb9f1354b1ccc8843de39197828c202128974",
+    "backend/package.json": "631edc8e29ef123712b41212b251308d9975fbac4c9d6e1999e4839c60760b3e",
+    "backend/package-lock.json": "4c4dbbfdedd053bbda1033070a16dd3b1a46ae3bbc4090adbcac2cc1f3c24025",
+    "frontend/package.json": "ad4b03be1896c34ca22730388791bd06210bfa03c8f1b93f5ff831fd40edbe8b",
+    "frontend/package-lock.json": "fb33b2a92e5e1122026f2ba67e406a77db914df8090571cd21421c961d9bbae4",
+    "backend/.dockerignore": "6e24ce4de567df4f582b36e61c3c9fb567baa7de0090f2f3fe5d6d03e62ad718",
+    "frontend/.dockerignore": "6e24ce4de567df4f582b36e61c3c9fb567baa7de0090f2f3fe5d6d03e62ad718",
+    "frontend/nginx.conf": "18292ead7a51a3a1320da740dca6c4970090012c382eacc162100d7d2085cb10"
+  }
+}

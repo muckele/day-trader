@@ -1,0 +1,2042 @@
+{
+  "imageId": "sha256:7f640e73b61a18bb2ef2914dbef374ed89528aebe3a81e9fe9567f161a9a6019",
+  "layerDiffId": "sha256:2b391457ac2b2d3de128a4fc7541f081d4b50f27c2ec2a5d063e0a9c17b9bde6",
+  "extractionSource": "Parent-provided exact candidate /usr/local/bin/node at /private/tmp/day-trader-hardened-node",
+  "sha256": "0f8949d1028f6d61506b2d5bc57e7e6fe893d7b1997509b7847294fc9c616584",
+  "elfClass": 64,
+  "elfEndian": "little",
+  "machine": 183,
+  "sections": 41,
+  "symbolTables": [
+    {
+      "name": ".dynsym",
+      "entries": 38892
+    },
+    {
+      "name": ".symtab",
+      "entries": 239295
+    }
+  ],
+  "matchingSymbols": [
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_session_get_hd_deflate_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fbc430",
+      "size": 8
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_get_table_entry",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4f00",
+      "size": 116
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_new",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4880",
+      "size": 220
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzdopen",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b35c0",
+      "size": 140
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_get_num_table_entries",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4e50",
+      "size": 12
+    },
+    {
+      "table": ".dynsym",
+      "name": "deflateInit_",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b2f24",
+      "size": 28
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_init",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2d54",
+      "size": 172
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_get_max_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4ee0",
+      "size": 8
+    },
+    {
+      "table": ".dynsym",
+      "name": "deflateEnd",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b2a20",
+      "size": 308
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_get_max_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4f80",
+      "size": 8
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzdirect",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5090",
+      "size": 92
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzsetparams",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b6320",
+      "size": 284
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzoffset",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3bd4",
+      "size": 116
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_hd_vec",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3b90",
+      "size": 152
+    },
+    {
+      "table": ".dynsym",
+      "name": "deflateReset",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b0540",
+      "size": 444
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_session_get_hd_inflate_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fbc420",
+      "size": 8
+    },
+    {
+      "table": ".dynsym",
+      "name": "inflate_fast_chunk_",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2309180",
+      "size": 2076
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_hd_bufs",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc31d0",
+      "size": 2180
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_hd",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3a54",
+      "size": 152
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzeof",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3c50",
+      "size": 48
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzoffset64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3b60",
+      "size": 116
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_free",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2e00",
+      "size": 128
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_new2",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4960",
+      "size": 236
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzflush",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b6284",
+      "size": 148
+    },
+    {
+      "table": ".dynsym",
+      "name": "gztell64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3ae0",
+      "size": 64
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzfwrite",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5a90",
+      "size": 176
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzfread",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4a30",
+      "size": 184
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_del",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3eb4",
+      "size": 136
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzseek64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3764",
+      "size": 444
+    },
+    {
+      "table": ".dynsym",
+      "name": "_ZZN3ada4idna7deflate11inflate_rawEPKhmPhmE5order",
+      "binding": 10,
+      "type": 1,
+      "visibility": 0,
+      "section": 16,
+      "address": "0x3f4c000",
+      "size": 76
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_end_headers",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4844",
+      "size": 60
+    },
+    {
+      "table": ".dynsym",
+      "name": "inflate_copyright",
+      "binding": 1,
+      "type": 1,
+      "visibility": 0,
+      "section": 16,
+      "address": "0x3732ea0",
+      "size": 49
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_init",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2c30",
+      "size": 132
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzgetc",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4af0",
+      "size": 180
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzgets",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4ee0",
+      "size": 424
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_hd2",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3af0",
+      "size": 152
+    },
+    {
+      "table": ".dynsym",
+      "name": "deflate_copyright",
+      "binding": 1,
+      "type": 1,
+      "visibility": 0,
+      "section": 16,
+      "address": "0x37320a0",
+      "size": 70
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzread",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4950",
+      "size": 224
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzclose",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3200",
+      "size": 36
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzungetc",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4c60",
+      "size": 632
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzerror",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3c80",
+      "size": 96
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzopen",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b35a0",
+      "size": 12
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzseek",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3920",
+      "size": 444
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_hd_vec2",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3c30",
+      "size": 152
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzclearerr",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3ce0",
+      "size": 124
+    },
+    {
+      "table": ".dynsym",
+      "name": "inflateEnd",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x23086e0",
+      "size": 172
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_new2",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3dd4",
+      "size": 224
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_init2",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2cb4",
+      "size": 160
+    },
+    {
+      "table": ".dynsym",
+      "name": "deflate",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b0ee0",
+      "size": 6388
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_del",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4a50",
+      "size": 184
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzwrite",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b59f0",
+      "size": 152
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_new",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3d04",
+      "size": 208
+    },
+    {
+      "table": ".dynsym",
+      "name": "inflateInit_",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2306394",
+      "size": 296
+    },
+    {
+      "table": ".dynsym",
+      "name": "gztell",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3b20",
+      "size": 64
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzopen64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b35b0",
+      "size": 12
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzclose_r",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b50f0",
+      "size": 168
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzclose_w",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b6440",
+      "size": 220
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzgetc_",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4ba4",
+      "size": 180
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzprintf",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5fa0",
+      "size": 740
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_option_set_max_deflate_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fb14a4",
+      "size": 20
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_hd",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc47f0",
+      "size": 84
+    },
+    {
+      "table": ".dynsym",
+      "name": "_ZN3ada4idna7deflate11inflate_rawEPKhmPhm",
+      "binding": 2,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fe6f70",
+      "size": 4508
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_get_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4f74",
+      "size": 8
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_hd2",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4794",
+      "size": 84
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_hd3",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4740",
+      "size": 84
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_bound",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3cd0",
+      "size": 52
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_hd_nv",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3f40",
+      "size": 2048
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_change_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3044",
+      "size": 212
+    },
+    {
+      "table": ".dynsym",
+      "name": "inflateReset",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2306030",
+      "size": 184
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzbuffer",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3650",
+      "size": 76
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_get_table_entry",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4e60",
+      "size": 116
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_change_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2f20",
+      "size": 292
+    },
+    {
+      "table": ".dynsym",
+      "name": "inflate",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2306570",
+      "size": 8552
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzputc",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5b40",
+      "size": 256
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzputs",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5c40",
+      "size": 184
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_get_num_table_entries",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4ef0",
+      "size": 12
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzrewind",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b36a0",
+      "size": 196
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_inflate_free",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2e80",
+      "size": 160
+    },
+    {
+      "table": ".dynsym",
+      "name": "gzvprintf",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5d00",
+      "size": 668
+    },
+    {
+      "table": ".dynsym",
+      "name": "nghttp2_hd_deflate_get_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4ed4",
+      "size": 8
+    },
+    {
+      "table": ".symtab",
+      "name": "deflate_stored",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18aec44",
+      "size": 1904
+    },
+    {
+      "table": ".symtab",
+      "name": "deflate_fast",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18af3b4",
+      "size": 1368
+    },
+    {
+      "table": ".symtab",
+      "name": "deflate_slow",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18af910",
+      "size": 1828
+    },
+    {
+      "table": ".symtab",
+      "name": "gzclose.c",
+      "binding": 0,
+      "type": 4,
+      "visibility": 0,
+      "section": 65521,
+      "address": "0x0",
+      "size": 0
+    },
+    {
+      "table": ".symtab",
+      "name": "gzlib.c",
+      "binding": 0,
+      "type": 4,
+      "visibility": 0,
+      "section": 65521,
+      "address": "0x0",
+      "size": 0
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_open",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3230",
+      "size": 872
+    },
+    {
+      "table": ".symtab",
+      "name": "gzread.c",
+      "binding": 0,
+      "type": 4,
+      "visibility": 0,
+      "section": 65521,
+      "address": "0x0",
+      "size": 0
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_load",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3e70",
+      "size": 216
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_avail",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3f50",
+      "size": 460
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_look",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4120",
+      "size": 476
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_decomp",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4300",
+      "size": 552
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_fetch",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4530",
+      "size": 220
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_skip",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4610",
+      "size": 332
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_read",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4760",
+      "size": 496
+    },
+    {
+      "table": ".symtab",
+      "name": "gzwrite.c",
+      "binding": 0,
+      "type": 4,
+      "visibility": 0,
+      "section": 65521,
+      "address": "0x0",
+      "size": 0
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_init",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b51a0",
+      "size": 264
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_comp",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b52b0",
+      "size": 584
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_comp.constprop.0",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5500",
+      "size": 556
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_zero",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5730",
+      "size": 212
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_write",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5804",
+      "size": 488
+    },
+    {
+      "table": ".symtab",
+      "name": "hd_inflate_read_len",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc1120",
+      "size": 548
+    },
+    {
+      "table": ".symtab",
+      "name": "hd_inflate_commit_indname",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2a24",
+      "size": 364
+    },
+    {
+      "table": ".symtab",
+      "name": "deflate_stored",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x24219f0",
+      "size": 1892
+    },
+    {
+      "table": ".symtab",
+      "name": "deflate_fast",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2422160",
+      "size": 1372
+    },
+    {
+      "table": ".symtab",
+      "name": "deflate_slow",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x24226c0",
+      "size": 1828
+    },
+    {
+      "table": ".symtab",
+      "name": "Cr_z_inflate_copyright",
+      "binding": 0,
+      "type": 1,
+      "visibility": 0,
+      "section": 16,
+      "address": "0x5ff6c90",
+      "size": 49
+    },
+    {
+      "table": ".symtab",
+      "name": "Cr_z_deflateEnd",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2425790",
+      "size": 308
+    },
+    {
+      "table": ".symtab",
+      "name": "inflate_table",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b8620",
+      "size": 2756
+    },
+    {
+      "table": ".symtab",
+      "name": "Cr_z_deflateInit_",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2425c90",
+      "size": 720
+    },
+    {
+      "table": ".symtab",
+      "name": "Cr_z_inflate",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2429f70",
+      "size": 7764
+    },
+    {
+      "table": ".symtab",
+      "name": "Cr_z_inflateEnd",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x242bdd0",
+      "size": 172
+    },
+    {
+      "table": ".symtab",
+      "name": "Cr_z_deflateReset",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2423300",
+      "size": 440
+    },
+    {
+      "table": ".symtab",
+      "name": "inflate_fixed",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b90e4",
+      "size": 36
+    },
+    {
+      "table": ".symtab",
+      "name": "inflate_fast",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b7680",
+      "size": 3992
+    },
+    {
+      "table": ".symtab",
+      "name": "Cr_z_inflate_fast",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x242d360",
+      "size": 3992
+    },
+    {
+      "table": ".symtab",
+      "name": "Cr_z_deflate_copyright",
+      "binding": 0,
+      "type": 1,
+      "visibility": 0,
+      "section": 16,
+      "address": "0x5ff32b0",
+      "size": 70
+    },
+    {
+      "table": ".symtab",
+      "name": "Cr_z_deflate",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x24239c0",
+      "size": 6384
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_intmax",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3e60",
+      "size": 8
+    },
+    {
+      "table": ".symtab",
+      "name": "gz_error",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3d60",
+      "size": 256
+    },
+    {
+      "table": ".symtab",
+      "name": "Cr_z_inflate_table",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x242c890",
+      "size": 2764
+    },
+    {
+      "table": ".symtab",
+      "name": "Cr_z_inflateReset",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2429a20",
+      "size": 184
+    },
+    {
+      "table": ".symtab",
+      "name": "Cr_z_inflateInit_",
+      "binding": 0,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2429d90",
+      "size": 296
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_get_table_entry",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4f00",
+      "size": 116
+    },
+    {
+      "table": ".symtab",
+      "name": "gzgetc_",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4ba4",
+      "size": 180
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_new2",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4960",
+      "size": 236
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_new",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3d04",
+      "size": 208
+    },
+    {
+      "table": ".symtab",
+      "name": "_ZZN3ada4idna7deflate11inflate_rawEPKhmPhmE5order",
+      "binding": 10,
+      "type": 1,
+      "visibility": 0,
+      "section": 16,
+      "address": "0x3f4c000",
+      "size": 76
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_init",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2d54",
+      "size": 172
+    },
+    {
+      "table": ".symtab",
+      "name": "gzseek64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3764",
+      "size": 444
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_session_get_hd_inflate_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fbc420",
+      "size": 8
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_get_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4f74",
+      "size": 8
+    },
+    {
+      "table": ".symtab",
+      "name": "gzprintf",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5fa0",
+      "size": 740
+    },
+    {
+      "table": ".symtab",
+      "name": "gzdirect",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5090",
+      "size": 92
+    },
+    {
+      "table": ".symtab",
+      "name": "gzgets",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4ee0",
+      "size": 424
+    },
+    {
+      "table": ".symtab",
+      "name": "gzerror",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3c80",
+      "size": 96
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_end_headers",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4844",
+      "size": 60
+    },
+    {
+      "table": ".symtab",
+      "name": "gzoffset",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3bd4",
+      "size": 116
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_init2",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2cb4",
+      "size": 160
+    },
+    {
+      "table": ".symtab",
+      "name": "gzclose_w",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b6440",
+      "size": 220
+    },
+    {
+      "table": ".symtab",
+      "name": "gzflush",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b6284",
+      "size": 148
+    },
+    {
+      "table": ".symtab",
+      "name": "gzclearerr",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3ce0",
+      "size": 124
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_del",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3eb4",
+      "size": 136
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_hd2",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4794",
+      "size": 84
+    },
+    {
+      "table": ".symtab",
+      "name": "deflateReset",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b0540",
+      "size": 444
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_change_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3044",
+      "size": 212
+    },
+    {
+      "table": ".symtab",
+      "name": "gzfread",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4a30",
+      "size": 184
+    },
+    {
+      "table": ".symtab",
+      "name": "gztell64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3ae0",
+      "size": 64
+    },
+    {
+      "table": ".symtab",
+      "name": "gzclose",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3200",
+      "size": 36
+    },
+    {
+      "table": ".symtab",
+      "name": "gzwrite",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b59f0",
+      "size": 152
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_hd_vec",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3b90",
+      "size": 152
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_del",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4a50",
+      "size": 184
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_get_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4ed4",
+      "size": 8
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_get_max_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4f80",
+      "size": 8
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_free",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2e00",
+      "size": 128
+    },
+    {
+      "table": ".symtab",
+      "name": "gzputs",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5c40",
+      "size": 184
+    },
+    {
+      "table": ".symtab",
+      "name": "deflate",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b0ee0",
+      "size": 6388
+    },
+    {
+      "table": ".symtab",
+      "name": "deflateEnd",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b2a20",
+      "size": 308
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_init",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2c30",
+      "size": 132
+    },
+    {
+      "table": ".symtab",
+      "name": "deflate_copyright",
+      "binding": 1,
+      "type": 1,
+      "visibility": 0,
+      "section": 16,
+      "address": "0x37320a0",
+      "size": 70
+    },
+    {
+      "table": ".symtab",
+      "name": "gzeof",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3c50",
+      "size": 48
+    },
+    {
+      "table": ".symtab",
+      "name": "gzrewind",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b36a0",
+      "size": 196
+    },
+    {
+      "table": ".symtab",
+      "name": "_ZN3ada4idna7deflate11inflate_rawEPKhmPhm",
+      "binding": 2,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fe6f70",
+      "size": 4508
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_hd_bufs",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc31d0",
+      "size": 2180
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_new2",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3dd4",
+      "size": 224
+    },
+    {
+      "table": ".symtab",
+      "name": "gzsetparams",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b6320",
+      "size": 284
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_get_max_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4ee0",
+      "size": 8
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_hd_nv",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3f40",
+      "size": 2048
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_option_set_max_deflate_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fb14a4",
+      "size": 20
+    },
+    {
+      "table": ".symtab",
+      "name": "gzopen64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b35b0",
+      "size": 12
+    },
+    {
+      "table": ".symtab",
+      "name": "gzoffset64",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3b60",
+      "size": 116
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_session_get_hd_deflate_dynamic_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fbc430",
+      "size": 8
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_new",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4880",
+      "size": 220
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_bound",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3cd0",
+      "size": 52
+    },
+    {
+      "table": ".symtab",
+      "name": "gzgetc",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4af0",
+      "size": 180
+    },
+    {
+      "table": ".symtab",
+      "name": "gzopen",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b35a0",
+      "size": 12
+    },
+    {
+      "table": ".symtab",
+      "name": "gzread",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4950",
+      "size": 224
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_hd",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc47f0",
+      "size": 84
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_hd3",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4740",
+      "size": 84
+    },
+    {
+      "table": ".symtab",
+      "name": "inflate",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2306570",
+      "size": 8552
+    },
+    {
+      "table": ".symtab",
+      "name": "gzvprintf",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5d00",
+      "size": 668
+    },
+    {
+      "table": ".symtab",
+      "name": "gzungetc",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b4c60",
+      "size": 632
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_hd_vec2",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3c30",
+      "size": 152
+    },
+    {
+      "table": ".symtab",
+      "name": "gzclose_r",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b50f0",
+      "size": 168
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_hd2",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3af0",
+      "size": 152
+    },
+    {
+      "table": ".symtab",
+      "name": "inflate_fast_chunk_",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2309180",
+      "size": 2076
+    },
+    {
+      "table": ".symtab",
+      "name": "inflateInit_",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2306394",
+      "size": 296
+    },
+    {
+      "table": ".symtab",
+      "name": "gzfwrite",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5a90",
+      "size": 176
+    },
+    {
+      "table": ".symtab",
+      "name": "deflateInit_",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b2f24",
+      "size": 28
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_change_table_size",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2f20",
+      "size": 292
+    },
+    {
+      "table": ".symtab",
+      "name": "gzdopen",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b35c0",
+      "size": 140
+    },
+    {
+      "table": ".symtab",
+      "name": "inflateReset",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x2306030",
+      "size": 184
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_get_num_table_entries",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4e50",
+      "size": 12
+    },
+    {
+      "table": ".symtab",
+      "name": "gzputc",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b5b40",
+      "size": 256
+    },
+    {
+      "table": ".symtab",
+      "name": "inflate_copyright",
+      "binding": 1,
+      "type": 1,
+      "visibility": 0,
+      "section": 16,
+      "address": "0x3732ea0",
+      "size": 49
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_get_num_table_entries",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4ef0",
+      "size": 12
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_get_table_entry",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc4e60",
+      "size": 116
+    },
+    {
+      "table": ".symtab",
+      "name": "gzbuffer",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3650",
+      "size": 76
+    },
+    {
+      "table": ".symtab",
+      "name": "gzseek",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3920",
+      "size": 444
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_deflate_hd",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc3a54",
+      "size": 152
+    },
+    {
+      "table": ".symtab",
+      "name": "nghttp2_hd_inflate_free",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x1fc2e80",
+      "size": 160
+    },
+    {
+      "table": ".symtab",
+      "name": "inflateEnd",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x23086e0",
+      "size": 172
+    },
+    {
+      "table": ".symtab",
+      "name": "gztell",
+      "binding": 1,
+      "type": 2,
+      "visibility": 0,
+      "section": 13,
+      "address": "0x18b3b20",
+      "size": 64
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "url": "https://api.github.com/repos/madler/zlib/issues/1310",
+  "repository_url": "https://api.github.com/repos/madler/zlib",
+  "labels_url": "https://api.github.com/repos/madler/zlib/issues/1310/labels{/name}",
+  "comments_url": "https://api.github.com/repos/madler/zlib/issues/1310/comments",
+  "events_url": "https://api.github.com/repos/madler/zlib/issues/1310/events",
+  "html_url": "https://github.com/madler/zlib/issues/1310",
+  "id": 5376740263,
+  "node_id": "I_kwDOACQAUs8AAAABQHqLpw",
+  "number": 1310,
+  "title": "Information on CVE-2026-85091",
+  "user": {
+    "login": "carnil",
+    "id": 773068,
+    "node_id": "MDQ6VXNlcjc3MzA2OA==",
+    "avatar_url": "https://avatars.githubusercontent.com/u/773068?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/carnil",
+    "html_url": "https://github.com/carnil",
+    "followers_url": "https://api.github.com/users/carnil/followers",
+    "following_url": "https://api.github.com/users/carnil/following{/other_user}",
+    "gists_url": "https://api.github.com/users/carnil/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/carnil/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/carnil/subscriptions",
+    "organizations_url": "https://api.github.com/users/carnil/orgs",
+    "repos_url": "https://api.github.com/users/carnil/repos",
+    "events_url": "https://api.github.com/users/carnil/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/carnil/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "labels": [
+
+  ],
+  "state": "open",
+  "locked": false,
+  "assignees": [
+
+  ],
+  "milestone": null,
+  "comments": 2,
+  "created_at": "2026-09-07T15:47:49Z",
+  "updated_at": "2026-09-08T11:42:14Z",
+  "closed_at": null,
+  "assignee": null,
+  "author_association": "NONE",
+  "active_lock_reason": null,
+  "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+  },
+  "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+  },
+  "body": "Hi\n\nI'm not sure if you got notified about a new CVE assignment for zlib, originating from\nhttps://gist.github.com/thesmartshadow/e0b9481792afb7c31e86fee1ff084490 . The\nassigned CVE is CVE-2026-85091,\n\nWas this reported to you?\n\nRegards,\nSalvatore",
+  "closed_by": null,
+  "reactions": {
+    "url": "https://api.github.com/repos/madler/zlib/issues/1310/reactions",
+    "total_count": 1,
+    "+1": 1,
+    "-1": 0,
+    "laugh": 0,
+    "hooray": 0,
+    "confused": 0,
+    "heart": 0,
+    "rocket": 0,
+    "eyes": 0
+  },
+  "timeline_url": "https://api.github.com/repos/madler/zlib/issues/1310/timeline",
+  "performed_via_github_app": null,
+  "state_reason": null,
+  "pinned_comment": null
+}

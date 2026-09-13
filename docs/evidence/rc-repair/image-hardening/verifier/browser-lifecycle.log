@@ -1,0 +1,19 @@
+
+Running 14 tests using 1 worker
+
+  ✓   1 scripts/acceptance/browser.spec.cjs:7:1 › real owner login, protected portfolio and persisted server logout revocation (1.9s)
+  ✓   2 scripts/acceptance/browser.spec.cjs:15:1 › pre-existing non-owner cannot log in through the actual form (1.4s)
+  ✓   3 scripts/acceptance/browser.spec.cjs:28:1 › manual acknowledgement, partial/final fill, accounting and reload through real services (2.9s)
+  ✓   4 scripts/acceptance/browser.spec.cjs:43:1 › accepted timeout reload and retry preserve one logical order, deliberate identical action creates another (3.3s)
+  ✓   5 scripts/acceptance/browser.spec.cjs:55:1 › broker rejection is persisted and displayed without fabricated fill (1.7s)
+  ✓   6 scripts/acceptance/browser.spec.cjs:59:1 › partial fill then broker cancellation retains only confirmed spending and shows canceled remainder (2.7s)
+  ✓   7 scripts/acceptance/browser.spec.cjs:64:1 › coordinated browser close cancels only owned stop, confirms, then submits bounded exit (2.8s)
+  ✓   8 scripts/acceptance/browser.spec.cjs:73:1 › core pages render authentic empty/provider data and provider outage stays explicit (2.6s)
+  ✓   9 scripts/acceptance/browser.spec.cjs:81:1 › real issued session expiration redirects browser without retaining portfolio (1.4s)
+  ✓  10 scripts/acceptance/browser.spec.cjs:86:1 › research workflow distinguishes recommendation from execution and shares spending (2.2s)
+  ✓  11 scripts/acceptance/browser.spec.cjs:95:1 › rapid double click produces one durable intent and one broker POST (1.9s)
+  ✓  12 scripts/acceptance/browser.spec.cjs:103:1 › unfilled canceled order releases reservation and displays zero fills (2.1s)
+  ✓  13 scripts/acceptance/browser.spec.cjs:110:1 › uncertain protection cancellation remains visible and blocks overlapping close submission (2.6s)
+  ✓  14 scripts/acceptance/browser.spec.cjs:122:1 › confirmed admission rejection permits a corrected ticket without weakening retry identity (1.8s)
+
+  14 passed (32.3s)

@@ -1,0 +1,25 @@
+{
+  "command": [
+    "docker",
+    "scout",
+    "cves",
+    "local://sha256:7f640e73b61a18bb2ef2914dbef374ed89528aebe3a81e9fe9567f161a9a6019",
+    "--platform",
+    "linux/arm64",
+    "--exit-code",
+    "--locations",
+    "--format",
+    "sarif",
+    "--output",
+    "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/image-hardening/backend.sarif.json"
+  ],
+  "startedAt": "2026-09-13T19:05:56.685928+00:00",
+  "finishedAt": "2026-09-13T19:06:09.352298+00:00",
+  "exitCode": 2,
+  "imageId": "sha256:7f640e73b61a18bb2ef2914dbef374ed89528aebe3a81e9fe9567f161a9a6019",
+  "platform": "linux/arm64",
+  "layers": [
+    "sha256:2b391457ac2b2d3de128a4fc7541f081d4b50f27c2ec2a5d063e0a9c17b9bde6",
+    "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef"
+  ]
+}

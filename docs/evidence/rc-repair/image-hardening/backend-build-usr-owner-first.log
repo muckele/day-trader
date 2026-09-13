@@ -1,0 +1,90 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 944B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 188B done
+#3 DONE 0.0s
+
+#4 [install 1/7] FROM docker.io/library/node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 17.69kB done
+#5 DONE 0.0s
+
+#6 [install 4/7] COPY package*.json ./
+#6 CACHED
+
+#7 [install 3/7] WORKDIR /app
+#7 CACHED
+
+#8 [install 2/7] RUN apt-get update  && apt-get upgrade -y  && apt-get install -y --no-install-recommends ca-certificates tzdata  && rm -rf /var/lib/apt/lists/*
+#8 CACHED
+
+#9 [install 5/7] RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+#9 CACHED
+
+#10 [install 6/7] COPY . .
+#10 DONE 0.0s
+
+#11 [install 7/7] RUN node docker/assemble-runtime.cjs
+#11 0.118 dpkg-query: no path found matching pattern /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+#11 0.119 node:child_process:981
+#11 0.119     throw err;
+#11 0.119     ^
+#11 0.119 
+#11 0.119 Error: Command failed: dpkg-query -S /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+#11 0.119 dpkg-query: no path found matching pattern /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+#11 0.119 
+#11 0.119     at genericNodeError (node:internal/errors:986:15)
+#11 0.119     at wrappedFn (node:internal/errors:540:14)
+#11 0.119     at checkExecSyncError (node:child_process:942:11)
+#11 0.119     at execFileSync (node:child_process:978:15)
+#11 0.119     at ownerOf (/app/docker/assemble-runtime.cjs:16:16)
+#11 0.119     at copy (/app/docker/assemble-runtime.cjs:21:53)
+#11 0.119     at Object.<anonymous> (/app/docker/assemble-runtime.cjs:39:129)
+#11 0.119     at Module._compile (node:internal/modules/cjs/loader:1929:14)
+#11 0.119     at Object..js (node:internal/modules/cjs/loader:2060:10)
+#11 0.119     at Module.load (node:internal/modules/cjs/loader:1651:32) {
+#11 0.119   status: 1,
+#11 0.119   signal: null,
+#11 0.119   output: [
+#11 0.119     null,
+#11 0.119     '',
+#11 0.119     'dpkg-query: no path found matching pattern /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1\n'
+#11 0.119   ],
+#11 0.119   pid: 15,
+#11 0.119   stdout: '',
+#11 0.119   stderr: 'dpkg-query: no path found matching pattern /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1\n'
+#11 0.119 }
+#11 0.119 
+#11 0.119 Node.js v24.21.0
+#11 ERROR: process "/bin/sh -c node docker/assemble-runtime.cjs" did not complete successfully: exit code: 1
+------
+ > [install 7/7] RUN node docker/assemble-runtime.cjs:
+0.119     null,
+0.119     '',
+0.119     'dpkg-query: no path found matching pattern /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1\n'
+0.119   ],
+0.119   pid: 15,
+0.119   stdout: '',
+0.119   stderr: 'dpkg-query: no path found matching pattern /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1\n'
+0.119 }
+0.119 
+0.119 Node.js v24.21.0
+------
+Dockerfile:13
+--------------------
+  11 |     RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+  12 |     COPY . .
+  13 | >>> RUN node docker/assemble-runtime.cjs
+  14 |     
+  15 |     # Same official Node binary and Debian glibc; no Alpine/musl or custom binaries.
+--------------------
+ERROR: failed to build: failed to solve: process "/bin/sh -c node docker/assemble-runtime.cjs" did not complete successfully: exit code: 1

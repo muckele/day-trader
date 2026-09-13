@@ -1,0 +1,76 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 944B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 188B done
+#3 DONE 0.0s
+
+#4 [install 1/7] FROM docker.io/library/node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 18.01kB done
+#5 DONE 0.0s
+
+#6 [install 2/7] RUN apt-get update  && apt-get upgrade -y  && apt-get install -y --no-install-recommends ca-certificates tzdata  && rm -rf /var/lib/apt/lists/*
+#6 CACHED
+
+#7 [install 3/7] WORKDIR /app
+#7 CACHED
+
+#8 [install 4/7] COPY package*.json ./
+#8 CACHED
+
+#9 [install 5/7] RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+#9 CACHED
+
+#10 [install 6/7] COPY . .
+#10 DONE 0.0s
+
+#11 [install 7/7] RUN node docker/assemble-runtime.cjs
+#11 2.296 /app/docker/assemble-runtime.cjs:18
+#11 2.296   if (!result) throw new Error(`No Debian owner for ${source}`);
+#11 2.296                ^
+#11 2.296 
+#11 2.296 Error: No Debian owner for /etc/nsswitch.conf
+#11 2.296     at ownerOf (/app/docker/assemble-runtime.cjs:18:22)
+#11 2.296     at copy (/app/docker/assemble-runtime.cjs:24:53)
+#11 2.296     at Object.<anonymous> (/app/docker/assemble-runtime.cjs:51:1)
+#11 2.296     at Module._compile (node:internal/modules/cjs/loader:1929:14)
+#11 2.296     at Object..js (node:internal/modules/cjs/loader:2060:10)
+#11 2.296     at Module.load (node:internal/modules/cjs/loader:1651:32)
+#11 2.296     at Module._load (node:internal/modules/cjs/loader:1443:12)
+#11 2.296     at wrapModuleLoad (node:internal/modules/cjs/loader:261:19)
+#11 2.296     at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+#11 2.296     at node:internal/main/run_main_module:33:47
+#11 2.296 
+#11 2.296 Node.js v24.21.0
+#11 ERROR: process "/bin/sh -c node docker/assemble-runtime.cjs" did not complete successfully: exit code: 1
+------
+ > [install 7/7] RUN node docker/assemble-runtime.cjs:
+2.296     at Object.<anonymous> (/app/docker/assemble-runtime.cjs:51:1)
+2.296     at Module._compile (node:internal/modules/cjs/loader:1929:14)
+2.296     at Object..js (node:internal/modules/cjs/loader:2060:10)
+2.296     at Module.load (node:internal/modules/cjs/loader:1651:32)
+2.296     at Module._load (node:internal/modules/cjs/loader:1443:12)
+2.296     at wrapModuleLoad (node:internal/modules/cjs/loader:261:19)
+2.296     at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+2.296     at node:internal/main/run_main_module:33:47
+2.296 
+2.296 Node.js v24.21.0
+------
+Dockerfile:13
+--------------------
+  11 |     RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+  12 |     COPY . .
+  13 | >>> RUN node docker/assemble-runtime.cjs
+  14 |     
+  15 |     # Same official Node binary and Debian glibc; no Alpine/musl or custom binaries.
+--------------------
+ERROR: failed to build: failed to solve: process "/bin/sh -c node docker/assemble-runtime.cjs" did not complete successfully: exit code: 1

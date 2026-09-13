@@ -1,0 +1,7 @@
+{
+  "scope": "Current local backend JavaScript/JSON plus installed dependency tree; final exported app inspection is separately required",
+  "packageLockSha256": "4c4dbbfdedd053bbda1033070a16dd3b1a46ae3bbc4090adbcac2cc1f3c24025",
+  "nativeAddonFiles": [],
+  "ffiOrGzipFileApiReferences": [],
+  "lockfileNativeOrPlatformIndicators": []
+}

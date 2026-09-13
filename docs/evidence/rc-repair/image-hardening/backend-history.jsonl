@@ -1,0 +1,6 @@
+{"Comment":"buildkit.dockerfile.v0","CreatedAt":"2026-09-13T12:05:03-07:00","CreatedBy":"CMD [\"/usr/local/bin/node\" \"server.js\"]","CreatedSince":"3 minutes ago","ID":"sha256:7f640e73b61a18bb2ef2914dbef374ed89528aebe3a81e9fe9567f161a9a6019","Size":"0B"}
+{"Comment":"buildkit.dockerfile.v0","CreatedAt":"2026-09-13T12:05:03-07:00","CreatedBy":"EXPOSE [8080/tcp]","CreatedSince":"3 minutes ago","ID":"\u003cmissing\u003e","Size":"0B"}
+{"Comment":"buildkit.dockerfile.v0","CreatedAt":"2026-09-13T12:05:03-07:00","CreatedBy":"USER 1000:1000","CreatedSince":"3 minutes ago","ID":"\u003cmissing\u003e","Size":"0B"}
+{"Comment":"buildkit.dockerfile.v0","CreatedAt":"2026-09-13T12:05:03-07:00","CreatedBy":"ENV NODE_ENV=production PATH=/usr/local/bin NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt","CreatedSince":"3 minutes ago","ID":"\u003cmissing\u003e","Size":"0B"}
+{"Comment":"buildkit.dockerfile.v0","CreatedAt":"2026-09-13T12:05:03-07:00","CreatedBy":"WORKDIR /app","CreatedSince":"3 minutes ago","ID":"\u003cmissing\u003e","Size":"0B"}
+{"Comment":"buildkit.dockerfile.v0","CreatedAt":"2026-09-13T12:05:03-07:00","CreatedBy":"COPY /runtime-root/ / # buildkit","CreatedSince":"3 minutes ago","ID":"\u003cmissing\u003e","Size":"182MB"}

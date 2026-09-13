@@ -1,0 +1,148 @@
+{
+  "command": "env PATH=/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin:/usr/local/bin:/usr/bin:/bin PLAYWRIGHT_CHROMIUM_EXECUTABLE=/Users/Matt/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell /private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node scripts/verify-mvp.mjs --report-dir docs/evidence/rc-repair/image-hardening/verifier",
+  "exitCode": 0,
+  "sourceSha": "6083c66184695ee4c31b2d617414ecd24d2b1035",
+  "generatedAt": "2026-09-13T19:10:58.161Z",
+  "gates": 23,
+  "durationMs": 197297,
+  "scenarios": {
+    "runtime": {
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": null
+    },
+    "backend-install": {
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": null
+    },
+    "frontend-install": {
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": null
+    },
+    "verification-tests": {
+      "passedTests": 16,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "backend-tests": {
+      "passedTests": 388,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "mongo-integration": {
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "mongo-orderLifecycle.faults": {
+      "passedTests": 9,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "mongo-orderLifecycle.mongo": {
+      "passedTests": 16,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "mongo-orderProtection": {
+      "passedTests": 8,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "mongo-phase3Financial.mongo": {
+      "passedTests": 17,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "mongo-phase3Smtp.mongo": {
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "mongo-rc002Exposure.mongo": {
+      "passedTests": 25,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "frontend-tests": {
+      "passedTests": 40,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "frontend-build": {
+      "passedTests": null,
+      "failedTests": null,
+      "skippedTests": null,
+      "flakyTests": null
+    },
+    "mongo-nonOwnerAuthorization.fullstack": {
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "mongo-phase3Admission.mongo": {
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "provider-contract": {
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "process-acceptance": {
+      "passedTests": 9,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "rc-dispatch": {
+      "passedTests": 25,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "rc-exit-dispatch": {
+      "passedTests": 10,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "rc-exposure-process": {
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "browser-lifecycle": {
+      "passedTests": 14,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    },
+    "browser-core-screens": {
+      "passedTests": 8,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0
+    }
+  }
+}

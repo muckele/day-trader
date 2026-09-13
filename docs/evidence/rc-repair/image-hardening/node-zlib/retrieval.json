@@ -1,0 +1,90 @@
+[
+  {
+    "file": "deps__zlib__gzwrite.c",
+    "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/deps/zlib/gzwrite.c",
+    "retrievedAt": "2026-09-13T19:05:01.351932+00:00",
+    "exit": 0,
+    "bytes": 22721,
+    "sha256": "2ce783294c688330c716bfe106f43167d3dae5be84994176bc304d205d4f5b04"
+  },
+  {
+    "file": "deps__zlib__gzguts.h",
+    "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/deps/zlib/gzguts.h",
+    "retrievedAt": "2026-09-13T19:05:01.387299+00:00",
+    "exit": 0,
+    "bytes": 7194,
+    "sha256": "a8b9589da5bab397a98685eb5cbc97a414aafec61d557f11453e1ac6d5364f2a"
+  },
+  {
+    "file": "deps__zlib__zlib.gyp",
+    "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/deps/zlib/zlib.gyp",
+    "retrievedAt": "2026-09-13T19:05:01.346276+00:00",
+    "exit": 0,
+    "bytes": 9233,
+    "sha256": "d57e1daed966e3fb4094b7d7b24012d1afa14472059965dbeb6e52e590abde5f"
+  },
+  {
+    "file": "deps__zlib__BUILD.gn",
+    "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/deps/zlib/BUILD.gn",
+    "retrievedAt": "2026-09-13T19:05:01.514397+00:00",
+    "exit": 0,
+    "bytes": 12848,
+    "sha256": "e40d08770ba695a47a7ebb5fabf7574716453ddfdd4d6185b88491a8b7f35dd0"
+  },
+  {
+    "file": "deps__zlib__zlib.h",
+    "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/deps/zlib/zlib.h",
+    "retrievedAt": "2026-09-13T19:05:01.756450+00:00",
+    "exit": 0,
+    "bytes": 104484,
+    "sha256": "0ff41598d145693759a8322bb90bc4f2c57dcdcb3635fdf5b2195bf13df15b54"
+  },
+  {
+    "file": "src__node_zlib.cc",
+    "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/src/node_zlib.cc",
+    "retrievedAt": "2026-09-13T19:05:01.702407+00:00",
+    "exit": 0,
+    "bytes": 71359,
+    "sha256": "4c2ed66fc8d02757bd5a4f2acfcc328d9c78a15045efbd897068d5e870c6b842"
+  },
+  {
+    "file": "lib__zlib.js",
+    "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/lib/zlib.js",
+    "retrievedAt": "2026-09-13T19:05:01.552545+00:00",
+    "exit": 0,
+    "bytes": 32658,
+    "sha256": "3088e3a836df14e8ce86209c3818024dd0d7859dee62a4ff80e119c0a55097da"
+  },
+  {
+    "file": "node.gyp",
+    "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/node.gyp",
+    "retrievedAt": "2026-09-13T19:05:01.851081+00:00",
+    "exit": 0,
+    "bytes": 55081,
+    "sha256": "a7c34a79e8d27bd91d2d59728f6a824918c2f26022463c345f411feb07a58eb9"
+  },
+  {
+    "file": "deps__zlib__README.chromium",
+    "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/deps/zlib/README.chromium",
+    "retrievedAt": "2026-09-13T19:05:01.713418+00:00",
+    "exit": 0,
+    "bytes": 1654,
+    "sha256": "18f3b809738eb94ac818546ca8a67563691697aecaa77f052610264dee8ba5b7"
+  },
+  {
+    "file": "upstream-issue-1310.json",
+    "url": "https://api.github.com/repos/madler/zlib/issues/1310",
+    "retrievedAt": "2026-09-13T19:05:01.920845+00:00",
+    "exit": 0,
+    "bytes": 2829,
+    "sha256": "a41aef2a6520ba0632aab53c2a80b86c90ba4d402d84ab3257031bcf1511f31b"
+  },
+  {
+    "file": "upstream-issue-1310-comments.json",
+    "url": "https://api.github.com/repos/madler/zlib/issues/1310/comments",
+    "retrievedAt": "2026-09-13T19:05:01.908101+00:00",
+    "exit": 0,
+    "bytes": 4294,
+    "sha256": "82464669b153f0fde164ee7020841ebefc109a841ccf7f6de1f900744c21fb8f"
+  }
+]

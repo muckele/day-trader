@@ -1,0 +1,10 @@
+{
+  "nodeVersion": "24.21.0",
+  "npmVersion": "11.19.0",
+  "nodeExecutable": "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+  "nodeOnPathExecutable": "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+  "npmExecutable": "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/lib/node_modules/npm/bin/npm-cli.js",
+  "npmNodeExecutable": "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+  "platform": "darwin",
+  "architecture": "arm64"
+}

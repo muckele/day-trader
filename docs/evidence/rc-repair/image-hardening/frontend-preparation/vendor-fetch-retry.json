@@ -1,0 +1,18 @@
+[
+  {
+    "url": "https://raw.githubusercontent.com/docker-library/official-images/master/library/nginx",
+    "error": "<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)>"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/nginx/docker-nginx/c5b3ce398e37067d93ab1edf803e9b96a1116092/stable/alpine-slim/Dockerfile",
+    "error": "<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)>"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/alpinelinux/aports/3.24-stable/main/util-linux/APKBUILD",
+    "error": "<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)>"
+  },
+  {
+    "url": "https://secdb.alpinelinux.org/v3.24/main.json",
+    "error": "<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)>"
+  }
+]

@@ -1,0 +1,113 @@
+TAP version 13
+# Subtest: Phase 3 real Mongo cash and coordinated closes
+    # Subtest: confirmed sale/deposit refresh preserves spending, repeated refresh never credits twice
+    ok 1 - confirmed sale/deposit refresh preserves spending, repeated refresh never credits twice
+      ---
+      duration_ms: 125.93025
+      type: 'test'
+      ...
+    # Subtest: unresolved entry blocks refresh and invalid/withdrawn cash prevents entry
+    ok 2 - unresolved entry blocks refresh and invalid/withdrawn cash prevents entry
+      ---
+      duration_ms: 39.935917
+      type: 'test'
+      ...
+    # Subtest: close cancels only app stop, waits for terminal evidence, then sizes actual position
+    ok 3 - close cancels only app stop, waits for terminal evidence, then sizes actual position
+      ---
+      duration_ms: 88.648959
+      type: 'test'
+      ...
+    # Subtest: unrelated exit never canceled and blocks full close
+    ok 4 - unrelated exit never canceled and blocks full close
+      ---
+      duration_ms: 17.892542
+      type: 'test'
+      ...
+    # Subtest: concurrent close requests share protection lease and submit once
+    ok 5 - concurrent close requests share protection lease and submit once
+      ---
+      duration_ms: 78.533708
+      type: 'test'
+      ...
+    # Subtest: expired close relinquishes protection suppression and does not submit later
+    ok 6 - expired close relinquishes protection suppression and does not submit later
+      ---
+      duration_ms: 47.934417
+      type: 'test'
+      ...
+    # Subtest: pending close blocks independent manual sell even after stops cancel
+    ok 7 - pending close blocks independent manual sell even after stops cancel
+      ---
+      duration_ms: 20.345833
+      type: 'test'
+      ...
+    # Subtest: stale cash snapshot and external pending buy cannot refresh capacity
+    ok 8 - stale cash snapshot and external pending buy cannot refresh capacity
+      ---
+      duration_ms: 9.0005
+      type: 'test'
+      ...
+    # Subtest: accepted close timeout survives service restart and never repeats POST
+    ok 9 - accepted close timeout survives service restart and never repeats POST
+      ---
+      duration_ms: 86.302209
+      type: 'test'
+      ...
+    # Subtest: lease loss after stop discovery prevents broker cancellation
+    ok 10 - lease loss after stop discovery prevents broker cancellation
+      ---
+      duration_ms: 22.439791
+      type: 'test'
+      ...
+    # Subtest: unknown stop identity fails safely without cancel or close writes
+    ok 11 - unknown stop identity fails safely without cancel or close writes
+      ---
+      duration_ms: 12.1035
+      type: 'test'
+      ...
+    # Subtest: unfilled close deadline cancels its own exit and returns remaining position to protection
+    ok 12 - unfilled close deadline cancels its own exit and returns remaining position to protection
+      ---
+      duration_ms: 105.554834
+      type: 'test'
+      ...
+    # Subtest: protective acceptance with lost broker ID is discovered through durable client identity
+    ok 13 - protective acceptance with lost broker ID is discovered through durable client identity
+      ---
+      duration_ms: 39.138459
+      type: 'test'
+      ...
+    # Subtest: production admission refuses unready execution before any intent or protective mutation
+    ok 14 - production admission refuses unready execution before any intent or protective mutation
+      ---
+      duration_ms: 28.787083
+      type: 'test'
+      ...
+    # Subtest: bounded recovery does no broker work while idle and restores stops after expired close
+    ok 15 - bounded recovery does no broker work while idle and restores stops after expired close
+      ---
+      duration_ms: 122.407375
+      type: 'test'
+      ...
+    # Subtest: protection restoration timeout stays scheduled and recovers accepted stop without duplication
+    ok 16 - protection restoration timeout stays scheduled and recovers accepted stop without duplication
+      ---
+      duration_ms: 109.29525
+      type: 'test'
+      ...
+    1..16
+ok 1 - Phase 3 real Mongo cash and coordinated closes
+  ---
+  duration_ms: 1125.987125
+  type: 'test'
+  ...
+1..1
+# tests 17
+# suites 0
+# pass 17
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1252.953083

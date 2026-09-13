@@ -1,10 +1,6 @@
-> **2026-09-13 authenticated Scout result: scans COMPLETE WITH FINDINGS; combined local RC NO-GO.** Backend65 CVEs (2Critical,14High,14Medium,31Low,4Unspecified); frontend8 (0Critical,4High,0Medium,3Low,1Unspecified). Both exact local Linuxarm64 targets exited2 with valid SARIF. Authentication is resolved; remaining blocker is findings/applicability/residual-risk disposition, not missing analysis. See `docs/evidence/rc-repair/image-scan/README.md` and `authenticated-retry/critical-high-dispositions.md`. No source/package/runtime change or rebuild; unchanged23/23 verification retained. Earlier approval/sign-in checkpoint text below is historical.
-
-> **2026-09-13 authorized scan continuation: NO-GO — image analysis remains incomplete because Docker Scout requires sign-in.** Both verified immutable local Linuxarm64 targets were attempted with explicit user authorization and normal approval; each exited1 without SARIF. Severity counts are unknown. The earlier metadata-authorization blocker is superseded; no credentials/sign-in, upgrades or broader transfers were performed. See `docs/evidence/rc-repair/image-scan/README.md` for exact commands, identities, timestamps and results. The unchanged 23/23 source-bound verification is retained; no full suite rerun.
-
 # Owner-only paper MVP acceptance ledger — RC repair
 
-**Combined local RC: NO-GO pending authenticated image CVE analysis.** RC-001 and RC-002 are repaired and verified under the mandatory local regression matrix. Required combined checks cannot be waived. The original candidate `1972254bfcfd0b6ff724876cd0d2a2b15006ac26` remains NO-GO; its historical 19/19 report did not exercise the two reproduced defects.
+**Combined local RC: GO for the exact hardened images/configuration.** RC-001/RC-002 remain repaired; fresh23/23 verifier and container/image checks passed. Retained zlib receives two verified C dispositions; no unresolved Critical/High D/E remains. The original candidate1972254 remains NO-GO. See the [current image decision](evidence/rc-repair/image-hardening/README.md).
 
 | Acceptance item | Current evidence and status | Remaining limit |
 |---|---|---|
@@ -19,15 +15,15 @@
 | Owner session and paper isolation | Full browser/API/Mongo/provider fixture acceptance retained; production image readiness with guard intact | External/deployed account and HTTPS configuration unobserved |
 | Research/manual/browser foundation | Existing source/provenance, deliberate new intent, retry/double-click, nine core screens and simulator separation retained | No strategy or profitability evidence granted |
 | Worker and notification foundation | Actual separate processes and local STARTTLS/outbox acceptance retained | Local provider acceptance is not external inbox receipt or unattended deployed operation |
-| Supported runtime | Node24.21.0/npm11.19.0 exact pins, bundled executable provenance and explicit TAP output; no dependency graph migration | Node20 runs are historical comparison only |
+| Supported runtime | Node24.21.0, npm11.19.0 in builder/host; final backend omits npm and runs nonroot Node directly | Application-maintained Debian runtime closure must be revalidated on native/runtime changes |
 | Linux images/startup/static navigation | Both linux/arm64 builds exit0; isolated backend production readiness; nginx1.30.4 config and nine routes; actual browser login rendering | No Linux amd64 execution or deployment claim |
 | npm dependencies | Fresh authorized registry audits: backend0; frontend57 (28high15moderate14low), actual findings preserved | Tooling/browser advisory disposition remains open; no forced upgrade |
-| Image security | Local inventory, image environment/file exclusions and official version evidence completed | **BLOCKED:** both authorized immutable-image Scout attempts exited1 requesting Docker sign-in; no SARIF or vulnerability counts |
+| Image security | PASS: backend0C/0H/1M/8L, frontend0; all20 prior C/H component occurrences removed | Retained zlib C dispositions require exact consumers/no native injection; lower findings and frontend npm audit remain tracked |
 | Hosted CI | Runtime YAML/config locally reviewed; complete verifier mandatory | NOT RUN; no push/hosted trigger |
 | External account/SMTP acceptance | Controlled fixtures only; guarded external tool remains existing foundation | NOT RUN; separately authorized external broker/SMTP actions required |
 | Deployment and roadmap operational gates | Existing foundation and master brief mapping preserved | NOT RUN: deployment provenance, backup/restore, revocation/recovery drills, monitoring/soak |
 | Broader agentic roadmap | No new agent/strategy/ledger was started | Mandate/economics/commercial evidence and strategy evaluation remain incomplete |
 
-Exact commands, counts and failed-run distinctions are in `mvp-verification.md`. Current deterministic report: `docs/evidence/rc-repair/runtime-final-verifier/report.json`; overall checkpoint and security blocker: `docs/evidence/rc-repair/repair-decision.md`. The deterministic verifier's own VERIFIED result does not cover the separate required image-security gate and cannot alone grant combined local RC status.
+Exact commands, counts and failed-run distinctions are in `mvp-verification.md`. Current deterministic report: `docs/evidence/rc-repair/image-hardening/verifier/report.json`; current decision: `docs/evidence/rc-repair/image-hardening/README.md`. The deterministic verifier's own VERIFIED result does not cover the separate required image-security gate and cannot alone grant combined local RC status.
 
 The historical `docs/evidence/verification/report.json` and `.md` remain byte-for-byte unchanged. Node parent suite entries are counted explicitly; 24 substantive RC-002 child scenarios produce 25 Node entries. Missing, duplicate, skipped, TODO or failed required identities fail the verifier regardless of aggregate totals. Actual assertions and red/green evidence were reviewed; scenario names alone are insufficient proof.

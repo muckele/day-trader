@@ -1,0 +1,12 @@
+{
+  "filesChecked": 135,
+  "knownCredentialFormatHits": [],
+  "scope": "Bounded recognized-format check plus manual image config/history/flag review; no claim of exhaustive secret detection",
+  "sensitiveLayerFlagsReviewed": "layer-inspection.json",
+  "sourceManifestUnchanged": true,
+  "historicalEvidenceUnchanged": true,
+  "briefUnchangedUntracked": true,
+  "rawEvidenceWhitespace": "Full staged whitespace check reports verbatim scanner/build/vendor output spacing; raw evidence left unchanged. Authored Markdown/Python whitespace check passes.",
+  "stagedPathsDocumentationOnly": true,
+  "masterBriefExcludedFromIndex": true
+}

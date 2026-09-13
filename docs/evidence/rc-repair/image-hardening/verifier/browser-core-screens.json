@@ -1,0 +1,652 @@
+{
+  "config": {
+    "configFile": "/Users/Matt/Projects/day-trader/scripts/acceptance/playwright.config.cjs",
+    "rootDir": "/Users/Matt/Projects/day-trader/scripts/acceptance",
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/Users/Matt/Projects/day-trader/docs/evidence/phase3-browser-artifacts",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "",
+        "name": "",
+        "testDir": "/Users/Matt/Projects/day-trader/scripts/acceptance",
+        "testIgnore": [],
+        "testMatch": [
+          "*.spec.cjs"
+        ],
+        "timeout": 60000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list"
+      ],
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "runAgents": "none",
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.58.2",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "screens.spec.cjs",
+      "file": "screens.spec.cjs",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "core screen empty persisted data remains explicit and source separated",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 2837,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "steps": [
+                    {
+                      "title": "Home/watchlist",
+                      "duration": 180
+                    },
+                    {
+                      "title": "Stock",
+                      "duration": 159
+                    },
+                    {
+                      "title": "Research",
+                      "duration": 191
+                    },
+                    {
+                      "title": "Trade Plan",
+                      "duration": 153
+                    },
+                    {
+                      "title": "Portfolio",
+                      "duration": 153
+                    },
+                    {
+                      "title": "Activity",
+                      "duration": 148
+                    },
+                    {
+                      "title": "Analytics",
+                      "duration": 151
+                    },
+                    {
+                      "title": "RoboTrader",
+                      "duration": 158
+                    },
+                    {
+                      "title": "Trading System",
+                      "duration": 156
+                    }
+                  ],
+                  "startTime": "2026-09-13T19:10:10.845Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "54b64ef50a6ddf17294b-2fc16e6574e17d46f4ad",
+          "file": "screens.spec.cjs",
+          "line": 31,
+          "column": 1
+        },
+        {
+          "title": "core screen valid broker records never enter simulator performance",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 4148,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "steps": [
+                    {
+                      "title": "Home/watchlist",
+                      "duration": 156
+                    },
+                    {
+                      "title": "Stock",
+                      "duration": 149
+                    },
+                    {
+                      "title": "Research",
+                      "duration": 192
+                    },
+                    {
+                      "title": "Trade Plan",
+                      "duration": 157
+                    },
+                    {
+                      "title": "Portfolio",
+                      "duration": 164
+                    },
+                    {
+                      "title": "Activity",
+                      "duration": 155
+                    },
+                    {
+                      "title": "Analytics",
+                      "duration": 154
+                    },
+                    {
+                      "title": "RoboTrader",
+                      "duration": 159
+                    },
+                    {
+                      "title": "Trading System",
+                      "duration": 163
+                    }
+                  ],
+                  "startTime": "2026-09-13T19:10:13.785Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "54b64ef50a6ddf17294b-1120ff9f8a9c278b1a81",
+          "file": "screens.spec.cjs",
+          "line": 41,
+          "column": 1
+        },
+        {
+          "title": "each core screen exposes a loading state before its actual data response",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 23162,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "steps": [
+                    {
+                      "title": "Home/watchlist",
+                      "duration": 2362
+                    },
+                    {
+                      "title": "Stock",
+                      "duration": 2792
+                    },
+                    {
+                      "title": "Research",
+                      "duration": 2385
+                    },
+                    {
+                      "title": "Trade Plan",
+                      "duration": 2359
+                    },
+                    {
+                      "title": "Portfolio",
+                      "duration": 2364
+                    },
+                    {
+                      "title": "Activity",
+                      "duration": 2365
+                    },
+                    {
+                      "title": "Analytics",
+                      "duration": 2361
+                    },
+                    {
+                      "title": "RoboTrader",
+                      "duration": 2380
+                    },
+                    {
+                      "title": "Trading System",
+                      "duration": 2368
+                    }
+                  ],
+                  "startTime": "2026-09-13T19:10:17.939Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "54b64ef50a6ddf17294b-45f57e9db1788db6fbc7",
+          "file": "screens.spec.cjs",
+          "line": 88,
+          "column": 1
+        },
+        {
+          "title": "all core screens reject expired authentic sessions without showing cached private data",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 2784,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "steps": [
+                    {
+                      "title": "Home/watchlist",
+                      "duration": 176
+                    },
+                    {
+                      "title": "Stock",
+                      "duration": 154
+                    },
+                    {
+                      "title": "Research",
+                      "duration": 68
+                    },
+                    {
+                      "title": "Trade Plan",
+                      "duration": 153
+                    },
+                    {
+                      "title": "Portfolio",
+                      "duration": 150
+                    },
+                    {
+                      "title": "Activity",
+                      "duration": 148
+                    },
+                    {
+                      "title": "Analytics",
+                      "duration": 148
+                    },
+                    {
+                      "title": "RoboTrader",
+                      "duration": 149
+                    },
+                    {
+                      "title": "Trading System",
+                      "duration": 60
+                    }
+                  ],
+                  "startTime": "2026-09-13T19:10:41.107Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "54b64ef50a6ddf17294b-ac53b44ff10d38ee0766",
+          "file": "screens.spec.cjs",
+          "line": 107,
+          "column": 1
+        },
+        {
+          "title": "all core screens show backend unavailable rather than false logout or fabricated data",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5928,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "steps": [
+                    {
+                      "title": "Home/watchlist",
+                      "duration": 44
+                    },
+                    {
+                      "title": "Stock",
+                      "duration": 48
+                    },
+                    {
+                      "title": "Research",
+                      "duration": 44
+                    },
+                    {
+                      "title": "Trade Plan",
+                      "duration": 40
+                    },
+                    {
+                      "title": "Portfolio",
+                      "duration": 43
+                    },
+                    {
+                      "title": "Activity",
+                      "duration": 46
+                    },
+                    {
+                      "title": "Analytics",
+                      "duration": 46
+                    },
+                    {
+                      "title": "RoboTrader",
+                      "duration": 46
+                    },
+                    {
+                      "title": "Trading System",
+                      "duration": 50
+                    }
+                  ],
+                  "startTime": "2026-09-13T19:10:43.897Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "54b64ef50a6ddf17294b-011055ab274b75ce39a4",
+          "file": "screens.spec.cjs",
+          "line": 118,
+          "column": 1
+        },
+        {
+          "title": "provider outage is explicit while persisted simulator and plan screens stay source honest",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 2675,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "steps": [
+                    {
+                      "title": "Home/watchlist",
+                      "duration": 166
+                    },
+                    {
+                      "title": "Stock",
+                      "duration": 149
+                    },
+                    {
+                      "title": "Research",
+                      "duration": 156
+                    },
+                    {
+                      "title": "Trade Plan",
+                      "duration": 158
+                    },
+                    {
+                      "title": "Portfolio",
+                      "duration": 146
+                    },
+                    {
+                      "title": "Activity",
+                      "duration": 148
+                    },
+                    {
+                      "title": "Analytics",
+                      "duration": 156
+                    },
+                    {
+                      "title": "RoboTrader",
+                      "duration": 155
+                    },
+                    {
+                      "title": "Trading System",
+                      "duration": 166
+                    }
+                  ],
+                  "startTime": "2026-09-13T19:10:49.832Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "54b64ef50a6ddf17294b-736354a9850d48e908ed",
+          "file": "screens.spec.cjs",
+          "line": 132,
+          "column": 1
+        },
+        {
+          "title": "emptyMarketData: all core screens preserve source and expose unavailable research context",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 2723,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "steps": [
+                    {
+                      "title": "Home/watchlist",
+                      "duration": 167
+                    },
+                    {
+                      "title": "Stock",
+                      "duration": 151
+                    },
+                    {
+                      "title": "Research",
+                      "duration": 197
+                    },
+                    {
+                      "title": "Trade Plan",
+                      "duration": 155
+                    },
+                    {
+                      "title": "Portfolio",
+                      "duration": 153
+                    },
+                    {
+                      "title": "Activity",
+                      "duration": 145
+                    },
+                    {
+                      "title": "Analytics",
+                      "duration": 151
+                    },
+                    {
+                      "title": "RoboTrader",
+                      "duration": 158
+                    },
+                    {
+                      "title": "Trading System",
+                      "duration": 155
+                    }
+                  ],
+                  "startTime": "2026-09-13T19:10:52.513Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "54b64ef50a6ddf17294b-380cde3a789c3840a9c0",
+          "file": "screens.spec.cjs",
+          "line": 156,
+          "column": 3
+        },
+        {
+          "title": "staleMarketData: all core screens preserve source and expose unavailable research context",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 2807,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "steps": [
+                    {
+                      "title": "Home/watchlist",
+                      "duration": 155
+                    },
+                    {
+                      "title": "Stock",
+                      "duration": 159
+                    },
+                    {
+                      "title": "Research",
+                      "duration": 231
+                    },
+                    {
+                      "title": "Trade Plan",
+                      "duration": 146
+                    },
+                    {
+                      "title": "Portfolio",
+                      "duration": 143
+                    },
+                    {
+                      "title": "Activity",
+                      "duration": 146
+                    },
+                    {
+                      "title": "Analytics",
+                      "duration": 144
+                    },
+                    {
+                      "title": "RoboTrader",
+                      "duration": 151
+                    },
+                    {
+                      "title": "Trading System",
+                      "duration": 149
+                    }
+                  ],
+                  "startTime": "2026-09-13T19:10:55.242Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "54b64ef50a6ddf17294b-7d3b0aaa7f2b19977827",
+          "file": "screens.spec.cjs",
+          "line": 156,
+          "column": 3
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-09-13T19:10:10.198Z",
+    "duration": 47937.813,
+    "expected": 8,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

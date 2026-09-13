@@ -1,0 +1,21 @@
+{
+  "preparedAt": "2026-09-13T18:52:44.835828+00:00",
+  "sourceBaseSha": "b3a6163fe3b469b69b09c8e414e6c6a28629596a",
+  "changes": "frontend final base only plus explanatory comment",
+  "builder": "node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553",
+  "oldFinalBase": "nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c",
+  "newFinalBase": "nginx:1.30.4-alpine3.24-slim@sha256:77da26c31397bf6694b4bf93275f5b40b0b120ba1b8f114264b603e592c561d6",
+  "arm64Manifest": "sha256:65378e880e8603fcd86ff252bff7012b58bd572f5ef86622c3b643b43d013d7c",
+  "hashes": {
+    "frontend/Dockerfile": "fbac55906577afaede3127117fbdb9f1354b1ccc8843de39197828c202128974",
+    "frontend/nginx.conf": "18292ead7a51a3a1320da740dca6c4970090012c382eacc162100d7d2085cb10",
+    "frontend/package.json": "ad4b03be1896c34ca22730388791bd06210bfa03c8f1b93f5ff831fd40edbe8b",
+    "frontend/package-lock.json": "fb33b2a92e5e1122026f2ba67e406a77db914df8090571cd21421c961d9bbae4"
+  },
+  "unchangedFromStartingSha": {
+    "frontend/nginx.conf": true,
+    "frontend/package.json": true,
+    "frontend/package-lock.json": true
+  },
+  "buildStatus": "parent-coordinated acceptance pending"
+}

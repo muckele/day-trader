@@ -1,0 +1,107 @@
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 64022)
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 692, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 761, in __init__
+    self.handle()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/server.py", line 436, in handle
+    self.handle_one_request()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/server.py", line 424, in handle_one_request
+    method()
+  File "/Users/Matt/Projects/day-trader/docs/evidence/rc-repair/image-hardening/container-check.py", line 51, in do_GET
+    self.send_response(status);self.send_header('Content-Type',mimetypes.guess_type(self.path.split('?')[0])[0] or 'text/html');self.end_headers();self.wfile.write(result.stdout)
+                                                                                                                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 840, in write
+    self._sock.sendall(b)
+ConnectionResetError: [Errno 54] Connection reset by peer
+----------------------------------------
+{
+  "scope": "Disposable Linux containers, internal network, synthetic owner; no external brokerage/SMTP/inference",
+  "navigationTransport": "Loopback-only HTTP bridge forwards each request via docker exec wget to actual isolated nginx HTTP; no external container network",
+  "staticNavigation": [
+    {
+      "route": "/",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/login",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/portfolio",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/activity",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/research",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/analytics",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/robotrader",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/trading-system",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    },
+    {
+      "route": "/stock/AAPL",
+      "status": 200,
+      "bytes": 893,
+      "sha256": "f322127d21c3c8b98f643769f5b3230485561975ac0d998d03edbd73e501d6e6"
+    }
+  ],
+  "browserNavigation": {
+    "exit": 0,
+    "stdout": "{\"url\":\"http://127.0.0.1:64001/login\",\"status\":200,\"title\":\"DayTrader\",\"loginRendered\":true}\n",
+    "stderr": ""
+  },
+  "images": [
+    {
+      "tag": "sha256:7f640e73b61a18bb2ef2914dbef374ed89528aebe3a81e9fe9567f161a9a6019",
+      "id": "sha256:7f640e73b61a18bb2ef2914dbef374ed89528aebe3a81e9fe9567f161a9a6019",
+      "os": "linux",
+      "architecture": "arm64",
+      "created": "2026-09-13T19:05:03.991864055Z"
+    },
+    {
+      "tag": "sha256:a7aa7e54a5c65283c7851987f64cfa83352d40c9f11ea4fbac502e27ba1b5c2e",
+      "id": "sha256:a7aa7e54a5c65283c7851987f64cfa83352d40c9f11ea4fbac502e27ba1b5c2e",
+      "os": "linux",
+      "architecture": "arm64",
+      "created": "2026-09-13T18:54:32.195344221Z"
+    }
+  ],
+  "shutdown": {
+    "exit": "0",
+    "stderr": ""
+  },
+  "ok": true,
+  "cleanupComplete": true
+}
