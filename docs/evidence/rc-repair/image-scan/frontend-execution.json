@@ -1,0 +1,39 @@
+{
+  "startedAt": "2026-09-13T18:31:29.849406+00:00",
+  "finishedAt": "2026-09-13T18:31:30.084142+00:00",
+  "command": [
+    "docker",
+    "scout",
+    "cves",
+    "local://sha256:2caf28ef5c5a8bcd558703034a8df1cb44b4fdd519b627ad3b6be7a36938fc19",
+    "--platform",
+    "linux/arm64",
+    "--exit-code",
+    "--locations",
+    "--format",
+    "sarif",
+    "--output",
+    "docs/evidence/rc-repair/image-scan/frontend.sarif.json"
+  ],
+  "exitCode": 1,
+  "target": {
+    "tag": "day-trader-rc-frontend:node24",
+    "id": "sha256:2caf28ef5c5a8bcd558703034a8df1cb44b4fdd519b627ad3b6be7a36938fc19",
+    "os": "linux",
+    "architecture": "arm64",
+    "created": "2026-09-13T16:35:53.964350051Z",
+    "layers": [
+      "sha256:b2848c02ac6ff53d265469b5b30f649f335e546a83330cd8916d54e65e640409",
+      "sha256:8212bdb165b0586f391f54ffc70f14ae43e4393c3df2496e603141a5a60998d7",
+      "sha256:a59c8d557466fd8bbb7c64d9c1163c5f9606f90cc652509dd0166c84997ad8b6",
+      "sha256:2b61a5435ba9c5eb55533698219cc31dcdfe4bf7db34d41af4d66396c446561c",
+      "sha256:7d32403a892a9f50767259488f239390dd0389149f242d4eb410e45d4072c1cc",
+      "sha256:ba6a756d0c41d81b96946d639d99ab318be8c660541ae2abb2019755188936ad",
+      "sha256:1dd8012ac8ead4ae8f574d8699e550768dc84b5589c51a6cc54da23b66e79140",
+      "sha256:b7596e109f91f945955bdcc910f626eb94de28200fff0a05266f3a10431328cc",
+      "sha256:9ed605f97103437583d10d7f2be368fbc48b295de49522186d888ac654a38dea",
+      "sha256:dc2ddcf50253edc8612d72a88a3b0873c491f040c99e88f61f2c5d8c0f2dbfe2"
+    ],
+    "repoDigests": []
+  }
+}

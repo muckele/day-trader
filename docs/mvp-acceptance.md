@@ -1,6 +1,8 @@
+> **2026-09-13 authorized scan continuation: NO-GO — image analysis remains incomplete because Docker Scout requires sign-in.** Both verified immutable local Linuxarm64 targets were attempted with explicit user authorization and normal approval; each exited1 without SARIF. Severity counts are unknown. The earlier metadata-authorization blocker is superseded; no credentials/sign-in, upgrades or broader transfers were performed. See `docs/evidence/rc-repair/image-scan/README.md` for exact commands, identities, timestamps and results. The unchanged 23/23 source-bound verification is retained; no full suite rerun.
+
 # Owner-only paper MVP acceptance ledger — RC repair
 
-**Combined local RC: NO-GO pending image CVE analysis.** RC-001 and RC-002 are repaired and verified under the mandatory local regression matrix. Required combined checks cannot be waived. The original candidate `1972254bfcfd0b6ff724876cd0d2a2b15006ac26` remains NO-GO; its historical 19/19 report did not exercise the two reproduced defects.
+**Combined local RC: NO-GO pending authenticated image CVE analysis.** RC-001 and RC-002 are repaired and verified under the mandatory local regression matrix. Required combined checks cannot be waived. The original candidate `1972254bfcfd0b6ff724876cd0d2a2b15006ac26` remains NO-GO; its historical 19/19 report did not exercise the two reproduced defects.
 
 | Acceptance item | Current evidence and status | Remaining limit |
 |---|---|---|
@@ -18,7 +20,7 @@
 | Supported runtime | Node24.21.0/npm11.19.0 exact pins, bundled executable provenance and explicit TAP output; no dependency graph migration | Node20 runs are historical comparison only |
 | Linux images/startup/static navigation | Both linux/arm64 builds exit0; isolated backend production readiness; nginx1.30.4 config and nine routes; actual browser login rendering | No Linux amd64 execution or deployment claim |
 | npm dependencies | Fresh authorized registry audits: backend0; frontend57 (28high15moderate14low), actual findings preserved | Tooling/browser advisory disposition remains open; no forced upgrade |
-| Image security | Local inventory, image environment/file exclusions and official version evidence completed | **BLOCKED:** Docker Scout metadata egress rejected by automatic approval; no CVE scan executed |
+| Image security | Local inventory, image environment/file exclusions and official version evidence completed | **BLOCKED:** both authorized immutable-image Scout attempts exited1 requesting Docker sign-in; no SARIF or vulnerability counts |
 | Hosted CI | Runtime YAML/config locally reviewed; complete verifier mandatory | NOT RUN; no push/hosted trigger |
 | External account/SMTP acceptance | Controlled fixtures only; guarded external tool remains existing foundation | NOT RUN; separately authorized external broker/SMTP actions required |
 | Deployment and roadmap operational gates | Existing foundation and master brief mapping preserved | NOT RUN: deployment provenance, backup/restore, revocation/recovery drills, monitoring/soak |

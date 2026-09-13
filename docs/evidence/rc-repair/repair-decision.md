@@ -1,3 +1,5 @@
+> **2026-09-13 authorized scan continuation: NO-GO — image analysis remains incomplete because Docker Scout requires sign-in.** Both verified immutable local Linuxarm64 targets were attempted with explicit user authorization and normal approval; each exited1 without SARIF. Severity counts are unknown. The earlier metadata-authorization blocker is superseded; no credentials/sign-in, upgrades or broader transfers were performed. See `docs/evidence/rc-repair/image-scan/README.md` for exact commands, identities, timestamps and results. The unchanged 23/23 source-bound verification is retained; no full suite rerun.
+
 # Bounded release-candidate repair decision
 
 Starting source: `1972254bfcfd0b6ff724876cd0d2a2b15006ac26`, `codex/owner-paper-mvp`, repository `muckele/day-trader`; `0dcc4d0dad7f47768a5613573b0a828bda0667ff` remains an ancestor. The original master brief was read from the original checkout, verified nonempty, and remains operator-added untracked documentation. It is not an application-code change or part of these commits.

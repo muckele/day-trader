@@ -310,7 +310,7 @@
   ],
   "actualProcessExit": 0,
   "combinedLocalRC": "NO-GO",
-  "blockingGate": "image CVE analysis: automatic approval rejected private image PURL/layer-digest metadata egress",
+  "blockingGate": "image CVE analysis incomplete: both explicitly authorized Scout attempts exited1 requesting Docker sign-in; no SARIF, severity counts unknown",
   "rc001": "repaired and verified",
   "rc002": "repaired and verified",
   "deterministicVerifierStatus": "VERIFIED RELEASE CANDIDATE",
@@ -325,5 +325,6 @@
     "containerFixture": "all disposable containers/network removed",
     "candidateImages": "retained, not activated; CVE approval pending"
   },
-  "operatorBrief": "untracked, nonempty, unchanged; excluded from commits"
+  "operatorBrief": "untracked, nonempty, unchanged; excluded from commits",
+  "imageScanContinuation": "docs/evidence/rc-repair/image-scan/summary.json"
 }

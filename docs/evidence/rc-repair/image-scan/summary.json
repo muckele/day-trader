@@ -1,0 +1,40 @@
+{
+  "status": "NO-GO",
+  "imageAnalysisGate": "INCOMPLETE_AUTHENTICATION_REQUIRED",
+  "scanner": "Docker Scout v1.23.1 (go1.26.3 darwin/arm64)",
+  "startingSha": "bebdcd1c6eec78230ec01dab18563f048d01d002",
+  "attempts": [
+    {
+      "image": "sha256:125fd6abf409da48f5e8ed8b5301899dd8ded1708001300a993511293fda1186",
+      "platform": "linux/arm64",
+      "exitCode": 1,
+      "startedAt": "2026-09-13T18:31:29.584935+00:00",
+      "finishedAt": "2026-09-13T18:31:29.849005+00:00",
+      "analysisCompleted": false,
+      "critical": null,
+      "high": null,
+      "medium": null,
+      "low": null,
+      "unspecified": null,
+      "sarifProduced": false
+    },
+    {
+      "image": "sha256:2caf28ef5c5a8bcd558703034a8df1cb44b4fdd519b627ad3b6be7a36938fc19",
+      "platform": "linux/arm64",
+      "exitCode": 1,
+      "startedAt": "2026-09-13T18:31:29.849406+00:00",
+      "finishedAt": "2026-09-13T18:31:30.084142+00:00",
+      "analysisCompleted": false,
+      "critical": null,
+      "high": null,
+      "medium": null,
+      "low": null,
+      "unspecified": null,
+      "sarifProduced": false
+    }
+  ],
+  "authorization": "Narrow PURL/layer-digest transfer authorized by user; prior approval blocker superseded. Both commands executed normally.",
+  "blocker": "Both attempts require Docker sign-in; no usable authenticated Scout session was available to these invocations.",
+  "nextStep": "Owner establishes a usable Docker authenticated session normally; then retry the same immutable local-only scans within authorization. Agent did not sign in, expose credentials, upgrade, enroll repository, upload images/source/SBOM/provenance, or enable monitoring.",
+  "findingsDisposition": "No findings available; unknown counts are not zero. No residual image risk accepted. Existing npm audit dispositions unchanged."
+}

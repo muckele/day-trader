@@ -1,3 +1,5 @@
+> **2026-09-13 authorized scan continuation: NO-GO — image analysis remains incomplete because Docker Scout requires sign-in.** Both verified immutable local Linuxarm64 targets were attempted with explicit user authorization and normal approval; each exited1 without SARIF. Severity counts are unknown. The earlier metadata-authorization blocker is superseded; no credentials/sign-in, upgrades or broader transfers were performed. See `docs/evidence/rc-repair/image-scan/README.md` for exact commands, identities, timestamps and results. The unchanged 23/23 source-bound verification is retained; no full suite rerun.
+
 # Linux candidate image verification
 
 Both builds completed with exit 0 on Docker Engine 29.6.1 / Buildx 0.35, platform `linux/arm64`. Exact commands (repository root):

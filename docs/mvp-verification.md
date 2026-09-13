@@ -1,6 +1,8 @@
+> **2026-09-13 authorized scan continuation: NO-GO — image analysis remains incomplete because Docker Scout requires sign-in.** Both verified immutable local Linuxarm64 targets were attempted with explicit user authorization and normal approval; each exited1 without SARIF. Severity counts are unknown. The earlier metadata-authorization blocker is superseded; no credentials/sign-in, upgrades or broader transfers were performed. See `docs/evidence/rc-repair/image-scan/README.md` for exact commands, identities, timestamps and results. The unchanged 23/23 source-bound verification is retained; no full suite rerun.
+
 # Verification record — RC repairs and supported runtime
 
-**Deterministic combined verifier: 23/23 passed, exit 0. Overall local RC: NO-GO pending approval-blocked image CVE analysis.** RC-001/RC-002 are repaired; the former reviewed candidate remains NO-GO. This record supersedes earlier Phase 3 GO prose without overwriting historical 19/19 reports.
+**Deterministic combined verifier: 23/23 passed, exit 0. Overall local RC: NO-GO pending authenticated image CVE analysis.** RC-001/RC-002 are repaired; the former reviewed candidate remains NO-GO. This record supersedes earlier Phase 3 GO prose without overwriting historical 19/19 reports.
 
 Starting SHA: `1972254bfcfd0b6ff724876cd0d2a2b15006ac26`. Safety commit: `d620aab5e56fdf41a986734bdf516ec028889f15`. Branch `codex/owner-paper-mvp`, repository `muckele/day-trader`; Phase 2 ancestor `0dcc4d0dad7f47768a5613573b0a828bda0667ff` preserved. Runtime source is a separate subsequent commit; final source hashes are in `docs/evidence/rc-repair/runtime-final-source-manifest.json`.
 
