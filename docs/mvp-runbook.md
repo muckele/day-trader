@@ -64,19 +64,29 @@ Run after `npm run build --prefix frontend` with the test replica set running. T
 
 ## External paper acceptance
 
-`backend/scripts/external-paper-acceptance.js` is implemented and tested locally. Its dry-run makes zero network requests:
+`backend/scripts/external-paper-acceptance.js` is an operator-invoked acceptance tool. It imports no `.env` automatically, starts no server/worker/scheduler, and sends no notifications. Load the existing ignored local environment explicitly when invoking it. `ALPACA_EXPECTED_PAPER_ACCOUNT_ID` must already bind the intended paper account; never put that ID or keys in command arguments, reports, or Git. The CLI checks the supplied full candidate SHA against local HEAD.
+
+A dry run validates the bounded plan without credentials, database access or network requests. From the repository root:
 
 ```sh
 node backend/scripts/external-paper-acceptance.js --dry-run \
-  --expected-account-id dedicated-paper-account \
+  --candidate "$(git rev-parse HEAD)" \
   --paper-origin https://paper-api.alpaca.markets \
-  --symbol-allowlist AAPL --symbol AAPL \
-  --max-notional 10.00 --limit-price 1.00 --quantity 1 --test-prefix phase3
+  --symbol-allowlist AAPL,MSFT,NVDA \
+  --quantity 1 --max-notional 100.00 --fill-limit-price 100.00
 ```
 
-Only after separate explicit authorization, replace `--dry-run` with `--authorize-external-paper-test`, replace the placeholder account ID with the verified dedicated paper account ID, and provide APCA credentials through a protected environment. Reserve that account exclusively for the test; it must have no positions or open orders. The command prints a unique test client ID, checks account/market/asset readiness, makes at most one bounded buy-limit POST, looks up that same identity, and cancels only that exact test-owned order. It never resets an account, cancels all orders or liquidates positions. A $1 limit is deliberately unlikely to fill; this checks acknowledgement/status, not a guaranteed fill.
+These prices illustrate option validation, not an executable market-price recommendation. For a future separately authorized external run, use an explicitly reviewed one-share limit price and maximum notional (hard ceiling $1,000), exact candidate, fresh evidence directory, and `--authorize-external-paper-test`. The script requires existing owner settings, automation disabled, and the existing local application Mongo database with readiness/index checks. It does not create substitute spending settings or a separate exposure ledger. It preserves all normal risk limits, including available position slots and day spending. The real broker calls must be separately authorized after hosted CI verifies the exact candidate.
 
-Exit 0 means dry-run or confirmed terminal cleanup with zero fills; exit 2 means filled shares remain or cancellation is unconfirmed; exit 1 means a guard/provider/transport failure. Reconcile the printed client ID before another run after any uncertainty. Retained filled shares require an explicit operator decision. External Alpaca orders and external SMTP have not been run in Phase 3.
+The preflight requires an explicitly configured exact paper endpoint, matching account binding, eligible account, fresh clock, complete baseline positions/open orders, and a clean active/tradable US-equity fixture. The deterministic configured list is constrained to AAPL, MSFT, NVDA, AMZN, GOOG and META. Occupied symbols are skipped; existing unrelated positions are allowed. No clean fixture blocks the run. Unattributed active orders are never hidden or canceled: the canonical RC-002 exposure guard determines admission.
+
+Closed market returns `EXTERNAL_ALPACA_PAPER_PARTIAL` with `WRITE LIFECYCLE REQUIRES OPEN REGULAR MARKET` after read-only preflight; it sends zero broker writes. Open market invokes the actual `getOrderLifecycle().submit`, reloads that service, looks up the stable canonical client ID and reconciles through the existing production lifecycle. One filled buy is followed by one exact-quantity canonical reducing sell, with Fill, spending, exposure and baseline-restoration assertions. Canonical `mvp-...` client IDs remain unchanged; the unique `dtacc-...` acceptance idempotency keys identify the run. A supplied run ID cannot silently repeat an existing run; use recorded canonical identities for separately authorized recovery.
+
+A fill timeout triggers at most one cancellation of the positively owned canonical order, bounded reconciliation, and a failed acceptance result. An uncertain write is never reposted. Other unknown failures stop additional writes and record best-effort read-only residual state; inspect the saved intent/client/broker IDs before any manual recovery. The tool cannot guarantee no fill during cancellation or cleanup after a network outage. Do not rerun a failed invocation with a new run ID to conceal unresolved state.
+
+Evidence continuously records semantic order payloads, durable intent/client/broker identities, transitions, request IDs where returned (null if absent), a masked account ID, baseline comparison and residual state. It excludes request headers and credentials. Use a new protected `--evidence-dir` for each external attempt; existing `report.json` is not overwritten by a new invocation. External evidence stays outside Git. `EXTERNAL_ALPACA_PAPER_VERIFIED` requires observed opening/closing fills and clean restoration; a controlled-provider result is not real external acceptance. Exit 0 means dry-run or verified; other outcomes exit 2 (argument/setup errors exit 1).
+
+The mandatory `mongo-externalPaperHarness.mongo` verifier gate exercises the real canonical services and Mongo transactions against the existing loopback provider. Its test adapter permits only the paper-origin contract, rewrites it to loopback before transport, rejects external DNS/fetch, and uses dummy credentials. No production market-hours, exposure, dispatch or paper-account policy is changed for testing.
 
 ## Startup, deployment checks and rollback
 

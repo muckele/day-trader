@@ -22,7 +22,7 @@ export async function runChecks(checks, execute) {
   return { ok: results.every(result => result.code === 0), checks: results };
 }
 
-const mongoMinimums = { 'mvpPersistence.test.js':4, 'orderLifecycle.mongo.test.js':16, 'orderLifecycle.faults.test.js':9, 'orderProtection.test.js':8, 'phase3Financial.mongo.test.js':17, 'phase3Smtp.mongo.test.js':4 };
+const mongoMinimums = { 'mvpPersistence.test.js':4, 'orderLifecycle.mongo.test.js':16, 'orderLifecycle.faults.test.js':9, 'orderProtection.test.js':8, 'phase3Financial.mongo.test.js':17, 'phase3Smtp.mongo.test.js':4, 'externalPaperHarness.mongo.test.js':24 };
 export const RC001_REQUIRED_SCENARIOS = [
   'RC001-final-account-emergency-stop', 'RC001-final-account-disable',
   'RC001-final-account-lease-takeover', 'RC001-final-account-lease-expiry',
@@ -54,12 +54,30 @@ export const RC002_REQUIRED_SCENARIOS = [
   'RC002-bootstrap-uncovered', 'RC002-uningested-fill', 'RC002-stale-reducing-quantity',
   'RC002-reduce-while-disabled', 'RC002-emergency-supersedes-replacement'
 ];
+export const EXTERNAL_PAPER_REQUIRED_SCENARIOS = [
+  "lookup cannot replace the acknowledged broker identity",
+  "closed market reads baseline, skips occupied fixture and returns PARTIAL without intent or write",
+  "production closed-market admission is still rejected",
+  "unattributed active order is blocked by actual canonical exposure guard",
+  "open market uses canonical buy and reducing fill, restores nonempty baseline and reloads identity",
+  "configuration drift blocks next request",
+  "control generation changes before dispatch block the acceptance order",
+  "market closure between admission and final check still blocks dispatch",
+  "accepted-response uncertainty recovers stable identity without duplicate buy",
+  "unfilled opening is canonically canceled with reservation released",
+  "cancellation uncertainty never retries or reports clean",
+  "reducing timeout is bounded and residual holding is not declared restored",
+  "lookup failure stops writes and retains durable identity",
+  "malformed lookup never authorizes cleanup",
+  "optional request ID absence does not fabricate IDs"
+];
 export function buildMongoChecks(files) {
   return files.filter(name => name.endsWith('.test.js')).sort().map(name => ({
     name: name === 'mvpPersistence.test.js' ? 'mongo-integration' : `mongo-${name.replace(/\.test\.js$/, '')}`,
     command: process.execPath,
     args: ['--test', '--test-reporter=tap', `backend/integration/${name}`],
     summary: 'tap', minimumTests: mongoMinimums[name] || 1,
+    ...(name === 'externalPaperHarness.mongo.test.js' ? { requiredScenarios: EXTERNAL_PAPER_REQUIRED_SCENARIOS } : {}),
     ...(name === 'rc002Exposure.mongo.test.js' ? { requiredScenarios: RC002_REQUIRED_SCENARIOS } : {})
   }));
 }
@@ -69,7 +87,7 @@ export const REQUIRED_LOCAL_GATES = [
   'mongo-integration', 'mongo-orderLifecycle.mongo', 'mongo-orderLifecycle.faults', 'mongo-orderProtection',
   'mongo-phase3Financial.mongo', 'mongo-phase3Admission.mongo', 'mongo-phase3Smtp.mongo', 'mongo-nonOwnerAuthorization.fullstack',
   'frontend-tests', 'frontend-build', 'provider-contract', 'process-acceptance', 'browser-lifecycle', 'browser-core-screens',
-  'rc-dispatch', 'mongo-rc002Exposure.mongo', 'rc-exposure-process', 'rc-exit-dispatch'
+  'mongo-externalPaperHarness.mongo', 'rc-dispatch', 'mongo-rc002Exposure.mongo', 'rc-exposure-process', 'rc-exit-dispatch'
 ];
 export function buildRequiredAcceptance(checks) {
   return REQUIRED_LOCAL_GATES.map(name => {

@@ -199,3 +199,13 @@ test('verification output directory can preserve historical evidence without cha
   assert.throws(() => resolveReportDirectory(['--report-dir', '--checks-only'], '/test/repository'), /directory/i);
   assert.throws(() => resolveReportDirectory(['--report-dir', 'a', '--report-dir', 'b'], '/test/repository'), /once/i);
 });
+
+test('canonical external harness is a mandatory gate with named scenario enforcement', async()=>{
+ const {buildRequiredAcceptance,buildMongoChecks,validateAcceptanceExecution}=await import('../verify-mvp.mjs');
+ assert.equal(buildRequiredAcceptance([]).find(x=>x.name==='mongo-externalPaperHarness.mongo')?.status,'BLOCKED');
+ const gate=buildMongoChecks(['externalPaperHarness.mongo.test.js'])[0];
+ assert.ok(gate.minimumTests>=21);
+ assert.ok(gate.requiredScenarios.includes('closed market reads baseline, skips occupied fixture and returns PARTIAL without intent or write'));
+ assert.ok(gate.requiredScenarios.includes('unattributed active order is blocked by actual canonical exposure guard'));
+ assert.equal(validateAcceptanceExecution(gate,'# tests 21\n# pass 21\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n').ok,false);
+});
