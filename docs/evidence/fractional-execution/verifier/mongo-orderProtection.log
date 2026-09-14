@@ -1,0 +1,59 @@
+TAP version 13
+# Subtest: durable partial-fill protection against real Mongo
+    # Subtest: 4 + 6 fills cancel-confirm-expand one stop; duplicate/concurrent reconcile does not duplicate
+    ok 1 - 4 + 6 fills cancel-confirm-expand one stop; duplicate/concurrent reconcile does not duplicate
+      ---
+      duration_ms: 105.390375
+      type: 'test'
+      ...
+    # Subtest: 4 + canceled remainder preserves four-share protection
+    ok 2 - 4 + canceled remainder preserves four-share protection
+      ---
+      duration_ms: 28.937333
+      type: 'test'
+      ...
+    # Subtest: accepted timeout, lookup miss and restart never duplicate; blocks new risk until confirmation
+    ok 3 - accepted timeout, lookup miss and restart never duplicate; blocks new risk until confirmation
+      ---
+      duration_ms: 53.907916
+      type: 'test'
+      ...
+    # Subtest: manual requested stop is maintained; held stop never counts as protected
+    ok 4 - manual requested stop is maintained; held stop never counts as protected
+      ---
+      duration_ms: 29.67425
+      type: 'test'
+      ...
+    # Subtest: manual exits share account lease and confirmed protective reservations
+    ok 5 - manual exits share account lease and confirmed protective reservations
+      ---
+      duration_ms: 32.788917
+      type: 'test'
+      ...
+    # Subtest: nested exits and pending manual sells cannot be oversubscribed by stops
+    ok 6 - nested exits and pending manual sells cannot be oversubscribed by stops
+      ---
+      duration_ms: 36.863209
+      type: 'test'
+      ...
+    # Subtest: reduced broker position caps the new exit and resizes existing exit
+    ok 7 - reduced broker position caps the new exit and resizes existing exit
+      ---
+      duration_ms: 56.1135
+      type: 'test'
+      ...
+    1..7
+ok 1 - durable partial-fill protection against real Mongo
+  ---
+  duration_ms: 640.308375
+  type: 'test'
+  ...
+1..1
+# tests 8
+# suites 0
+# pass 8
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 773.714167

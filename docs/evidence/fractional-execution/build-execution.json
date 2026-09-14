@@ -1,0 +1,21 @@
+{
+  "command": [
+    "docker",
+    "build",
+    "--pull",
+    "--platform",
+    "linux/arm64",
+    "--progress",
+    "plain",
+    "--provenance=false",
+    "-t",
+    "day-trader-rc-backend:fractional",
+    "backend"
+  ],
+  "environment": {
+    "BUILDX_CONFIG": "/private/tmp/day-trader-rc-buildx"
+  },
+  "startedAt": "2026-09-14T19:27:51.246674+00:00",
+  "exitCode": 0,
+  "finishedAt": "2026-09-14T19:28:16.742162+00:00"
+}

@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node",
+    "scripts/verify-mvp.mjs",
+    "--report-dir",
+    "/private/tmp/day-trader-fractional-finalization/full-verification"
+  ],
+  "startedAt": "2026-09-14T20:30:27.495250+00:00",
+  "exitCode": 0,
+  "finishedAt": "2026-09-14T20:34:40.428414+00:00"
+}

@@ -8,10 +8,11 @@ const {run}=require('../scripts/external-paper-acceptance');
 const Intent=require('../models/OrderIntent'),Fill=require('../models/Fill'),Capacity=require('../models/AccountCapacity'),Settings=require('../models/RoboSettings');
 const {getOrderLifecycle}=require('../services/orderLifecycleService');
 const {createAlpacaBroker}=require('../robotrader/alpacaBroker');
+const User=require('../models/User');
 const owner='507f1f77bcf86cd799439011';
 const baseOptions={'authorize-external-paper-test':true,'paper-origin':'https://paper-api.alpaca.markets',candidate:'a'.repeat(40),'symbol-allowlist':'AAPL,MSFT,NVDA','max-notional':'100','fill-limit-price':'100',quantity:'1'};
 const baseline=[{symbol:'AAPL',qty:'2',avg_entry_price:'100',market_value:'200'},{symbol:'GOOG',qty:'3',avg_entry_price:'100',market_value:'300'}];
-const models=[Intent,Fill,Capacity,Settings,require('../models/BrokerOrder'),require('../models/SpendingBucket'),require('../models/OrderProtection'),require('../models/OrderProtectionLock'),require('../models/RoboAuditLog'),require('../models/NotificationOutbox'),require('../models/PositionClose')];
+const models=[User,Intent,Fill,Capacity,Settings,require('../models/BrokerOrder'),require('../models/SpendingBucket'),require('../models/OrderProtection'),require('../models/OrderProtectionLock'),require('../models/RoboAuditLog'),require('../models/NotificationOutbox'),require('../models/PositionClose')];
 test('canonical external paper harness controlled acceptance',{timeout:120000},async t=>{
  const p=createProvider(),port=await p.listen(),target=`http://127.0.0.1:${port}`;
  const db='mvp_test_external_'+randomUUID().replaceAll('-','');
@@ -21,11 +22,11 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
  const nativeFetch=global.fetch;
  global.fetch=(url,...args)=>{assert.equal(new URL(url).origin,target,'Only loopback controlled-provider fetch is permitted');return nativeFetch(url,...args);};
  const actualAdapter=axios.defaults.adapter,adapter=axios.getAdapter('http');
- let env,fault,report,reads,seen,postBodies;
+ let env,fault,report,reads,seen,postBodies,quoteReads,clockRemaining,now,partialQty;
  const control=async data=>{const r=await fetch(target+'/control',{method:'POST',body:JSON.stringify(data)});assert.equal(r.status,200);return r.json();};
  axios.defaults.adapter=async config=>{
   const url=new URL(config.url);
-  assert.equal(url.origin,'https://paper-api.alpaca.markets','no live or unrelated target may enter transport');
+  assert.ok(['https://paper-api.alpaca.markets','https://data.alpaca.markets'].includes(url.origin),'no live or unrelated target may enter transport');
   assert.equal(config.headers['APCA-API-KEY-ID'],'acceptance-dummy');
   seen.push({method:config.method,original:url.origin,actual:target});
   if(fault==='lookup'&&url.pathname.includes('orders:by_client'))throw Object.assign(new Error('controlled lookup failure'),{code:'LOOKUP_FAILED',config});
@@ -34,6 +35,10 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
   response.config=config;
   if(fault==='changed-broker-id'&&url.pathname.includes('orders:by_client')){const raw=JSON.parse(response.data);raw.id='different-broker-id';response.data=JSON.stringify(raw);}
   if(fault!=='no-request-id')response.headers['x-request-id']='controlled-'+seen.length;
+  if(url.pathname==='/v2/clock'){const raw=JSON.parse(response.data);Object.assign(raw,{timestamp:new Date(now).toISOString(),next_close:new Date(now+clockRemaining).toISOString()});if(fault==='stale-clock')raw.timestamp=new Date(now-60001).toISOString();if(fault==='malformed-clock')raw.next_close='bad';response.data=JSON.stringify(raw);}
+  if(url.pathname.includes('/quotes/latest')){quoteReads++;const raw=JSON.parse(response.data);for(const q of Object.values(raw.quotes||{})){q.t=new Date(now).toISOString();if(fault==='stale-quote')q.t=new Date(now-60001).toISOString();if(fault==='expensive')q.ap=251;if(fault==='invalid-quote')q.bp=101;if(fault==='missing-quote'){delete q.ap;}if(fault==='ceiling'){q.ap=250;q.bp=249.99;}if(fault==='moving-quote'&&quoteReads>1||fault==='dispatch-moving-quote'&&quoteReads>=3){q.ap=98;q.bp=97.99;}}response.data=JSON.stringify(raw);}
+  if(url.pathname.endsWith('/bars')){const raw=JSON.parse(response.data);raw.bars=Array.from({length:5},(_,i)=>({h:100.1,l:99.9,t:new Date(now-(5-i)*60000).toISOString()}));response.data=JSON.stringify(raw);}
+  if(url.pathname.startsWith('/v2/assets/')){const raw=JSON.parse(response.data);raw.fractionable=true;if(fault==='invalid-asset')raw.class='crypto';response.data=JSON.stringify(raw);}
   if(url.pathname==='/v2/account'){
    reads++;
    if(reads===1&&fault==='drift')env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID='changed';
@@ -42,21 +47,22 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
   if(url.pathname==='/v2/clock'&&fault==='closing-clock'&&reads>=2)await control({patch:{marketOpen:false}});
   if(config.method==='post'){
    const body=JSON.parse(config.data);postBodies.push(body);
-   if(fault!=='no-fill'&&!(fault==='close-timeout'&&body.side==='sell')){
-    await control({fill:{id:JSON.parse(response.data).id,qty:1,price:100}});
+   if((p.state.posts.length>1&&fault!=='no-fill'&&!(['close-timeout','partial-close-timeout'].includes(fault)&&body.side==='sell'))||(['partial-cancel','full-cancel','partial-close-timeout'].includes(fault)&&p.state.posts.length===1)){
+    await control({fill:{id:JSON.parse(response.data).id,qty:p.state.posts.length===1?(['partial-cancel','partial-close-timeout'].includes(fault)?partialQty:'1'):body.qty,price:p.state.posts.length===1?body.limit_price:100}});
    }
   }
   return response;
  };
- const execute=async(options={})=>run({...baseOptions,'run-id':randomUUID(),...options},{env,pollAttempts:2,pollDelayMs:0,onEvidence:r=>{report=r;}});
+ const execute=async(options={})=>run({...baseOptions,'run-id':randomUUID(),...options},{env,now:()=>now,pollAttempts:2,pollDelayMs:0,onEvidence:r=>{report=r;}});
  try{
   await Promise.all(models.map(m=>m.init()));
   t.beforeEach(async()=>{
    await Promise.all(models.map(m=>m.deleteMany({})));await control({reset:true,patch:{positions:structuredClone(baseline),account:{id:'acceptance-paper',status:'ACTIVE',currency:'USD',cash:'10000',equity:'10000',last_equity:'10000',trading_blocked:false,account_blocked:false}}});
-   env={APCA_BASE_URL:'https://paper-api.alpaca.markets',APCA_API_KEY_ID:'acceptance-dummy',APCA_API_SECRET_KEY:'acceptance-dummy-secret',ALPACA_EXPECTED_PAPER_ACCOUNT_ID:'acceptance-paper',OWNER_USER_ID:owner};fault=null;reads=0;seen=[];postBodies=[];report=null;
-   await Settings.create({userId:owner,mode:'paper',isEnabled:false,enabled:false,dailyLimit:1000,weeklyLimit:2000,monthlyLimit:3000,maxTradeAmount:100,maxPositionSize:1000,maxDailyLoss:500,maxOpenPositions:10,maxTradesPerDay:20});
+   env={APCA_BASE_URL:'https://paper-api.alpaca.markets',APCA_API_KEY_ID:'acceptance-dummy',APCA_API_SECRET_KEY:'acceptance-dummy-secret',ALPACA_EXPECTED_PAPER_ACCOUNT_ID:'acceptance-paper',OWNER_USER_ID:owner};fault=null;reads=0;seen=[];postBodies=[];report=null;quoteReads=0;clockRemaining=3600000;now=Date.now();partialQty='0.5';
+   await User.create({_id:owner,username:'acceptance-owner',email:'owner@example.test',hash:'controlled-placeholder'});
+   await Settings.create({userId:owner,mode:'paper',isEnabled:false,enabled:false,pausedReason:'Preserved operator pause',dailyLimit:1000,weeklyLimit:2000,monthlyLimit:3000,maxTradeAmount:100,maxPositionSize:1000,maxDailyLoss:500,maxOpenPositions:10,maxTradesPerDay:20});
   });
-  t.afterEach(()=>{assert.ok(seen.every(r=>r.original==='https://paper-api.alpaca.markets'&&r.actual===target));assert.equal(JSON.stringify(report).includes('acceptance-dummy'),false);assert.equal(JSON.stringify(report).includes('acceptance-paper'),false);});
+  t.afterEach(()=>{assert.ok(seen.every(r=>['https://paper-api.alpaca.markets','https://data.alpaca.markets'].includes(r.original)&&r.actual===target));assert.equal(JSON.stringify(report).includes('acceptance-dummy'),false);assert.equal(JSON.stringify(report).includes('acceptance-paper'),false);});
   await t.test('closed market reads baseline, skips occupied fixture and returns PARTIAL without intent or write',async()=>{
    await control({patch:{marketOpen:false}});const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL');assert.equal(r.reason,'WRITE LIFECYCLE REQUIRES OPEN REGULAR MARKET');assert.equal(r.fixture,'MSFT');assert.equal(r.baseline.positions.length,2);assert.equal(await Intent.countDocuments(),0);assert.equal(p.state.posts.length,0);assert.ok(p.state.requests.every(x=>x.method==='GET'));
   });
@@ -69,31 +75,61 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
    await control({patch:{orders:[foreign]}});const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(r.reason,'UNATTRIBUTED ACTIVE BROKER ORDER');assert.equal(p.state.posts.length,0);assert.deepEqual(p.state.orders,[foreign]);const i=await Intent.findOne();assert.equal(i.status,'rejected');assert.match(i.rejectionReason,/unattributed active broker order/);
   });
   await t.test('open market uses canonical buy and reducing fill, restores nonempty baseline and reloads identity',async()=>{
-   const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',JSON.stringify(r));assert.equal(r.fixture,'MSFT');assert.equal(r.reloadedExecutionContext,true);assert.equal(r.opening.fillCount,1);assert.equal(r.opening.spentDeltaCents,10000);assert.equal(r.cleanup.confirmed,true);assert.equal(r.cleanup.reservedCents,0);assert.equal(p.state.posts.length,2);assert.deepEqual(p.state.posts.map(x=>x.side),['buy','sell']);assert.equal(await Fill.countDocuments({side:'buy'}),1);assert.equal(await Fill.countDocuments({side:'sell'}),1);assert.deepEqual(p.state.positions,baseline);assert.ok(r.orders.every(x=>x.clientOrderId.length<=48));assert.ok(r.orders.some(x=>x.brokerOrderId));assert.ok(r.requests.every(x=>x.xRequestId));assert.ok(r.requests.some(x=>x.path.includes('by_client_order_id')));
+   const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',JSON.stringify(r));assert.equal(r.fixture,'MSFT');assert.equal(r.reloadedExecutionContext,true);assert.equal(r.opening.fillCount,1);assert.equal(r.opening.spentDeltaCents,10000);assert.equal(r.cleanup.confirmed,true);assert.equal(r.cleanup.reservedCents,0);assert.equal(p.state.posts.length,3);assert.deepEqual(p.state.posts.map(x=>x.side),['buy','buy','sell']);assert.equal(r.standaloneCancellation.confirmed,true);assert.equal(r.budget.submissions,3);assert.equal(await Fill.countDocuments({side:'buy'}),1);assert.equal(await Fill.countDocuments({side:'sell'}),1);assert.deepEqual(p.state.positions,baseline);assert.ok(r.orders.every(x=>x.clientOrderId.length<=48));assert.ok(r.orders.some(x=>x.brokerOrderId));assert.ok(r.requests.every(x=>x.xRequestId));assert.ok(r.requests.some(x=>x.path.includes('by_client_order_id')));
   });
   for(const [name,patch]of[['missing binding',{ALPACA_EXPECTED_PAPER_ACCOUNT_ID:''}],['live origin',{APCA_BASE_URL:'https://api.alpaca.markets'}],['missing explicit origin',{APCA_BASE_URL:''}],['live-style key',{APCA_API_KEY_ID:'AK-not-a-real-key'}]])await t.test(name+' fails before HTTP',async()=>{Object.assign(env,patch);const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(seen.length,0);});
   await t.test('mismatch prevents any mutation',async()=>{env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID='different';assert.equal((await execute()).decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);});
   await t.test('ineligible account blocks',async()=>{await control({patch:{account:{...p.state.account,trading_blocked:true}}});assert.equal((await execute()).decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);});
-  await t.test('no clean fixture blocks without changing baseline',async()=>{const r=await execute({'symbol-allowlist':'AAPL'});assert.equal(r.reason,'NO_CLEAN_FIXTURE');assert.equal(p.state.posts.length,0);assert.deepEqual(p.state.positions,baseline);});
+  await t.test('no clean fixture blocks without changing baseline',async()=>{const r=await execute({'symbol-allowlist':'AAPL'});assert.equal(r.reason,'NO ELIGIBLE ACCEPTANCE FIXTURE UNDER $250');assert.equal(p.state.posts.length,0);assert.deepEqual(p.state.positions,baseline);});
   await t.test('configuration drift blocks next request',async()=>{fault='drift';const r=await execute();assert.equal(r.reason,'ACCOUNT_CONFIGURATION_DRIFT');assert.equal(p.state.posts.length,0);assert.equal(seen.length,1);});
   await t.test('enabled automation prevents acceptance writes',async()=>{await Settings.updateOne({userId:owner},{$set:{isEnabled:true,enabled:true}});const r=await execute();assert.equal(r.reason,'DISABLE_AUTOMATION_BEFORE_ACCEPTANCE');assert.equal(p.state.posts.length,0);});
   await t.test('control generation changes before dispatch block the acceptance order',async()=>{fault='generation';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);assert.equal((await Intent.findOne()).status,'rejected');});
   await t.test('market closure between admission and final check still blocks dispatch',async()=>{fault='closing-clock';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);});
   await t.test('optional request ID absence does not fabricate IDs',async()=>{fault='no-request-id';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED');assert.ok(r.requests.every(x=>x.xRequestId===null));});
-  await t.test('unfilled opening is canonically canceled with reservation released',async()=>{fault='no-fill';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'OPENING_FILL_TIMEOUT');assert.equal(r.cancellationConfirmed,true);assert.equal(p.state.posts.length,1);assert.equal((await Intent.findOne()).status,'canceled');assert.equal((await Capacity.findOne()).reservedCents,0);assert.deepEqual(p.state.positions,baseline);});
+  await t.test('unfilled opening is canonically canceled with reservation released',async()=>{fault='no-fill';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'OPENING_FILL_TIMEOUT');assert.equal(r.cancellationConfirmed,true);assert.equal(p.state.posts.length,2);assert.ok((await Intent.find()).every(i=>i.status==='canceled'));assert.equal((await Capacity.findOne()).reservedCents,0);assert.deepEqual(p.state.positions,baseline);});
   await t.test('cancellation uncertainty never retries or reports clean',async()=>{fault='no-fill';await control({patch:{cancelUncertain:true}});const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.cleanup?.confirmed,undefined);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);assert.equal(p.state.posts.length,1);});
   await t.test('lookup failure stops writes and retains durable identity',async()=>{fault='lookup';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'LOOKUP_FAILED');assert.equal(p.state.posts.length,1);assert.equal(await Intent.countDocuments(),1);assert.ok(r.orders.some(x=>x.clientOrderId));});
   await t.test('malformed lookup never authorizes cleanup',async()=>{fault='malformed';const r=await execute();assert.equal(r.reason,'BROKER_OWNERSHIP_MISMATCH');assert.equal(p.state.posts.length,1);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,0);});
   await t.test('lookup cannot replace the acknowledged broker identity',async()=>{fault='changed-broker-id';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'BROKER_OWNERSHIP_MISMATCH');assert.equal(p.state.posts.length,1);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,0);});
-  await t.test('reducing timeout is bounded and residual holding is not declared restored',async()=>{fault='close-timeout';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'REDUCING_FILL_TIMEOUT');assert.equal(p.state.posts.length,2);assert.ok(p.state.positions.some(x=>x.symbol==='MSFT'));assert.equal(r.cleanup?.confirmed,undefined);});
+  await t.test('reducing timeout is bounded and residual holding is not declared restored',async()=>{fault='close-timeout';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'REDUCING_FILL_TIMEOUT');assert.equal(p.state.posts.length,3);assert.ok(p.state.positions.some(x=>x.symbol==='MSFT'));assert.equal(r.cleanup?.confirmed,undefined);});
   await t.test('accepted-response uncertainty recovers stable identity without duplicate buy',async()=>{
    // Socket loss is injected by the existing provider after accepting the opening.
    await control({patch:{mode:'timeout'}});
    const original=axios.defaults.adapter;
    axios.defaults.adapter=async config=>{
-    try{return await original(config);}catch(e){if(config.method==='post'&&p.state.orders.length===1){const o=p.state.orders[0];await control({patch:{mode:'acknowledge'},fill:{id:o.id,qty:1,price:100}});}throw e;}
+    try{return await original(config);}catch(e){if(config.method==='post'&&p.state.orders.length===1){const o=p.state.orders[0];await control({patch:{mode:'acknowledge'}});}throw e;}
    };
-   try{const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);assert.equal(p.state.posts.filter(x=>x.side==='buy').length,1);assert.ok(r.orders.some(x=>x.status==='submission_uncertain'));assert.equal(await Fill.countDocuments({side:'buy'}),1);}finally{axios.defaults.adapter=original;}
+   try{const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);assert.equal(p.state.posts.filter(x=>x.side==='buy').length,2);assert.ok(r.orders.some(x=>x.status==='submission_uncertain'));assert.equal(await Fill.countDocuments({side:'buy'}),1);}finally{axios.defaults.adapter=original;}
   });
+
+
+  await t.test('acceptance exactly $250 executable fixture remains eligible',async()=>{
+   fault='ceiling';await Settings.updateOne({userId:owner},{$set:{maxTradeAmount:250}});const r=await execute({'max-notional':'250','fill-limit-price':'250'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);assert.equal(r.fixtureMarket.askCents,25000);assert.equal(p.state.posts.length,3);
+  });
+  await t.test('cancellation fixture becoming marketable at final dispatch makes zero POST',async()=>{
+   fault='dispatch-moving-quote';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED',r.reason);assert.equal(p.state.posts.length,0);assert.ok(quoteReads>=3);assert.equal((await Intent.findOne()).status,'rejected');assert.equal((await Capacity.findOne()).reservedCents,0);
+  });
+  await t.test('controlled acceptance performs zero live-host or external network transport',async()=>{
+   const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);assert.ok(seen.length>0);assert.ok(seen.every(x=>x.actual===target));const prior=seen.length;
+   await assert.rejects(axios.get('https://api.alpaca.markets/v2/account'),/no live or unrelated target/);assert.equal(seen.length,prior);
+  });
+  await t.test('acceptance 30-minute boundary',async()=>{clockRemaining=1800000;const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);assert.equal(p.state.posts.length,3);});
+  await t.test('acceptance below 30 minutes makes zero mutation',async()=>{clockRemaining=1799999;const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL');assert.equal(r.reason,'INSUFFICIENT REGULAR SESSION TIME');assert.equal(p.state.posts.length,0);assert.equal(await Intent.countDocuments(),0);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,0);});
+  for(const kind of ['stale-clock','malformed-clock'])await t.test('acceptance rejects '+kind,async()=>{fault=kind;await execute();assert.equal(p.state.posts.length,0);});
+  await t.test('acceptance fixture price ceiling',async()=>{fault='expensive';const r=await execute();assert.equal(r.reason,'NO ELIGIBLE ACCEPTANCE FIXTURE UNDER $250');assert.equal(p.state.posts.length,0);});
+  await t.test('acceptance stale quote rejection',async()=>{fault='stale-quote';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);});
+  await t.test('acceptance final quote revalidation',async()=>{fault='moving-quote';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);});
+  await t.test('canonical standalone cancel and cancellation identity match',async()=>{const r=await execute();assert.equal(r.standaloneCancellation.confirmed,true);assert.equal(r.standaloneCancellation.fillCount,0);const first=p.state.posts[0];assert.equal(first.qty,'1');assert.equal(first.limit_price,'98.99');const order=p.state.orders.find(o=>o.client_order_id===first.client_order_id);assert.equal(order.status,'canceled');assert.equal(p.state.requests.filter(x=>x.method==='DELETE'&&x.path.endsWith(order.id)).length,1);assert.equal(await Fill.countDocuments({externalOrderId:order.id}),0);});
+  for(const [kind,name,qty]of [['partial-cancel','unexpected partial-fill acceptance cleanup','0.5'],['full-cancel','unexpected full-fill acceptance cleanup',1]])await t.test(name,async()=>{fault=kind;const before=(await Settings.findOne()).toObject();const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL',JSON.stringify(r));assert.equal(r.cleanup.confirmed,true);assert.equal(p.state.posts.length,2);assert.equal(p.state.posts[1].side,'sell');assert.equal(p.state.posts[1].qty,String(qty));assert.equal(await Fill.countDocuments(),2);assert.deepEqual(p.state.positions,baseline);assert.deepEqual((await Settings.findOne()).toObject(),before);assert.equal(r.opening,undefined);});
+  await t.test('acceptance mutation-budget enforcement',async()=>{const r=await execute();assert.equal(r.budget.submissions,3);assert.equal(new Set(p.state.posts.map(x=>x.client_order_id)).size,3);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);});
+
+  for(const qty of ['0.1','0.333333333','0.500000000'])await t.test('unexpected fractional cleanup '+qty,async()=>{fault='partial-cancel';partialQty=qty;const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL',JSON.stringify(r));assert.equal(r.cleanup.confirmed,true);assert.equal(p.state.posts.length,2);assert.equal(p.state.posts[1].qty,require('../services/shareQuantity').normalize(qty));assert.deepEqual(p.state.positions,baseline);});
+  await t.test('partial-fill reducing timeout preserves residual exposure',async()=>{fault='partial-close-timeout';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'REDUCING_FILL_TIMEOUT');assert.equal(r.cleanup?.confirmed,undefined);assert.equal(p.state.posts.length,2);assert.equal(p.state.positions.find(x=>x.symbol==='MSFT').qty,'0.5');});
+  await t.test('acceptance above 30 minutes by one millisecond',async()=>{clockRemaining=1800001;assert.equal((await execute()).decision,'EXTERNAL_ALPACA_PAPER_VERIFIED');});
+  for(const kind of ['invalid-quote','missing-quote','invalid-asset'])await t.test('acceptance rejects '+kind,async()=>{fault=kind;const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);});
+  await t.test('acceptance missing owner blocks before provider',async()=>{delete env.OWNER_USER_ID;await execute();assert.equal(seen.length,0);});
+  await t.test('acceptance wrong owner blocks before provider',async()=>{env.OWNER_USER_ID='507f1f77bcf86cd799439012';await execute();assert.equal(seen.length,0);});
+  await t.test('acceptance active worker lease blocks before provider',async()=>{await mongoose.connection.collection('robolocks').insertOne({userId:new mongoose.Types.ObjectId(owner),owner:'controlled',lockedUntil:new Date(now+60000)});try{await execute();assert.equal(seen.length,0);}finally{await mongoose.connection.collection('robolocks').deleteMany({});}});
+  await t.test('acceptance readiness failure blocks before provider',async()=>{const readiness=require('../services/executionReadiness').executionReadiness,original=readiness.bootstrap;readiness.bootstrap=async()=>{readiness.invalidate();return false;};try{await execute();assert.equal(seen.length,0);}finally{readiness.bootstrap=original;}});
  }finally{axios.defaults.adapter=actualAdapter;dns.lookup=lookup;global.fetch=nativeFetch;await mongoose.connection.dropDatabase();await mongoose.disconnect();p.server.closeAllConnections();await new Promise(r=>p.server.close(r));}
 });

@@ -8,3 +8,11 @@ test('controlled HTTP provider retains accepted timeout and idempotent broker id
  await fetch(base+'/control',{method:'POST',body:JSON.stringify({fill:{id:o.id,qty:2,price:100}})});assert.equal(p.state.positions[0].qty,'2');assert.equal(p.state.account.cash,'9800.00');
  }finally{await new Promise(r=>p.server.close(r));}
 });
+test('controlled provider preserves fractional position quantities exactly',async()=>{
+ const p=createProvider(),port=await p.listen(),base=`http://127.0.0.1:${port}`;
+ try{await fetch(base+'/control',{method:'POST',body:JSON.stringify({patch:{positions:[{symbol:'AAPL',qty:'17.582774'}]}})});
+ const o=await(await fetch(base+'/v2/orders',{method:'POST',body:JSON.stringify({symbol:'AAPL',side:'buy',qty:'1',type:'limit',limit_price:'10',client_order_id:'fractional-fixture'})})).json();
+ await fetch(base+'/control',{method:'POST',body:JSON.stringify({fill:{id:o.id,qty:'0.1',price:'10'}})});assert.equal(p.state.positions[0].qty,'17.682774');
+ await fetch(base+'/control',{method:'POST',body:JSON.stringify({fill:{id:o.id,qty:'0.333333333',price:'10'}})});assert.equal(p.state.positions[0].qty,'17.916107333');
+ }finally{p.server.closeAllConnections();await new Promise(r=>p.server.close(r));}
+});

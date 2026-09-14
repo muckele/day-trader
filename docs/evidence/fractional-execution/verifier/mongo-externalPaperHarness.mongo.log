@@ -1,0 +1,311 @@
+TAP version 13
+# Subtest: canonical external paper harness controlled acceptance
+    # Subtest: closed market reads baseline, skips occupied fixture and returns PARTIAL without intent or write
+    ok 1 - closed market reads baseline, skips occupied fixture and returns PARTIAL without intent or write
+      ---
+      duration_ms: 561.931209
+      type: 'test'
+      ...
+    # Subtest: production closed-market admission is still rejected
+    ok 2 - production closed-market admission is still rejected
+      ---
+      duration_ms: 36.847208
+      type: 'test'
+      ...
+    # Subtest: unattributed active order is blocked by actual canonical exposure guard
+    ok 3 - unattributed active order is blocked by actual canonical exposure guard
+      ---
+      duration_ms: 152.594708
+      type: 'test'
+      ...
+    # Subtest: open market uses canonical buy and reducing fill, restores nonempty baseline and reloads identity
+    ok 4 - open market uses canonical buy and reducing fill, restores nonempty baseline and reloads identity
+      ---
+      duration_ms: 575.87125
+      type: 'test'
+      ...
+    # Subtest: missing binding fails before HTTP
+    ok 5 - missing binding fails before HTTP
+      ---
+      duration_ms: 11.107375
+      type: 'test'
+      ...
+    # Subtest: live origin fails before HTTP
+    ok 6 - live origin fails before HTTP
+      ---
+      duration_ms: 13.803916
+      type: 'test'
+      ...
+    # Subtest: missing explicit origin fails before HTTP
+    ok 7 - missing explicit origin fails before HTTP
+      ---
+      duration_ms: 6.99375
+      type: 'test'
+      ...
+    # Subtest: live-style key fails before HTTP
+    ok 8 - live-style key fails before HTTP
+      ---
+      duration_ms: 5.117416
+      type: 'test'
+      ...
+    # Subtest: mismatch prevents any mutation
+    ok 9 - mismatch prevents any mutation
+      ---
+      duration_ms: 65.445375
+      type: 'test'
+      ...
+    # Subtest: ineligible account blocks
+    ok 10 - ineligible account blocks
+      ---
+      duration_ms: 68.5215
+      type: 'test'
+      ...
+    # Subtest: no clean fixture blocks without changing baseline
+    ok 11 - no clean fixture blocks without changing baseline
+      ---
+      duration_ms: 63.383917
+      type: 'test'
+      ...
+    # Subtest: configuration drift blocks next request
+    ok 12 - configuration drift blocks next request
+      ---
+      duration_ms: 63.696083
+      type: 'test'
+      ...
+    # Subtest: enabled automation prevents acceptance writes
+    ok 13 - enabled automation prevents acceptance writes
+      ---
+      duration_ms: 11.997417
+      type: 'test'
+      ...
+    # Subtest: control generation changes before dispatch block the acceptance order
+    ok 14 - control generation changes before dispatch block the acceptance order
+      ---
+      duration_ms: 123.177458
+      type: 'test'
+      ...
+    # Subtest: market closure between admission and final check still blocks dispatch
+    ok 15 - market closure between admission and final check still blocks dispatch
+      ---
+      duration_ms: 112.568084
+      type: 'test'
+      ...
+    # Subtest: optional request ID absence does not fabricate IDs
+    ok 16 - optional request ID absence does not fabricate IDs
+      ---
+      duration_ms: 423.592333
+      type: 'test'
+      ...
+    # Subtest: unfilled opening is canonically canceled with reservation released
+    ok 17 - unfilled opening is canonically canceled with reservation released
+      ---
+      duration_ms: 403.703542
+      type: 'test'
+      ...
+    # Subtest: cancellation uncertainty never retries or reports clean
+    ok 18 - cancellation uncertainty never retries or reports clean
+      ---
+      duration_ms: 161.974833
+      type: 'test'
+      ...
+    # Subtest: lookup failure stops writes and retains durable identity
+    ok 19 - lookup failure stops writes and retains durable identity
+      ---
+      duration_ms: 123.500292
+      type: 'test'
+      ...
+    # Subtest: malformed lookup never authorizes cleanup
+    ok 20 - malformed lookup never authorizes cleanup
+      ---
+      duration_ms: 125.706458
+      type: 'test'
+      ...
+    # Subtest: lookup cannot replace the acknowledged broker identity
+    ok 21 - lookup cannot replace the acknowledged broker identity
+      ---
+      duration_ms: 124.14925
+      type: 'test'
+      ...
+    # Subtest: reducing timeout is bounded and residual holding is not declared restored
+    ok 22 - reducing timeout is bounded and residual holding is not declared restored
+      ---
+      duration_ms: 543.86
+      type: 'test'
+      ...
+    # Subtest: accepted-response uncertainty recovers stable identity without duplicate buy
+    ok 23 - accepted-response uncertainty recovers stable identity without duplicate buy
+      ---
+      duration_ms: 377.805667
+      type: 'test'
+      ...
+    # Subtest: acceptance exactly $250 executable fixture remains eligible
+    ok 24 - acceptance exactly $250 executable fixture remains eligible
+      ---
+      duration_ms: 431.533791
+      type: 'test'
+      ...
+    # Subtest: cancellation fixture becoming marketable at final dispatch makes zero POST
+    ok 25 - cancellation fixture becoming marketable at final dispatch makes zero POST
+      ---
+      duration_ms: 111.272708
+      type: 'test'
+      ...
+    # Subtest: controlled acceptance performs zero live-host or external network transport
+    ok 26 - controlled acceptance performs zero live-host or external network transport
+      ---
+      duration_ms: 453.367667
+      type: 'test'
+      ...
+    # Subtest: acceptance 30-minute boundary
+    ok 27 - acceptance 30-minute boundary
+      ---
+      duration_ms: 459.694875
+      type: 'test'
+      ...
+    # Subtest: acceptance below 30 minutes makes zero mutation
+    ok 28 - acceptance below 30 minutes makes zero mutation
+      ---
+      duration_ms: 75.4075
+      type: 'test'
+      ...
+    # Subtest: acceptance rejects stale-clock
+    ok 29 - acceptance rejects stale-clock
+      ---
+      duration_ms: 67.905833
+      type: 'test'
+      ...
+    # Subtest: acceptance rejects malformed-clock
+    ok 30 - acceptance rejects malformed-clock
+      ---
+      duration_ms: 67.408708
+      type: 'test'
+      ...
+    # Subtest: acceptance fixture price ceiling
+    ok 31 - acceptance fixture price ceiling
+      ---
+      duration_ms: 82.444208
+      type: 'test'
+      ...
+    # Subtest: acceptance stale quote rejection
+    ok 32 - acceptance stale quote rejection
+      ---
+      duration_ms: 70.887375
+      type: 'test'
+      ...
+    # Subtest: acceptance final quote revalidation
+    ok 33 - acceptance final quote revalidation
+      ---
+      duration_ms: 65.995542
+      type: 'test'
+      ...
+    # Subtest: canonical standalone cancel and cancellation identity match
+    ok 34 - canonical standalone cancel and cancellation identity match
+      ---
+      duration_ms: 402.149
+      type: 'test'
+      ...
+    # Subtest: unexpected partial-fill acceptance cleanup
+    ok 35 - unexpected partial-fill acceptance cleanup
+      ---
+      duration_ms: 306.557666
+      type: 'test'
+      ...
+    # Subtest: unexpected full-fill acceptance cleanup
+    ok 36 - unexpected full-fill acceptance cleanup
+      ---
+      duration_ms: 252.115
+      type: 'test'
+      ...
+    # Subtest: acceptance mutation-budget enforcement
+    ok 37 - acceptance mutation-budget enforcement
+      ---
+      duration_ms: 411.499542
+      type: 'test'
+      ...
+    # Subtest: unexpected fractional cleanup 0.1
+    ok 38 - unexpected fractional cleanup 0.1
+      ---
+      duration_ms: 303.120083
+      type: 'test'
+      ...
+    # Subtest: unexpected fractional cleanup 0.333333333
+    ok 39 - unexpected fractional cleanup 0.333333333
+      ---
+      duration_ms: 386.341041
+      type: 'test'
+      ...
+    # Subtest: unexpected fractional cleanup 0.500000000
+    ok 40 - unexpected fractional cleanup 0.500000000
+      ---
+      duration_ms: 307.0955
+      type: 'test'
+      ...
+    # Subtest: partial-fill reducing timeout preserves residual exposure
+    ok 41 - partial-fill reducing timeout preserves residual exposure
+      ---
+      duration_ms: 569.164125
+      type: 'test'
+      ...
+    # Subtest: acceptance above 30 minutes by one millisecond
+    ok 42 - acceptance above 30 minutes by one millisecond
+      ---
+      duration_ms: 421.765166
+      type: 'test'
+      ...
+    # Subtest: acceptance rejects invalid-quote
+    ok 43 - acceptance rejects invalid-quote
+      ---
+      duration_ms: 68.317
+      type: 'test'
+      ...
+    # Subtest: acceptance rejects missing-quote
+    ok 44 - acceptance rejects missing-quote
+      ---
+      duration_ms: 73.2055
+      type: 'test'
+      ...
+    # Subtest: acceptance rejects invalid-asset
+    ok 45 - acceptance rejects invalid-asset
+      ---
+      duration_ms: 74.785542
+      type: 'test'
+      ...
+    # Subtest: acceptance missing owner blocks before provider
+    ok 46 - acceptance missing owner blocks before provider
+      ---
+      duration_ms: 7.974667
+      type: 'test'
+      ...
+    # Subtest: acceptance wrong owner blocks before provider
+    ok 47 - acceptance wrong owner blocks before provider
+      ---
+      duration_ms: 9.919167
+      type: 'test'
+      ...
+    # Subtest: acceptance active worker lease blocks before provider
+    ok 48 - acceptance active worker lease blocks before provider
+      ---
+      duration_ms: 23.1715
+      type: 'test'
+      ...
+    # Subtest: acceptance readiness failure blocks before provider
+    ok 49 - acceptance readiness failure blocks before provider
+      ---
+      duration_ms: 14.47275
+      type: 'test'
+      ...
+    1..49
+ok 1 - canonical external paper harness controlled acceptance
+  ---
+  duration_ms: 10050.964208
+  type: 'test'
+  ...
+1..1
+# tests 50
+# suites 0
+# pass 50
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 10212.33875

@@ -1,0 +1,163 @@
+TAP version 13
+# RC002_PROVENANCE {"node":"v24.21.0","executable":"/private/tmp/day-trader-rc-node24/node-v24.21.0-darwin-arm64/bin/node","sourceRevision":"a25d0b48dd18df886212ce48f95afb0695773550","lifecycleSha256":"d7c43ab36bf2b4434194c9455dc872907b5fb636fdac9cafdfc654786a9c354d","database":"mvp_test_rc002_59c905c6e0d54eb59067db1b5a597bd4"}
+# RC002_ORIGINAL_STATE {"brokerPosts":1,"holdings":[{"symbol":"AAPL","qty":"6","qty_available":"6","market_value":"60","current_price":"10"}],"intents":[{"_id":"6aa85984fb2e66e8d51ba3cf","status":"filled","idempotencyKey":"fills-first","reservedCents":0,"filledQty":6},{"_id":"6aa85984fb2e66e8d51ba415","status":"rejected","idempotencyKey":"captured-earlier","reservedCents":0,"filledQty":0}],"fills":[{"_id":"6aa85984fb2e66e8d51ba3f3","notionalCents":6000,"side":"buy","qty":6}],"capacity":{"_id":"6aa85984c7dbdb6d4e3739a9","accountId":"rc002-fixture-paper","__v":0,"createdAt":"2026-09-14T20:31:00.786Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-14T20:31:00.852Z","version":4,"cashFloorCents":100000,"portfolioBaseline":{"quantities":{},"canonicalNet":{},"foreignState":"[]","observedAt":"2026-09-14T20:31:00.777Z"},"portfolioObservation":{"state":"reconciliation_required","quantities":{},"canonicalNet":{},"observedAt":"2026-09-14T20:31:00.777Z","version":1}},"buckets":[{"_id":"6aa85984c7dbdb6d4e3739b1","accountId":"rc002-fixture-paper","key":"2026-09-14","period":"day","__v":0,"createdAt":"2026-09-14T20:31:00.793Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-14T20:31:00.826Z"},{"_id":"6aa85984c7dbdb6d4e3739b3","accountId":"rc002-fixture-paper","key":"2026-09-14","period":"week","__v":0,"createdAt":"2026-09-14T20:31:00.795Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-14T20:31:00.827Z"},{"_id":"6aa85984c7dbdb6d4e3739b5","accountId":"rc002-fixture-paper","key":"2026-09","period":"month","__v":0,"createdAt":"2026-09-14T20:31:00.796Z","reservedCents":0,"spentCents":6000,"updatedAt":"2026-09-14T20:31:00.828Z"}]}
+# Subtest: RC002 required exposure regressions
+    # Subtest: RC002-original-race: captured empty snapshot cannot admit a second $60 into a $100 position
+    ok 1 - RC002-original-race: captured empty snapshot cannot admit a second $60 into a $100 position
+      ---
+      duration_ms: 104.486166
+      type: 'test'
+      ...
+    # Subtest: RC002-origin-manual-manual
+    ok 2 - RC002-origin-manual-manual
+      ---
+      duration_ms: 68.486125
+      type: 'test'
+      ...
+    # Subtest: RC002-origin-manual-robo
+    ok 3 - RC002-origin-manual-robo
+      ---
+      duration_ms: 70.641208
+      type: 'test'
+      ...
+    # Subtest: RC002-origin-robo-manual
+    ok 4 - RC002-origin-robo-manual
+      ---
+      duration_ms: 63.892208
+      type: 'test'
+      ...
+    # Subtest: RC002-origin-robo-robo
+    ok 5 - RC002-origin-robo-robo
+      ---
+      duration_ms: 64.273334
+      type: 'test'
+      ...
+    # Subtest: RC002-lag-full
+    ok 6 - RC002-lag-full
+      ---
+      duration_ms: 95.653542
+      type: 'test'
+      ...
+    # Subtest: RC002-lag-partial
+    ok 7 - RC002-lag-partial
+      ---
+      duration_ms: 112.850542
+      type: 'test'
+      ...
+    # Subtest: RC002-terminal-cancel
+    ok 8 - RC002-terminal-cancel
+      ---
+      duration_ms: 162.723167
+      type: 'test'
+      ...
+    # Subtest: RC002-terminal-expiry
+    ok 9 - RC002-terminal-expiry
+      ---
+      duration_ms: 144.824209
+      type: 'test'
+      ...
+    # Subtest: RC002-headroom
+    ok 10 - RC002-headroom
+      ---
+      duration_ms: 156.193917
+      type: 'test'
+      ...
+    # Subtest: RC002-symbol-slot
+    ok 11 - RC002-symbol-slot
+      ---
+      duration_ms: 82.742333
+      type: 'test'
+      ...
+    # Subtest: RC002-retry
+    ok 12 - RC002-retry
+      ---
+      duration_ms: 45.019625
+      type: 'test'
+      ...
+    # Subtest: RC002-replacement
+    ok 13 - RC002-replacement
+      ---
+      duration_ms: 190.366542
+      type: 'test'
+      ...
+    # Subtest: RC002-fill-during-cancel
+    ok 14 - RC002-fill-during-cancel
+      ---
+      duration_ms: 137.919917
+      type: 'test'
+      ...
+    # Subtest: RC002-external-conflict
+    ok 15 - RC002-external-conflict
+      ---
+      duration_ms: 55.019416
+      type: 'test'
+      ...
+    # Subtest: RC002-close-headroom
+    ok 16 - RC002-close-headroom
+      ---
+      duration_ms: 172.0445
+      type: 'test'
+      ...
+    # Subtest: RC002-protection-generations
+    ok 17 - RC002-protection-generations
+      ---
+      duration_ms: 237.346416
+      type: 'test'
+      ...
+    # Subtest: RC002-invalid-observation
+    ok 18 - RC002-invalid-observation
+      ---
+      duration_ms: 66.650166
+      type: 'test'
+      ...
+    # Subtest: RC002-incomplete-discovery
+    ok 19 - RC002-incomplete-discovery
+      ---
+      duration_ms: 50.257625
+      type: 'test'
+      ...
+    # Subtest: RC002-bootstrap-uncovered
+    ok 20 - RC002-bootstrap-uncovered
+      ---
+      duration_ms: 52.281042
+      type: 'test'
+      ...
+    # Subtest: RC002-uningested-fill
+    ok 21 - RC002-uningested-fill
+      ---
+      duration_ms: 148.855209
+      type: 'test'
+      ...
+    # Subtest: RC002-stale-reducing-quantity
+    ok 22 - RC002-stale-reducing-quantity
+      ---
+      duration_ms: 112.62825
+      type: 'test'
+      ...
+    # Subtest: RC002-reduce-while-disabled
+    ok 23 - RC002-reduce-while-disabled
+      ---
+      duration_ms: 60.876792
+      type: 'test'
+      ...
+    # Subtest: RC002-emergency-supersedes-replacement
+    ok 24 - RC002-emergency-supersedes-replacement
+      ---
+      duration_ms: 53.345
+      type: 'test'
+      ...
+    1..24
+ok 1 - RC002 required exposure regressions
+  ---
+  duration_ms: 2835.051833
+  type: 'test'
+  ...
+1..1
+# tests 25
+# suites 0
+# pass 25
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2961.4965

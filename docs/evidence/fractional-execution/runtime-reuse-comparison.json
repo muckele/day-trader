@@ -1,0 +1,8 @@
+{
+  "nodeSha256": true,
+  "nodeComponents": true,
+  "packages": true,
+  "nativeAddons": true,
+  "nodeDynamicDependencies": false,
+  "exportedFiles": true
+}

@@ -1,3 +1,7 @@
+// Independent fixed-point fixture arithmetic; do not mirror the production utility.
+const shareScale=1000000000n;
+const shareUnits=x=>{const [a,b='']=String(x).split('.');return BigInt(a)*shareScale+BigInt(b.padEnd(9,'0'));};
+const shareText=x=>{const f=String(x%shareScale).padStart(9,'0').replace(/0+$/,'');return String(x/shareScale)+(f?'.'+f:'');};
 const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 const terminal = new Set(['filled', 'canceled', 'rejected', 'expired', 'replaced']);
@@ -20,14 +24,14 @@ function createProvider() {
       if (data.fill) {
         const order = state.orders.find(o => o.id === data.fill.id);
         if (!order) return reply({error:'unknown order'},404);
-        const oldQty = Number(order.filled_qty); const qty = Number(data.fill.qty); const price = Number(data.fill.price || order.limit_price || 100);
-        Object.assign(order, { filled_qty: String(qty), filled_avg_price: String(price), status: qty === Number(order.qty) ? 'filled' : 'partially_filled', updated_at: new Date().toISOString(), filled_at: new Date().toISOString() });
+        const oldQty = shareUnits(order.filled_qty); const qty = shareUnits(data.fill.qty); const price = Number(data.fill.price || order.limit_price || 100);
+        Object.assign(order, { filled_qty: shareText(qty), filled_avg_price: String(price), status: qty === shareUnits(order.qty) ? 'filled' : 'partially_filled', updated_at: new Date().toISOString(), filled_at: new Date().toISOString() });
         const change = qty - oldQty; const signed = order.side === 'buy' ? change : -change;
         let position = state.positions.find(p => p.symbol === order.symbol);
         if (!position) { position = {symbol:order.symbol,qty:'0',avg_entry_price:String(price),current_price:String(price),market_value:'0',unrealized_pl:'0'}; state.positions.push(position); }
-        position.qty = String(Number(position.qty) + signed); position.market_value = String(Number(position.qty) * price);
-        state.positions = state.positions.filter(p => Number(p.qty) > 0);
-        state.account.cash = (Number(state.account.cash) - signed * price).toFixed(2);
+        position.qty = shareText(shareUnits(position.qty) + signed); position.market_value = String(Number(position.qty) * price);
+        state.positions = state.positions.filter(p => shareUnits(p.qty) > 0n);
+        state.account.cash = (Number(state.account.cash) - Number(shareText(signed<0n?-signed:signed)) * (signed<0n?-1:1) * price).toFixed(2);
       }
       return reply(state);
     }
@@ -45,7 +49,7 @@ function createProvider() {
     if (url.pathname === '/v2/account') return reply({...state.account,updated_at:new Date().toISOString()});
     if (url.pathname === '/v2/clock') return reply({is_open:state.marketOpen,timestamp:new Date().toISOString(),next_close:new Date(Date.now()+3600000).toISOString(),next_open:new Date(Date.now()+86400000).toISOString()});
     if (url.pathname.startsWith('/v2/assets/')) return reply({id:'asset-'+url.pathname.split('/').pop(),symbol:url.pathname.split('/').pop(),name:'Acceptance equity',class:'us_equity',status:'active',tradable:true,marginable:false,shortable:false,fractionable:false});
-    if (url.pathname === '/v2/positions') return reply(state.positions.map(p => ({...p,qty_available:String(Math.max(0,Number(p.qty)-state.orders.filter(o=>o.symbol===p.symbol&&o.side==='sell'&&!terminal.has(o.status)).reduce((s,o)=>s+Number(o.qty)-Number(o.filled_qty),0)))})));
+    if (url.pathname === '/v2/positions') return reply(state.positions.map(p => ({...p,qty_available:shareText([shareUnits(p.qty)-state.orders.filter(o=>o.symbol===p.symbol&&o.side==='sell'&&!terminal.has(o.status)).reduce((s,o)=>s+shareUnits(o.qty)-shareUnits(o.filled_qty),0n),0n].reduce((a,b)=>a>b?a:b))})));
     if (url.pathname === '/v2/account/portfolio/history') return reply({timestamp:[Math.floor(Date.now()/1000)],equity:[Number(state.account.equity)]});
     if (url.pathname === '/v2/orders' && req.method === 'POST') {
       state.posts.push(data);

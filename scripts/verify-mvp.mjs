@@ -22,7 +22,7 @@ export async function runChecks(checks, execute) {
   return { ok: results.every(result => result.code === 0), checks: results };
 }
 
-const mongoMinimums = { 'mvpPersistence.test.js':4, 'orderLifecycle.mongo.test.js':16, 'orderLifecycle.faults.test.js':9, 'orderProtection.test.js':8, 'phase3Financial.mongo.test.js':17, 'phase3Smtp.mongo.test.js':4, 'externalPaperHarness.mongo.test.js':24 };
+const mongoMinimums = { 'mvpPersistence.test.js':4, 'orderLifecycle.mongo.test.js':16, 'orderLifecycle.faults.test.js':9, 'orderProtection.test.js':8, 'phase3Financial.mongo.test.js':17, 'phase3Smtp.mongo.test.js':4, 'externalPaperHarness.mongo.test.js':24, 'fractionalExecution.mongo.test.js':24 };
 export const RC001_REQUIRED_SCENARIOS = [
   'RC001-final-account-emergency-stop', 'RC001-final-account-disable',
   'RC001-final-account-lease-takeover', 'RC001-final-account-lease-expiry',
@@ -54,7 +54,64 @@ export const RC002_REQUIRED_SCENARIOS = [
   'RC002-bootstrap-uncovered', 'RC002-uningested-fill', 'RC002-stale-reducing-quantity',
   'RC002-reduce-while-disabled', 'RC002-emergency-supersedes-replacement'
 ];
+export const FRACTIONAL_REQUIRED_SCENARIOS = [
+  "fractional broker fill accepted",
+  "cumulative fractional fill idempotency",
+  "partial-fill remainder cancellation",
+  "fractional exposure delayed-position coverage",
+  "fractional position coverage no double count",
+  "fractional exact reduce-only cleanup",
+  "fractional over-close rejection",
+  "fractional protection remains explicitly unprotected without a GTC fractional stop",
+  "fractional cleanup rejects non-fractionable assets without rounding",
+  "invalid broker cumulative quantity -0.1",
+  "invalid broker cumulative quantity 1.000000001",
+  "invalid broker cumulative quantity 0.0000000001",
+  "invalid broker cumulative quantity bad",
+  "fractional canonical Fill index collapses equivalent cumulative formatting",
+  "no duplicate POST during fractional recovery",
+  "fractional cumulative spending is independent of intermediate observations",
+  "manual and Robo fractional opening authority cannot be spoofed",
+  "manual API rejects fractional opening through the canonical lifecycle",
+  "fractional partial reduction preserves the exact remaining owned position",
+  "external fractional baseline retains 17.582774 without fabricating fills",
+  "concurrent equivalent fractional cumulative reconciliation persists one fill",
+  "conflicting fractional position coverage blocks opening risk",
+  "fractional position flip and invalid reducing quantities are rejected"
+];
+export const QUANTITY_REQUIRED_SCENARIOS = [
+  "whole-share opening policy preserved",
+  "robotrader risk gate rejects simple fractional stock entries with internal risk stop",
+  "robotrader risk gate rejects fractional short-opening stock orders",
+  "fractional spend rounding uses exact cumulative execution economics",
+  "quantity domain preserves nine decimals and canonical equivalence without floating addition",
+  "acceptance mutation-budget enforcement prohibits fourth submit and duplicate cancellation",
+  "acceptance fixture price ceiling and stale quote rejection"
+];
 export const EXTERNAL_PAPER_REQUIRED_SCENARIOS = [
+  "acceptance 30-minute boundary",
+  "acceptance below 30 minutes makes zero mutation",
+  "acceptance above 30 minutes by one millisecond",
+  "acceptance fixture price ceiling",
+  "acceptance exactly $250 executable fixture remains eligible",
+  "acceptance stale quote rejection",
+  "acceptance rejects invalid-quote",
+  "acceptance rejects missing-quote",
+  "acceptance rejects stale-clock",
+  "acceptance rejects malformed-clock",
+  "acceptance final quote revalidation",
+  "cancellation fixture becoming marketable at final dispatch makes zero POST",
+  "canonical standalone cancel and cancellation identity match",
+  "unexpected partial-fill acceptance cleanup",
+  "unexpected full-fill acceptance cleanup",
+  "unexpected fractional cleanup 0.1",
+  "unexpected fractional cleanup 0.333333333",
+  "unexpected fractional cleanup 0.500000000",
+  "partial-fill reducing timeout preserves residual exposure",
+  "acceptance mutation-budget enforcement",
+  "controlled acceptance performs zero live-host or external network transport",
+  "live origin fails before HTTP",
+
   "lookup cannot replace the acknowledged broker identity",
   "closed market reads baseline, skips occupied fixture and returns PARTIAL without intent or write",
   "production closed-market admission is still rejected",
@@ -77,6 +134,7 @@ export function buildMongoChecks(files) {
     command: process.execPath,
     args: ['--test', '--test-reporter=tap', `backend/integration/${name}`],
     summary: 'tap', minimumTests: mongoMinimums[name] || 1,
+    ...(name === 'fractionalExecution.mongo.test.js' ? { requiredScenarios: FRACTIONAL_REQUIRED_SCENARIOS } : {}),
     ...(name === 'externalPaperHarness.mongo.test.js' ? { requiredScenarios: EXTERNAL_PAPER_REQUIRED_SCENARIOS } : {}),
     ...(name === 'rc002Exposure.mongo.test.js' ? { requiredScenarios: RC002_REQUIRED_SCENARIOS } : {})
   }));
@@ -87,7 +145,7 @@ export const REQUIRED_LOCAL_GATES = [
   'mongo-integration', 'mongo-orderLifecycle.mongo', 'mongo-orderLifecycle.faults', 'mongo-orderProtection',
   'mongo-phase3Financial.mongo', 'mongo-phase3Admission.mongo', 'mongo-phase3Smtp.mongo', 'mongo-nonOwnerAuthorization.fullstack',
   'frontend-tests', 'frontend-build', 'provider-contract', 'process-acceptance', 'browser-lifecycle', 'browser-core-screens',
-  'mongo-externalPaperHarness.mongo', 'rc-dispatch', 'mongo-rc002Exposure.mongo', 'rc-exposure-process', 'rc-exit-dispatch'
+  'mongo-externalPaperHarness.mongo', 'mongo-fractionalExecution.mongo', 'rc-dispatch', 'mongo-rc002Exposure.mongo', 'rc-exposure-process', 'rc-exit-dispatch'
 ];
 export function buildRequiredAcceptance(checks) {
   return REQUIRED_LOCAL_GATES.map(name => {
@@ -146,7 +204,7 @@ export function buildReleaseChecks({backendTests,integrationFiles}) {
     { name:'runtime',command:process.execPath,args:[path.join(root,'scripts/verify-runtime.mjs')] },
     ...['backend','frontend'].map(dir=>({name:`${dir}-install`,command:'npm',args:['ci','--ignore-scripts','--no-audit','--no-fund'],cwd:path.join(root,dir)})),
     {name:'verification-tests',command:process.execPath,args:['--test','--test-reporter=tap','scripts/tests/verify-mvp.test.mjs'],summary:'tap',minimumTests:10},
-    {name:'backend-tests',command:process.execPath,args:['--test','--test-reporter=tap',...backendTests.map(name=>`tests/${name}`)],cwd:path.join(root,'backend'),summary:'tap',minimumTests:369},
+    {name:'backend-tests',command:process.execPath,args:['--test','--test-reporter=tap',...backendTests.map(name=>`tests/${name}`)],cwd:path.join(root,'backend'),summary:'tap',minimumTests:369,requiredScenarios:QUANTITY_REQUIRED_SCENARIOS},
     ...regularMongo,
     {name:'frontend-tests',command:'npm',args:['test','--','--watchAll=false','--runInBand'],cwd:path.join(root,'frontend'),summary:'jest',minimumTests:26},
     {name:'frontend-build',command:'npm',args:['run','build'],cwd:path.join(root,'frontend')},

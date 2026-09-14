@@ -1,0 +1,34 @@
+{
+  "test": [
+    "backend/integration/externalPaperHarness.mongo.test.js",
+    "backend/integration/fractionalExecution.mongo.test.js",
+    "backend/tests/externalPaperAcceptance.test.js",
+    "backend/tests/shareQuantity.test.js",
+    "scripts/acceptance/provider.cjs",
+    "scripts/acceptance/provider.test.cjs"
+  ],
+  "production fractional execution": [
+    "backend/models/BrokerOrder.js",
+    "backend/models/Fill.js",
+    "backend/models/OrderIntent.js",
+    "backend/models/OrderProtection.js",
+    "backend/models/PositionClose.js",
+    "backend/models/RoboTradeOrder.js",
+    "backend/robotrader/alpacaOrderBuilder.js",
+    "backend/robotrader/reconciliation.js",
+    "backend/services/orderLifecycleFinancial.js",
+    "backend/services/orderLifecycleService.js",
+    "backend/services/orderProtectionService.js",
+    "backend/services/portfolioExposureService.js",
+    "backend/services/positionCloseService.js",
+    "backend/services/shareQuantity.js"
+  ],
+  "guarded acceptance": [
+    "backend/scripts/acceptanceSafety.js",
+    "backend/scripts/external-paper-acceptance.js"
+  ],
+  "verifier": [
+    "scripts/tests/verify-mvp.test.mjs",
+    "scripts/verify-mvp.mjs"
+  ]
+}

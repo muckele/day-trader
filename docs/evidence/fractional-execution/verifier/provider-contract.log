@@ -1,0 +1,22 @@
+TAP version 13
+# Subtest: controlled HTTP provider retains accepted timeout and idempotent broker identity
+ok 1 - controlled HTTP provider retains accepted timeout and idempotent broker identity
+  ---
+  duration_ms: 29.63125
+  type: 'test'
+  ...
+# Subtest: controlled provider preserves fractional position quantities exactly
+ok 2 - controlled provider preserves fractional position quantities exactly
+  ---
+  duration_ms: 7.10875
+  type: 'test'
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 2
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 95.147166

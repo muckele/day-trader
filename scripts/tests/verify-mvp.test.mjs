@@ -209,3 +209,30 @@ test('canonical external harness is a mandatory gate with named scenario enforce
  assert.ok(gate.requiredScenarios.includes('unattributed active order is blocked by actual canonical exposure guard'));
  assert.equal(validateAcceptanceExecution(gate,'# tests 21\n# pass 21\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n').ok,false);
 });
+test('fractional and guarded acceptance scenarios cannot be replaced by aggregate counts',async()=>{
+ const v=await import('../verify-mvp.mjs');
+ assert.ok(v.REQUIRED_LOCAL_GATES.includes('mongo-fractionalExecution.mongo'));
+ const gate=v.buildMongoChecks(['fractionalExecution.mongo.test.js'])[0];
+ for(const name of ['fractional broker fill accepted','cumulative fractional fill idempotency','partial-fill remainder cancellation','fractional exposure delayed-position coverage','fractional position coverage no double count','fractional exact reduce-only cleanup','fractional over-close rejection','no duplicate POST during fractional recovery'])assert.ok(gate.requiredScenarios.includes(name),name);
+ for(const name of ['acceptance 30-minute boundary','acceptance fixture price ceiling','acceptance stale quote rejection','acceptance final quote revalidation','canonical standalone cancel and cancellation identity match','unexpected partial-fill acceptance cleanup','unexpected full-fill acceptance cleanup','acceptance mutation-budget enforcement'])assert.ok(v.EXTERNAL_PAPER_REQUIRED_SCENARIOS.includes(name),name);
+ const fake='# tests 100\n# pass 100\n# fail 0\n# skipped 0\n';assert.equal(v.validateAcceptanceExecution(gate,fake).ok,false);
+});
+
+test('fractional mandatory gate rejects omission failure skipped names and malformed output',async()=>{
+ const v=await import('../verify-mvp.mjs'),gate=v.buildMongoChecks(['fractionalExecution.mongo.test.js'])[0];
+ const checks=v.REQUIRED_LOCAL_GATES.map(name=>({name,code:0}));assert.equal(v.assessRelease(checks).releaseCandidate,true);
+ assert.equal(v.assessRelease(checks.filter(c=>c.name!==gate.name)).releaseCandidate,false);
+ assert.equal(v.assessRelease(checks.map(c=>c.name===gate.name?{...c,code:1}:c)).releaseCandidate,false);
+ const summary='# tests 100\n# pass 100\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n';
+ for(const check of [gate,v.buildMongoChecks(['externalPaperHarness.mongo.test.js'])[0],v.buildReleaseChecks({backendTests:[],integrationFiles:[]}).find(c=>c.name==='backend-tests')]){
+  const footer=summary.replaceAll('100',String(Math.max(100,check.minimumTests)));
+  const rows=check.requiredScenarios.map((name,i)=>`ok ${i+1} - ${name}\n`);
+  assert.equal(v.validateAcceptanceExecution(check,rows.join('')+footer).ok,true);
+  for(let i=0;i<rows.length;i++){
+   assert.equal(v.validateAcceptanceExecution(check,rows.filter((_,n)=>n!==i).join('')+footer).ok,false,check.requiredScenarios[i]);
+   assert.equal(v.validateAcceptanceExecution(check,rows.map((r,n)=>n===i?r.trimEnd()+' # SKIP\n':r).join('')+footer).ok,false);
+  }
+  assert.equal(v.validateAcceptanceExecution(check,rows.join('')+rows[0]+footer).ok,false);
+  assert.equal(v.validateAcceptanceExecution(check,rows.join('')).ok,false);
+ }
+});

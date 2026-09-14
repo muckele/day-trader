@@ -1,0 +1,15 @@
+{
+  "at": "2026-09-14T20:33:09.390Z",
+  "operationalDocumentsAndIndexesUnchanged": true,
+  "collections": 40,
+  "documents": 1336,
+  "indexes": 226,
+  "envUnchangedAndIgnored": true,
+  "masterBriefUnchangedAndUntracked": true,
+  "replicaSet": "local-apps",
+  "primary": true,
+  "databaseWrites": 0,
+  "brokerRequests": 0,
+  "head": "a25d0b48dd18df886212ce48f95afb0695773550",
+  "stagedFiles": []
+}

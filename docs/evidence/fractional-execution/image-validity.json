@@ -1,0 +1,17 @@
+{
+  "result": "BACKEND IMAGE REMAINS SOURCE-VALID",
+  "imageId": "sha256:f663986b263b6d2dcb4453d2c912971178639c7a65890f2b54e29c5f12d759a7",
+  "matchedAuthoredRuntimeFiles": 140,
+  "backendChangesSinceBuild": [
+    "backend/integration/fractionalExecution.mongo.test.js",
+    "backend/integration/externalPaperHarness.mongo.test.js"
+  ],
+  "existingTrackedEditsThisPass": [
+    "backend/integration/externalPaperHarness.mongo.test.js",
+    "scripts/tests/verify-mvp.test.mjs",
+    "backend/integration/fractionalExecution.mongo.test.js"
+  ],
+  "imageRebuilt": false,
+  "scanReused": true,
+  "productionRuntimeUnchanged": true
+}

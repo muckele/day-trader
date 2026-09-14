@@ -1,0 +1,155 @@
+TAP version 13
+# Subtest: fractional canonical execution safety
+    # Subtest: fractional broker fill accepted
+    ok 1 - fractional broker fill accepted
+      ---
+      duration_ms: 113.024625
+      type: 'test'
+      ...
+    # Subtest: cumulative fractional fill idempotency
+    ok 2 - cumulative fractional fill idempotency
+      ---
+      duration_ms: 300.411625
+      type: 'test'
+      ...
+    # Subtest: partial-fill remainder cancellation
+    ok 3 - partial-fill remainder cancellation
+      ---
+      duration_ms: 195.09175
+      type: 'test'
+      ...
+    # Subtest: fractional exposure delayed-position coverage
+    ok 4 - fractional exposure delayed-position coverage
+      ---
+      duration_ms: 106.470042
+      type: 'test'
+      ...
+    # Subtest: fractional position coverage no double count
+    ok 5 - fractional position coverage no double count
+      ---
+      duration_ms: 138.817541
+      type: 'test'
+      ...
+    # Subtest: fractional exact reduce-only cleanup
+    ok 6 - fractional exact reduce-only cleanup
+      ---
+      duration_ms: 197.323458
+      type: 'test'
+      ...
+    # Subtest: fractional over-close rejection
+    ok 7 - fractional over-close rejection
+      ---
+      duration_ms: 22.625458
+      type: 'test'
+      ...
+    # Subtest: fractional protection remains explicitly unprotected without a GTC fractional stop
+    ok 8 - fractional protection remains explicitly unprotected without a GTC fractional stop
+      ---
+      duration_ms: 73.785792
+      type: 'test'
+      ...
+    # Subtest: fractional cleanup rejects non-fractionable assets without rounding
+    ok 9 - fractional cleanup rejects non-fractionable assets without rounding
+      ---
+      duration_ms: 22.72375
+      type: 'test'
+      ...
+    # Subtest: invalid broker cumulative quantity -0.1
+    ok 10 - invalid broker cumulative quantity -0.1
+      ---
+      duration_ms: 41.516917
+      type: 'test'
+      ...
+    # Subtest: invalid broker cumulative quantity 1.000000001
+    ok 11 - invalid broker cumulative quantity 1.000000001
+      ---
+      duration_ms: 43.514625
+      type: 'test'
+      ...
+    # Subtest: invalid broker cumulative quantity 0.0000000001
+    ok 12 - invalid broker cumulative quantity 0.0000000001
+      ---
+      duration_ms: 42.170292
+      type: 'test'
+      ...
+    # Subtest: invalid broker cumulative quantity bad
+    ok 13 - invalid broker cumulative quantity bad
+      ---
+      duration_ms: 39.455917
+      type: 'test'
+      ...
+    # Subtest: fractional canonical Fill index collapses equivalent cumulative formatting
+    ok 14 - fractional canonical Fill index collapses equivalent cumulative formatting
+      ---
+      duration_ms: 64.832041
+      type: 'test'
+      ...
+    # Subtest: no duplicate POST during fractional recovery
+    ok 15 - no duplicate POST during fractional recovery
+      ---
+      duration_ms: 59.723041
+      type: 'test'
+      ...
+    # Subtest: fractional cumulative spending is independent of intermediate observations
+    ok 16 - fractional cumulative spending is independent of intermediate observations
+      ---
+      duration_ms: 172.664584
+      type: 'test'
+      ...
+    # Subtest: manual and Robo fractional opening authority cannot be spoofed
+    ok 17 - manual and Robo fractional opening authority cannot be spoofed
+      ---
+      duration_ms: 22.894416
+      type: 'test'
+      ...
+    # Subtest: manual API rejects fractional opening through the canonical lifecycle
+    ok 18 - manual API rejects fractional opening through the canonical lifecycle
+      ---
+      duration_ms: 89.46975
+      type: 'test'
+      ...
+    # Subtest: fractional partial reduction preserves the exact remaining owned position
+    ok 19 - fractional partial reduction preserves the exact remaining owned position
+      ---
+      duration_ms: 493.763166
+      type: 'test'
+      ...
+    # Subtest: external fractional baseline retains 17.582774 without fabricating fills
+    ok 20 - external fractional baseline retains 17.582774 without fabricating fills
+      ---
+      duration_ms: 106.418834
+      type: 'test'
+      ...
+    # Subtest: concurrent equivalent fractional cumulative reconciliation persists one fill
+    ok 21 - concurrent equivalent fractional cumulative reconciliation persists one fill
+      ---
+      duration_ms: 122.81775
+      type: 'test'
+      ...
+    # Subtest: conflicting fractional position coverage blocks opening risk
+    ok 22 - conflicting fractional position coverage blocks opening risk
+      ---
+      duration_ms: 141.457125
+      type: 'test'
+      ...
+    # Subtest: fractional position flip and invalid reducing quantities are rejected
+    ok 23 - fractional position flip and invalid reducing quantities are rejected
+      ---
+      duration_ms: 25.114541
+      type: 'test'
+      ...
+    1..23
+ok 1 - fractional canonical execution safety
+  ---
+  duration_ms: 2910.578958
+  type: 'test'
+  ...
+1..1
+# tests 24
+# suites 0
+# pass 24
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3040.450292

@@ -1,0 +1,19 @@
+{
+  "command": [
+    "docker",
+    "scout",
+    "cves",
+    "local://sha256:f663986b263b6d2dcb4453d2c912971178639c7a65890f2b54e29c5f12d759a7",
+    "--platform",
+    "linux/arm64",
+    "--exit-code",
+    "--locations",
+    "--format",
+    "sarif",
+    "--output",
+    "/private/tmp/day-trader-fractional-execution/image/backend.sarif.json"
+  ],
+  "startedAt": "2026-09-14T19:29:28.904466+00:00",
+  "exitCode": 2,
+  "finishedAt": "2026-09-14T19:29:40.289104+00:00"
+}
