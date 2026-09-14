@@ -1,3 +1,4 @@
+const Q = require('./shareQuantity');
 const Close = require('../models/PositionClose');
 const Protection = require('../models/OrderProtection');
 const Intent = require('../models/OrderIntent');
@@ -18,12 +19,12 @@ function createPositionCloseService({broker,ownerId,expectedAccountId,submit,rec
  async function closePosition({userId,idempotencyKey,symbol,qty}={}) {
   symbol=String(symbol||'').toUpperCase();
   if(String(userId)!==String(ownerId)||!/^\w[\w.]{0,14}$/.test(symbol)||typeof idempotencyKey!=='string'||!idempotencyKey.trim()||idempotencyKey.length>100)throw fail('Owner, symbol and stable close idempotency key required.');
-  if(qty!=null&&(!Number.isSafeInteger(Number(qty))||Number(qty)<=0))throw fail('Close quantity must be a positive whole share count.');
+  if(qty!=null){if(!Q.positive(qty))throw fail('Close quantity must be positive.');qty=Q.persist(qty);}
   if(beforeAdmission)await beforeAdmission();
   return withProtectionAccountLock({accountId:expectedAccountId,symbol,coordinatedClose:true},async assertLease=>{
    const account=await broker.getAccount();if(broker.mode!=='paper'||String(account.id)!==String(expectedAccountId))throw fail('Expected paper account required.');
    let c=await Close.findOne({accountId:expectedAccountId,idempotencyKey});
-   if(c&&(c.symbol!==symbol||Number(c.requestedQty||0)!==Number(qty||0)))throw fail('Close idempotency payload conflict.');
+   if(c&&(c.symbol!==symbol||Q.compare(c.requestedQty||0,qty||0)!==0))throw fail('Close idempotency payload conflict.');
    if(!c){
     if(await Close.exists({accountId:expectedAccountId,symbol,active:true}))throw fail('A coordinated close already reserves this position.');
     c=await Close.create({accountId:expectedAccountId,userId:ownerId,symbol,idempotencyKey,requestedQty:qty,deadlineAt:new Date(now().getTime()+120000)});
@@ -64,10 +65,11 @@ function createPositionCloseService({broker,ownerId,expectedAccountId,submit,rec
      }
      record.confirmedQty=0;record.state='close_pending';await record.save();
     }
-    const positions=await broker.getPositions();const position=positions.find(p=>p.symbol===symbol);const remaining=Number(position?.qty||0),available=Number(position?.qty_available??remaining);
-    if(!Number.isSafeInteger(remaining)||remaining<0||!Number.isFinite(available)||available<remaining)return mark(c,'blocked','Fresh whole-share unreserved position required.');
+    const positions=await broker.getPositions();const position=positions.find(p=>p.symbol===symbol);const remaining=Q.units(position?.qty??0),available=Q.units(position?.qty_available??position?.qty??0);
+    if(available<remaining)return mark(c,'blocked','Fresh unreserved position required.');
     if(!remaining)return mark(c,'flat',null,false);
-    c.qty=Math.min(c.requestedQty||remaining,remaining);await mark(c,'submitting');
+    if(qty!=null&&Q.units(qty)>remaining)return mark(c,'blocked','Requested reduction exceeds exact owned quantity.');
+    c.qty=qty??Q.persist(Q.format(remaining));await mark(c,'submitting');
     const result=await submit({userId:ownerId,idempotencyKey:`close:${c._id}`,origin:'manual-close',orderInput:{symbol,side:'sell',qty:c.qty,orderType:'market',timeInForce:'day'},beforeSubmit:assertLease,beforeBrokerWrite:assertLease});
     c.intentId=result.intent._id;await mark(c,result.intent.status,result.intent.rejectionReason||null,!terminal.has(result.intent.status));return {...result,close:c};
    }catch(error){return mark(c,'cancel_uncertain',String(error.message).slice(0,500));}

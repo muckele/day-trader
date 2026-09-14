@@ -1,3 +1,4 @@
+const Q = require('../services/shareQuantity');
 const RoboTradeOrder = require('../models/RoboTradeOrder');
 const OrderIntent = require('../models/OrderIntent');
 const { createAlpacaBroker } = require('./alpacaBroker');
@@ -10,10 +11,10 @@ async function submitProtectiveStopForEntry(parentOrder, { broker }, deps = {}) 
 }
 async function submitMissingProtectiveStops({ broker, userId }, deps = {}) {
   const intents = await (deps.OrderIntent || OrderIntent).find({ userId: String(userId || process.env.OWNER_USER_ID),
-    executionSource: 'alpaca-paper', origin: /^robo/i, side: 'buy', filledQty: { $gt: 0 } });
+    executionSource: 'alpaca-paper', origin: /^robo/i, side: 'buy' });
   const protection = createOrderProtection({ broker, ...(deps.protectionDeps || {}) });
   const results = [];
-  for (const intent of intents) results.push(await protection.reconcile({ intentId: intent._id }));
+  for (const intent of intents.filter(i=>Q.positive(i.filledQty??0))) results.push(await protection.reconcile({ intentId: intent._id }));
   return results.filter(Boolean);
 }
 async function reconcileRoboOrders({ mode = 'paper', limit = 100, userId = process.env.OWNER_USER_ID,

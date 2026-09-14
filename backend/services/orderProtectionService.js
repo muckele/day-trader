@@ -1,3 +1,4 @@
+const Q = require('./shareQuantity');
 const { createHash, randomUUID } = require('node:crypto');
 const OrderIntent = require('../models/OrderIntent');
 const OrderProtection = require('../models/OrderProtection');
@@ -8,7 +9,9 @@ const { claimDispatch } = require('./dispatchAuthorization');
 const TERMINAL = new Set(['filled', 'canceled', 'cancelled', 'expired', 'rejected']);
 function flattenOrders(orders = []) { return orders.flatMap(order => [order, ...flattenOrders(order.legs || [])]); }
 const ACTIVE = new Set(['new', 'accepted', 'partially_filled']);
-const quantity = value => Math.max(0, Number(value) || 0);
+const quantity = value => Q.units(value ?? 0);
+const minQty=(...xs)=>xs.reduce((a,b)=>a<b?a:b);
+const remainingQty=(a,b)=>{const n=quantity(a)-quantity(b);return n>0n?n:0n;};
 function protectionClientId(intentId, generation) {
   return `robo-stop-${createHash('sha256').update(`${intentId}:${generation}`).digest('hex').slice(0, 32)}`;
 }
@@ -23,6 +26,7 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
     }
   }
   async function mark(record, state, extra = {}) {
+    for(const key of ['qty','confirmedQty'])if(typeof extra[key]==='bigint')extra[key]=Q.persist(Q.format(extra[key]));
     Object.assign(record, extra, { state });
     await record.save();
     await require('./portfolioExposureService').recordProtectionFill(record);
@@ -99,12 +103,12 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
         side: 'sell', symbol: intent.symbol, status: { $in: ['intent_created', 'reserved', 'submitting', 'submission_uncertain', 'reconciliation_required', 'replace_pending'] } });
       if (unresolvedSell) return mark(record, 'unprotected', { error: 'An unresolved reducing exit reserves this position.' });
       const otherExits = flattenOrders(openOrders || []).filter(o => o.symbol === intent.symbol && o.side === 'sell' && o.id !== current?.id)
-        .reduce((sum, o) => sum + Math.max(0, quantity(o.qty) - quantity(o.filled_qty)), 0);
+        .reduce((sum, o) => sum + remainingQty(o.qty,o.filled_qty), 0n);
       const available = position?.qty_available == null ? quantity(position?.qty)
-        : quantity(position.qty_available) + (current && !TERMINAL.has(current.status) ? Math.max(0, quantity(current.qty) - quantity(current.filled_qty)) : 0);
-      const desired = Math.min(quantity(intent.filledQty), available, Math.max(0, quantity(position?.qty) - otherExits));
+        : quantity(position.qty_available) + (current && !TERMINAL.has(current.status) ? remainingQty(current.qty,current.filled_qty) : 0n);
+      const desired = minQty(quantity(intent.filledQty), available, quantity(position?.qty)>otherExits?quantity(position?.qty)-otherExits:0n);
       if (current && !TERMINAL.has(current.status)) {
-        const remaining = Math.max(0, quantity(current.qty) - quantity(current.filled_qty));
+        const remaining = remainingQty(current.qty,current.filled_qty);
         if (ACTIVE.has(current.status) && remaining === desired && desired > 0) return mark(record, 'protected', { confirmedQty: remaining, error: null });
         // Persist cancellation before writing. A restart only polls this ID until terminal evidence.
         if (record.state !== 'cancel_pending') {
@@ -117,6 +121,7 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
       }
       if (current?.status === 'rejected') return mark(record, 'unprotected', { confirmedQty: 0, error: 'Broker rejected protective stop; operator review required.' });
       if (!desired) return mark(record, quantity(position?.qty) > 0 ? 'unprotected' : 'flat', { confirmedQty: 0, error: quantity(position?.qty) > 0 ? 'Remaining position is reserved by other exits; stop coverage requires review.' : null });
+      if(desired%Q.SCALE!==0n)return mark(record,'unprotected',{confirmedQty:0,error:'Fractional owned exposure cannot use the existing GTC protective stop; exact coordinated reduction or operator review required.'});
       // A new generation is legal only after the previous broker ID is terminal.
       record.generation += 1;
       record.clientOrderId = protectionClientId(intentId, record.generation);
@@ -126,7 +131,7 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
       await assertLease();
       try {
         const result = await broker.submitOrder({ symbol: intent.symbol, assetClass: 'stocks', side: 'sell',
-          orderType: 'stop', orderClass: 'simple', timeInForce: 'gtc', qty: desired,
+          orderType: 'stop', orderClass: 'simple', timeInForce: 'gtc', qty: Q.persist(Q.format(desired)),
           stopPrice, clientOrderId: record.clientOrderId }, { assertExecutor, authorize: ({ payload }) => claimDispatch({ Model: OrderProtection, id: record._id, accountId: expectedAccountId, userId: ownerId, operation: `submit:${record.clientOrderId}`, payload, lease: dispatchLease, assertExecutor }) });
         const order = result.order || result;
         const confirmed = order.id && order.client_order_id === record.clientOrderId && order.symbol === intent.symbol
@@ -134,7 +139,7 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
           && quantity(order.qty) === desired && ACTIVE.has(order.status);
         return await mark(record, confirmed ? 'protected' : 'uncertain', {
           brokerOrderId: order.id, brokerSnapshot: order,
-          confirmedQty: confirmed ? Math.max(0, quantity(order.qty) - quantity(order.filled_qty)) : 0
+          confirmedQty: confirmed ? remainingQty(order.qty,order.filled_qty) : 0
         });
       } catch (error) {
         // Includes local persistence failures after broker acknowledgement. Never retry POST.
@@ -144,8 +149,9 @@ function createOrderProtection({ broker, ownerId = process.env.OWNER_USER_ID,
   }
   async function assertProtected() {
     const entries = await Intent.find({ accountId: expectedAccountId, userId: ownerId,
-      executionSource: 'alpaca-paper', side: 'buy', filledQty: { $gt: 0 } });
+      executionSource: 'alpaca-paper', side: 'buy' });
     for (const entry of entries) {
+      if(!Q.positive(entry.filledQty??0))continue;
       if (!/^robo/i.test(entry.origin) && !(Number(entry.orderInput?.stopLossPrice || entry.orderInput?.riskStopPrice || entry.stopLossPrice) > 0)) continue;
       const result = await reconcile({ intentId: entry._id });
       if (!result || !['protected', 'flat'].includes(result.state)) throw Object.assign(new Error('Existing automated position protection is unresolved.'), { code: 'AUTOMATED_PROTECTION_REQUIRED' });

@@ -1,3 +1,4 @@
+const Q = require('../services/shareQuantity');
 const {
   buildClientOrderId,
   normalizeAlpacaSymbol
@@ -29,7 +30,7 @@ function mapOrderFields(input, normalized) {
   };
 
   if (normalized.orderClass !== 'simple') payload.order_class = normalized.orderClass;
-  if (hasNumericValue(input.qty)) payload.qty = toOrderString(input.qty);
+  if (hasNumericValue(input.qty)) payload.qty = normalized.assetClass === 'stocks' ? Q.normalize(input.qty) : toOrderString(input.qty);
   if (hasNumericValue(input.notional)) payload.notional = toOrderString(input.notional);
   if (hasNumericValue(input.limitPrice ?? input.limit_price)) {
     payload.limit_price = toOrderString(input.limitPrice ?? input.limit_price);

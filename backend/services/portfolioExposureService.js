@@ -1,3 +1,4 @@
+const Q = require('./shareQuantity');
 const mongoose = require('mongoose');
 const Capacity = require('../models/AccountCapacity');
 const Intent = require('../models/OrderIntent');
@@ -14,15 +15,15 @@ function quantities(positions) {
   if (!Array.isArray(positions)) throw unresolved('positions unavailable');
   const result = {};
   for (const position of positions) {
-    const qty = Number(position.qty);
-    if (!position.symbol || !Number.isSafeInteger(qty) || qty < 0 || Object.hasOwn(result, position.symbol)) throw unresolved('invalid or unsupported position quantity');
+    let qty;try{qty=Q.units(position.qty);}catch{throw unresolved('invalid or unsupported position quantity');}
+    if (!position.symbol || Object.hasOwn(result, position.symbol)) throw unresolved('invalid or unsupported position quantity');
     if (qty && (position.market_value == null || !Number.isFinite(Number(position.market_value)) || Number(position.market_value) <= 0)) throw unresolved('positive current position valuation unavailable');
-    if (qty) result[position.symbol] = qty;
+    if (qty) result[position.symbol] = Q.persist(Q.format(qty));
   }
   return result;
 }
 function fingerprint(orders) {
-  return JSON.stringify(orders.map(order => [order.id, order.client_order_id || '', order.symbol, order.side, String(order.qty), String(order.filled_qty || 0), order.status]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+  return JSON.stringify(orders.map(order => [order.id, order.client_order_id || '', order.symbol, order.side, Q.normalize(order.qty), Q.normalize(order.filled_qty ?? 0), order.status]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
 }
 async function capture({ broker, accountId }) {
   const cap = await Capacity.findOne({ accountId }).lean();
@@ -47,15 +48,15 @@ async function canonical({ accountId, session }) {
   const protections = await Protection.find({ accountId }).session(session).lean();
   const net = {}, totals = new Map();
   for (const fill of fills) {
-    if (!Number.isSafeInteger(fill.qty) || fill.qty <= 0) throw unresolved('invalid canonical fill quantity');
-    net[fill.symbol] = (net[fill.symbol] || 0) + (fill.side === 'buy' ? fill.qty : -fill.qty);
+    if (!Q.positive(fill.qty)) throw unresolved('invalid canonical fill quantity');
+    net[fill.symbol] = Q.signedPersist(Q.signedUnits(net[fill.symbol] || 0) + (fill.side === 'buy' ? Q.units(fill.qty) : -Q.units(fill.qty)));
     if (fill.metadata?.kind !== 'protection') {
       const key = `${fill.intentId}:${fill.side}`;
-      totals.set(key, (totals.get(key) || 0) + fill.qty);
+      totals.set(key, (totals.get(key) || 0n) + Q.units(fill.qty));
     }
   }
   for (const intent of intents) {
-    if ((totals.get(`${intent._id}:${intent.side}`) || 0) !== intent.filledQty) throw unresolved('canonical intent and fill quantities disagree');
+    if ((totals.get(`${intent._id}:${intent.side}`) || 0n) !== Q.units(intent.filledQty)) throw unresolved('canonical intent and fill quantities disagree');
   }
   const clients = new Set(intents.flatMap(intent => [intent.clientOrderId, intent.replacement?.clientOrderId]).filter(Boolean));
   for (const p of protections) {
@@ -67,7 +68,7 @@ async function canonical({ accountId, session }) {
   const filledByClient = new Map();
   for (const intent of intents) for (const client of [intent.clientOrderId, intent.replacement?.clientOrderId].filter(Boolean)) filledByClient.set(client, intent.filledQty);
   const filledById = new Map();
-  for (const fill of fills) if (fill.metadata?.kind === 'protection') filledById.set(fill.externalOrderId, (filledById.get(fill.externalOrderId) || 0) + fill.qty);
+  for (const fill of fills) if (fill.metadata?.kind === 'protection') filledById.set(fill.externalOrderId, Q.add(filledById.get(fill.externalOrderId) || 0, fill.qty));
   return { net, clients, ids, filledByClient, filledById, hasFills: fills.length > 0 };
 }
 async function certify({ accountId, snapshot, cap, session }) {
@@ -77,8 +78,8 @@ async function certify({ accountId, snapshot, cap, session }) {
   const known = await canonical({ accountId, session });
   for (const order of snapshot.orders || []) {
     if (!known.clients.has(order.client_order_id) && !known.ids.has(order.id)) continue;
-    const filled = Number(order.filled_qty || 0);
-    if (!Number.isSafeInteger(filled) || filled < 0 || filled > (known.filledByClient.get(order.client_order_id) ?? known.filledById.get(order.id) ?? 0)) throw unresolved('broker execution is ahead of canonical fill ingestion');
+    const filled = Q.units(order.filled_qty ?? 0);
+    if (filled > Q.units(known.filledByClient.get(order.client_order_id) ?? known.filledById.get(order.id) ?? 0)) throw unresolved('broker execution is ahead of canonical fill ingestion');
   }
   const foreign = (snapshot.orders || []).filter(order => !known.clients.has(order.client_order_id) && !known.ids.has(order.id));
   if (foreign.some(order => !terminal.has(order.status))) throw unresolved('unattributed active broker order');
@@ -93,9 +94,9 @@ async function certify({ accountId, snapshot, cap, session }) {
   if (snapshot.orders && baseline.foreignState !== foreignState) throw unresolved('unattributed broker activity changed since the baseline');
   const expected = {};
   for (const symbol of new Set([...Object.keys(baseline.quantities || {}), ...Object.keys(baseline.canonicalNet || {}), ...Object.keys(known.net), ...Object.keys(snapshot.quantities)])) {
-    const qty = (baseline.quantities[symbol] || 0) + (known.net[symbol] || 0) - (baseline.canonicalNet[symbol] || 0);
-    if (!Number.isSafeInteger(qty) || qty < 0 || qty !== (snapshot.quantities[symbol] || 0)) throw unresolved(`broker and canonical holdings disagree for ${symbol}`);
-    if (qty) expected[symbol] = qty;
+    const qty = Q.units(baseline.quantities[symbol] || 0) + Q.signedUnits(known.net[symbol] || 0) - Q.signedUnits(baseline.canonicalNet[symbol] || 0);
+    if (qty < 0n || qty !== Q.units(snapshot.quantities[symbol] || 0)) throw unresolved(`broker and canonical holdings disagree for ${symbol}`);
+    if (qty) expected[symbol] = Q.persist(Q.format(qty));
   }
   await Capacity.updateOne({ _id: cap._id }, { $set: { portfolioBaseline: baseline,
     portfolioObservation: { state: 'coherent', quantities: expected, canonicalNet: known.net, observedAt: snapshot.observedAt, version: cap.version } } }, { session });
@@ -106,8 +107,10 @@ async function reducingPositions({ accountId, positions, cap, session }) {
   const { net } = await canonical({ accountId, session });
   const baseline = cap.portfolioBaseline;
   return positions.map(position => {
-    const qty = Math.max(0, (baseline.quantities[position.symbol] || 0) + (net[position.symbol] || 0) - (baseline.canonicalNet[position.symbol] || 0));
-    return { ...position, qty_available: Math.min(Number(position.qty_available ?? position.qty), qty) };
+    const qty = Q.units(baseline.quantities[position.symbol] || 0) + Q.signedUnits(net[position.symbol] || 0) - Q.signedUnits(baseline.canonicalNet[position.symbol] || 0);
+    if(qty<0n)throw unresolved('negative canonical holding');
+    const available=Q.units(position.qty_available ?? position.qty);
+    return { ...position, qty_available: Q.persist(Q.format(available<qty?available:qty)) };
   });
 }
 async function invalidate(accountId, session) {
@@ -134,23 +137,23 @@ async function refresh({ broker, accountId }) {
 // quantity. They never credit spending/cash or create a separate position ledger.
 async function recordProtectionFill(record) {
   const raw = record.brokerSnapshot;
-  if (!raw || !(Number(raw.filled_qty) > 0)) return;
+  if (!raw || !Q.positive(raw.filled_qty??0)) return;
   if (raw.id !== record.brokerOrderId || raw.client_order_id !== record.clientOrderId || raw.symbol !== record.symbol || raw.side !== 'sell' || raw.type !== 'stop') throw unresolved('protective execution identity mismatch');
-  const qty = Number(raw.filled_qty), total = fillNotionalCents(qty, raw.filled_avg_price);
-  if (!Number.isSafeInteger(qty) || qty < 0) throw unresolved('protective fill quantity invalid');
+  const qty = Q.units(raw.filled_qty), total = fillNotionalCents(raw.filled_qty, raw.filled_avg_price);
+  if (qty > Q.units(raw.qty)) throw unresolved('protective fill quantity invalid');
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
       await Capacity.findOneAndUpdate({ accountId: record.accountId }, { $inc: { version: 1 } }, { upsert: true, new: true, session });
-      const prior = await Fill.findOne({ accountId: record.accountId, executionSource: source, externalOrderId: raw.id }).sort({ cumulativeQty: -1 }).session(session);
-      const delta = qty - (prior?.cumulativeQty || 0);
-      if (delta <= 0) return;
       const previous = await Fill.find({ accountId: record.accountId, executionSource: source, externalOrderId: raw.id }).session(session);
+      const prior=previous.reduce((n,f)=>Q.units(f.cumulativeQty)>n?Q.units(f.cumulativeQty):n,0n);
+      const delta = qty-prior;
+      if (delta <= 0n) return;
       const cents = total - previous.reduce((sum, fill) => sum + fill.notionalCents, 0);
       if (cents < 0) throw unresolved('protective cumulative notional regressed');
       await Fill.create([{ accountId: record.accountId, executionSource: source, broker: 'alpaca', intentId: record.intentId,
-        externalOrderId: raw.id, cumulativeQty: qty, symbol: record.symbol, side: 'sell', qty: delta,
-        notionalCents: cents, notional: cents / 100, price: cents / delta / 100, metadata: { kind: 'protection' } }], { session });
+        externalOrderId: raw.id, cumulativeQty: Q.persist(Q.format(qty)), symbol: record.symbol, side: 'sell', qty: Q.persist(Q.format(delta)),
+        notionalCents: cents, notional: cents / 100, price: cents / Number(Q.format(delta)) / 100, metadata: { kind: 'protection' } }], { session });
       await invalidate(record.accountId, session);
     });
   } finally { await session.endSession(); }

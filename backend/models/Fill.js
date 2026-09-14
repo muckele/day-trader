@@ -1,8 +1,9 @@
+const Q = require('../services/shareQuantity');
 const mongoose = require('mongoose');
 
 const fillSchema = new mongoose.Schema(
   {
-    executionSource:String, externalOrderId:String, cumulativeQty:Number, notionalCents:Number,
+    executionSource:String, externalOrderId:String, cumulativeQty:Q.schemaField(mongoose), notionalCents:Number,
     accountId: { type: String, default: 'default', index: true },
     broker: { type: String, enum: ['paper', 'alpaca'], default: 'paper', index: true },
     intentId: { type: mongoose.Schema.Types.ObjectId, ref: 'OrderIntent', default: null, index: true },
@@ -11,7 +12,7 @@ const fillSchema = new mongoose.Schema(
     symbol: { type: String, required: true, index: true },
     assetClass: { type: String, default: 'equity' },
     side: { type: String, enum: ['buy', 'sell'], required: true },
-    qty: { type: Number, required: true },
+    qty: Q.schemaField(mongoose, { required: true }),
     price: { type: Number, required: true },
     notional: { type: Number, default: null },
     strategyId: { type: String, default: null },

@@ -1,3 +1,4 @@
+const Q = require('./shareQuantity');
 const fail = (message, code='ORDER_INVALID') => Object.assign(new Error(message), {code,status:400});
 function cents(value, allowZero=false) {
  const text=String(value ?? '');
@@ -8,7 +9,7 @@ function cents(value, allowZero=false) {
 }
 function periodKeys(now) { const d=new Date(now);const day=d.toISOString().slice(0,10); d.setUTCHours(0,0,0,0);d.setUTCDate(d.getUTCDate()-((d.getUTCDay()+6)%7));return {day,week:d.toISOString().slice(0,10),month:day.slice(0,7)}; }
 function normalizeOrder(x={}) {
- const symbol=String(x.symbol||'').trim().toUpperCase(),side=x.side,qty=Number(x.qty);
+ const symbol=String(x.symbol||'').trim().toUpperCase(),side=x.side,qty=Q.opening(x.qty);
  if(!/^[A-Z][A-Z0-9.]{0,14}$/.test(symbol)||!['buy','sell'].includes(side)||!Number.isSafeInteger(qty)||qty<=0)throw fail('A valid symbol, side and positive whole share quantity are required.');
  if(x.assetClass && !['equity','stocks','us_equity'].includes(x.assetClass))throw fail('Only equity orders are supported.');
  let orderType=x.orderType||x.type||'market';let limitPrice=x.limitPrice??x.limit_price;
@@ -22,8 +23,15 @@ function normalizeOrder(x={}) {
  return {symbol,side,qty,assetClass:'equity',orderType,timeInForce,limitPrice:limitCents?limitCents/100:undefined,stopPrice:orderType==='stop'?cents(x.stopPrice)/100:undefined,stopLossPrice:(x.riskStopPrice||x.stopLossPrice)?cents(x.riskStopPrice||x.stopLossPrice)/100:undefined,allowExtendedHours:false,ceilingCents};
 }
 function fillNotionalCents(qty,price){
- const p=String(price??''); if(!/^\d+(\.\d{1,12})?$/.test(p)||!Number.isSafeInteger(qty)||qty<0)throw fail('Invalid broker cumulative execution.');
- const [a,b='']=p.split('.');const scale=10n**BigInt(b.length);const raw=(BigInt(a)*scale+BigInt(b||'0'))*BigInt(qty)*100n;
- const result=Number((raw+scale/2n)/scale);if(!Number.isSafeInteger(result))throw fail('Broker execution exceeds monetary precision.');return result;
+ const p=String(price??''); if(!/^\d+(\.\d{1,12})?$/.test(p))throw fail('Invalid broker cumulative execution.');
+ const q=Q.units(qty),[a,b='']=p.split('.');const priceScale=10n**BigInt(b.length);
+ const denominator=priceScale*Q.SCALE;
+ const raw=(BigInt(a)*priceScale+BigInt(b||'0'))*q*100n;
+ // Round the cumulative economic value half up to cents, then callers derive deltas.
+ const result=Number((raw+denominator/2n)/denominator);if(!Number.isSafeInteger(result))throw fail('Broker execution exceeds monetary precision.');return result;
 }
-module.exports={fillNotionalCents,cents,periodKeys,normalizeOrder,fail};
+function normalizeReducingOrder(input={}){
+ if(input.side!=='sell'||(input.orderType||input.type||'market')!=='market'||(input.timeInForce||input.time_in_force||'day')!=='day'||!Q.positive(input.qty))throw fail('Exact reduction requires a positive market DAY sell.');
+ const normalized=normalizeOrder({...input,qty:1});return {...normalized,qty:Q.persist(input.qty)};
+}
+module.exports={fillNotionalCents,cents,periodKeys,normalizeOrder,normalizeReducingOrder,fail};

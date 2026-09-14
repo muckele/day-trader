@@ -1,3 +1,4 @@
+const Q = require('../services/shareQuantity');
 const mongoose = require('mongoose');
 
 const brokerOrderSchema = new mongoose.Schema(
@@ -11,10 +12,10 @@ const brokerOrderSchema = new mongoose.Schema(
     symbol: { type: String, required: true, index: true },
     assetClass: { type: String, default: 'equity' },
     side: { type: String, enum: ['buy', 'sell'], required: true },
-    qty: { type: Number, required: true },
+    qty: Q.schemaField(mongoose, { required: true }),
     orderType: { type: String, default: 'market' },
     status: { type: String, default: 'submitted', index: true },
-    executionSource: String, clientOrderId: String, replacedBy: String, replaces: String, filledQty:{type:Number,default:0}, filledNotionalCents:{type:Number,default:0},
+    executionSource: String, clientOrderId: String, replacedBy: String, replaces: String, filledQty:Q.schemaField(mongoose,{default:0}), filledNotionalCents:{type:Number,default:0},
     estimatedPrice: { type: Number, default: null },
     fillPrice: { type: Number, default: null },
     notional: { type: Number, default: null },

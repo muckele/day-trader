@@ -1,3 +1,4 @@
+const Q = require('../services/shareQuantity');
 const mongoose = require('mongoose');
 
 const orderIntentSchema = new mongoose.Schema(
@@ -8,7 +9,7 @@ const orderIntentSchema = new mongoose.Schema(
     symbol: { type: String, required: true, index: true },
     assetClass: { type: String, default: 'equity' },
     side: { type: String, enum: ['buy', 'sell'], required: true },
-    qty: { type: Number, required: true },
+    qty: Q.schemaField(mongoose, { required: true }),
     orderType: { type: String, default: 'market' },
     timeInForce: { type: String, default: 'day' },
     limitPrice: { type: Number, default: null },
@@ -23,7 +24,7 @@ const orderIntentSchema = new mongoose.Schema(
     status: { type: String, default: 'created', index: true },
     userId: String, environment: String, executionSource: String, idempotencyKey: String, payloadFingerprint: String, clientOrderId: String,
     orderInput: mongoose.Schema.Types.Mixed, periodKeys: mongoose.Schema.Types.Mixed,
-    reservedCents: {type:Number,default:0}, filledQty:{type:Number,default:0}, filledNotionalCents:{type:Number,default:0},
+    reservedCents: {type:Number,default:0}, filledQty:Q.schemaField(mongoose,{default:0}), filledNotionalCents:{type:Number,default:0},
     uncertainSince: Date, protectionState: mongoose.Schema.Types.Mixed, replacement: mongoose.Schema.Types.Mixed,
     dispatchClaims: { type: mongoose.Schema.Types.Mixed, default: {} }, controlGeneration: Number,
     stopCancelRequested: Boolean, stopCancelAttempted: Boolean,

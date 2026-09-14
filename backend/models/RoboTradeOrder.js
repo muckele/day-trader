@@ -1,3 +1,4 @@
+const Q = require('../services/shareQuantity');
 const mongoose = require('mongoose');
 
 const riskCheckSchema = new mongoose.Schema(
@@ -31,7 +32,7 @@ const roboTradeOrderSchema = new mongoose.Schema(
     orderType: { type: String, default: 'market' },
     orderClass: { type: String, default: 'simple' },
     timeInForce: { type: String, default: 'day' },
-    qty: { type: Number, default: null },
+    qty: Q.schemaField(mongoose, { default: null }),
     notional: { type: Number, default: null },
     limitPrice: { type: Number, default: null },
     stopPrice: { type: Number, default: null },
@@ -42,7 +43,7 @@ const roboTradeOrderSchema = new mongoose.Schema(
     riskStopPrice: { type: Number, default: null },
     riskTakeProfitPrice: { type: Number, default: null },
     status: { type: String, default: 'pending_submit', index: true },
-    filledQty: { type: Number, default: null },
+    filledQty: Q.schemaField(mongoose, { default: null }),
     filledAvgPrice: { type: Number, default: null },
     rawPayload: { type: mongoose.Schema.Types.Mixed, default: {} },
     alpacaResponse: { type: mongoose.Schema.Types.Mixed, default: {} },

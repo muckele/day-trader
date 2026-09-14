@@ -1,3 +1,4 @@
+const Q = require('../services/shareQuantity');
 const mongoose = require('mongoose');
 const schema = new mongoose.Schema({
   intentId: { type: mongoose.Schema.Types.ObjectId, required: true, unique: true },
@@ -8,8 +9,8 @@ const schema = new mongoose.Schema({
   generation: { type: Number, default: 0 },
   clientOrderId: String,
   brokerOrderId: String,
-  qty: { type: Number, default: 0 },
-  confirmedQty: { type: Number, default: 0 },
+  qty: Q.schemaField(mongoose, { default: 0 }),
+  confirmedQty: Q.schemaField(mongoose, { default: 0 }),
   error: String,
   brokerSnapshot: mongoose.Schema.Types.Mixed,
   dispatchClaims: { type: mongoose.Schema.Types.Mixed, default: {} }
