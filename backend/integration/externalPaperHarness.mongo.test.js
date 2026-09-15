@@ -47,10 +47,12 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
   if(url.pathname==='/v2/clock'&&fault==='closing-clock'&&reads>=2)await control({patch:{marketOpen:false}});
   if(config.method==='post'){
    const body=JSON.parse(config.data);postBodies.push(body);
-   if((p.state.posts.length>1&&fault!=='no-fill'&&!(['close-timeout','partial-close-timeout'].includes(fault)&&body.side==='sell'))||(['partial-cancel','full-cancel','partial-close-timeout'].includes(fault)&&p.state.posts.length===1)){
+   if((p.state.posts.length>1&&!['no-fill','cancel-response-lost'].includes(fault)&&!(['close-timeout','partial-close-timeout'].includes(fault)&&body.side==='sell'))||(['partial-cancel','full-cancel','partial-close-timeout'].includes(fault)&&p.state.posts.length===1)){
     await control({fill:{id:JSON.parse(response.data).id,qty:p.state.posts.length===1?(['partial-cancel','partial-close-timeout'].includes(fault)?partialQty:'1'):body.qty,price:p.state.posts.length===1?body.limit_price:100}});
    }
   }
+  if(config.method==='delete'&&['cancel-response-lost','accepted-cancel-loss'].includes(fault))throw Object.assign(new Error('controlled cancellation response lost'),{code:'ECONNRESET',config});
+  if(config.method==='delete'&&fault==='cancel-timeout')await control({patch:{orders:p.state.orders.map(o=>o.id===url.pathname.split('/').pop()?{...o,status:'new'}:o)}});
   return response;
  };
  const execute=async(options={})=>run({...baseOptions,'run-id':randomUUID(),...options},{env,now:()=>now,pollAttempts:2,pollDelayMs:0,onEvidence:r=>{report=r;}});
@@ -86,12 +88,13 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
   await t.test('control generation changes before dispatch block the acceptance order',async()=>{fault='generation';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);assert.equal((await Intent.findOne()).status,'rejected');});
   await t.test('market closure between admission and final check still blocks dispatch',async()=>{fault='closing-clock';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);});
   await t.test('optional request ID absence does not fabricate IDs',async()=>{fault='no-request-id';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED');assert.ok(r.requests.every(x=>x.xRequestId===null));});
-  await t.test('unfilled opening is canonically canceled with reservation released',async()=>{fault='no-fill';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'OPENING_FILL_TIMEOUT');assert.equal(r.cancellationConfirmed,true);assert.equal(p.state.posts.length,2);assert.ok((await Intent.find()).every(i=>i.status==='canceled'));assert.equal((await Capacity.findOne()).reservedCents,0);assert.deepEqual(p.state.positions,baseline);});
-  await t.test('cancellation uncertainty never retries or reports clean',async()=>{fault='no-fill';await control({patch:{cancelUncertain:true}});const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.cleanup?.confirmed,undefined);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);assert.equal(p.state.posts.length,1);});
+  // Preserve the mandatory historical identity; the stricter run budget now protects the residual opening.
+  await t.test('unfilled opening is canonically canceled with reservation released',async()=>{fault='no-fill';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'CANCELLATION_BUDGET_EXHAUSTED');assert.equal(r.cancellationConfirmed,true);assert.equal(p.state.posts.length,2);assert.equal((await Intent.find({status:'canceled'})).length,1);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);assert.equal(r.remaining.acceptanceOpenOrders.length,1);assert.equal((await Capacity.findOne()).reservedCents,10000);assert.deepEqual(p.state.positions,baseline);});
+  await t.test('cancellation uncertainty never retries or reports clean',async()=>{fault='no-fill';await control({patch:{cancelUncertain:true}});const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.cleanup?.confirmed,undefined);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);assert.equal(p.state.posts.length,1);assert.equal(r.budget.cancellations,1);assert.equal(r.cancellationRecovery.confirmed,false);const deletion=p.state.requests.findIndex(x=>x.method==='DELETE');assert.ok(p.state.requests.slice(deletion+1).some(x=>x.path.includes('orders:by_client')));});
   await t.test('lookup failure stops writes and retains durable identity',async()=>{fault='lookup';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'LOOKUP_FAILED');assert.equal(p.state.posts.length,1);assert.equal(await Intent.countDocuments(),1);assert.ok(r.orders.some(x=>x.clientOrderId));});
   await t.test('malformed lookup never authorizes cleanup',async()=>{fault='malformed';const r=await execute();assert.equal(r.reason,'BROKER_OWNERSHIP_MISMATCH');assert.equal(p.state.posts.length,1);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,0);});
   await t.test('lookup cannot replace the acknowledged broker identity',async()=>{fault='changed-broker-id';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'BROKER_OWNERSHIP_MISMATCH');assert.equal(p.state.posts.length,1);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,0);});
-  await t.test('reducing timeout is bounded and residual holding is not declared restored',async()=>{fault='close-timeout';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'REDUCING_FILL_TIMEOUT');assert.equal(p.state.posts.length,3);assert.ok(p.state.positions.some(x=>x.symbol==='MSFT'));assert.equal(r.cleanup?.confirmed,undefined);});
+  await t.test('reducing timeout is bounded and residual holding is not declared restored',async()=>{fault='close-timeout';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'CANCELLATION_BUDGET_EXHAUSTED');assert.equal(p.state.posts.length,3);assert.ok(p.state.positions.some(x=>x.symbol==='MSFT'));assert.equal(r.cleanup?.confirmed,undefined);});
   await t.test('accepted-response uncertainty recovers stable identity without duplicate buy',async()=>{
    // Socket loss is injected by the existing provider after accepting the opening.
    await control({patch:{mode:'timeout'}});
@@ -121,10 +124,53 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
   await t.test('acceptance final quote revalidation',async()=>{fault='moving-quote';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);});
   await t.test('canonical standalone cancel and cancellation identity match',async()=>{const r=await execute();assert.equal(r.standaloneCancellation.confirmed,true);assert.equal(r.standaloneCancellation.fillCount,0);const first=p.state.posts[0];assert.equal(first.qty,'1');assert.equal(first.limit_price,'98.99');const order=p.state.orders.find(o=>o.client_order_id===first.client_order_id);assert.equal(order.status,'canceled');assert.equal(p.state.requests.filter(x=>x.method==='DELETE'&&x.path.endsWith(order.id)).length,1);assert.equal(await Fill.countDocuments({externalOrderId:order.id}),0);});
   for(const [kind,name,qty]of [['partial-cancel','unexpected partial-fill acceptance cleanup','0.5'],['full-cancel','unexpected full-fill acceptance cleanup',1]])await t.test(name,async()=>{fault=kind;const before=(await Settings.findOne()).toObject();const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL',JSON.stringify(r));assert.equal(r.cleanup.confirmed,true);assert.equal(p.state.posts.length,2);assert.equal(p.state.posts[1].side,'sell');assert.equal(p.state.posts[1].qty,String(qty));assert.equal(await Fill.countDocuments(),2);assert.deepEqual(p.state.positions,baseline);assert.deepEqual((await Settings.findOne()).toObject(),before);assert.equal(r.opening,undefined);});
+  await t.test('global one-cancellation budget',async()=>{
+   const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);
+   assert.equal(r.budget.submissions,3);assert.equal(r.budget.cancellations,1);
+   assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);assert.deepEqual(p.state.positions,baseline);
+  });
+  await t.test('second cancellation rejected before transport',async()=>{
+   fault='no-fill';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');
+   assert.equal(r.reason,'CANCELLATION_BUDGET_EXHAUSTED');assert.equal(r.budget.submissions,2);assert.equal(r.budget.cancellations,1);
+   assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);assert.equal(r.remaining.acceptanceOpenOrders.length,1);
+   assert.equal(r.remaining.acceptanceOpenOrders[0].side,'buy');assert.equal(r.operatorReconciliationRequired,true);assert.ok(r.operatorFollowUp);
+  });
+  await t.test('uncertain cancellation consumes budget',async()=>{
+   fault='cancel-response-lost';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');
+   assert.equal(r.reason,'CANCELLATION_BUDGET_EXHAUSTED');assert.equal(r.budget.cancellations,1);assert.equal(r.budget.submissions,2);
+   const deletion=p.state.requests.findIndex(x=>x.method==='DELETE');assert.ok(deletion>=0);
+   assert.ok(p.state.requests.slice(deletion+1).some(x=>x.path.includes('orders:by_client')));
+   assert.equal(r.cancellationRecovery.confirmed,true);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);
+  });
+  await t.test('unexpected partial fill uses at most one cancellation',async()=>{
+   fault='partial-cancel';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL',r.reason);
+   assert.equal(r.budget.submissions,2);assert.equal(r.budget.cancellations,1);assert.equal(r.cleanup.qty,'0.5');
+   assert.equal(r.opening,undefined);assert.deepEqual(p.state.posts.map(x=>x.side),['buy','sell']);assert.deepEqual(p.state.positions,baseline);
+  });
+  await t.test('full fill uses zero cancellation',async()=>{
+   fault='full-cancel';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL',r.reason);
+   assert.equal(r.budget.submissions,2);assert.equal(r.budget.cancellations,0);assert.equal(r.opening,undefined);
+   assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,0);assert.deepEqual(p.state.positions,baseline);
+  });
+  await t.test('no per-order cancellation reset',async()=>{
+   fault='partial-close-timeout';const r=await execute();assert.equal(r.reason,'CANCELLATION_BUDGET_EXHAUSTED');
+   assert.equal(r.budget.cancellations,1);assert.equal(r.budget.submissions,2);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);
+   assert.equal(r.remaining.acceptanceOpenOrders[0].side,'sell');assert.equal(r.remaining.positions.find(x=>x.symbol==='MSFT').qty,'0.5');
+  });
+  await t.test('accepted cancellation response loss recovers without another cancellation',async()=>{
+   fault='accepted-cancel-loss';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);
+   assert.equal(r.cancellationRecovery.confirmed,true);assert.equal(r.budget.cancellations,1);assert.equal(r.budget.submissions,3);
+   assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);assert.deepEqual(p.state.positions,baseline);
+  });
+  await t.test('cancellation timeout consumes authority without retry transport',async()=>{
+   fault='cancel-timeout';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');
+   assert.equal(r.reason,'CANCELLATION_UNCONFIRMED');assert.equal(r.budget.cancellations,1);assert.equal(r.budget.submissions,1);
+   assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);assert.equal(r.remaining.acceptanceOpenOrders.length,1);
+  });
   await t.test('acceptance mutation-budget enforcement',async()=>{const r=await execute();assert.equal(r.budget.submissions,3);assert.equal(new Set(p.state.posts.map(x=>x.client_order_id)).size,3);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);});
 
   for(const qty of ['0.1','0.333333333','0.500000000'])await t.test('unexpected fractional cleanup '+qty,async()=>{fault='partial-cancel';partialQty=qty;const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL',JSON.stringify(r));assert.equal(r.cleanup.confirmed,true);assert.equal(p.state.posts.length,2);assert.equal(p.state.posts[1].qty,require('../services/shareQuantity').normalize(qty));assert.deepEqual(p.state.positions,baseline);});
-  await t.test('partial-fill reducing timeout preserves residual exposure',async()=>{fault='partial-close-timeout';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'REDUCING_FILL_TIMEOUT');assert.equal(r.cleanup?.confirmed,undefined);assert.equal(p.state.posts.length,2);assert.equal(p.state.positions.find(x=>x.symbol==='MSFT').qty,'0.5');});
+  await t.test('partial-fill reducing timeout preserves residual exposure',async()=>{fault='partial-close-timeout';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(r.reason,'CANCELLATION_BUDGET_EXHAUSTED');assert.equal(r.cleanup?.confirmed,undefined);assert.equal(p.state.posts.length,2);assert.equal(p.state.positions.find(x=>x.symbol==='MSFT').qty,'0.5');});
   await t.test('acceptance above 30 minutes by one millisecond',async()=>{clockRemaining=1800001;assert.equal((await execute()).decision,'EXTERNAL_ALPACA_PAPER_VERIFIED');});
   for(const kind of ['invalid-quote','missing-quote','invalid-asset'])await t.test('acceptance rejects '+kind,async()=>{fault=kind;const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);});
   await t.test('acceptance missing owner blocks before provider',async()=>{delete env.OWNER_USER_ID;await execute();assert.equal(seen.length,0);});

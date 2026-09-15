@@ -25,3 +25,13 @@ test('acceptance final quote revalidation rejects lost non-marketable margin',()
 test('acceptance mutation-budget enforcement prohibits fourth submit and duplicate cancellation',()=>{
  const {mutationBudget}=require('../scripts/acceptanceSafety'),b=mutationBudget();for(const id of ['cancel','open','close'])b.submit(id);assert.throws(()=>b.submit('fourth'));assert.throws(()=>b.submit('open'));b.cancel('cancel');assert.throws(()=>b.cancel('cancel'));assert.deepEqual(b.snapshot().submissions,3);
 });
+
+test('global cancellation authority cannot reset for another order',()=>{
+ const b=require('../scripts/acceptanceSafety').mutationBudget();
+ b.submit('fixture');b.cancel('fixture');b.submit('opening');
+ assert.throws(()=>b.assertCancel('opening'),{code:'CANCELLATION_BUDGET_EXHAUSTED'});
+ assert.throws(()=>b.cancel('opening'),{code:'CANCELLATION_BUDGET_EXHAUSTED'});
+ assert.equal(b.snapshot().cancellations,1);b.submit('cleanup');
+ assert.throws(()=>b.submit('fourth'),{code:'SUBMISSION_BUDGET_EXHAUSTED'});
+ assert.equal(b.snapshot().submissions,3);
+});

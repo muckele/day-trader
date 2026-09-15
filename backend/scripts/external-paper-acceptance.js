@@ -102,7 +102,7 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
           requireSafe(body.time_in_force==='day'&&!body.extended_hours,'UNSUPPORTED_ACCEPTANCE_TERMS');
           if(body.side==='buy'){requireSafe(selectedMarket&&now()-selectedMarket.quoteAt<=Safety.FRESH_MS,'FRESH_QUOTE_REQUIRED');requireSafe(amount(body.limit_price)<=amount(p.maxNotional),'ACCEPTANCE_NOTIONAL_LIMIT');if(expected.stage==='cancel')Safety.validateCancel(body.limit_price,selectedMarket);}
           budget.submit(body.client_order_id);
-        }else {const id=decodeURIComponent(url.pathname.split('/').pop());requireSafe(method==='DELETE'&&ownedIds.has(id)&&/^\/v2\/orders\/[^/]+$/.test(url.pathname),'UNOWNED_CLEANUP');budget.cancel(id);}
+        }else {const id=decodeURIComponent(url.pathname.split('/').pop());requireSafe(method==='DELETE'&&ownedIds.has(id)&&/^\/v2\/orders\/[^/]+$/.test(url.pathname),'UNOWNED_CLEANUP');/* Consume global authority before transport, including lost responses. */budget.cancel(id);}
         report.budget=budget.snapshot();
         mutated=true;
       }
@@ -203,9 +203,17 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
       }return null;
     };
     const cancel=async i=>{
-      ownership(await broker.getOrderByClientOrderId(i.clientOrderId),i);
-      await lifecycle.cancel({intentId:i._id});
+      const raw=ownership(await broker.getOrderByClientOrderId(i.clientOrderId),i);
+      budget.assertCancel(raw.id);
+      const attemptsBefore=budget.snapshot().cancellations;
+      try{await lifecycle.cancel({intentId:i._id});}catch(error){
+        // Only a consumed transport attempt can be uncertain. Never retry DELETE;
+        // recover the same owned identity through bounded canonical reads instead.
+        if(budget.snapshot().cancellations===attemptsBefore||error.config?.acceptanceRow?.method!=='DELETE')throw error;
+        report.cancellationRecovery={intentId:String(i._id),clientOrderId:i.clientOrderId,brokerOrderId:raw.id,confirmed:false};
+      }
       const done=await poll(i,new Set(['canceled','cancelled','expired','filled']));
+      if(report.cancellationRecovery)report.cancellationRecovery.confirmed=!!done&&done.reservedCents===0;
       requireSafe(done&&done.reservedCents===0,'CANCELLATION_UNCONFIRMED');report.cancellationConfirmed=true;return done;
     };
     const cleanup=async filled=>{
@@ -251,6 +259,7 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
     report.reason=error.code==='EXPOSURE_UNRESOLVED'&&/unattributed active broker order/.test(error.message)?'UNATTRIBUTED ACTIVE BROKER ORDER':String(error.code||'ACCEPTANCE_CHECK_FAILED').replace(/[^A-Z0-9_$ ]/g,'').slice(0,100);
     // No speculative retry/compensating write after an unknown failure. Preserve durable IDs.
     report.operatorReconciliationRequired=mutated&&!report.cleanup?.confirmed;
+    if(error.code==='CANCELLATION_BUDGET_EXHAUSTED')report.operatorFollowUp='No further cancellation is authorized in this run. Inspect the recorded acceptance-owned broker identities and residual positions; obtain separate operator authorization before any further broker mutation.';
     if(mutated&&broker){
       try{
         const positions=inventory(await broker.getPositions());

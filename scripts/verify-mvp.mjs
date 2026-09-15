@@ -89,6 +89,12 @@ export const QUANTITY_REQUIRED_SCENARIOS = [
   "acceptance fixture price ceiling and stale quote rejection"
 ];
 export const EXTERNAL_PAPER_REQUIRED_SCENARIOS = [
+  "global one-cancellation budget",
+  "second cancellation rejected before transport",
+  "uncertain cancellation consumes budget",
+  "unexpected partial fill uses at most one cancellation",
+  "full fill uses zero cancellation",
+  "no per-order cancellation reset",
   "acceptance 30-minute boundary",
   "acceptance below 30 minutes makes zero mutation",
   "acceptance above 30 minutes by one millisecond",

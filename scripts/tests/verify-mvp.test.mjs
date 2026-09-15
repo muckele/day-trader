@@ -236,3 +236,12 @@ test('fractional mandatory gate rejects omission failure skipped names and malfo
   assert.equal(v.validateAcceptanceExecution(check,rows.join('')).ok,false);
  }
 });
+
+test('guarded acceptance requires every global cancellation scenario',async()=>{
+ const v=await import('../verify-mvp.mjs'),gate=v.buildMongoChecks(['externalPaperHarness.mongo.test.js'])[0];
+ for(const name of ['global one-cancellation budget','second cancellation rejected before transport','uncertain cancellation consumes budget','unexpected partial fill uses at most one cancellation','full fill uses zero cancellation','no per-order cancellation reset']){
+  assert.ok(gate.requiredScenarios.includes(name),name);
+  const rows=gate.requiredScenarios.filter(s=>s!==name).map((s,i)=>`ok ${i+1} - ${s}\n`).join('');
+  assert.equal(v.validateAcceptanceExecution(gate,rows+'# tests 1000\n# pass 1000\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n').ok,false);
+ }
+});

@@ -29,8 +29,8 @@ function validateCancel(price,market){const limit=cents(price);check(limit<=mark
 function mutationBudget(){const submissions=new Set(),cancellations=new Set();return {
  assertSubmit(id){check(!submissions.has(id),'DUPLICATE_POST_BLOCKED');check(submissions.size<3,'SUBMISSION_BUDGET_EXHAUSTED');},
  submit(id){this.assertSubmit(id);submissions.add(id);},
- assertCancel(id){check(!cancellations.has(id),'DUPLICATE_CANCEL_BLOCKED');check(cancellations.size<3,'CANCELLATION_BUDGET_EXHAUSTED');},
+ assertCancel(id){check(!cancellations.has(id),'DUPLICATE_CANCEL_BLOCKED');check(cancellations.size<1,'CANCELLATION_BUDGET_EXHAUSTED');},
  cancel(id){this.assertCancel(id);cancellations.add(id);},
- snapshot:()=>({submissions:submissions.size,cancellations:cancellations.size,maxSubmissions:3,maxCancelsPerOrder:1})
+ snapshot:()=>({submissions:submissions.size,cancellations:cancellations.size,maxSubmissions:3,maxCancellations:1})
 };}
 module.exports={sessionCheck,validateMarket,cancelPrice,validateCancel,mutationBudget,FRESH_MS};
