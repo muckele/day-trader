@@ -245,3 +245,16 @@ test('guarded acceptance requires every global cancellation scenario',async()=>{
   assert.equal(v.validateAcceptanceExecution(gate,rows+'# tests 1000\n# pass 1000\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n').ok,false);
  }
 });
+
+test('held fixture and precision safety scenarios are individually mandatory',async()=>{
+ const v=await import('../verify-mvp.mjs');
+ const suites=[
+  [v.buildMongoChecks(['externalPaperHarness.mongo.test.js'])[0],['clean fixture preferred over held fallback','position-cap-neutral held fixture','held fixture exact baseline restoration','fractional held-fixture cleanup 0.5','fractional held-fixture cleanup 0.333333333','ambiguous baseline drift blocks cleanup: unrelated extra buy','held fixture still obeys maxPositionSize','held baseline drift at final account authorization blocks first POST']],
+  [v.buildReleaseChecks({backendTests:[],integrationFiles:[]}).find(c=>c.name==='backend-tests'),['baseline-floor protection','canonical acceptance fill identity is required rather than symbol match','sub-cent bar observations supported','exact market-data range calculation','widened bounded bar lookback','five most recent valid bars selected','five-bar requirement preserved']]
+ ];
+ for(const [gate,names]of suites)for(const name of names){
+  assert.ok(gate.requiredScenarios.includes(name),name);
+  const rows=gate.requiredScenarios.filter(s=>s!==name).map((s,i)=>`ok ${i+1} - ${s}\n`).join('');
+  assert.equal(v.validateAcceptanceExecution(gate,rows+'# tests 1000\n# pass 1000\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n').ok,false,name);
+ }
+});

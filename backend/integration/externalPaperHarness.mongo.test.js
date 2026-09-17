@@ -79,6 +79,75 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
   await t.test('open market uses canonical buy and reducing fill, restores nonempty baseline and reloads identity',async()=>{
    const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',JSON.stringify(r));assert.equal(r.fixture,'MSFT');assert.equal(r.reloadedExecutionContext,true);assert.equal(r.opening.fillCount,1);assert.equal(r.opening.spentDeltaCents,10000);assert.equal(r.cleanup.confirmed,true);assert.equal(r.cleanup.reservedCents,0);assert.equal(p.state.posts.length,3);assert.deepEqual(p.state.posts.map(x=>x.side),['buy','buy','sell']);assert.equal(r.standaloneCancellation.confirmed,true);assert.equal(r.budget.submissions,3);assert.equal(await Fill.countDocuments({side:'buy'}),1);assert.equal(await Fill.countDocuments({side:'sell'}),1);assert.deepEqual(p.state.positions,baseline);assert.ok(r.orders.every(x=>x.clientOrderId.length<=48));assert.ok(r.orders.some(x=>x.brokerOrderId));assert.ok(r.requests.every(x=>x.xRequestId));assert.ok(r.requests.some(x=>x.path.includes('by_client_order_id')));
   });
+  const heldSetup=async()=>{
+   const positions=[{symbol:'AAPL',qty:'2',side:'long',market_value:'200'},{symbol:'GOOG',qty:'3',side:'long',market_value:'300'},{symbol:'AMZN',qty:'1',side:'long',market_value:'100'},{symbol:'META',qty:'1',side:'long',market_value:'100'},{symbol:'NVDA',qty:'17.582774',side:'long',market_value:'1758.2774',avg_entry_price:'100'}];
+   await control({patch:{positions}});await Settings.updateOne({userId:owner},{$set:{maxOpenPositions:5,maxPositionSize:5000}});return structuredClone(positions);
+  };
+  await t.test('clean fixture preferred over held fallback',async()=>{
+   await heldSetup();await Settings.updateOne({userId:owner},{$set:{maxOpenPositions:6}});const r=await execute({'symbol-allowlist':'NVDA,MSFT'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);assert.equal(r.fixture,'MSFT');assert.equal(r.fixtureBaseline.qty,'0');
+  });
+  await t.test('position cap full blocks canonical new symbol without changing policy',async()=>{
+   await heldSetup();const service=getOrderLifecycle({broker:createAlpacaBroker({env}),ownerId:owner,expectedAccountId:'acceptance-paper',beforeAdmission:async()=>{}});
+   await assert.rejects(service.submit({userId:owner,idempotencyKey:'sixth-position',orderInput:{symbol:'MSFT',side:'buy',qty:1,orderType:'limit',limitPrice:100}}),/Maximum open positions/);assert.equal(p.state.posts.length,0);assert.equal((await Settings.findOne()).maxOpenPositions,5);
+  });
+  await t.test('position-cap-neutral held fixture',async()=>{
+   await heldSetup();const r=await execute({'symbol-allowlist':'MSFT,NVDA'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',JSON.stringify(r));assert.equal(r.fixture,'NVDA');assert.equal(r.fixtureBaseline.qty,'17.582774');assert.equal((await Settings.findOne()).maxOpenPositions,5);assert.equal(p.state.posts.length,3);assert.equal(p.state.posts[2].qty,'1');
+  });
+  await t.test('held fixture exact baseline restoration',async()=>{
+   const before=await heldSetup();const r=await execute({'symbol-allowlist':'MSFT,NVDA'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);assert.equal(r.cleanup.qty,1);assert.equal(p.state.positions.find(x=>x.symbol==='NVDA').qty,'17.582774');assert.deepEqual(p.state.positions.filter(x=>x.symbol!=='NVDA'),before.filter(x=>x.symbol!=='NVDA'));assert.equal(await Fill.countDocuments(),2);
+  });
+  for(const qty of ['0.5','0.333333333'])await t.test('fractional held-fixture cleanup '+qty,async()=>{
+   await heldSetup();fault='partial-cancel';partialQty=qty;const r=await execute({'symbol-allowlist':'MSFT,NVDA'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL',JSON.stringify(r));assert.equal(r.cleanup.qty,qty);assert.equal(p.state.posts.length,2);assert.equal(p.state.posts[1].qty,qty);assert.equal(p.state.positions.find(x=>x.symbol==='NVDA').qty,'17.582774');assert.equal(r.budget.cancellations,1);assert.equal(r.opening,undefined);
+  });
+  await t.test('held fixture still obeys maxPositionSize',async()=>{
+   await heldSetup();await Settings.updateOne({userId:owner},{$set:{maxPositionSize:1800}});const r=await execute({'symbol-allowlist':'NVDA'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);assert.equal((await Settings.findOne()).maxPositionSize,1800);
+  });
+  await t.test('canonical held add obeys total maxPositionSize without changing policy',async()=>{
+   await heldSetup();await Settings.updateOne({userId:owner},{$set:{maxPositionSize:1800}});
+   const service=getOrderLifecycle({broker:createAlpacaBroker({env}),ownerId:owner,expectedAccountId:'acceptance-paper',beforeAdmission:async()=>{}});
+   await assert.rejects(service.submit({userId:owner,idempotencyKey:'held-too-large',orderInput:{symbol:'NVDA',side:'buy',qty:1,orderType:'limit',limitPrice:100}}),/Maximum position size/);assert.equal(p.state.posts.length,0);
+  });
+  await t.test('held unexpected full fill restores baseline without cancellation',async()=>{
+   await heldSetup();fault='full-cancel';const r=await execute({'symbol-allowlist':'MSFT,NVDA'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL',r.reason);assert.equal(r.cleanup.qty,1);assert.equal(r.opening,undefined);assert.equal(r.budget.submissions,2);assert.equal(r.budget.cancellations,0);assert.equal(p.state.posts[1].qty,'1');assert.equal(p.state.positions.find(x=>x.symbol==='NVDA').qty,'17.582774');
+  });
+  await t.test('held fallback refuses ask over ceiling and conflicting baseline order',async()=>{
+   await heldSetup();fault='expensive';let r=await execute({'symbol-allowlist':'NVDA'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);
+   fault=null;await control({patch:{orders:[{id:'baseline-order',client_order_id:'baseline-client',symbol:'NVDA',side:'buy',qty:'1',filled_qty:'0',type:'limit',limit_price:'90',status:'new'}]}});r=await execute({'symbol-allowlist':'NVDA'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,0);
+  });
+  await t.test('held baseline drift at final account authorization blocks first POST',async()=>{
+   await heldSetup();const before=axios.defaults.adapter;let changed=false;
+   axios.defaults.adapter=async config=>{if(!changed&&new URL(config.url).pathname==='/v2/account'&&await Intent.exists({status:'submitting'})){changed=true;await control({patch:{positions:p.state.positions.map(x=>x.symbol==='NVDA'?{...x,qty:'18.582774'}:x)}});}return before(config);};
+   try{const r=await execute({'symbol-allowlist':'MSFT,NVDA'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED',r.reason);assert.equal(r.reason,'ACCEPTANCE_BASELINE_DRIFT');assert.equal(p.state.posts.length,0);}finally{axios.defaults.adapter=before;}
+  });
+  for(const [name,patch]of [['blockedSymbols',{blockedSymbols:['AAPL']}],['allowedSymbols',{allowedSymbols:['NVDA']}]] )await t.test('held fallback skips first symbol prohibited by '+name,async()=>{
+   await heldSetup();await Settings.updateOne({userId:owner},{$set:patch});const r=await execute({'symbol-allowlist':'AAPL,NVDA'});
+   assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);assert.equal(r.fixture,'NVDA');assert.ok(p.state.posts.every(x=>x.symbol==='NVDA'));assert.equal(await Intent.countDocuments({symbol:'AAPL'}),0);
+  });
+  for(const kind of ['market_value','maxPositionSize','maxTradeAmount'])await t.test('held fresh '+kind+' at final account authorization blocks first POST',async()=>{
+   await heldSetup();const before=axios.defaults.adapter;let changed=false;
+   axios.defaults.adapter=async config=>{if(!changed&&new URL(config.url).pathname==='/v2/account'&&await Intent.exists({status:'submitting'})){changed=true;if(kind==='market_value')await control({patch:{positions:p.state.positions.map(x=>x.symbol==='NVDA'?{...x,market_value:'4950'}:x)}});else await Settings.updateOne({userId:owner},{$set:{[kind]:kind==='maxPositionSize'?1800:99}});}return before(config);};
+   try{const r=await execute({'symbol-allowlist':'MSFT,NVDA'});assert.equal(changed,true);assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED',r.reason);assert.equal(p.state.posts.length,0);assert.equal((await Intent.findOne()).status,'rejected');assert.equal((await Capacity.findOne()).reservedCents,0);}finally{axios.defaults.adapter=before;}
+  });
+  const malformedHeldValues=[['null',null],['empty string',''],['false',false],['whitespace',' '],['exponent string','1e3'],['excess precision','1758.2774000001'],['missing',undefined]];
+  for(const [name,market_value]of malformedHeldValues)await t.test('held selection rejects malformed market_value: '+name,async()=>{
+   await heldSetup();await control({patch:{positions:p.state.positions.map(x=>x.symbol==='NVDA'?{...x,market_value}:x)}});
+   const r=await execute({'symbol-allowlist':'NVDA'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED',r.reason);assert.equal(r.fixtureEvaluations[0].rejection,'HELD_POSITION_VALUE_REQUIRED');assert.equal(p.state.posts.length,0);assert.equal(await Intent.countDocuments(),0);
+  });
+  for(const [name,market_value]of malformedHeldValues)await t.test('held final authorization rejects malformed market_value: '+name,async()=>{
+   await heldSetup();const before=axios.defaults.adapter;let changed=false;
+   axios.defaults.adapter=async config=>{if(!changed&&new URL(config.url).pathname==='/v2/account'&&await Intent.exists({status:'submitting'})){changed=true;await control({patch:{positions:p.state.positions.map(x=>x.symbol==='NVDA'?{...x,market_value}:x)}});}return before(config);};
+   try{const r=await execute({'symbol-allowlist':'NVDA'});assert.equal(changed,true);assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED',r.reason);assert.equal(r.reason,'HELD_POSITION_VALUE_REQUIRED');assert.equal(p.state.posts.length,0);assert.equal((await Intent.findOne()).status,'rejected');assert.equal((await Capacity.findOne()).reservedCents,0);}finally{axios.defaults.adapter=before;}
+  });
+  for(const kind of ['baseline floor','owned fill quantity'])await t.test('held final SELL authorization rejects changed '+kind,async()=>{
+   await heldSetup();const before=axios.defaults.adapter;let changed=false;
+   axios.defaults.adapter=async config=>{if(!changed&&new URL(config.url).pathname==='/v2/account'&&await Intent.exists({side:'sell',status:'submitting'})){changed=true;if(kind==='baseline floor')await control({patch:{positions:p.state.positions.map(x=>x.symbol==='NVDA'?{...x,qty:'17.582774'}:x)}});else await Fill.updateOne({side:'buy'},{$set:{qty:'0.5'}});}return before(config);};
+   try{const r=await execute({'symbol-allowlist':'MSFT,NVDA'});assert.equal(changed,true);assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED',r.reason);assert.equal(r.reason,'ACCEPTANCE_BASELINE_DRIFT');assert.equal(p.state.posts.filter(x=>x.side==='sell').length,0);assert.equal((await Intent.findOne({side:'sell'})).status,'rejected');assert.equal(r.cleanup?.confirmed,undefined);}finally{axios.defaults.adapter=before;}
+  });
+  for(const [name,qty]of [['unrelated extra buy','19.082774'],['unrelated sell','17.082774'],['position disappears',null],['wrong cumulative quantity','18.582774']])await t.test('ambiguous baseline drift blocks cleanup: '+name,async()=>{
+   await heldSetup();fault='partial-cancel';const adapterBefore=axios.defaults.adapter;let changed=false;
+   axios.defaults.adapter=async config=>{if(!changed&&new URL(config.url).pathname==='/v2/positions'&&p.state.posts.length===1){changed=true;await control({patch:{positions:qty===null?p.state.positions.filter(x=>x.symbol!=='NVDA'):p.state.positions.map(x=>x.symbol==='NVDA'?{...x,qty}:x)}});}return adapterBefore(config);};
+   try{const r=await execute({'symbol-allowlist':'MSFT,NVDA'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED',r.reason);assert.equal(p.state.posts.filter(x=>x.side==='sell').length,0);assert.equal(r.cleanup?.confirmed,undefined);}finally{axios.defaults.adapter=adapterBefore;}
+  });
   for(const [name,patch]of[['missing binding',{ALPACA_EXPECTED_PAPER_ACCOUNT_ID:''}],['live origin',{APCA_BASE_URL:'https://api.alpaca.markets'}],['missing explicit origin',{APCA_BASE_URL:''}],['live-style key',{APCA_API_KEY_ID:'AK-not-a-real-key'}]])await t.test(name+' fails before HTTP',async()=>{Object.assign(env,patch);const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(seen.length,0);});
   await t.test('mismatch prevents any mutation',async()=>{env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID='different';assert.equal((await execute()).decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);});
   await t.test('ineligible account blocks',async()=>{await control({patch:{account:{...p.state.account,trading_blocked:true}}});assert.equal((await execute()).decision,'EXTERNAL_ALPACA_PAPER_BLOCKED');assert.equal(p.state.posts.length,0);});

@@ -16,7 +16,8 @@ test('acceptance 30-minute boundary includes equality and rejects ambiguity',()=
 test('acceptance fixture price ceiling and stale quote rejection',()=>{
  const {validateMarket}=require('../scripts/acceptanceSafety');const now=Date.parse('2026-09-14T15:00:00Z');const market={quote:{ap:250,bp:249.99,t:new Date(now).toISOString()},bars:Array.from({length:5},(_,i)=>({h:250,l:249.8,t:new Date(now-(5-i)*60000).toISOString()}))};
  assert.equal(validateMarket(market,now).askCents,25000);
- for(const quote of [{...market.quote,ap:250.01},{...market.quote,ap:0},{...market.quote,ap:249},{...market.quote,t:new Date(now-60001).toISOString()},{...market.quote,ap:249.999}])assert.throws(()=>validateMarket({...market,quote},now));
+ for(const quote of [{...market.quote,ap:250.01},{...market.quote,ap:0},{...market.quote,ap:249},{...market.quote,t:new Date(now-60001).toISOString()},{...market.quote,ap:250.004}])assert.throws(()=>validateMarket({...market,quote},now));
+ assert.equal(validateMarket({...market,quote:{...market.quote,ap:249.999}},now).askCents,25000);
 });
 test('acceptance final quote revalidation rejects lost non-marketable margin',()=>{
  const {validateMarket,cancelPrice,validateCancel}=require('../scripts/acceptanceSafety');const now=Date.now(),market={quote:{ap:100,bp:99.99,t:new Date(now).toISOString()},bars:Array.from({length:5},(_,i)=>({h:100.1,l:99.9,t:new Date(now-(5-i)*60000).toISOString()}))};const m=validateMarket(market,now);

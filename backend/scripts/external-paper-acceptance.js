@@ -18,6 +18,7 @@ const Bucket = require('../models/SpendingBucket');
 const Settings = require('../models/RoboSettings');
 const Q=require('../services/shareQuantity');
 const Safety=require('./acceptanceSafety');
+const Fixture=require('./acceptanceFixture');
 const User=require('../models/User');
 const Close=require('../models/PositionClose');
 const DATA_ORIGIN='https://data.alpaca.markets';
@@ -34,6 +35,17 @@ function amount(value) {
   const [a,b=''] = String(value).split('.');
   const n=Number(a)*100+Number(b.padEnd(2,'0'));
   requireSafe(Number.isSafeInteger(n)&&n>0,'INVALID_AMOUNT');return n;
+}
+function heldValueCents(value) {
+  // Broker position valuations may include fractional cents. Accept only bounded
+  // decimal observations, then round exposure upward without coercion or floats.
+  requireSafe(typeof value==='string'||typeof value==='number'&&Number.isFinite(value),'HELD_POSITION_VALUE_REQUIRED');
+  const raw=String(value);
+  requireSafe(/^\d{1,14}(?:\.\d{1,9})?$/.test(raw),'HELD_POSITION_VALUE_REQUIRED');
+  const [whole,fraction='']=raw.split('.');
+  const cents=BigInt(whole)*100n+BigInt(fraction.slice(0,2).padEnd(2,'0'))+(/[1-9]/.test(fraction.slice(2))?1n:0n);
+  requireSafe(cents<=BigInt(Number.MAX_SAFE_INTEGER),'HELD_POSITION_VALUE_REQUIRED');
+  return Number(cents);
 }
 function parseArgs(argv) {
   const flags=new Set(['dry-run','authorize-external-paper-test']);
@@ -78,7 +90,7 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
   let requestInterceptor,responseInterceptor,connected=false,mutated=false;
   const ownedClients=new Map(),ownedIds=new Set(),budget=Safety.mutationBudget();
   let latestClock,selectedMarket,cancelLimit,symbol;
-  let broker,lifecycle,opening,baseline,baselineOrders,scope;
+  let broker,lifecycle,opening,baseline,baselineOrders,scope,fixtureBaseline;
   try {
     requireSafe(Number.isInteger(pollAttempts)&&pollAttempts>=1&&pollAttempts<=30&&pollDelayMs>=0&&pollDelayMs<=2000,'INVALID_POLL_BOUND');
     const config=getAlpacaConfigForMode('paper',env),configHash=hash(config);
@@ -148,21 +160,75 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
     const market=async fixture=>{
       const options={headers:{'APCA-API-KEY-ID':config.apiKey,'APCA-API-SECRET-KEY':config.apiSecret},maxRedirects:0,timeout:10000};symbol=fixture;
       const quote=await axios.get(`${DATA_ORIGIN}/v2/stocks/quotes/latest`,{...options,params:{symbols:fixture,feed:'iex'}});
-      const bars=await axios.get(`${DATA_ORIGIN}/v2/stocks/${fixture}/bars`,{...options,params:{timeframe:'1Min',start:new Date(now()-6*60000).toISOString(),end:new Date(now()).toISOString(),limit:6,feed:'iex'}});
+      const bars=await axios.get(`${DATA_ORIGIN}/v2/stocks/${fixture}/bars`,{...options,params:Safety.barQuery(now())});
       return Safety.validateMarket({quote:quote.data?.quotes?.[fixture],bars:bars.data?.bars},now());
     };
     symbol=null;
-    for(const fixture of p.symbols){
-      if(positions.some(x=>x.symbol===fixture&&Q.positive(x.qty))||baselineOrders.some(x=>x.symbol===fixture))continue;
-      const asset=await broker.getAsset(fixture);
-      if(asset.symbol!==fixture||asset.status!=='active'||asset.tradable!==true||asset.class!=='us_equity'||asset.halted===true||asset.leveraged===true||asset.inverse===true)continue;
-      try{selectedMarket=await market(fixture);requireSafe(selectedMarket.askCents<=amount(p.maxNotional)&&selectedMarket.askCents<=amount(settings.maxTradeAmount)&&selectedMarket.askCents<=amount(settings.maxPositionSize),'ACCEPTANCE_NOTIONAL_LIMIT');cancelLimit=Safety.cancelPrice(selectedMarket);symbol=fixture;break;}catch(error){if(['ACCOUNT_CONFIGURATION_DRIFT','UNTRUSTED_TRANSPORT'].includes(error.code))throw error;symbol=null;}
+    const heldSymbols=new Set(positions.filter(x=>Number(x.qty)>0).map(x=>x.symbol));
+    requireSafe(Number.isSafeInteger(settings.maxOpenPositions)&&settings.maxOpenPositions>0,'POSITIVE_POSITION_LIMIT_REQUIRED');
+    report.fixtureEvaluations=[];
+    for(const phase of ['clean','held']){
+      // A held fallback is only appropriate at the existing cap, never as a
+      // shortcut around failed clean pricing when a new position slot is free.
+      if(phase==='held'&&heldSymbols.size!==settings.maxOpenPositions)continue;
+      for(const fixture of p.symbols){
+        const position=positions.find(x=>x.symbol===fixture&&Number(x.qty)!==0);
+        if(phase==='clean'&&position||phase==='held'&&!position)continue;
+        const evaluation={symbol:fixture,phase};report.fixtureEvaluations.push(evaluation);
+        try{
+          requireSafe(!settings.blockedSymbols?.includes(fixture)&&(!settings.allowedSymbols?.length||settings.allowedSymbols.includes(fixture)),'ACCEPTANCE_SYMBOL_PROHIBITED');
+          requireSafe(!baselineOrders.some(x=>x.symbol===fixture),'CONFLICTING_BASELINE_ORDER');
+          if(phase==='clean')requireSafe(heldSymbols.size<settings.maxOpenPositions,'ACCEPTANCE_POSITION_CAP_FULL');
+          if(position)requireSafe(position.side==='long'&&Q.positive(position.qty),'HELD_LONG_BASELINE_REQUIRED');
+          const asset=await broker.getAsset(fixture);
+          requireSafe(asset.symbol===fixture&&asset.status==='active'&&asset.tradable===true&&asset.class==='us_equity'&&asset.halted!==true&&asset.leveraged!==true&&asset.inverse!==true&&asset.fractionable===true,'INELIGIBLE_ACCEPTANCE_ASSET');
+          selectedMarket=await market(fixture);evaluation.market=selectedMarket;
+          requireSafe(selectedMarket.askCents<=amount(p.maxNotional),'ACCEPTANCE_NOTIONAL_LIMIT');
+          const ceiling=Math.max(selectedMarket.askCents,amount(p.limitPrice));
+          requireSafe(ceiling<=amount(settings.maxTradeAmount),'ACCEPTANCE_TRADE_LIMIT');
+          const heldCents=position?heldValueCents(position.market_value):0;
+          requireSafe(heldCents+ceiling<=amount(settings.maxPositionSize),'ACCEPTANCE_POSITION_SIZE_LIMIT');
+          cancelLimit=Safety.cancelPrice(selectedMarket);symbol=fixture;
+          fixtureBaseline=Object.freeze({symbol:fixture,qty:Q.normalize(position?.qty??0),side:position?.side??null,position:position?Object.freeze({...baseline.find(x=>x.symbol===fixture)}):null,phase});
+          report.fixtureBaseline=fixtureBaseline;evaluation.eligible=true;break;
+        }catch(error){if(['ACCOUNT_CONFIGURATION_DRIFT','UNTRUSTED_TRANSPORT'].includes(error.code))throw error;evaluation.rejection=error.code||error.message;symbol=null;}
+      }
+      if(symbol)break;
     }
     requireSafe(symbol,'NO ELIGIBLE ACCEPTANCE FIXTURE UNDER $250');report.fixture=symbol;report.fixtureMarket=selectedMarket;report.cancelLimitPrice=cancelLimit;
     if(!session.eligible){report.decision='EXTERNAL_ALPACA_PAPER_PARTIAL';report.reason=session.reason;return report;}
-    const checkMutation=async(stage)=>{
+    const acceptanceDelta=async()=>{
+      const ids=[...ownedClients.values()].map(x=>x.intent._id);
+      const intents=await Intent.find({...scope,_id:{$in:ids}}).lean();
+      requireSafe(intents.length===ids.length,'ACCEPTANCE_IDENTITY_MISSING');
+      const brokerOrders=await BrokerOrder.find({accountId:scope.accountId,executionSource:scope.executionSource,intentId:{$in:ids}}).lean();
+      const fills=await Fill.find({accountId:scope.accountId,executionSource:scope.executionSource,intentId:{$in:ids}}).lean();
+      const qty=Fixture.ownedFillQuantity({intents,brokerOrders,fills,accountId:scope.accountId,userId:scope.userId,symbol,identities:ownedClients});
+      report.deltaEvidence={qty,fillIds:fills.map(f=>String(f._id)),intentIds:intents.map(i=>String(i._id)),brokerOrderIds:brokerOrders.map(b=>b.externalOrderId)};return qty;
+    };
+    const verifyBaseline=async(requestedQty,buyLimit)=>{
+      const ownedQty=await acceptanceDelta(),current=await broker.getPositions(),holding=current.find(x=>x.symbol===symbol);
+      requireSafe(!holding||holding.side===fixtureBaseline.side||fixtureBaseline.phase==='clean'&&(!holding.side||holding.side==='long'),'ACCEPTANCE_BASELINE_DRIFT');
+      Fixture.assertBaselineDelta({baselineQty:fixtureBaseline.qty,currentQty:holding?.qty??0,availableQty:holding?.qty_available??holding?.qty??0,ownedQty,requestedQty});
+      requireSafe(hash(inventory(current.filter(x=>x.symbol!==symbol)))===hash(baseline.filter(x=>x.symbol!==symbol)),'UNRELATED_POSITIONS_CHANGED');
+      const activeOrders=flatten(await broker.listOrders({status:'open',nested:true,limit:500}));
+      requireSafe(hash(activeOrders.filter(o=>!ownedClients.has(o.client_order_id)).map(orderSummary))===hash(baselineOrders.map(orderSummary)),'BASELINE_ORDERS_CHANGED');
+      if(buyLimit!==undefined){
+        // Repeat acceptance's conservative total-exposure check after the final
+        // account read, using the fresh holding and current owner limits.
+        const currentSettings=await Settings.findOne({userId:scope.userId}).lean();
+        requireSafe(currentSettings,'PAPER_SETTINGS_REQUIRED');
+        const ceiling=Math.max(selectedMarket.askCents,amount(buyLimit));
+        requireSafe(ceiling<=amount(currentSettings.maxTradeAmount),'ACCEPTANCE_TRADE_LIMIT');
+        const heldCents=holding?heldValueCents(holding.market_value):0;
+        requireSafe(heldCents+ceiling<=amount(currentSettings.maxPositionSize),'ACCEPTANCE_POSITION_SIZE_LIMIT');
+      }
+      report.baselineCheck={at:new Date(now()).toISOString(),baselineQty:fixtureBaseline.qty,ownedQty,currentQty:Q.normalize(holding?.qty??0)};return ownedQty;
+    };
+    const checkMutation=async(stage,requestedQty)=>{
       await checkControl();latestClock=await broker.getClock();const current=Safety.sessionCheck(latestClock,now());requireSafe(current.eligible,current.reason);
       if(stage!=='close'){selectedMarket=await market(symbol);requireSafe(selectedMarket.askCents<=amount(p.maxNotional),'ACCEPTANCE_NOTIONAL_LIMIT');if(stage==='cancel')Safety.validateCancel(cancelLimit,selectedMarket);}
+      await verifyBaseline(requestedQty,stage==='close'?undefined:stage==='cancel'?cancelLimit:p.limitPrice);
     };
     const makeLifecycle=()=>getOrderLifecycle({broker,ownerId:env.OWNER_USER_ID,expectedAccountId:config.expectedAccountId});
     lifecycle=makeLifecycle();
@@ -173,6 +239,15 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
       if(record){ownedIds.add(record.externalOrderId);const client=ownedClients.get(intent.clientOrderId);if(client)client.brokerId=record.externalOrderId;}
       const entry={intentId:String(intent._id),clientOrderId:intent.clientOrderId,brokerOrderId:record?.externalOrderId||null,brokerOrderRecordId:record?String(record._id):null,runId:p.runId,symbol:intent.symbol,side:intent.side,qty:intent.qty,status:intent.status,filledQty:intent.filledQty,filledNotionalCents:intent.filledNotionalCents,reservedCents:intent.reservedCents};
       report.orders.push(entry);save();return entry;
+    };
+    const requireAccepted=intent=>{
+      if(!['rejected','reconciliation_required'].includes(intent.status))return;
+      // Canonical submission persists a pre-transport rejection and returns the
+      // intent. Preserve known acceptance failures before any broker polling.
+      const rejectionReason=intent.rejectionReason;
+      const reason=['ACCEPTANCE_BASELINE_DRIFT','ACCEPTANCE BASELINE DRIFT / OWNERSHIP AMBIGUOUS'].includes(rejectionReason)?'ACCEPTANCE_BASELINE_DRIFT':
+        ['ACCEPTANCE_TRADE_LIMIT','ACCEPTANCE_POSITION_SIZE_LIMIT','HELD_POSITION_VALUE_REQUIRED'].includes(rejectionReason)?rejectionReason:'CANONICAL_ADMISSION_REJECTED';
+      throw fail(reason);
     };
     const submit=async(n,orderInput)=>{budget.assertSubmit(key(n));await checkMutation(n===0?'cancel':'open');return lifecycle.submit({userId:env.OWNER_USER_ID,idempotencyKey:key(n),origin:'manual',orderInput,beforeSubmit:async()=>{
       await checkControl();const i=await Intent.findOne({...scope,idempotencyKey:key(n)});requireSafe(i,'CANONICAL_INTENT_REQUIRED');
@@ -187,7 +262,7 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
         ownedClients.set(i.clientOrderId,{symbol:i.symbol,side:i.side,qty:i.qty,stage:'close',intent:i});await capture(i);
       }
       const expected=ownedClients.get(input.clientOrderId);requireSafe(expected,'UNOWNED_WRITE');budget.assertSubmit(input.clientOrderId);
-      return originalSubmit(input,{...options,authorize:async context=>{await checkMutation(expected.stage);return options.authorize(context);}});
+      return originalSubmit(input,{...options,authorize:async context=>{await checkMutation(expected.stage,input.side==='sell'?input.qty:undefined);return options.authorize(context);}});
     };
     broker.cancelOrder=(id,options)=>{budget.assertCancel(id);return originalCancel(id,{...options,authorize:async context=>{await checkMutation('close');return options.authorize(context);}});};
     broker.getOrder=async id=>{const raw=await originalGet(id),client=ownedClients.get(raw?.client_order_id);if(client)ownership(raw,client.intent);else requireSafe(!ownedIds.has(id),'BROKER_OWNERSHIP_MISMATCH');return raw;};
@@ -217,23 +292,24 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
       requireSafe(done&&done.reservedCents===0,'CANCELLATION_UNCONFIRMED');report.cancellationConfirmed=true;return done;
     };
     const cleanup=async filled=>{
-      const owned=Q.normalize(filled.filledQty);requireSafe(Q.positive(owned),'EXACT_CLEANUP_QUANTITY_UNPROVEN');
-      const current=await broker.getPositions(),holding=current.find(x=>x.symbol===symbol);
-      requireSafe(Q.compare(holding?.qty??0,owned)===0&&Q.compare(holding?.qty_available??holding?.qty??0,owned)===0,'EXACT_CLEANUP_QUANTITY_UNPROVEN');
-      requireSafe(hash(inventory(current.filter(x=>x.symbol!==symbol)))===hash(baseline),'UNRELATED_POSITIONS_CHANGED');
+      const owned=await acceptanceDelta();requireSafe(Q.positive(owned)&&Q.compare(owned,filled.filledQty)===0,'EXACT_CLEANUP_QUANTITY_UNPROVEN');
+      await verifyBaseline(owned);
       report.acceptancePositionObserved={symbol,qty:Q.persist(owned)};
       const cap=await Capacity.findOne({accountId:scope.accountId}).lean();budget.assertSubmit(key(2));await checkMutation('close');
-      const exit=await lifecycle.closePosition({userId:env.OWNER_USER_ID,idempotencyKey:key(2),symbol,qty:owned});requireSafe(exit.intent,'REDUCING_ADMISSION_BLOCKED');await capture(exit.intent);
+      const exit=await lifecycle.closePosition({userId:env.OWNER_USER_ID,idempotencyKey:key(2),symbol,qty:owned});requireSafe(exit.intent,'REDUCING_ADMISSION_BLOCKED');await capture(exit.intent);requireAccepted(exit.intent);
       const closed=await poll(exit.intent,new Set(['filled']));if(!closed){await cancel(exit.intent);throw fail('REDUCING_FILL_TIMEOUT');}
       const closeFills=await Fill.find({accountId:scope.accountId,executionSource:scope.executionSource,intentId:closed._id}).lean();requireSafe(closeFills.length===1&&Q.compare(closeFills[0].qty,owned)===0,'CLOSING_FILL_MISMATCH');
       const postPositions=inventory(await broker.getPositions()),postOrders=flatten(await broker.listOrders({status:'open',nested:true,limit:500}));
-      requireSafe(hash(postPositions)===hash(baseline),'BASELINE_POSITION_NOT_RESTORED');requireSafe(hash(postOrders.map(orderSummary))===hash(baselineOrders.map(orderSummary)),'BASELINE_ORDERS_CHANGED');
+      const restored=postPositions.find(x=>x.symbol===symbol);
+      requireSafe(Q.compare(restored?.qty??0,fixtureBaseline.qty)===0&&(!restored||restored.side===fixtureBaseline.side),'BASELINE_POSITION_NOT_RESTORED');
+      requireSafe(hash(postPositions.filter(x=>x.symbol!==symbol))===hash(baseline.filter(x=>x.symbol!==symbol)),'UNRELATED_POSITIONS_CHANGED');requireSafe(hash(postOrders.map(orderSummary))===hash(baselineOrders.map(orderSummary)),'BASELINE_ORDERS_CHANGED');
+      requireSafe(Q.zero(await acceptanceDelta()),'ACCEPTANCE_DELTA_NOT_CLOSED');
       const finalCap=await Capacity.findOne({accountId:scope.accountId}).lean();requireSafe(finalCap.reservedCents===0&&finalCap.spentCents===cap.spentCents&&finalCap.portfolioObservation?.state==='coherent','FINAL_ACCOUNTING_MISMATCH');
       const buckets=await Bucket.find({accountId:scope.accountId}).lean();requireSafe(buckets.every(b=>b.reservedCents===0),'RESERVATION_NOT_RELEASED');
-      report.cleanup={confirmed:true,qty:Q.persist(owned),closingFillCount:closeFills.length,positionHash:hash(postPositions),openOrdersHash:hash(postOrders.map(orderSummary)),reservedCents:finalCap.reservedCents,spentCents:finalCap.spentCents};
+      report.cleanup={confirmed:true,qty:Q.persist(owned),baselineQty:fixtureBaseline.qty,restoredQty:Q.normalize(restored?.qty??0),closingFillCount:closeFills.length,positionHash:hash(postPositions),openOrdersHash:hash(postOrders.map(orderSummary)),reservedCents:finalCap.reservedCents,spentCents:finalCap.spentCents};
     };
     const canceledOrder=await submit(0,{symbol,side:'buy',qty:1,orderType:'limit',limitPrice:cancelLimit,timeInForce:'day'});await capture(canceledOrder.intent);
-    requireSafe(!['rejected','reconciliation_required'].includes(canceledOrder.intent.status),'CANONICAL_ADMISSION_REJECTED');
+    requireAccepted(canceledOrder.intent);
     lifecycle=makeLifecycle();report.reloadedExecutionContext=true;
     ownership(await broker.getOrderByClientOrderId(canceledOrder.intent.clientOrderId),canceledOrder.intent);
     let cancellation=(await lifecycle.reconcile({intentId:canceledOrder.intent._id})).intent;await capture(cancellation);
@@ -246,7 +322,7 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
     const cancelFills=await Fill.countDocuments({intentId:cancellation._id});const canceledCap=await Capacity.findOne({accountId:scope.accountId}).lean();requireSafe(cancelFills===0&&canceledCap.reservedCents===0&&canceledCap.spentCents===spentBefore&&canceledCap.portfolioObservation?.state==='coherent','CANCEL_ACCOUNTING_MISMATCH');
     report.standaloneCancellation={confirmed:true,fillCount:0,intentId:String(cancellation._id),clientOrderId:cancellation.clientOrderId,reservedCents:0};
     const submitted=await submit(1,{symbol,side:'buy',qty:1,orderType:'limit',limitPrice:p.limitPrice,timeInForce:'day'});opening=submitted.intent;await capture(opening);
-    requireSafe(!['rejected','reconciliation_required'].includes(opening.status),'CANONICAL_ADMISSION_REJECTED');
+    requireAccepted(opening);
     lifecycle=makeLifecycle();let filled=await poll(opening,new Set(['filled']));
     if(!filled){const stopped=await cancel(opening);if(Q.positive(stopped.filledQty))await cleanup(stopped);throw fail('OPENING_FILL_TIMEOUT');}
     const fills=await Fill.find({accountId:scope.accountId,executionSource:scope.executionSource,intentId:filled._id}).lean();requireSafe(fills.length===1&&Q.compare(fills[0].qty,1)===0&&Q.compare(filled.filledQty,1)===0&&filled.reservedCents===0,'FILL_ACCOUNTING_MISMATCH');
