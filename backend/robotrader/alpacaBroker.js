@@ -6,6 +6,7 @@ const {
   isPaperTradingEndpoint
 } = require('../services/alpacaTradingClient');
 const { buildRoboAlpacaOrderPayload } = require('./alpacaOrderBuilder');
+const { recordClockTiming } = require('../services/brokerClock');
 
 const DEFAULT_ALPACA_LIVE_BASE_URL = 'https://api.alpaca.markets';
 
@@ -126,6 +127,7 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
     // Local heartbeat failure after D leaves the claim unresolved, never definitely unsent.
     // This synchronous check introduces no new awaited gap before the transport call.
     if (method !== 'get') options.assertExecutor?.();
+    const requestStartedAt = Date.now();
     const response = await httpClient({
       method,
       url: `${config.baseUrl}${path}`,
@@ -135,7 +137,17 @@ function createAlpacaBroker({ mode = 'paper', httpClient = axios, env = process.
       maxRedirects: 0,
       timeout: options.timeout || 20000
     });
-    return response?.data || {};
+    const responseReceivedAt = Date.now();
+    const result = response?.data || {};
+    if (method === 'get' && path === '/v2/clock') {
+      const evidenceReceipt = Date.parse(response?.config?.acceptanceRow?.endedAt);
+      const evidenceStart = Date.parse(response?.config?.acceptanceRow?.startedAt);
+      recordClockTiming(result, {
+        requestStartedAt: Number.isSafeInteger(evidenceStart) && evidenceStart >= requestStartedAt && evidenceStart <= responseReceivedAt ? evidenceStart : requestStartedAt,
+        responseReceivedAt: Number.isSafeInteger(evidenceReceipt) && evidenceReceipt >= requestStartedAt && evidenceReceipt <= responseReceivedAt ? evidenceReceipt : responseReceivedAt
+      });
+    }
+    return result;
   };
 
   return {

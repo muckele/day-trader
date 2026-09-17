@@ -1,0 +1,21 @@
+{
+  "command": [
+    "docker",
+    "scout",
+    "cves",
+    "local://sha256:6b8b35dede3bc416fbc7a2fcbc3c4d1482b0ab4260268bda33c59beb38df976f",
+    "--platform",
+    "linux/arm64",
+    "--exit-code",
+    "--locations",
+    "--format",
+    "sarif",
+    "--output",
+    "/private/tmp/day-trader-clock-skew/image/backend.sarif.json"
+  ],
+  "startedAt": "2026-09-17T18:04:32.271902+00:00",
+  "endedAt": "2026-09-17T18:04:52.405898+00:00",
+  "exitCode": 2,
+  "image": "sha256:6b8b35dede3bc416fbc7a2fcbc3c4d1482b0ab4260268bda33c59beb38df976f",
+  "platform": "linux/arm64"
+}

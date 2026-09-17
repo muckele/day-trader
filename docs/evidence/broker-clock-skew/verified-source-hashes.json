@@ -1,0 +1,16 @@
+{
+  "backend/integration/externalPaperHarness.mongo.test.js": "0aa8fced9f7da3aa1329186e5d229a6a58037c615393edfd4439d6a9a53be7f0",
+  "backend/robotrader/alpacaBroker.js": "9f234b04370e5fc956520e978865899d5b006bfec4c7ad468384526731debc29",
+  "backend/scripts/acceptanceSafety.js": "e88d942cfc9d408d3a4c736506a864f37e2cf31e724cc3c8266782b79b571fc2",
+  "backend/scripts/external-paper-acceptance.js": "e8d7dc30214609ade17d49b2e5b1e4f866e47cfb3fff20d7d0db2116da9704ec",
+  "backend/services/executionMarketStatus.js": "99f14782629b4e881f1fc0aa38f03ddecaa5bea095ba85f451c726b7ca819549",
+  "backend/services/orderLifecycleService.js": "141802edfb4e98a3d52e6c5fe89ecb31ecfded16f8cc3e2da4d164c7c4ca1962",
+  "backend/tests/executionMarketStatus.test.js": "b80ca5a436994813286666bef1428aa5c326a5ea743a4b31f146a6935a4b61d3",
+  "backend/tests/externalPaperAcceptance.test.js": "82cf73ff83c4299af2453abafb882e6e85732b5abf97019e80ee7527c7ce3259",
+  "backend/tests/robotraderAlpacaBroker.test.js": "785617f41c8cdb9c25201696eb53c2a6c26773eecab5cf1d8bcfb18b2daf3168",
+  "scripts/tests/verify-mvp.test.mjs": "70b854f7efd3f5ba87a6dbfa807577f3fb16a228f78a1901005459084f9ee425",
+  "scripts/verify-mvp.mjs": "c8dab8be5555c73e3846f6e85a1bb5c2082cc7371af33ac1df79056cbef740da",
+  "backend/services/brokerClock.js": "c0aea2c7848f44800f0e811c92ab519679e40a319a278e36ed7a0d28bca0bb22",
+  "backend/tests/brokerClock.test.js": "103e60194b5028981dedf05e4cd8241595e9c8c17273f4b11b8157c9dea644b8",
+  "backend/tests/orderLifecycle.marketClock.test.js": "569a7f23945a3c91f5391bcf5c3a229ac11f76074f117b7963d38e84138976cd"
+}

@@ -35,7 +35,7 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
   response.config=config;
   if(fault==='changed-broker-id'&&url.pathname.includes('orders:by_client')){const raw=JSON.parse(response.data);raw.id='different-broker-id';response.data=JSON.stringify(raw);}
   if(fault!=='no-request-id')response.headers['x-request-id']='controlled-'+seen.length;
-  if(url.pathname==='/v2/clock'){const raw=JSON.parse(response.data);Object.assign(raw,{timestamp:new Date(now).toISOString(),next_close:new Date(now+clockRemaining).toISOString()});if(fault==='stale-clock')raw.timestamp=new Date(now-60001).toISOString();if(fault==='malformed-clock')raw.next_close='bad';response.data=JSON.stringify(raw);}
+  if(url.pathname==='/v2/clock'){const raw=JSON.parse(response.data);Object.assign(raw,{timestamp:new Date(now).toISOString(),next_close:new Date(now+clockRemaining).toISOString()});if(fault==='stale-clock')raw.timestamp=new Date(now-60001).toISOString();if(fault==='future-clock')raw.timestamp=new Date(Date.now()+5000).toISOString();if(['final-skew-31','final-skew-5000'].includes(fault)&&await Intent.exists({status:'submitting'}))raw.timestamp=new Date(Date.now()+Number(fault.split('-').at(-1))).toISOString();if(fault==='malformed-clock')raw.next_close='bad';response.data=JSON.stringify(raw);}
   if(url.pathname.includes('/quotes/latest')){quoteReads++;const raw=JSON.parse(response.data);for(const q of Object.values(raw.quotes||{})){q.t=new Date(now).toISOString();if(fault==='stale-quote')q.t=new Date(now-60001).toISOString();if(fault==='expensive')q.ap=251;if(fault==='invalid-quote')q.bp=101;if(fault==='missing-quote'){delete q.ap;}if(fault==='ceiling'){q.ap=250;q.bp=249.99;}if(fault==='moving-quote'&&quoteReads>1||fault==='dispatch-moving-quote'&&quoteReads>=3){q.ap=98;q.bp=97.99;}}response.data=JSON.stringify(raw);}
   if(url.pathname.endsWith('/bars')){const raw=JSON.parse(response.data);raw.bars=Array.from({length:5},(_,i)=>({h:100.1,l:99.9,t:new Date(now-(5-i)*60000).toISOString()}));response.data=JSON.stringify(raw);}
   if(url.pathname.startsWith('/v2/assets/')){const raw=JSON.parse(response.data);raw.fractionable=true;if(fault==='invalid-asset')raw.class='crypto';response.data=JSON.stringify(raw);}
@@ -67,6 +67,16 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
   t.afterEach(()=>{assert.ok(seen.every(r=>['https://paper-api.alpaca.markets','https://data.alpaca.markets'].includes(r.original)&&r.actual===target));assert.equal(JSON.stringify(report).includes('acceptance-dummy'),false);assert.equal(JSON.stringify(report).includes('acceptance-paper'),false);});
   await t.test('closed market reads baseline, skips occupied fixture and returns PARTIAL without intent or write',async()=>{
    await control({patch:{marketOpen:false}});const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL');assert.equal(r.reason,'WRITE LIFECYCLE REQUIRES OPEN REGULAR MARKET');assert.equal(r.fixture,'MSFT');assert.equal(r.baseline.positions.length,2);assert.equal(await Intent.countDocuments(),0);assert.equal(p.state.posts.length,0);assert.ok(p.state.requests.every(x=>x.method==='GET'));
+  });
+  await t.test('excessive future skew rejected before transport',async()=>{
+   fault='future-clock';const r=await execute();assert.equal(r.reason,'FRESH_CLOCK_REQUIRED');assert.equal(p.state.posts.length,0);assert.equal(await Intent.countDocuments(),0);
+  });
+  await t.test('final-dispatch skew tolerance',async()=>{
+   fault='final-skew-31';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);assert.equal(p.state.posts.length,3);assert.equal(r.cleanup.confirmed,true);
+   assert.ok(r.clockChecks.some(c=>c.stage==='cancel'&&c.clockFreshness.rawAgeMs<0&&c.clockFreshness.valid));
+  });
+  await t.test('final-dispatch excessive future skew zero POST',async()=>{
+   fault='final-skew-5000';const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_BLOCKED',r.reason);assert.equal(p.state.posts.length,0);assert.equal((await Intent.findOne()).status,'rejected');assert.equal((await Capacity.findOne()).reservedCents,0);
   });
   await t.test('production closed-market admission is still rejected',async()=>{
    await control({patch:{marketOpen:false}});const service=getOrderLifecycle({broker:createAlpacaBroker({env}),ownerId:owner,expectedAccountId:'acceptance-paper',beforeAdmission:async()=>{}});

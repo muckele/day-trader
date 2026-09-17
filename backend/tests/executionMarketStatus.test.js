@@ -2,6 +2,12 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const service=()=>require('../services/executionMarketStatus');
 const instant=new Date('2026-09-13T12:00:00Z');
+test('paper market status rejects excessive future skew but accepts bounded skew',async()=>{
+ for(const [skew,status] of [[31,'OPEN'],[1000,'OPEN'],[1001,'UNAVAILABLE'],[5000,'UNAVAILABLE']]){
+  const result=await service().getExecutionMarketStatus({alpacaMode:true,now:()=>instant,broker:{getClock:async()=>({is_open:true,timestamp:new Date(+instant+skew).toISOString()})}});
+  assert.equal(result.status,status);
+ }
+});
 test('fresh broker clock overrides closed local Sunday calendar for paper execution',async()=>{
  const status=await service().getExecutionMarketStatus({alpacaMode:true,now:()=>instant,broker:{getClock:async()=>({is_open:true,timestamp:instant.toISOString(),next_open:'next-open',next_close:'next-close'})}});
  assert.equal(status.status,'OPEN');assert.equal(status.source,'alpaca-clock');assert.equal(status.executionSource,'alpaca-paper');

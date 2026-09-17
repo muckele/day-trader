@@ -5,6 +5,7 @@ const check=(value,code)=>{if(!value)throw fail(code);};
 // Matches the existing harness/canonical 60-second clock convention and the
 // stock quote cache lifetime. Acceptance reads uncached data, never a bid fallback.
 const FRESH_MS=60000,SESSION_MS=30*60000;
+const {evaluateBrokerClock}=require('../services/brokerClock');
 // Observation-only fixed point: positive plain decimals, at most nine whole
 // and nine fractional digits. Numbers use their JSON-decoded decimal spelling;
 // strings retain all supplied digits. Exponents/whitespace fail closed. This
@@ -24,12 +25,14 @@ function barQuery(now=Date.now()){
  return {timeframe:'1Min',start:new Date(now-10*60000).toISOString(),end:new Date(now).toISOString(),limit:11,feed:'iex',sort:'asc'};
 }
 function sessionCheck(clock,now=Date.now()){
- const timestamp=Date.parse(clock?.timestamp),close=Date.parse(clock?.next_close);
- if(typeof clock?.is_open!=='boolean'||!Number.isFinite(timestamp)||now-timestamp<0||now-timestamp>FRESH_MS||!Number.isFinite(close)||close<=timestamp)return {eligible:false,reason:'FRESH_CLOCK_REQUIRED'};
- if(!clock.is_open)return {eligible:false,reason:'WRITE LIFECYCLE REQUIRES OPEN REGULAR MARKET'};
- if(close-now<SESSION_MS)return {eligible:false,reason:'INSUFFICIENT REGULAR SESSION TIME'};
- return {eligible:true,remainingMs:close-now,timestamp,close};
+ const clockFreshness=evaluateBrokerClock(clock,{nowMs:now});
+ const timestamp=clockFreshness.timestamp,close=Date.parse(clock?.next_close);
+ if(!clockFreshness.valid||!Number.isFinite(close)||close<=timestamp)return {eligible:false,reason:'FRESH_CLOCK_REQUIRED',clockFreshness};
+ if(!clock.is_open)return {eligible:false,reason:'WRITE LIFECYCLE REQUIRES OPEN REGULAR MARKET',clockFreshness};
+ if(close-now<SESSION_MS)return {eligible:false,reason:'INSUFFICIENT REGULAR SESSION TIME',clockFreshness};
+ return {eligible:true,remainingMs:close-now,timestamp,close,clockFreshness};
 }
+
 function validateMarket(market,now=Date.now()){
  const q=market?.quote,t=Date.parse(q?.t);check(Number.isFinite(t)&&t<=now&&now-t<=FRESH_MS,'FRESH_QUOTE_REQUIRED');
  const ask=observation(q.ap,'INVALID_ACCEPTANCE_QUOTE'),bid=observation(q.bp,'INVALID_ACCEPTANCE_QUOTE');

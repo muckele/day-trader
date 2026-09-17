@@ -258,3 +258,16 @@ test('held fixture and precision safety scenarios are individually mandatory',as
   assert.equal(v.validateAcceptanceExecution(gate,rows+'# tests 1000\n# pass 1000\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n').ok,false,name);
  }
 });
+
+test('clock-skew safety cases are individually mandatory',async()=>{
+ const v=await import('../verify-mvp.mjs');
+ const suites=[
+  [v.buildReleaseChecks({backendTests:[],integrationFiles:[]}).find(x=>x.name==='backend-tests'),['31ms broker future skew accepted','maximum allowed future skew boundary','stale clock still rejected','closed market remains blocked','insufficient session time remains blocked']],
+  [v.buildMongoChecks(['externalPaperHarness.mongo.test.js'])[0],['excessive future skew rejected before transport','final-dispatch skew tolerance','final-dispatch excessive future skew zero POST']]
+ ];
+ for(const [gate,names] of suites)for(const name of names){
+  assert.ok(gate.requiredScenarios.includes(name),name);
+  const rows=gate.requiredScenarios.filter(n=>n!==name).map((n,i)=>`ok ${i+1} - ${n}\n`).join('');
+  assert.equal(v.validateAcceptanceExecution(gate,rows+'# tests 1000\n# pass 1000\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n').ok,false,name);
+ }
+});

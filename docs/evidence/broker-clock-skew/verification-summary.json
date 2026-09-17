@@ -1,0 +1,15 @@
+{
+  "passedTests": 782,
+  "failedTests": 0,
+  "skippedTests": 0,
+  "flakyTests": 0,
+  "gates": 25,
+  "passedGates": 25,
+  "node": "v24.21.0",
+  "verifierExitCode": 0,
+  "startingSHA": "dc930cd1e63c500129f4de8c8ad930eecdd031ef",
+  "externalAlpacaRequests": 0,
+  "externalMarketDataRequests": 0,
+  "pushes": 0,
+  "documentationNote": "Candidate SHA is the commit containing these exact verified source hashes; postcommit binding also retained outside checkout."
+}

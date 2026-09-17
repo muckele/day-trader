@@ -1,0 +1,17 @@
+{
+  "unchangedFields": [
+    "node",
+    "nodeComponents",
+    "nodeSha256",
+    "packages",
+    "nativeAddons",
+    "exportedFiles"
+  ],
+  "nodeSha256": "0f8949d1028f6d61506b2d5bc57e7e6fe893d7b1997509b7847294fc9c616584",
+  "nativeAddons": [],
+  "dynamicDependenciesSameIgnoringLoadAddresses": true,
+  "onlyAddedCopiedRoot": "/app/services/brokerClock.js",
+  "frontendSourceFilesMatched": 77,
+  "frontendMismatches": [],
+  "sourceHashesUnchangedSinceTests": true
+}

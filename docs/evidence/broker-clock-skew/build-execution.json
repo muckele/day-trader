@@ -1,0 +1,20 @@
+{
+  "command": [
+    "docker",
+    "build",
+    "--pull",
+    "--platform",
+    "linux/arm64",
+    "--progress",
+    "plain",
+    "--provenance=false",
+    "--iidfile",
+    "/private/tmp/day-trader-clock-skew/image/backend-id.txt",
+    "-t",
+    "day-trader-rc-backend:clock-skew",
+    "backend"
+  ],
+  "startedAt": "2026-09-17T17:59:44.892531+00:00",
+  "exitCode": 0,
+  "endedAt": "2026-09-17T18:00:32.134667+00:00"
+}

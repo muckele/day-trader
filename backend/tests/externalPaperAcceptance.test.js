@@ -36,3 +36,28 @@ test('global cancellation authority cannot reset for another order',()=>{
  assert.throws(()=>b.submit('fourth'),{code:'SUBMISSION_BUDGET_EXHAUSTED'});
  assert.equal(b.snapshot().submissions,3);
 });
+
+test('31ms broker future skew accepted',()=>{
+ const {sessionCheck}=require('../scripts/acceptanceSafety');
+ const r=sessionCheck({is_open:true,timestamp:'2026-09-17T17:36:30.593806133Z',next_close:'2026-09-17T20:00:00Z'},Date.parse('2026-09-17T17:36:30.562Z'));
+ assert.equal(r.eligible,true);assert.equal(r.clockFreshness.valid,true);assert.equal(r.clockFreshness.effectiveAgeMs,0);
+});
+test('maximum allowed future skew boundary',()=>{
+ const {sessionCheck}=require('../scripts/acceptanceSafety'),now=Date.parse('2026-09-17T17:00:00Z');
+ for(const delta of [0,1,31,250,999,1000])assert.equal(sessionCheck({is_open:true,timestamp:new Date(now+delta).toISOString(),next_close:'2026-09-17T20:00:00Z'},now).eligible,true,String(delta));
+ for(const delta of [1001,5000])assert.equal(sessionCheck({is_open:true,timestamp:new Date(now+delta).toISOString(),next_close:'2026-09-17T20:00:00Z'},now).reason,'FRESH_CLOCK_REQUIRED');
+ assert.equal(sessionCheck({is_open:true,timestamp:'2026-09-17T17:00:01.000000001Z',next_close:'2026-09-17T20:00:00Z'},now).eligible,false);
+});
+test('stale clock still rejected',()=>{
+ const {sessionCheck}=require('../scripts/acceptanceSafety'),now=Date.parse('2026-09-17T17:00:00Z');
+ for(const [age,pass]of [[59999,true],[60000,true],[60001,false]])assert.equal(sessionCheck({is_open:true,timestamp:new Date(now-age).toISOString(),next_close:'2026-09-17T20:00:00Z'},now).eligible,pass);
+});
+test('closed market remains blocked',()=>{
+ const r=require('../scripts/acceptanceSafety').sessionCheck({is_open:false,timestamp:'2026-09-17T17:00:00.031Z',next_close:'2026-09-17T20:00:00Z'},Date.parse('2026-09-17T17:00:00Z'));
+ assert.equal(r.eligible,false);assert.equal(r.reason,'WRITE LIFECYCLE REQUIRES OPEN REGULAR MARKET');
+});
+test('insufficient session time remains blocked',()=>{
+ const check=require('../scripts/acceptanceSafety').sessionCheck,now=Date.parse('2026-09-17T17:00:00Z'),clock={is_open:true,timestamp:new Date(now+31).toISOString()};
+ assert.equal(check({...clock,next_close:new Date(now+1800000).toISOString()},now).eligible,true);
+ assert.equal(check({...clock,next_close:new Date(now+1799999).toISOString()},now).reason,'INSUFFICIENT REGULAR SESSION TIME');
+});

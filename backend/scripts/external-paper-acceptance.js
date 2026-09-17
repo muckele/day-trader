@@ -153,7 +153,7 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
     requireSafe(account.status==='ACTIVE'&&account.currency==='USD'&&account.trading_blocked===false&&account.account_blocked===false&&account.trade_suspended_by_user!==true&&Number(account.cash)>=p.maxNotional,'ACCOUNT_NOT_ELIGIBLE');
     report.account={maskedId:'***'+account.id.slice(-6),status:account.status,currency:account.currency,tradingBlocked:false};
     const clock=await broker.getClock();latestClock=clock;const session=Safety.sessionCheck(clock,now());
-    report.clock=clock;
+    report.clock=clock;report.clockChecks=[{stage:'initial',...session}];
     const positions=await broker.getPositions();baseline=inventory(positions);
     baselineOrders=flatten(await broker.listOrders({status:'open',nested:true,limit:500}));
     report.baseline={positions:baseline,openOrders:baselineOrders.map(orderSummary),positionsHash:hash(baseline),ordersHash:hash(baselineOrders.map(orderSummary))};
@@ -226,7 +226,7 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
       report.baselineCheck={at:new Date(now()).toISOString(),baselineQty:fixtureBaseline.qty,ownedQty,currentQty:Q.normalize(holding?.qty??0)};return ownedQty;
     };
     const checkMutation=async(stage,requestedQty)=>{
-      await checkControl();latestClock=await broker.getClock();const current=Safety.sessionCheck(latestClock,now());requireSafe(current.eligible,current.reason);
+      await checkControl();latestClock=await broker.getClock();const current=Safety.sessionCheck(latestClock,now());report.clockChecks.push({stage,...current});requireSafe(current.eligible,current.reason);
       if(stage!=='close'){selectedMarket=await market(symbol);requireSafe(selectedMarket.askCents<=amount(p.maxNotional),'ACCEPTANCE_NOTIONAL_LIMIT');if(stage==='cancel')Safety.validateCancel(cancelLimit,selectedMarket);}
       await verifyBaseline(requestedQty,stage==='close'?undefined:stage==='cancel'?cancelLimit:p.limitPrice);
     };

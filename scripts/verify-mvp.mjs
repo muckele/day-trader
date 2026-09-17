@@ -80,6 +80,11 @@ export const FRACTIONAL_REQUIRED_SCENARIOS = [
   "fractional position flip and invalid reducing quantities are rejected"
 ];
 export const QUANTITY_REQUIRED_SCENARIOS = [
+  '31ms broker future skew accepted',
+  'maximum allowed future skew boundary',
+  'stale clock still rejected',
+  'closed market remains blocked',
+  'insufficient session time remains blocked',
   'baseline-floor protection',
   'baseline consistency alone cannot mint acceptance ownership',
   'canonical acceptance fill identity is required rather than symbol match',
@@ -97,6 +102,9 @@ export const QUANTITY_REQUIRED_SCENARIOS = [
   "acceptance fixture price ceiling and stale quote rejection"
 ];
 export const EXTERNAL_PAPER_REQUIRED_SCENARIOS = [
+  'excessive future skew rejected before transport',
+  'final-dispatch skew tolerance',
+  'final-dispatch excessive future skew zero POST',
   'clean fixture preferred over held fallback',
   'position cap full blocks canonical new symbol without changing policy',
   'position-cap-neutral held fixture',
