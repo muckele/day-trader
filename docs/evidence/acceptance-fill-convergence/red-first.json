@@ -1,0 +1,23 @@
+{
+  "startingSHA": "4107528be97c1a33597053c032bb5bfabbc26004",
+  "implementationUnchangedForPrimaryRed": true,
+  "primaryLog": "/private/tmp/day-trader-acceptance-convergence/red.tap",
+  "exitCode": 1,
+  "primaryRegressions": [
+    {
+      "name": "position ahead of canonical fill converges",
+      "expected": "EXTERNAL_ALPACA_PAPER_VERIFIED",
+      "actual": "EXTERNAL_ALPACA_PAPER_FAILED",
+      "reason": "EXPOSURE_RECONCILIATION_REQUIRED"
+    },
+    {
+      "name": "lagging order discovery converges",
+      "expected": "EXTERNAL_ALPACA_PAPER_VERIFIED",
+      "actual": "EXTERNAL_ALPACA_PAPER_FAILED",
+      "reason": "EXPOSURE_RECONCILIATION_REQUIRED"
+    }
+  ],
+  "passingEntries": 96,
+  "failingEntries": 3,
+  "explanation": "Two expected child failures plus parent; no skips. Additional red logs preserve cancellation-race, identity validation, malformed duplicate observation, and verifier-registration checks."
+}

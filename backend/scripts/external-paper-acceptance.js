@@ -19,6 +19,7 @@ const Settings = require('../models/RoboSettings');
 const Q=require('../services/shareQuantity');
 const Safety=require('./acceptanceSafety');
 const Fixture=require('./acceptanceFixture');
+const Convergence=require('./acceptanceConvergence');
 const User=require('../models/User');
 const Close=require('../models/PositionClose');
 const DATA_ORIGIN='https://data.alpaca.markets';
@@ -81,15 +82,17 @@ function flatten(orders) {
   return orders.flatMap(o=>{requireSafe(o&&typeof o.id==='string'&&typeof o.symbol==='string'&&typeof o.status==='string','INVALID_ORDER');return [o,...flatten(o.legs||[])];});
 }
 function orderSummary(o) { return {id:o.id,clientOrderId:o.client_order_id,symbol:o.symbol,side:o.side,qty:o.qty,status:o.status,filledQty:o.filled_qty}; }
-async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Promise(r=>setTimeout(r,ms)),pollAttempts=10,pollDelayMs=1000,now=()=>Date.now()}={}) {
+async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Promise(r=>setTimeout(r,ms)),pollAttempts=10,pollDelayMs=1000,now=()=>Date.now(),monotonicNow=()=>performance.now(),scheduleDeadline=setTimeout,clearDeadline=clearTimeout}={}) {
   const p=plan(options);
   if(options['dry-run'])return {...p,dryRun:true,networkRequests:0};
   requireSafe(!active,'ACCEPTANCE_ALREADY_RUNNING');active=true;
   const report={...p,startedAt:new Date().toISOString(),decision:'EXTERNAL_ALPACA_PAPER_BLOCKED',requests:[],orders:[],mode:'paper'};
-  const save=()=>onEvidence(JSON.parse(JSON.stringify(report)));
+  let evidenceFinalized=false;
+  const save=()=>{if(!evidenceFinalized)onEvidence(JSON.parse(JSON.stringify(report)));};
   let requestInterceptor,responseInterceptor,connected=false,mutated=false;
   const ownedClients=new Map(),ownedIds=new Set(),budget=Safety.mutationBudget();
   let latestClock,selectedMarket,cancelLimit,symbol;
+  let observationWait=null,observationFenced=false;const waits=new Map(),latestOrders=new Map();
   let broker,lifecycle,opening,baseline,baselineOrders,scope,fixtureBaseline;
   try {
     requireSafe(Number.isInteger(pollAttempts)&&pollAttempts>=1&&pollAttempts<=30&&pollDelayMs>=0&&pollDelayMs<=2000,'INVALID_POLL_BOUND');
@@ -102,7 +105,12 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
     const assertConfig=()=>requireSafe(hash(getAlpacaConfigForMode('paper',env))===configHash,'ACCOUNT_CONFIGURATION_DRIFT');
     // Synchronous interceptor adds no awaited authorization-to-transport gap.
     requestInterceptor=axios.interceptors.request.use(config=>{
-      assertConfig();const url=new URL(config.url),method=String(config.method).toUpperCase();
+      requireSafe(!observationFenced,'ACCEPTANCE_CONVERGENCE_DEADLINE');assertConfig();const url=new URL(config.url),method=String(config.method).toUpperCase();
+      if(observationWait){
+        observationWait.check();requireSafe(method==='GET','CONVERGENCE_MUTATION_PROHIBITED');
+        config.timeout=Math.max(1,Math.min(config.timeout||20000,Math.ceil(observationWait.remaining())));
+        config.signal=AbortSignal.timeout(Math.max(1,Math.ceil(observationWait.remaining())));
+      }
       requireSafe((url.origin===PAPER_ORIGIN||url.origin===DATA_ORIGIN&&method==='GET'&&['/v2/stocks/quotes/latest',`/v2/stocks/${symbol}/bars`].includes(url.pathname))&&!url.username&&!url.password&&config.maxRedirects===0&&url.pathname.startsWith('/v2/'),'UNTRUSTED_TRANSPORT');
       if(method!=='GET'){
         executionReadiness.assertReady();
@@ -149,6 +157,11 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
     requireSafe(!(capacityBefore?.reservedCents>0),'UNRESOLVED_LOCAL_RESERVATIONS');
     const spentBefore=capacityBefore?.spentCents||0;
     broker=createAlpacaBroker({mode:'paper',env});
+    // A timed-out canonical observation may still be settling a DB transaction.
+    // Fence this broker permanently; neither late callbacks nor a new phase may dispatch.
+    for(const [name,method]of Object.entries(broker))if(typeof method==='function')broker[name]=(...args)=>{
+      requireSafe(!observationFenced,'ACCEPTANCE_CONVERGENCE_DEADLINE');return method(...args);
+    };
     const account=await broker.getAccount();await verifyPaperAccount(config,async()=>account);
     requireSafe(account.status==='ACTIVE'&&account.currency==='USD'&&account.trading_blocked===false&&account.account_blocked===false&&account.trade_suspended_by_user!==true&&Number(account.cash)>=p.maxNotional,'ACCOUNT_NOT_ELIGIBLE');
     report.account={maskedId:'***'+account.id.slice(-6),status:account.status,currency:account.currency,tradingBlocked:false};
@@ -236,7 +249,7 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
     requireSafe(!await Intent.exists({...scope,idempotencyKey:{$in:[key(0),key(1),key(2)]}}),'RUN_ALREADY_EXISTS_RECONCILE_REQUIRED');
     const capture=async intent=>{
       const record=await BrokerOrder.findOne({accountId:scope.accountId,executionSource:scope.executionSource,intentId:intent._id}).sort({createdAt:-1}).lean();
-      if(record){ownedIds.add(record.externalOrderId);const client=ownedClients.get(intent.clientOrderId);if(client)client.brokerId=record.externalOrderId;}
+      if(record){ownedIds.add(record.externalOrderId);const client=ownedClients.get(intent.clientOrderId);if(client){requireSafe(!client.brokerId||client.brokerId===record.externalOrderId,'BROKER_OWNERSHIP_MISMATCH');client.brokerId=record.externalOrderId;}}
       const entry={intentId:String(intent._id),clientOrderId:intent.clientOrderId,brokerOrderId:record?.externalOrderId||null,brokerOrderRecordId:record?String(record._id):null,runId:p.runId,symbol:intent.symbol,side:intent.side,qty:intent.qty,status:intent.status,filledQty:intent.filledQty,filledNotionalCents:intent.filledNotionalCents,reservedCents:intent.reservedCents};
       report.orders.push(entry);save();return entry;
     };
@@ -253,8 +266,8 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
       await checkControl();const i=await Intent.findOne({...scope,idempotencyKey:key(n)});requireSafe(i,'CANONICAL_INTENT_REQUIRED');
       requireSafe(i.clientOrderId.length<=48,'CLIENT_ID_LENGTH');ownedClients.set(i.clientOrderId,{symbol:i.symbol,side:i.side,qty:i.qty,stage:n===0?'cancel':'open',intent:i});await capture(i);
     }});};
-    const ownership=(raw,i)=>{requireSafe(raw&&typeof raw.id==='string'&&/^[a-zA-Z0-9-]+$/.test(raw.id)&&raw.client_order_id===i.clientOrderId&&(!ownedClients.get(i.clientOrderId)?.brokerId||ownedClients.get(i.clientOrderId).brokerId===raw.id)&&raw.symbol===i.symbol&&raw.side===i.side&&Q.compare(raw.qty,i.qty)===0&&raw.type===i.orderType&&(i.orderType!=='limit'||Number(raw.limit_price)===i.limitPrice),'BROKER_OWNERSHIP_MISMATCH');ownedIds.add(raw.id);return raw;};
-    const originalSubmit=broker.submitOrder,originalCancel=broker.cancelOrder,originalGet=broker.getOrder,originalLookup=broker.getOrderByClientOrderId;
+    const ownership=(raw,i)=>{requireSafe(raw&&typeof raw.id==='string'&&/^[a-zA-Z0-9-]+$/.test(raw.id)&&raw.client_order_id===i.clientOrderId&&(!ownedClients.get(i.clientOrderId)?.brokerId||ownedClients.get(i.clientOrderId).brokerId===raw.id)&&raw.symbol===i.symbol&&raw.side===i.side&&Q.compare(raw.qty,i.qty)===0&&raw.type===i.orderType&&(i.orderType!=='limit'||Number(raw.limit_price)===i.limitPrice),'BROKER_OWNERSHIP_MISMATCH');Convergence.validateBroker(raw,i,ownedClients.get(i.clientOrderId)?.brokerId);ownedIds.add(raw.id);latestOrders.set(i.clientOrderId,raw);return raw;};
+    const originalSubmit=broker.submitOrder,originalCancel=broker.cancelOrder,originalGet=broker.getOrder,originalLookup=broker.getOrderByClientOrderId,originalList=broker.listOrders;
     broker.submitOrder=async(input,options)=>{
       if(input.side==='sell'){
         const close=await Close.findOne({accountId:scope.accountId,idempotencyKey:key(2)});const i=await Intent.findOne({...scope,clientOrderId:input.clientOrderId});
@@ -267,15 +280,60 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
     broker.cancelOrder=(id,options)=>{budget.assertCancel(id);return originalCancel(id,{...options,authorize:async context=>{await checkMutation('close');return options.authorize(context);}});};
     broker.getOrder=async id=>{const raw=await originalGet(id),client=ownedClients.get(raw?.client_order_id);if(client)ownership(raw,client.intent);else requireSafe(!ownedIds.has(id),'BROKER_OWNERSHIP_MISMATCH');return raw;};
     broker.getOrderByClientOrderId=async id=>{const raw=await originalLookup(id),client=ownedClients.get(id);if(client)ownership(raw,client.intent);return raw;};
+    broker.listOrders=async options=>{
+      const rows=await originalList(options);
+      for(const raw of flatten(rows)){
+        const client=ownedClients.get(raw.client_order_id);
+        if(client)ownership(raw,client.intent);
+        else requireSafe(!ownedIds.has(raw.id),'BROKER_OWNERSHIP_MISMATCH');
+      }
+      return rows;
+    };
     const poll=async(i,wanted)=>{
-      for(let n=0;n<pollAttempts;n++){
-        const raw=ownership(await broker.getOrderByClientOrderId(i.clientOrderId),i);
-        const outcome=await lifecycle.reconcile({intentId:i._id});i=outcome.intent;await capture(i);
-        requireSafe(!outcome.exposure||outcome.exposure.state==='coherent','EXPOSURE_RECONCILIATION_REQUIRED');
-        if(wanted.has(i.status))return i;
-        if(terminal.has(i.status))throw fail('UNEXPECTED_TERMINAL_STATUS');
-        if(n+1<pollAttempts)await sleep(pollDelayMs);
-      }return null;
+      const id=String(i._id),expected=ownedClients.get(i.clientOrderId)?.intent;
+      requireSafe(expected,'ACCEPTANCE_IDENTITY_MISSING');
+      if(!waits.has(id))waits.set(id,Convergence.createWait({attempts:pollAttempts,monotonicNow,schedule:scheduleDeadline,clear:clearDeadline}));
+      const wait=waits.get(id);let last,temporary=false;
+      observationWait=wait;
+      try{
+        return await wait.observe(async()=>{
+        while(wait.attempts<pollAttempts){
+          wait.next();await checkControl();
+          Convergence.validateIntent(await Intent.findOne({...scope,_id:expected._id}).lean(),expected);
+          ownership(await broker.getOrderByClientOrderId(expected.clientOrderId),expected);
+          const outcome=await lifecycle.reconcile({intentId:expected._id});wait.check();i=outcome.intent;await capture(i);wait.check();
+          const raw=latestOrders.get(expected.clientOrderId);
+          last={attempt:wait.attempts,elapsedMs:wait.elapsed(),intentId:id,brokerOrderId:ownedClients.get(expected.clientOrderId)?.brokerId||null,
+            canonicalStatus:i.status,canonicalFilledQty:i.filledQty,brokerStatus:raw?.status,brokerFilledQty:raw?.filled_qty,
+            exposureState:outcome.exposure?.state,...Convergence.exposureReason(outcome.exposure,symbol),baselineQty:fixtureBaseline.qty};
+          report.convergence=report.convergence||[];report.convergence.push(last);save();
+          wait.check();
+          const ownedQty=await acceptanceDelta();last.ownedQty=ownedQty;
+          const positions=await broker.getPositions();inventory(positions);
+          requireSafe(new Set(positions.map(x=>x.symbol)).size===positions.length,'INVALID_POSITIONS');
+          const holding=positions.find(x=>x.symbol===symbol);
+          requireSafe(!holding||holding.side===fixtureBaseline.side||fixtureBaseline.phase==='clean'&&(!holding.side||holding.side==='long'),'ACCEPTANCE_BASELINE_DRIFT');
+          requireSafe(hash(inventory(positions.filter(x=>x.symbol!==symbol)))===hash(baseline.filter(x=>x.symbol!==symbol)),'UNRELATED_POSITIONS_CHANGED');
+          const orders=flatten(await broker.listOrders({status:'open',nested:true,limit:500}));
+          requireSafe(orders.length<500&&orders.every(o=>o.client_order_id===expected.clientOrderId),'CONVERGENCE_FOREIGN_ORDER');
+          for(const order of orders)ownership(order,expected);
+          const classified=Convergence.classify({intent:i,expected,brokerId:ownedClients.get(expected.clientOrderId)?.brokerId,raw:latestOrders.get(expected.clientOrderId),exposure:outcome.exposure,baselineQty:fixtureBaseline.qty,ownedQty,currentQty:holding?.qty??0});
+          wait.check();Object.assign(last,classified,{elapsedMs:wait.elapsed()});save();
+          temporary=classified.kind==='temporary';
+          if(!temporary){
+            if(wanted.has(i.status))return i;
+            if(terminal.has(i.status))throw fail('UNEXPECTED_TERMINAL_STATUS');
+          }
+          if(wait.attempts<pollAttempts){await sleep(Math.min(pollDelayMs,wait.remaining()));wait.check();}
+        }
+        if(temporary)throw fail('ACCEPTANCE_CONVERGENCE_ATTEMPTS');
+        return null;
+        },()=>{observationFenced=true;});
+      }catch(error){
+        if(wait.remaining()<=0||error.code==='ACCEPTANCE_CONVERGENCE_DEADLINE'){observationFenced=true;error=fail('ACCEPTANCE_CONVERGENCE_DEADLINE');}
+        report.convergenceInFlight=wait.inFlight;
+        report.convergenceFailure={code:/^[A-Z][A-Z0-9_]{0,80}$/.test(error.code||'')?error.code:'CONVERGENCE_OBSERVATION_FAILED',attempt:wait.attempts,elapsedMs:wait.elapsed(),lastObservation:last||null};save();throw error;
+      }finally{observationWait=null;}
     };
     const cancel=async i=>{
       const raw=ownership(await broker.getOrderByClientOrderId(i.clientOrderId),i);
@@ -311,8 +369,9 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
     const canceledOrder=await submit(0,{symbol,side:'buy',qty:1,orderType:'limit',limitPrice:cancelLimit,timeInForce:'day'});await capture(canceledOrder.intent);
     requireAccepted(canceledOrder.intent);
     lifecycle=makeLifecycle();report.reloadedExecutionContext=true;
-    ownership(await broker.getOrderByClientOrderId(canceledOrder.intent.clientOrderId),canceledOrder.intent);
-    let cancellation=(await lifecycle.reconcile({intentId:canceledOrder.intent._id})).intent;await capture(cancellation);
+    // Establish coherent ownership before choosing cancellation versus exact cleanup.
+    let cancellation=await poll(canceledOrder.intent,new Set(['acknowledged','partially_filled',...terminal]));
+    requireSafe(cancellation,'CANCELLATION_OBSERVATION_UNCONFIRMED');
     if(!terminal.has(cancellation.status))cancellation=await cancel(cancellation);
     if(Q.positive(cancellation.filledQty)){
       report.unexpectedFill={stage:'standalone-cancel',qty:cancellation.filledQty,classification:'UNEXPECTED_MARKET_MOVEMENT'};
@@ -343,12 +402,25 @@ async function run(options,{env=process.env,onEvidence=()=>{},sleep=ms=>new Prom
         report.remaining={positions,acceptanceOpenOrders:orders.filter(o=>ownedClients.has(o.client_order_id)||ownedIds.has(o.id)).map(orderSummary),positionsMatchBaseline:baseline?hash(positions)===hash(baseline):false};
       }catch{report.remaining={observationUnavailable:true};}
     }
+    if(report.convergenceInFlight){
+      report.budget=budget.snapshot();report.endedAt=new Date().toISOString();
+      report.operatorFollowUp='Observation deadline exhausted while canonical database work may still settle. Broker access is permanently fenced for this run. Reconcile these same identities before any further mutation; no transaction rollback is implied.';
+      return JSON.parse(JSON.stringify(report));
+    }
     return report;
   }finally{
+    const release=async()=>{
     if(requestInterceptor!==undefined)axios.interceptors.request.eject(requestInterceptor);
     if(responseInterceptor!==undefined)axios.interceptors.response.eject(responseInterceptor);
-    report.budget=budget.snapshot();report.endedAt=new Date().toISOString();save();active=false;
-    if(connected)await mongoose.disconnect();
+    if(connected)await mongoose.disconnect();active=false;
+    };
+    report.budget=budget.snapshot();report.endedAt=report.endedAt||new Date().toISOString();save();evidenceFinalized=true;
+    const pending=[...waits.values()].filter(wait=>wait.inFlight).map(wait=>wait.pending);
+    if(pending.length){
+      // Keep interceptors and active-run exclusion until late canonical work drains.
+      // A disconnect failure deliberately retains active=true; never start a new run.
+      void Promise.allSettled(pending).then(release).catch(()=>{});
+    }else await release();
   }
 }
 if(require.main===module){
@@ -361,6 +433,9 @@ if(require.main===module){
     const onEvidence=options['evidence-dir']?r=>{fs.mkdirSync(options['evidence-dir'],{recursive:true,mode:0o700});fs.writeFileSync(path.join(options['evidence-dir'],'report.json'),JSON.stringify(r,null,2)+'\n',{mode:0o600});}:()=>{};
     const report=await run(options,{onEvidence});console.log(JSON.stringify(report,null,2));
     if(!report.dryRun&&report.decision!=='EXTERNAL_ALPACA_PAPER_VERIFIED')process.exitCode=2;
+    // Evidence has been synchronously persisted. A stalled DB socket must not keep
+    // the standalone acceptance CLI alive indefinitely after its terminal deadline.
+    if(report.convergenceInFlight)process.exit(2);
   })().catch(error=>{console.error(error.code||'ACCEPTANCE_FAILED');process.exitCode=1;});
 }
 module.exports={run,plan,parseArgs};

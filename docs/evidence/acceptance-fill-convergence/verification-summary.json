@@ -1,0 +1,274 @@
+{
+  "startingSHA": "4107528be97c1a33597053c032bb5bfabbc26004",
+  "runtime": "v24.21.0",
+  "runtimeRestore": {
+    "officialArchive": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
+    "sha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+    "publishedChecksumMatched": true,
+    "nodeBinaryUnchanged": true
+  },
+  "fullVerifier": {
+    "exitCode": 0,
+    "gateCount": 25,
+    "status": "VERIFIED RELEASE CANDIDATE",
+    "passingEntries": 848,
+    "failures": 0,
+    "skips": 0,
+    "flakes": 0,
+    "checks": [
+      {
+        "name": "runtime",
+        "exitCode": 0
+      },
+      {
+        "name": "backend-install",
+        "exitCode": 0
+      },
+      {
+        "name": "frontend-install",
+        "exitCode": 0
+      },
+      {
+        "name": "verification-tests",
+        "exitCode": 0,
+        "passed": 23,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "backend-tests",
+        "exitCode": 0,
+        "passed": 478,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "mongo-externalPaperHarness.mongo",
+        "exitCode": 0,
+        "passed": 129,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "mongo-fractionalExecution.mongo",
+        "exitCode": 0,
+        "passed": 24,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "mongo-integration",
+        "exitCode": 0,
+        "passed": 4,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "mongo-orderLifecycle.faults",
+        "exitCode": 0,
+        "passed": 9,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "mongo-orderLifecycle.mongo",
+        "exitCode": 0,
+        "passed": 16,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "mongo-orderProtection",
+        "exitCode": 0,
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "mongo-phase3Financial.mongo",
+        "exitCode": 0,
+        "passed": 17,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "mongo-phase3Smtp.mongo",
+        "exitCode": 0,
+        "passed": 4,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "mongo-rc002Exposure.mongo",
+        "exitCode": 0,
+        "passed": 25,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "frontend-tests",
+        "exitCode": 0,
+        "passed": 40,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "frontend-build",
+        "exitCode": 0
+      },
+      {
+        "name": "mongo-nonOwnerAuthorization.fullstack",
+        "exitCode": 0,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "mongo-phase3Admission.mongo",
+        "exitCode": 0,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "provider-contract",
+        "exitCode": 0,
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "process-acceptance",
+        "exitCode": 0,
+        "passed": 9,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "rc-dispatch",
+        "exitCode": 0,
+        "passed": 25,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "rc-exit-dispatch",
+        "exitCode": 0,
+        "passed": 10,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "rc-exposure-process",
+        "exitCode": 0,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "browser-lifecycle",
+        "exitCode": 0,
+        "passed": 14,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "name": "browser-core-screens",
+        "exitCode": 0,
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0,
+        "flaky": 0
+      }
+    ]
+  },
+  "targeted": [
+    {
+      "log": "/private/tmp/day-trader-acceptance-convergence/unit-verifier-final.tap",
+      "scope": "acceptance unit, convergence helper, verifier contract",
+      "exitCode": 0,
+      "tests": 81,
+      "pass": 81,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "log": "/private/tmp/day-trader-acceptance-convergence/review-green.tap",
+      "scope": "final controlled harness",
+      "exitCode": 0,
+      "tests": 129,
+      "pass": 129,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "log": "/private/tmp/day-trader-acceptance-convergence/targeted-mongo.tap",
+      "scope": "earlier harness, fractional and RC-002 targeted run",
+      "exitCode": 0,
+      "tests": 173,
+      "pass": 173,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "log": "/private/tmp/day-trader-acceptance-convergence/targeted-process-green.tap",
+      "scope": "corrected process acceptance",
+      "exitCode": 0,
+      "tests": 9,
+      "pass": 9,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    }
+  ],
+  "toolingCorrections": [
+    {
+      "issue": "Temporary Node binary existed without bundled npm files; restored the exact official archive and verified its published checksum and unchanged Node binary.",
+      "implementationDefect": false
+    },
+    {
+      "issue": "First process invocation referenced absent default Playwright Chromium; rerun used the existing installed Chromium executable and passed. RC dispatch/exit checks in that invocation passed.",
+      "implementationDefect": false
+    }
+  ],
+  "realExternalRequests": {
+    "paper-api.alpaca.markets": 0,
+    "data.alpaca.markets": 0,
+    "api.alpaca.markets": 0
+  },
+  "networkEvidence": "Controlled provider fixtures rewrite semantic broker/data URLs to loopback; DNS/fetch guards and verifier sanitized environment prohibit real broker destinations.",
+  "operationalMongoUsed": false,
+  "submissionsAuthorizedForRealBroker": 0,
+  "cancellationsAuthorizedForRealBroker": 0,
+  "push": false,
+  "deployment": false,
+  "externalSmtp": false,
+  "activation": false
+}

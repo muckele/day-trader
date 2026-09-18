@@ -271,3 +271,12 @@ test('clock-skew safety cases are individually mandatory',async()=>{
   assert.equal(v.validateAcceptanceExecution(gate,rows+'# tests 1000\n# pass 1000\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n').ok,false,name);
  }
 });
+
+test('acceptance convergence requires every named race and hard-failure scenario',async()=>{
+ const v=await import('../verify-mvp.mjs'),gate=v.buildMongoChecks(['externalPaperHarness.mongo.test.js'])[0];
+ const required=['position ahead of canonical fill converges','lagging order discovery converges','broker execution ahead of canonical fill remains risk-blocking but retryable','explainable holdings disagreement converges','persistent reconciliation disagreement exhausts bound','aggregate convergence deadline preserves last exposure reason','identity mismatch fails immediately: id','baseline drift fails immediately: increase exceeds order maximum','overfill fails immediately','convergence adds zero broker mutations','convergence preserves global mutation budget','fractional visibility race preserves exact execution and exhausted cancellation budget','delayed position visibility converges without weakening exposure'];
+ for(const name of required)assert.ok(gate.requiredScenarios.includes(name),name);
+ const tap=names=>names.map((n,i)=>`ok ${i+1} - ${n}`).join('\n')+`\n# tests ${names.length}\n# pass ${names.length}\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n`;
+ assert.equal(v.validateAcceptanceExecution(gate,tap(gate.requiredScenarios)).ok,true);
+ for(const name of required)assert.equal(v.validateAcceptanceExecution(gate,tap(gate.requiredScenarios.filter(n=>n!==name))).ok,false,name);
+});

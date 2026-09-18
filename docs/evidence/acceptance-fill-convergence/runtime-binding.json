@@ -1,0 +1,25 @@
+{
+  "startingSHA": "4107528be97c1a33597053c032bb5bfabbc26004",
+  "result": "PRODUCTION IMAGE CONTENT UNCHANGED",
+  "backendImage": "sha256:6b8b35dede3bc416fbc7a2fcbc3c4d1482b0ab4260268bda33c59beb38df976f",
+  "platform": "linux/arm64",
+  "authoredRuntimeFilesMatched": 141,
+  "authoredRuntimeMismatches": [],
+  "constructionFiles": {
+    "backend/Dockerfile": "09f66c83ae48d586bfb34a913f1f0df80c919d98e3261fa68f5da54f66fe3375",
+    "backend/.dockerignore": "6e24ce4de567df4f582b36e61c3c9fb567baa7de0090f2f3fe5d6d03e62ad718",
+    "backend/package-lock.json": "4c4dbbfdedd053bbda1033070a16dd3b1a46ae3bbc4090adbcac2cc1f3c24025",
+    "backend/docker/assemble-runtime.cjs": "cb6dbd5dcfc67eefc9b9570210cfe6618f7897f672d846deb77d9af4f8b9e30e"
+  },
+  "changedImplementationExcludedFromRuntimeAssembly": [
+    "backend/scripts/external-paper-acceptance.js",
+    "backend/scripts/acceptanceConvergence.js"
+  ],
+  "assemblyRule": "backend/docker/assemble-runtime.cjs copies runtime directories/top-level JavaScript and only scripts/bootstrap-owner.js",
+  "historicalImageEvidence": "../broker-clock-skew/source-image-binding.json",
+  "historicalSecurityEvidence": "../broker-clock-skew/scan-execution.json",
+  "rebuilt": false,
+  "rescanned": false,
+  "securityStatement": "Exact existing image reused with historical security dispositions; no new freshness claim. Post-commit source binding recorded separately.",
+  "verifiedAt": "2026-09-18T19:39:10.194Z"
+}

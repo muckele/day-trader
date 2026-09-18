@@ -23,16 +23,30 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
  global.fetch=(url,...args)=>{assert.equal(new URL(url).origin,target,'Only loopback controlled-provider fetch is permitted');return nativeFetch(url,...args);};
  const actualAdapter=axios.defaults.adapter,adapter=axios.getAdapter('http');
  let env,fault,report,reads,seen,postBodies,quoteReads,clockRemaining,now,partialQty;
+ let raceReads=0,raceInjected=false,laggingList=false,raceAtGap=null,transportHook=null;
  const control=async data=>{const r=await fetch(target+'/control',{method:'POST',body:JSON.stringify(data)});assert.equal(r.status,200);return r.json();};
  axios.defaults.adapter=async config=>{
   const url=new URL(config.url);
+  if(transportHook)await transportHook(config,url);
   assert.ok(['https://paper-api.alpaca.markets','https://data.alpaca.markets'].includes(url.origin),'no live or unrelated target may enter transport');
   assert.equal(config.headers['APCA-API-KEY-ID'],'acceptance-dummy');
   seen.push({method:config.method,original:url.origin,actual:target});
   if(fault==='lookup'&&url.pathname.includes('orders:by_client'))throw Object.assign(new Error('controlled lookup failure'),{code:'LOOKUP_FAILED',config});
   if(fault==='malformed'&&url.pathname.includes('orders:by_client'))return {status:200,headers:{},config,data:{id:'wrong',client_order_id:'foreign',symbol:'MSFT',side:'buy',qty:'1',type:'limit'}};
+  if(fault?.startsWith('convergence')&&p.state.posts.length===(fault.includes('cancel-race')?1:2)){
+   if(url.pathname.includes('orders:by_client')||url.pathname.startsWith('/v2/orders/')){raceReads++;if(raceInjected)laggingList=false;}
+   if(url.pathname==='/v2/positions'&&!raceInjected){
+    assert.equal(raceReads,3,'ownership lookup and both canonical reads must precede execution');
+    assert.equal(await Fill.countDocuments(),0);raceInjected=true;laggingList=fault==='convergence-lag';
+    await control({fill:{id:p.state.orders[fault.includes('cancel-race')?0:1].id,qty:['convergence-fraction','convergence-cancel-race-partial'].includes(fault)?'0.5':'1',price:100}});
+    raceAtGap={posts:p.state.posts.length,deletes:p.state.requests.filter(x=>x.method==='DELETE').length,fills:await Fill.countDocuments(),capacity:(await Capacity.findOne()).toObject()};
+   }
+  }
   const response=await adapter({...config,url:target+url.pathname+url.search,baseURL:undefined,proxy:false,headers:{...config.headers,'x-provider-host':url.hostname}});
   response.config=config;
+  if(fault==='convergence-persistent'&&raceInjected&&(url.pathname.includes('orders:by_client')||url.pathname.startsWith('/v2/orders/'))){const row=JSON.parse(response.data);if(row.id===p.state.orders[1].id)Object.assign(row,{filled_qty:'0',filled_avg_price:null,status:'new'});response.data=JSON.stringify(row);}
+  if(laggingList&&url.pathname==='/v2/orders'&&config.method==='get'){const rows=JSON.parse(response.data);for(const row of rows)if(row.id===p.state.orders[1].id)Object.assign(row,{filled_qty:'0',filled_avg_price:null,status:'new'});response.data=JSON.stringify(rows);}
+
   if(fault==='changed-broker-id'&&url.pathname.includes('orders:by_client')){const raw=JSON.parse(response.data);raw.id='different-broker-id';response.data=JSON.stringify(raw);}
   if(fault!=='no-request-id')response.headers['x-request-id']='controlled-'+seen.length;
   if(url.pathname==='/v2/clock'){const raw=JSON.parse(response.data);Object.assign(raw,{timestamp:new Date(now).toISOString(),next_close:new Date(now+clockRemaining).toISOString()});if(fault==='stale-clock')raw.timestamp=new Date(now-60001).toISOString();if(fault==='future-clock')raw.timestamp=new Date(Date.now()+5000).toISOString();if(['final-skew-31','final-skew-5000'].includes(fault)&&await Intent.exists({status:'submitting'}))raw.timestamp=new Date(Date.now()+Number(fault.split('-').at(-1))).toISOString();if(fault==='malformed-clock')raw.next_close='bad';response.data=JSON.stringify(raw);}
@@ -47,7 +61,7 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
   if(url.pathname==='/v2/clock'&&fault==='closing-clock'&&reads>=2)await control({patch:{marketOpen:false}});
   if(config.method==='post'){
    const body=JSON.parse(config.data);postBodies.push(body);
-   if((p.state.posts.length>1&&!['no-fill','cancel-response-lost'].includes(fault)&&!(['close-timeout','partial-close-timeout'].includes(fault)&&body.side==='sell'))||(['partial-cancel','full-cancel','partial-close-timeout'].includes(fault)&&p.state.posts.length===1)){
+   if((p.state.posts.length>1&&!(fault?.startsWith('convergence')&&p.state.posts.length===(fault.includes('cancel-race')?1:2))&&!['no-fill','cancel-response-lost'].includes(fault)&&!(['close-timeout','partial-close-timeout'].includes(fault)&&body.side==='sell'))||(['partial-cancel','full-cancel','partial-close-timeout'].includes(fault)&&p.state.posts.length===1)){
     await control({fill:{id:JSON.parse(response.data).id,qty:p.state.posts.length===1?(['partial-cancel','partial-close-timeout'].includes(fault)?partialQty:'1'):body.qty,price:p.state.posts.length===1?body.limit_price:100}});
    }
   }
@@ -55,16 +69,142 @@ test('canonical external paper harness controlled acceptance',{timeout:120000},a
   if(config.method==='delete'&&fault==='cancel-timeout')await control({patch:{orders:p.state.orders.map(o=>o.id===url.pathname.split('/').pop()?{...o,status:'new'}:o)}});
   return response;
  };
- const execute=async(options={})=>run({...baseOptions,'run-id':randomUUID(),...options},{env,now:()=>now,pollAttempts:2,pollDelayMs:0,onEvidence:r=>{report=r;}});
+ const execute=async(options={},deps={})=>run({...baseOptions,'run-id':randomUUID(),...options},{env,now:()=>now,pollAttempts:2,pollDelayMs:0,...deps,onEvidence:r=>{report=r;deps.onEvidence?.(r);}});
  try{
   await Promise.all(models.map(m=>m.init()));
   t.beforeEach(async()=>{
    await Promise.all(models.map(m=>m.deleteMany({})));await control({reset:true,patch:{positions:structuredClone(baseline),account:{id:'acceptance-paper',status:'ACTIVE',currency:'USD',cash:'10000',equity:'10000',last_equity:'10000',trading_blocked:false,account_blocked:false}}});
-   env={APCA_BASE_URL:'https://paper-api.alpaca.markets',APCA_API_KEY_ID:'acceptance-dummy',APCA_API_SECRET_KEY:'acceptance-dummy-secret',ALPACA_EXPECTED_PAPER_ACCOUNT_ID:'acceptance-paper',OWNER_USER_ID:owner};fault=null;reads=0;seen=[];postBodies=[];report=null;quoteReads=0;clockRemaining=3600000;now=Date.now();partialQty='0.5';
+   env={APCA_BASE_URL:'https://paper-api.alpaca.markets',APCA_API_KEY_ID:'acceptance-dummy',APCA_API_SECRET_KEY:'acceptance-dummy-secret',ALPACA_EXPECTED_PAPER_ACCOUNT_ID:'acceptance-paper',OWNER_USER_ID:owner};fault=null;raceReads=0;raceInjected=false;laggingList=false;raceAtGap=null;transportHook=null;reads=0;seen=[];postBodies=[];report=null;quoteReads=0;clockRemaining=3600000;now=Date.now();partialQty='0.5';
    await User.create({_id:owner,username:'acceptance-owner',email:'owner@example.test',hash:'controlled-placeholder'});
    await Settings.create({userId:owner,mode:'paper',isEnabled:false,enabled:false,pausedReason:'Preserved operator pause',dailyLimit:1000,weeklyLimit:2000,monthlyLimit:3000,maxTradeAmount:100,maxPositionSize:1000,maxDailyLoss:500,maxOpenPositions:10,maxTradesPerDay:20});
   });
   t.afterEach(()=>{assert.ok(seen.every(r=>['https://paper-api.alpaca.markets','https://data.alpaca.markets'].includes(r.original)&&r.actual===target));assert.equal(JSON.stringify(report).includes('acceptance-dummy'),false);assert.equal(JSON.stringify(report).includes('acceptance-paper'),false);});
+  // This catches the real boundary: every order read precedes execution, positions follow it.
+  for(const [name,kind]of [['position ahead of canonical fill converges','convergence'],['lagging order discovery converges','convergence-lag']])await t.test(name,async()=>{
+   fault=kind;const r=await execute();assert.equal(raceInjected,true);
+   assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);
+   assert.equal(p.state.posts.length,3);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);
+   assert.equal(await Fill.countDocuments({side:'buy'}),1);assert.equal(await Fill.countDocuments({side:'sell'}),1);
+   assert.equal((await Capacity.findOne()).spentCents,10000);assert.equal((await Capacity.findOne()).reservedCents,0);
+   assert.deepEqual(p.state.positions,baseline);assert.equal(r.cleanup.confirmed,true);
+   const gap=r.convergence.find(x=>x.kind==='temporary');assert.ok(gap);assert.equal(gap.ownedQty,'0');assert.equal(gap.canonicalFilledQty,0);
+   assert.equal(raceAtGap.fills,0);assert.equal(raceAtGap.capacity.reservedCents,10000);assert.equal(raceAtGap.capacity.spentCents,0);
+   const opening=await Intent.findOne({side:'buy',status:'filled'});const broker=createAlpacaBroker({env});const service=getOrderLifecycle({broker,ownerId:owner,expectedAccountId:'acceptance-paper'});
+   const audit=await models[9].countDocuments(),outbox=await models[10].countDocuments();await service.reconcile({intentId:opening._id});
+   assert.equal(await models[9].countDocuments(),audit);assert.equal(await models[10].countDocuments(),outbox);assert.equal(await Fill.countDocuments(),2);assert.equal((await Capacity.findOne()).spentCents,10000);
+  });
+  for(const [name,kind]of [
+   ['broker execution ahead of canonical fill remains risk-blocking but retryable','convergence'],
+   ['explainable holdings disagreement converges','convergence-lag'],
+   ['convergence adds zero broker mutations','convergence'],
+   ['convergence preserves global mutation budget','convergence']
+  ])await t.test(name,async()=>{
+   fault=kind;let gapSeen=false,riskBlocked=false;
+   if(name==='broker execution ahead of canonical fill remains risk-blocking but retryable')transportHook=async(_config,url)=>{
+    if(raceInjected&&!riskBlocked&&url.pathname==='/v2/orders'){
+     riskBlocked=true;const service=getOrderLifecycle({broker:createAlpacaBroker({env}),ownerId:owner,expectedAccountId:'acceptance-paper'});
+     await assert.rejects(service.submit({userId:owner,idempotencyKey:'synthetic-blocked-new-risk',orderInput:{symbol:'MSFT',side:'buy',qty:1,orderType:'limit',limitPrice:100}}),e=>e.code==='EXPOSURE_UNRESOLVED');
+     assert.equal(p.state.posts.length,2);
+    }
+   };
+   const r=await execute({}, {onEvidence:e=>{const gap=e.convergence?.find(x=>x.kind==='temporary');if(gap&&!gapSeen){gapSeen=true;assert.equal(p.state.posts.length,2);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);}}});
+   assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);assert.equal(gapSeen,true);if(name==='broker execution ahead of canonical fill remains risk-blocking but retryable')assert.equal(riskBlocked,true);
+   assert.equal(raceAtGap.fills,0);assert.equal(raceAtGap.capacity.reservedCents,10000);assert.equal(raceAtGap.capacity.spentCents,0);
+   assert.equal(r.budget.submissions,3);assert.equal(r.budget.cancellations,1);assert.deepEqual(p.state.positions,baseline);
+   assert.match(r.convergence.find(x=>x.kind==='temporary').reason,kind==='convergence'?/broker execution is ahead/:/holdings disagree/);
+  });
+  for(const kind of ['partial','full'])await t.test('cancellation fixture '+kind+' fill visibility converges before exact cleanup',async()=>{
+   fault='convergence-cancel-race-'+kind;const r=await execute({}, {pollAttempts:3});
+   assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL',r.reason);assert.equal(r.cleanup.confirmed,true);assert.equal(r.cleanup.qty,kind==='partial'?'0.5':1);
+   assert.equal(p.state.posts.length,2);assert.equal(r.budget.cancellations,kind==='partial'?1:0);assert.deepEqual(p.state.positions,baseline);assert.equal(await Fill.countDocuments(),2);
+  });
+  await t.test('persistent reconciliation disagreement exhausts bound',async()=>{
+   fault='convergence-persistent';const r=await execute();assert.equal(r.reason,'ACCEPTANCE_CONVERGENCE_ATTEMPTS');
+   assert.equal(r.convergenceFailure.attempt,2);assert.match(r.convergenceFailure.lastObservation.reason,/broker execution is ahead/);
+   assert.equal(await Fill.countDocuments(),0);assert.equal((await Capacity.findOne()).reservedCents,10000);assert.equal(p.state.posts.length,2);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);
+  });
+  await t.test('aggregate convergence deadline preserves last exposure reason',async()=>{
+   fault='convergence-persistent';let elapsed=0;
+   const r=await execute({}, {monotonicNow:()=>elapsed,onEvidence:e=>{if(e.convergence?.some(x=>x.exposureState==='reconciliation_required'))elapsed=60000;}});
+   assert.equal(r.reason,'ACCEPTANCE_CONVERGENCE_DEADLINE');assert.equal(r.convergenceFailure.attempt,1);assert.match(r.convergenceFailure.lastObservation.reason,/broker execution is ahead/);
+   assert.equal(p.state.posts.length,2);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);assert.equal(await Fill.countDocuments(),0);
+  });
+  for(const [field,value]of [['id','synthetic-wrong-id'],['client_order_id','synthetic-wrong-client'],['symbol','NVDA'],['side','sell'],['qty','2']])await t.test('identity mismatch fails immediately: '+field,async()=>{
+   fault='convergence';let tampered=false;const before=axios.defaults.adapter;
+   axios.defaults.adapter=async config=>{const result=await before(config);if(!tampered&&raceInjected&&new URL(config.url).pathname.includes('orders:by_client')){tampered=true;const row=JSON.parse(result.data);row[field]=value;result.data=JSON.stringify(row);}return result;};
+   try{const r=await execute();assert.equal(tampered,true);assert.equal(r.reason,'BROKER_OWNERSHIP_MISMATCH');assert.equal(r.convergenceFailure.attempt,2);assert.equal(p.state.posts.length,2);assert.equal(await Fill.countDocuments(),0);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);}finally{axios.defaults.adapter=before;}
+  });
+  for(const [name,change]of [['foreign extra quantity',rows=>[...rows,{symbol:'META',qty:'1',market_value:'100'}]],['protected baseline decreased',rows=>rows.map(x=>x.symbol==='NVDA'?{...x,qty:'1'}:x)],['fixture disappears',rows=>rows.filter(x=>x.symbol!=='NVDA')],['increase exceeds order maximum',rows=>rows.map(x=>x.symbol==='NVDA'?{...x,qty:'20'}:x)]])await t.test('baseline drift fails immediately: '+name,async()=>{
+   await control({patch:{positions:[...baseline,{symbol:'NVDA',qty:'5.5',side:'long',market_value:'550'}]}});await Settings.updateOne({userId:owner},{$set:{maxOpenPositions:3,maxPositionSize:5000}});
+   fault='convergence';let changed=false;transportHook=async(_config,url)=>{if(raceInjected&&!changed&&url.pathname==='/v2/positions'){changed=true;await control({patch:{positions:change(p.state.positions)}});}};
+   const r=await execute({'symbol-allowlist':'NVDA'});assert.equal(changed,true);assert.ok(['ACCEPTANCE_BASELINE_DRIFT','UNRELATED_POSITIONS_CHANGED'].includes(r.reason),r.reason);assert.equal(r.convergenceFailure.attempt,1);assert.equal(p.state.posts.length,2);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);
+  });
+  await t.test('unattributed open order during convergence fails immediately',async()=>{
+   fault='convergence';let changed=false;transportHook=async(_config,url)=>{if(raceInjected&&!changed&&url.pathname==='/v2/orders'){changed=true;await control({patch:{orders:[...p.state.orders,{id:'synthetic-foreign',client_order_id:'synthetic-foreign-client',symbol:'MSFT',side:'buy',qty:'1',filled_qty:'0',status:'new'}]}});}};
+   const r=await execute();assert.equal(r.reason,'CONVERGENCE_FOREIGN_ORDER');assert.equal(r.convergenceFailure.attempt,1);assert.equal(p.state.posts.length,2);
+  });
+  await t.test('convergence account binding change fails before further reconciliation',async()=>{
+   fault='convergence';let changed=false;transportHook=async(_config,url)=>{if(raceInjected&&!changed&&url.pathname==='/v2/account'){changed=true;await control({patch:{account:{...p.state.account,id:'synthetic-other-account'}}});}};
+   const r=await execute();assert.equal(changed,true);assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_FAILED');assert.equal(p.state.posts.length,2);assert.equal(await Fill.countDocuments(),0);
+  });
+  await t.test('interrupted convergence run cannot reset mutation authority',async()=>{
+   fault='convergence-persistent';const id=randomUUID();let r=await execute({'run-id':id});assert.equal(r.reason,'ACCEPTANCE_CONVERGENCE_ATTEMPTS');
+   const count=p.state.posts.length,cancels=p.state.requests.filter(x=>x.method==='DELETE').length;
+   r=await execute({'run-id':id});assert.equal(r.reason,'UNRESOLVED_OWNER_INTENTS');assert.equal(p.state.posts.length,count);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,cancels);
+  });
+  await t.test('convergence deadline is not reset after cancellation observation',async()=>{
+   let elapsed=0;transportHook=async config=>{if(config.method==='delete')elapsed=60000;};
+   const r=await execute({}, {monotonicNow:()=>elapsed});assert.equal(r.reason,'ACCEPTANCE_CONVERGENCE_DEADLINE');assert.equal(p.state.posts.length,1);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);
+  });
+  await t.test('held fixture convergence restores protected baseline',async()=>{
+   await control({patch:{positions:[...baseline,{symbol:'NVDA',qty:'5.5',side:'long',market_value:'550'}]}});await Settings.updateOne({userId:owner},{$set:{maxOpenPositions:3,maxPositionSize:5000}});
+   fault='convergence';const r=await execute({'symbol-allowlist':'NVDA'});assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);assert.equal(p.state.positions.find(x=>x.symbol==='NVDA').qty,'5.5');assert.equal(r.cleanup.baselineQty,'5.5');
+  });
+  await t.test('convergence rejects duplicate position observations',async()=>{
+   let positions=0;const before=axios.defaults.adapter;
+   axios.defaults.adapter=async config=>{const result=await before(config);if(p.state.posts.length===2&&new URL(config.url).pathname==='/v2/positions'&&++positions===2){const rows=JSON.parse(result.data);rows.push({...rows.find(x=>x.symbol==='MSFT')});result.data=JSON.stringify(rows);}return result;};
+   try{const r=await execute();assert.equal(r.reason,'INVALID_POSITIONS');assert.equal(p.state.posts.length,2);}finally{axios.defaults.adapter=before;}
+  });
+  for(const [field,value,code]of [['filled_qty','2','ACCEPTANCE_BROKER_EXECUTION_INVALID'],['id','synthetic-other-id','BROKER_OWNERSHIP_MISMATCH'],['client_order_id','synthetic-other-client','BROKER_OWNERSHIP_MISMATCH']])await t.test('terminal all-order discovery fails closed: '+field,async()=>{
+   fault='convergence';const before=axios.defaults.adapter;
+   axios.defaults.adapter=async config=>{const result=await before(config);if(raceInjected&&new URL(config.url).pathname==='/v2/orders'&&config.params?.status==='all'){const rows=JSON.parse(result.data);rows.find(x=>x.id===p.state.orders[1].id)[field]=value;result.data=JSON.stringify(rows);}return result;};
+   try{const r=await execute();assert.equal(r.reason,code);assert.equal(r.convergenceFailure.attempt,1);assert.equal(p.state.posts.length,2);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);assert.equal(await Fill.countDocuments(),0);}finally{axios.defaults.adapter=before;}
+  });
+  await t.test('stalled database convergence returns deadline and fences late work',async()=>{
+   fault='convergence';let elapsed=0,fire,release,arrived;
+   const held=new Promise(resolve=>{release=resolve;}),entered=new Promise(resolve=>{arrived=resolve;});
+   const original=Intent.findOne;let heldOnce=false;
+   Intent.findOne=function(query,...args){
+    const result=original.call(this,query,...args);
+    if(raceInjected&&!heldOnce&&query?._id){heldOnce=true;const lean=result.lean;result.lean=function(...args){const q=lean.apply(this,args);arrived();return held.then(()=>q);};}
+    return result;
+   };
+   let running;
+   try{
+    running=execute({}, {monotonicNow:()=>elapsed,scheduleDeadline:callback=>{fire=callback;return 1;},clearDeadline:()=>{}});
+    await entered;elapsed=60000;fire();const r=await running;
+    assert.equal(r.reason,'ACCEPTANCE_CONVERGENCE_DEADLINE');assert.equal(r.convergenceInFlight,true);
+    const saved=JSON.stringify(r),requests=p.state.requests.length;
+    await assert.rejects(execute(),e=>e.code==='ACCEPTANCE_ALREADY_RUNNING');
+    release();await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(p.state.requests.length,requests);assert.equal(JSON.stringify(r),saved);
+    assert.equal(p.state.posts.length,2);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);assert.equal(await Fill.countDocuments(),0);
+   }finally{release();Intent.findOne=original;await running;await new Promise(resolve=>setImmediate(resolve));}
+  });
+  await t.test('overfill fails immediately',async()=>{
+   fault='convergence';const before=axios.defaults.adapter;axios.defaults.adapter=async config=>{const result=await before(config);if(raceInjected&&new URL(config.url).pathname.includes('orders:by_client')){const row=JSON.parse(result.data);row.filled_qty='1.1';result.data=JSON.stringify(row);}return result;};
+   try{const r=await execute();assert.equal(r.reason,'ACCEPTANCE_BROKER_EXECUTION_INVALID');assert.equal(await Fill.countDocuments(),0);assert.equal(p.state.posts.length,2);}finally{axios.defaults.adapter=before;}
+  });
+  await t.test('fractional visibility race preserves exact execution and exhausted cancellation budget',async()=>{
+   fault='convergence-fraction';const r=await execute();assert.equal(r.reason,'CANCELLATION_BUDGET_EXHAUSTED');
+   assert.equal((await Fill.findOne()).qty,'0.5');assert.equal(await Fill.countDocuments(),1);assert.equal((await Capacity.findOne()).spentCents,5000);assert.equal((await Capacity.findOne()).reservedCents,5000);
+   assert.equal(p.state.posts.length,2);assert.equal(p.state.requests.filter(x=>x.method==='DELETE').length,1);assert.equal(r.cleanup,undefined);
+  });
+  await t.test('delayed position visibility converges without weakening exposure',async()=>{
+   let hidden=0;const before=axios.defaults.adapter;
+   axios.defaults.adapter=async config=>{const result=await before(config);if(p.state.posts.length===2&&new URL(config.url).pathname==='/v2/positions'&&hidden++<2){result.data=JSON.stringify(baseline);}return result;};
+   try{const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_VERIFIED',r.reason);assert.ok(r.convergence.some(x=>x.kind==='temporary'));assert.equal(await Fill.countDocuments(),2);assert.deepEqual(p.state.positions,baseline);}finally{axios.defaults.adapter=before;}
+  });
   await t.test('closed market reads baseline, skips occupied fixture and returns PARTIAL without intent or write',async()=>{
    await control({patch:{marketOpen:false}});const r=await execute();assert.equal(r.decision,'EXTERNAL_ALPACA_PAPER_PARTIAL');assert.equal(r.reason,'WRITE LIFECYCLE REQUIRES OPEN REGULAR MARKET');assert.equal(r.fixture,'MSFT');assert.equal(r.baseline.positions.length,2);assert.equal(await Intent.countDocuments(),0);assert.equal(p.state.posts.length,0);assert.ok(p.state.requests.every(x=>x.method==='GET'));
   });

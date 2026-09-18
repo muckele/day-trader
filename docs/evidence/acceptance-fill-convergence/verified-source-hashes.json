@@ -1,0 +1,12 @@
+{
+  "startingSHA": "4107528be97c1a33597053c032bb5bfabbc26004",
+  "binding": "The containing commit plus these tested file hashes defines the new candidate. Exact post-commit SHA is recorded outside the repository to avoid self-reference.",
+  "files": {
+    "backend/scripts/external-paper-acceptance.js": "7d28fd6a10b10146c3a1c78eb6a75970b2a3bc063ad3fed9a7e4b0c92efb8f03",
+    "backend/scripts/acceptanceConvergence.js": "c2b3c922152f598f8ad32b228bb91df51336d59be2bea1d07ddd48c3920cddf6",
+    "backend/tests/acceptanceConvergence.test.js": "eecd3eb47bede036ba3ed2ee0c2aaafeda95357c2c6383ce3ac84eca4c7455df",
+    "backend/integration/externalPaperHarness.mongo.test.js": "0bcb517b4535e7b35705ade7ba99cd2f9378d42d43db2ec32e57049a19ae0760",
+    "scripts/verify-mvp.mjs": "3b1662566489273225118e4b06ad24c1932cc2e62861bfb8b6c9f9bdf3a6c035",
+    "scripts/tests/verify-mvp.test.mjs": "db92ccfe37f59dfb6e55654fbf1a366eacb67326e70a9b55434ac5f79e33f31c"
+  }
+}
