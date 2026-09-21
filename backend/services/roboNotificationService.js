@@ -42,6 +42,94 @@ async function enqueueOrderNotification(order, { now = new Date() } = {}, deps =
     throw error;
   }
 }
+// Internal service API: content only. Transport authority always comes from the environment.
+async function enqueueNotification(input, { now = new Date() } = {}, deps = { Outbox }) {
+  const fields = ['eventKey', 'accountId', 'environment', 'subject', 'text'];
+  const limits = { eventKey: 512, accountId: 256, subject: 200, text: 20000 };
+  if (!input || Object.keys(input).some(key => !fields.includes(key)) || input.environment !== 'paper' ||
+      Object.entries(limits).some(([key, max]) => typeof input[key] !== 'string' || !input[key].trim() || input[key].length > max) ||
+      /[\r\n]/.test(input.subject)) {
+    throw Object.assign(new Error('Invalid notification content.'), { code: 'NOTIFICATION_CONTENT_INVALID' });
+  }
+  try {
+    await deps.Outbox.updateOne({ eventKey: input.eventKey }, { $setOnInsert: { ...input, state: 'pending', nextAttemptAt: now } }, { upsert: true });
+  } catch (error) {
+    if (error.code !== 11000) throw error;
+  }
+  return deps.Outbox.findOne({ eventKey: input.eventKey });
+}
+
+function targetedConfiguration() {
+  const recipient = process.env.ROBO_NOTIFICATION_RECIPIENT;
+  // One plain mailbox only: no lists, display-name groups, or header injection.
+  const mailbox = /^[^\s@<>,;:"()\[\]\\]+@[^\s@<>,;:"()\[\]\\]+\.[^\s@<>,;:"()\[\]\\]+$/;
+  if (!recipient || !mailbox.test(recipient) || !process.env.SMTP_HOST?.trim() ||
+      !(process.env.SMTP_FROM || process.env.SMTP_USER)?.trim()) return null;
+  return recipient;
+}
+
+function definitiveSmtpFailure(error) {
+  // Nodemailer's structured SMTP command/response is evidence; arbitrary error text is not.
+  const command = String(error?.command || '').toUpperCase();
+  if (error?.code === 'EDNS' && command === 'CONN') return true;
+  // CONN also labels socket loss/timeouts after DATA; it alone proves nothing.
+  if (['EHLO', 'HELO', 'STARTTLS', 'MAIL FROM', 'RCPT TO'].includes(command) || command.startsWith('AUTH ')) return true;
+  return command === 'DATA' && Number.isInteger(error?.responseCode) && error.responseCode >= 400 && error.responseCode <= 599;
+}
+
+async function deliverById(notificationId, options = {}, deps = { Outbox, send: sendNotificationEmail }) {
+  if (!options || Object.keys(options).some(key => key !== 'now')) {
+    throw Object.assign(new Error('Invalid targeted notification options.'), { code: 'NOTIFICATION_OPTIONS_INVALID' });
+  }
+  const now = options.now || new Date();
+  if (!(now instanceof Date) || !Number.isFinite(+now)) throw new Error('Invalid notification time.');
+  if (typeof notificationId !== 'string' || !/^[a-fA-F0-9]{24}$/.test(notificationId)) return { state: 'not_found' };
+  const recipient = targetedConfiguration();
+  if (!recipient) return { state: 'unconfigured' };
+  const owner = randomUUID();
+  const event = await deps.Outbox.findOneAndUpdate({
+    _id: notificationId,
+    attempts: { $lt: MAX_ATTEMPTS },
+    $and: [
+      { $or: [{ leaseUntil: { $exists: false } }, { leaseUntil: null }, { leaseUntil: { $lte: now } }] },
+      { $or: [
+        { state: { $in: ['pending', 'retryable'] }, nextAttemptAt: { $lte: now } },
+        { state: 'sending', leaseUntil: { $lte: now } }
+      ] }
+    ]
+  }, { $set: { state: 'sending', leaseOwner: owner, leaseUntil: new Date(+now + 120_000) }, $inc: { attempts: 1 } }, { new: true });
+  if (!event) {
+    const current = await deps.Outbox.findById(notificationId);
+    if (!current) return { state: 'not_found' };
+    if (['provider_accepted', 'failed', 'delivery_uncertain'].includes(current.state)) return { state: 'terminal' };
+    if (current.leaseUntil > now) return { state: 'leased' };
+    return { state: 'not_eligible' };
+  }
+  // Persist a no-resend fence BEFORE possible transmission. A crash, lost response,
+  // or failed result persistence must not make an expired sending lease retryable.
+  const fence = await deps.Outbox.updateOne({ _id: event._id, state: 'sending', leaseOwner: owner }, {
+    $set: { state: 'delivery_uncertain', lastError: 'EMAIL_DELIVERY_UNCERTAIN' }
+  });
+  if (fence.modifiedCount !== 1) return { state: 'not_eligible' };
+  let update;
+  try {
+    const response = await deps.send({ to: recipient, subject: event.subject, text: event.text });
+    if (response?.provider !== 'smtp' || response.accepted?.length !== 1 || response.accepted[0] !== recipient || response.rejected?.length) {
+      throw new Error('Unconfirmed single-recipient acceptance.');
+    }
+    update = { state: 'provider_accepted', providerMessageId: response.messageId || null, providerAcceptedAt: now, lastError: null };
+  } catch (error) {
+    update = definitiveSmtpFailure(error)
+      ? { state: event.attempts >= MAX_ATTEMPTS ? 'failed' : 'retryable', lastError: 'EMAIL_DELIVERY_FAILED', nextAttemptAt: new Date(+now + Math.min(3600_000, 30_000 * 2 ** event.attempts)) }
+      : { state: 'delivery_uncertain', lastError: 'EMAIL_DELIVERY_UNCERTAIN' };
+  }
+  const persisted = await deps.Outbox.updateOne({ _id: event._id, state: 'delivery_uncertain', leaseOwner: owner }, {
+    $set: update, $unset: { leaseOwner: '', leaseUntil: '' }
+  });
+  if (persisted.matchedCount !== 1) return { state: 'delivery_uncertain' };
+  return { state: update.state };
+}
+
 async function deliverNext({ now = new Date(), recipient = process.env.ROBO_NOTIFICATION_RECIPIENT } = {}, deps = { Outbox, send: sendNotificationEmail }) {
   if (!recipient) return { state: 'unconfigured' };
   const owner = randomUUID();
@@ -87,4 +175,4 @@ async function runNotificationTick() {
     if (['idle', 'unconfigured'].includes(result.state)) break;
   }
 }
-module.exports = { notificationForOrder, enqueueOrderNotification, deliverNext, runNotificationTick, sweepOrderNotifications };
+module.exports = { enqueueNotification, deliverById, notificationForOrder, enqueueOrderNotification, deliverNext, runNotificationTick, sweepOrderNotifications };

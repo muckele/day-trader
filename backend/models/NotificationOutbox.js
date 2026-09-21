@@ -5,7 +5,7 @@ const schema = new mongoose.Schema({
   environment: { type: String, enum: ['paper'], required: true },
   subject: { type: String, required: true },
   text: { type: String, required: true },
-  state: { type: String, enum: ['pending', 'sending', 'retryable', 'provider_accepted', 'failed'], default: 'pending' },
+  state: { type: String, enum: ['pending', 'sending', 'retryable', 'provider_accepted', 'failed', 'delivery_uncertain'], default: 'pending' },
   attempts: { type: Number, default: 0 },
   nextAttemptAt: { type: Date, default: Date.now },
   leaseOwner: String,

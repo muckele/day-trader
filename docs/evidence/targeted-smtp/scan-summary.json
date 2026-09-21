@@ -1,0 +1,117 @@
+{
+  "imageId": "sha256:45b9a917717d1bf6cc113c589fa069b70591aab6502bda91d4eed3bf45844d7d",
+  "platform": "linux/arm64",
+  "scannerVersion": "v1.23.1",
+  "analysisInvocations": 1,
+  "analysisSuccessful": true,
+  "exitCode": 0,
+  "counts": {
+    "CRITICAL": 0,
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 8,
+    "UNKNOWN": 0
+  },
+  "indexedPackages": 145,
+  "vulnerableSourcePackages": 2,
+  "criticalHighGatePassed": true,
+  "findings": [
+    {
+      "id": "CVE-2010-4756",
+      "severity": "LOW",
+      "purls": [
+        "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+      ],
+      "fixedVersion": "not fixed",
+      "locations": [
+        "/usr/share/doc/libc6/copyright",
+        "/var/lib/dpkg/status"
+      ]
+    },
+    {
+      "id": "CVE-2018-20796",
+      "severity": "LOW",
+      "purls": [
+        "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+      ],
+      "fixedVersion": "not fixed",
+      "locations": [
+        "/usr/share/doc/libc6/copyright",
+        "/var/lib/dpkg/status"
+      ]
+    },
+    {
+      "id": "CVE-2019-1010022",
+      "severity": "LOW",
+      "purls": [
+        "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+      ],
+      "fixedVersion": "not fixed",
+      "locations": [
+        "/usr/share/doc/libc6/copyright",
+        "/var/lib/dpkg/status"
+      ]
+    },
+    {
+      "id": "CVE-2019-1010023",
+      "severity": "LOW",
+      "purls": [
+        "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+      ],
+      "fixedVersion": "not fixed",
+      "locations": [
+        "/usr/share/doc/libc6/copyright",
+        "/var/lib/dpkg/status"
+      ]
+    },
+    {
+      "id": "CVE-2019-1010024",
+      "severity": "LOW",
+      "purls": [
+        "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+      ],
+      "fixedVersion": "not fixed",
+      "locations": [
+        "/usr/share/doc/libc6/copyright",
+        "/var/lib/dpkg/status"
+      ]
+    },
+    {
+      "id": "CVE-2019-1010025",
+      "severity": "LOW",
+      "purls": [
+        "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+      ],
+      "fixedVersion": "not fixed",
+      "locations": [
+        "/usr/share/doc/libc6/copyright",
+        "/var/lib/dpkg/status"
+      ]
+    },
+    {
+      "id": "CVE-2019-9192",
+      "severity": "LOW",
+      "purls": [
+        "pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?os_distro=bookworm&os_name=debian&os_version=12"
+      ],
+      "fixedVersion": "not fixed",
+      "locations": [
+        "/usr/share/doc/libc6/copyright",
+        "/var/lib/dpkg/status"
+      ]
+    },
+    {
+      "id": "CVE-2022-27943",
+      "severity": "LOW",
+      "purls": [
+        "pkg:deb/debian/gcc-12@12.2.0-14%2Bdeb12u1?os_distro=bookworm&os_name=debian&os_version=12"
+      ],
+      "fixedVersion": "not fixed",
+      "locations": [
+        "/usr/share/doc/libgcc-s1/copyright",
+        "/usr/share/doc/libstdc++6/copyright",
+        "/var/lib/dpkg/status"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "startingSha": "15a85b1409db1509ddd068a30944015c2468a2cc",
+  "newCandidateSha": null,
+  "commitCreated": false,
+  "decision": "LOCAL_VERIFICATION_PASSED_COMMIT_AND_BINDING_PENDING",
+  "remainingBlocker": null,
+  "runtime": "Node v24.21.0",
+  "red": {
+    "pass": 25,
+    "fail": 19,
+    "skips": 0,
+    "productionChangesBeforeRed": false,
+    "expectedMissingServiceAndVerifierFailures": true
+  },
+  "additionalRed": "Generic CONN post-DATA timeout was incorrectly retryable before classifier correction.",
+  "targeted": {
+    "pass": 70,
+    "fail": 0,
+    "skip": 0
+  },
+  "normalBackendNpmTest": {
+    "pass": 741,
+    "fail": 0,
+    "skip": 0
+  },
+  "verifier": {
+    "gates": 26,
+    "passedGates": 26,
+    "passingEntries": 874,
+    "failures": 0,
+    "skips": 0,
+    "flakes": 0,
+    "notificationRequiredScenarios": 23
+  },
+  "imageId": "sha256:45b9a917717d1bf6cc113c589fa069b70591aab6502bda91d4eed3bf45844d7d",
+  "platform": "linux/arm64",
+  "imageIsPrecommitVerificationBuild": true,
+  "authoredRuntimeHashesMatched": 141,
+  "containerAcceptance": true,
+  "containerCleanup": true,
+  "scout": {
+    "status": "COMPLETED_WITH_FINDINGS",
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 8,
+    "unknown": 0,
+    "invocations": 1,
+    "exitCode": 0
+  },
+  "operationalMongoAccessed": false,
+  "externalSmtpAttempts": 0,
+  "externalEmailsTransmitted": 0,
+  "realAlpacaRequests": {
+    "paper-api.alpaca.markets": 0,
+    "data.alpaca.markets": 0,
+    "api.alpaca.markets": 0
+  },
+  "sourceScope": "Notification service/model, controlled tests, verifier registration, runbook/evidence only",
+  "masterBriefUnchangedUntracked": true,
+  "operationalConfigUnchangedIgnored": true,
+  "push": false,
+  "deployment": false,
+  "realCredentialsConfigured": false,
+  "testToolingNotes": [
+    "Initial RED fixture owner-ID type corrected before baseline RED",
+    "Initial build-context guard rejected tracked .env.example; no image built by failed attempt; all .env files then excluded"
+  ]
+}

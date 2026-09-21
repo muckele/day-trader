@@ -1,0 +1,17 @@
+{
+  "image": "local://sha256:45b9a917717d1bf6cc113c589fa069b70591aab6502bda91d4eed3bf45844d7d",
+  "platform": "linux/arm64",
+  "status": "RESOLVED_BY_EXPLICIT_USER_AUTHORIZATION",
+  "reason": "Automatic approval review requires explicit authorization for package URL/layer digest transfer for this new immutable image; prior explicit metadata authorization named older images.",
+  "provider": "Docker vulnerability-analysis service",
+  "scanExecuted": true,
+  "cveCounts": {
+    "CRITICAL": 0,
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 8,
+    "UNKNOWN": 0
+  },
+  "operatorQuestionPending": false,
+  "resolution": "User explicitly authorized this exact immutable image and metadata scope; one analysis completed."
+}

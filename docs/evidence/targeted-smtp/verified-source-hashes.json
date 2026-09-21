@@ -1,0 +1,8 @@
+{
+  "backend/models/NotificationOutbox.js": "5d175af6cd26185e356102bacda13c3ca4de2533203c818ff3843d9d38e8586f",
+  "backend/services/roboNotificationService.js": "29ca485a63c2a36669f9f1c758a723506d2e61a219b5101cc0aab8a78845f763",
+  "scripts/tests/verify-mvp.test.mjs": "4c502482c43925983e794eecf4adf07116354960967b90a813bb7a130cbc843b",
+  "scripts/verify-mvp.mjs": "d44ca3fafc6e054a2106ff0aa0175020afb63b69c0a46cc8b3981970ad380334",
+  "backend/integration/targetedNotification.mongo.test.js": "d83a26c67a370afcdfbef9c8d0cc0c6d2aa6bdcda4ce672768ec35c690798d92",
+  "backend/tests/notificationEmail.test.js": "a16cd6e07773745ceb823c49e95e4bfcd01b63f69453ebd7034dfdd36e6ee2b2"
+}

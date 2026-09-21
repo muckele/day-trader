@@ -1,0 +1,1688 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "runtime",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 159,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "/Users/Matt/Projects/day-trader/scripts/verify-runtime.mjs"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/runtime.log",
+      "ok": true
+    },
+    {
+      "name": "backend-install",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 840,
+      "command": [
+        "npm",
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/backend-install.log",
+      "ok": true
+    },
+    {
+      "name": "frontend-install",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 6181,
+      "command": [
+        "npm",
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/frontend-install.log",
+      "ok": true
+    },
+    {
+      "name": "verification-tests",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 2309,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "scripts/tests/verify-mvp.test.mjs"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/verification-tests.log",
+      "ok": true,
+      "passedTests": 24,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "backend-tests",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 2132,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "tests/acceptanceConvergence.test.js",
+        "tests/acceptanceFixture.test.js",
+        "tests/acceptanceSafety.test.js",
+        "tests/accountScope.test.js",
+        "tests/alpacaExecutionService.test.js",
+        "tests/alpacaPortfolio.test.js",
+        "tests/alpacaTradingClient.test.js",
+        "tests/analysisEngine.test.js",
+        "tests/analytics.test.js",
+        "tests/analyticsSnapshot.test.js",
+        "tests/analyzeRoute.test.js",
+        "tests/backtest.test.js",
+        "tests/brokerBoundarySafety.test.js",
+        "tests/brokerClock.test.js",
+        "tests/companyRoute.test.js",
+        "tests/debugRoute.test.js",
+        "tests/dispatchStopStatus.test.js",
+        "tests/errorResponse.test.js",
+        "tests/executionGate.test.js",
+        "tests/executionMarketStatus.test.js",
+        "tests/executionReadiness.test.js",
+        "tests/externalPaperAcceptance.test.js",
+        "tests/guardrails.test.js",
+        "tests/manualAlpacaDispatch.test.js",
+        "tests/marketQuoteProvenance.test.js",
+        "tests/marketRoute.test.js",
+        "tests/marketStatusSource.test.js",
+        "tests/mongoConnectionConfig.test.js",
+        "tests/mongoNetwork.test.js",
+        "tests/mongoState.test.js",
+        "tests/notificationEmail.test.js",
+        "tests/notificationRecovery.test.js",
+        "tests/orderLifecycle.financial.test.js",
+        "tests/orderLifecycle.marketClock.test.js",
+        "tests/ownerAccess.test.js",
+        "tests/ownerAuthRoutes.test.js",
+        "tests/ownerBootstrap.test.js",
+        "tests/paperBrokerClient.test.js",
+        "tests/paperMath.test.js",
+        "tests/privateRoutesAuth.test.js",
+        "tests/qualityGate.test.js",
+        "tests/rateLimit.test.js",
+        "tests/recommendRoute.test.js",
+        "tests/recommendationEngine.test.js",
+        "tests/recommendationSchema.test.js",
+        "tests/regimeDetector.test.js",
+        "tests/requireMongo.test.js",
+        "tests/researchIndexService.test.js",
+        "tests/researchService.test.js",
+        "tests/researchTradeWorkflowService.test.js",
+        "tests/riskEngine.test.js",
+        "tests/roboNotificationService.test.js",
+        "tests/roboRoute.test.js",
+        "tests/roboScheduler.test.js",
+        "tests/roboTraderEngine.test.js",
+        "tests/robotraderAlpacaBroker.test.js",
+        "tests/robotraderAlpacaCapabilities.test.js",
+        "tests/robotraderReconciliation.test.js",
+        "tests/robotraderRiskGate.test.js",
+        "tests/robotraderRoute.test.js",
+        "tests/robotraderSettings.test.js",
+        "tests/robotraderStopStatusRoute.test.js",
+        "tests/robotraderStrategyEngine.test.js",
+        "tests/robotraderWorker.test.js",
+        "tests/sessionCookie.test.js",
+        "tests/shareQuantity.test.js",
+        "tests/simulatorSeparation.test.js",
+        "tests/strategyRunService.test.js",
+        "tests/tradeLogic.test.js",
+        "tests/tradePlan.test.js",
+        "tests/tradeRoutes.test.js",
+        "tests/tradingConfig.test.js",
+        "tests/tradingIndexService.test.js",
+        "tests/tradingSystemRoute.test.js",
+        "tests/unsafeInputRoutes.test.js",
+        "tests/unsafeMethodOriginGuard.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/backend-tests.log",
+      "ok": true,
+      "passedTests": 479,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "31ms broker future skew accepted",
+          "passed": true
+        },
+        {
+          "name": "maximum allowed future skew boundary",
+          "passed": true
+        },
+        {
+          "name": "stale clock still rejected",
+          "passed": true
+        },
+        {
+          "name": "closed market remains blocked",
+          "passed": true
+        },
+        {
+          "name": "insufficient session time remains blocked",
+          "passed": true
+        },
+        {
+          "name": "baseline-floor protection",
+          "passed": true
+        },
+        {
+          "name": "baseline consistency alone cannot mint acceptance ownership",
+          "passed": true
+        },
+        {
+          "name": "canonical acceptance fill identity is required rather than symbol match",
+          "passed": true
+        },
+        {
+          "name": "sub-cent bar observations supported",
+          "passed": true
+        },
+        {
+          "name": "exact market-data range calculation",
+          "passed": true
+        },
+        {
+          "name": "widened bounded bar lookback",
+          "passed": true
+        },
+        {
+          "name": "five most recent valid bars selected",
+          "passed": true
+        },
+        {
+          "name": "five-bar requirement preserved",
+          "passed": true
+        },
+        {
+          "name": "whole-share opening policy preserved",
+          "passed": true
+        },
+        {
+          "name": "robotrader risk gate rejects simple fractional stock entries with internal risk stop",
+          "passed": true
+        },
+        {
+          "name": "robotrader risk gate rejects fractional short-opening stock orders",
+          "passed": true
+        },
+        {
+          "name": "fractional spend rounding uses exact cumulative execution economics",
+          "passed": true
+        },
+        {
+          "name": "quantity domain preserves nine decimals and canonical equivalence without floating addition",
+          "passed": true
+        },
+        {
+          "name": "acceptance mutation-budget enforcement prohibits fourth submit and duplicate cancellation",
+          "passed": true
+        },
+        {
+          "name": "acceptance fixture price ceiling and stale quote rejection",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "mongo-externalPaperHarness.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 35424,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "backend/integration/externalPaperHarness.mongo.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/mongo-externalPaperHarness.mongo.log",
+      "ok": true,
+      "passedTests": 129,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "cancellation fixture partial fill visibility converges before exact cleanup",
+          "passed": true
+        },
+        {
+          "name": "cancellation fixture full fill visibility converges before exact cleanup",
+          "passed": true
+        },
+        {
+          "name": "convergence account binding change fails before further reconciliation",
+          "passed": true
+        },
+        {
+          "name": "interrupted convergence run cannot reset mutation authority",
+          "passed": true
+        },
+        {
+          "name": "convergence deadline is not reset after cancellation observation",
+          "passed": true
+        },
+        {
+          "name": "held fixture convergence restores protected baseline",
+          "passed": true
+        },
+        {
+          "name": "convergence rejects duplicate position observations",
+          "passed": true
+        },
+        {
+          "name": "stalled database convergence returns deadline and fences late work",
+          "passed": true
+        },
+        {
+          "name": "terminal all-order discovery fails closed: filled_qty",
+          "passed": true
+        },
+        {
+          "name": "terminal all-order discovery fails closed: id",
+          "passed": true
+        },
+        {
+          "name": "terminal all-order discovery fails closed: client_order_id",
+          "passed": true
+        },
+        {
+          "name": "position ahead of canonical fill converges",
+          "passed": true
+        },
+        {
+          "name": "lagging order discovery converges",
+          "passed": true
+        },
+        {
+          "name": "broker execution ahead of canonical fill remains risk-blocking but retryable",
+          "passed": true
+        },
+        {
+          "name": "explainable holdings disagreement converges",
+          "passed": true
+        },
+        {
+          "name": "persistent reconciliation disagreement exhausts bound",
+          "passed": true
+        },
+        {
+          "name": "aggregate convergence deadline preserves last exposure reason",
+          "passed": true
+        },
+        {
+          "name": "identity mismatch fails immediately: id",
+          "passed": true
+        },
+        {
+          "name": "identity mismatch fails immediately: client_order_id",
+          "passed": true
+        },
+        {
+          "name": "identity mismatch fails immediately: symbol",
+          "passed": true
+        },
+        {
+          "name": "identity mismatch fails immediately: side",
+          "passed": true
+        },
+        {
+          "name": "identity mismatch fails immediately: qty",
+          "passed": true
+        },
+        {
+          "name": "baseline drift fails immediately: foreign extra quantity",
+          "passed": true
+        },
+        {
+          "name": "baseline drift fails immediately: protected baseline decreased",
+          "passed": true
+        },
+        {
+          "name": "baseline drift fails immediately: fixture disappears",
+          "passed": true
+        },
+        {
+          "name": "baseline drift fails immediately: increase exceeds order maximum",
+          "passed": true
+        },
+        {
+          "name": "unattributed open order during convergence fails immediately",
+          "passed": true
+        },
+        {
+          "name": "overfill fails immediately",
+          "passed": true
+        },
+        {
+          "name": "convergence adds zero broker mutations",
+          "passed": true
+        },
+        {
+          "name": "convergence preserves global mutation budget",
+          "passed": true
+        },
+        {
+          "name": "fractional visibility race preserves exact execution and exhausted cancellation budget",
+          "passed": true
+        },
+        {
+          "name": "delayed position visibility converges without weakening exposure",
+          "passed": true
+        },
+        {
+          "name": "excessive future skew rejected before transport",
+          "passed": true
+        },
+        {
+          "name": "final-dispatch skew tolerance",
+          "passed": true
+        },
+        {
+          "name": "final-dispatch excessive future skew zero POST",
+          "passed": true
+        },
+        {
+          "name": "clean fixture preferred over held fallback",
+          "passed": true
+        },
+        {
+          "name": "position cap full blocks canonical new symbol without changing policy",
+          "passed": true
+        },
+        {
+          "name": "position-cap-neutral held fixture",
+          "passed": true
+        },
+        {
+          "name": "held fixture exact baseline restoration",
+          "passed": true
+        },
+        {
+          "name": "fractional held-fixture cleanup 0.5",
+          "passed": true
+        },
+        {
+          "name": "fractional held-fixture cleanup 0.333333333",
+          "passed": true
+        },
+        {
+          "name": "held fixture still obeys maxPositionSize",
+          "passed": true
+        },
+        {
+          "name": "canonical held add obeys total maxPositionSize without changing policy",
+          "passed": true
+        },
+        {
+          "name": "held unexpected full fill restores baseline without cancellation",
+          "passed": true
+        },
+        {
+          "name": "held fallback refuses ask over ceiling and conflicting baseline order",
+          "passed": true
+        },
+        {
+          "name": "held baseline drift at final account authorization blocks first POST",
+          "passed": true
+        },
+        {
+          "name": "held fallback skips first symbol prohibited by blockedSymbols",
+          "passed": true
+        },
+        {
+          "name": "held fallback skips first symbol prohibited by allowedSymbols",
+          "passed": true
+        },
+        {
+          "name": "held fresh market_value at final account authorization blocks first POST",
+          "passed": true
+        },
+        {
+          "name": "held fresh maxPositionSize at final account authorization blocks first POST",
+          "passed": true
+        },
+        {
+          "name": "held fresh maxTradeAmount at final account authorization blocks first POST",
+          "passed": true
+        },
+        {
+          "name": "held final authorization rejects malformed market_value: null",
+          "passed": true
+        },
+        {
+          "name": "held final authorization rejects malformed market_value: empty string",
+          "passed": true
+        },
+        {
+          "name": "held final authorization rejects malformed market_value: false",
+          "passed": true
+        },
+        {
+          "name": "held final SELL authorization rejects changed baseline floor",
+          "passed": true
+        },
+        {
+          "name": "held final SELL authorization rejects changed owned fill quantity",
+          "passed": true
+        },
+        {
+          "name": "ambiguous baseline drift blocks cleanup: unrelated extra buy",
+          "passed": true
+        },
+        {
+          "name": "ambiguous baseline drift blocks cleanup: unrelated sell",
+          "passed": true
+        },
+        {
+          "name": "ambiguous baseline drift blocks cleanup: position disappears",
+          "passed": true
+        },
+        {
+          "name": "ambiguous baseline drift blocks cleanup: wrong cumulative quantity",
+          "passed": true
+        },
+        {
+          "name": "global one-cancellation budget",
+          "passed": true
+        },
+        {
+          "name": "second cancellation rejected before transport",
+          "passed": true
+        },
+        {
+          "name": "uncertain cancellation consumes budget",
+          "passed": true
+        },
+        {
+          "name": "unexpected partial fill uses at most one cancellation",
+          "passed": true
+        },
+        {
+          "name": "full fill uses zero cancellation",
+          "passed": true
+        },
+        {
+          "name": "no per-order cancellation reset",
+          "passed": true
+        },
+        {
+          "name": "acceptance 30-minute boundary",
+          "passed": true
+        },
+        {
+          "name": "acceptance below 30 minutes makes zero mutation",
+          "passed": true
+        },
+        {
+          "name": "acceptance above 30 minutes by one millisecond",
+          "passed": true
+        },
+        {
+          "name": "acceptance fixture price ceiling",
+          "passed": true
+        },
+        {
+          "name": "acceptance exactly $250 executable fixture remains eligible",
+          "passed": true
+        },
+        {
+          "name": "acceptance stale quote rejection",
+          "passed": true
+        },
+        {
+          "name": "acceptance rejects invalid-quote",
+          "passed": true
+        },
+        {
+          "name": "acceptance rejects missing-quote",
+          "passed": true
+        },
+        {
+          "name": "acceptance rejects stale-clock",
+          "passed": true
+        },
+        {
+          "name": "acceptance rejects malformed-clock",
+          "passed": true
+        },
+        {
+          "name": "acceptance final quote revalidation",
+          "passed": true
+        },
+        {
+          "name": "cancellation fixture becoming marketable at final dispatch makes zero POST",
+          "passed": true
+        },
+        {
+          "name": "canonical standalone cancel and cancellation identity match",
+          "passed": true
+        },
+        {
+          "name": "unexpected partial-fill acceptance cleanup",
+          "passed": true
+        },
+        {
+          "name": "unexpected full-fill acceptance cleanup",
+          "passed": true
+        },
+        {
+          "name": "unexpected fractional cleanup 0.1",
+          "passed": true
+        },
+        {
+          "name": "unexpected fractional cleanup 0.333333333",
+          "passed": true
+        },
+        {
+          "name": "unexpected fractional cleanup 0.500000000",
+          "passed": true
+        },
+        {
+          "name": "partial-fill reducing timeout preserves residual exposure",
+          "passed": true
+        },
+        {
+          "name": "acceptance mutation-budget enforcement",
+          "passed": true
+        },
+        {
+          "name": "controlled acceptance performs zero live-host or external network transport",
+          "passed": true
+        },
+        {
+          "name": "live origin fails before HTTP",
+          "passed": true
+        },
+        {
+          "name": "lookup cannot replace the acknowledged broker identity",
+          "passed": true
+        },
+        {
+          "name": "closed market reads baseline, skips occupied fixture and returns PARTIAL without intent or write",
+          "passed": true
+        },
+        {
+          "name": "production closed-market admission is still rejected",
+          "passed": true
+        },
+        {
+          "name": "unattributed active order is blocked by actual canonical exposure guard",
+          "passed": true
+        },
+        {
+          "name": "open market uses canonical buy and reducing fill, restores nonempty baseline and reloads identity",
+          "passed": true
+        },
+        {
+          "name": "configuration drift blocks next request",
+          "passed": true
+        },
+        {
+          "name": "control generation changes before dispatch block the acceptance order",
+          "passed": true
+        },
+        {
+          "name": "market closure between admission and final check still blocks dispatch",
+          "passed": true
+        },
+        {
+          "name": "accepted-response uncertainty recovers stable identity without duplicate buy",
+          "passed": true
+        },
+        {
+          "name": "unfilled opening is canonically canceled with reservation released",
+          "passed": true
+        },
+        {
+          "name": "cancellation uncertainty never retries or reports clean",
+          "passed": true
+        },
+        {
+          "name": "reducing timeout is bounded and residual holding is not declared restored",
+          "passed": true
+        },
+        {
+          "name": "lookup failure stops writes and retains durable identity",
+          "passed": true
+        },
+        {
+          "name": "malformed lookup never authorizes cleanup",
+          "passed": true
+        },
+        {
+          "name": "optional request ID absence does not fabricate IDs",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "mongo-fractionalExecution.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 2185,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "backend/integration/fractionalExecution.mongo.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/mongo-fractionalExecution.mongo.log",
+      "ok": true,
+      "passedTests": 24,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "fractional broker fill accepted",
+          "passed": true
+        },
+        {
+          "name": "cumulative fractional fill idempotency",
+          "passed": true
+        },
+        {
+          "name": "partial-fill remainder cancellation",
+          "passed": true
+        },
+        {
+          "name": "fractional exposure delayed-position coverage",
+          "passed": true
+        },
+        {
+          "name": "fractional position coverage no double count",
+          "passed": true
+        },
+        {
+          "name": "fractional exact reduce-only cleanup",
+          "passed": true
+        },
+        {
+          "name": "fractional over-close rejection",
+          "passed": true
+        },
+        {
+          "name": "fractional protection remains explicitly unprotected without a GTC fractional stop",
+          "passed": true
+        },
+        {
+          "name": "fractional cleanup rejects non-fractionable assets without rounding",
+          "passed": true
+        },
+        {
+          "name": "invalid broker cumulative quantity -0.1",
+          "passed": true
+        },
+        {
+          "name": "invalid broker cumulative quantity 1.000000001",
+          "passed": true
+        },
+        {
+          "name": "invalid broker cumulative quantity 0.0000000001",
+          "passed": true
+        },
+        {
+          "name": "invalid broker cumulative quantity bad",
+          "passed": true
+        },
+        {
+          "name": "fractional canonical Fill index collapses equivalent cumulative formatting",
+          "passed": true
+        },
+        {
+          "name": "no duplicate POST during fractional recovery",
+          "passed": true
+        },
+        {
+          "name": "fractional cumulative spending is independent of intermediate observations",
+          "passed": true
+        },
+        {
+          "name": "manual and Robo fractional opening authority cannot be spoofed",
+          "passed": true
+        },
+        {
+          "name": "manual API rejects fractional opening through the canonical lifecycle",
+          "passed": true
+        },
+        {
+          "name": "fractional partial reduction preserves the exact remaining owned position",
+          "passed": true
+        },
+        {
+          "name": "external fractional baseline retains 17.582774 without fabricating fills",
+          "passed": true
+        },
+        {
+          "name": "concurrent equivalent fractional cumulative reconciliation persists one fill",
+          "passed": true
+        },
+        {
+          "name": "conflicting fractional position coverage blocks opening risk",
+          "passed": true
+        },
+        {
+          "name": "fractional position flip and invalid reducing quantities are rejected",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "mongo-integration",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 493,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "backend/integration/mvpPersistence.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/mongo-integration.log",
+      "ok": true,
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-orderLifecycle.faults",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 780,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "backend/integration/orderLifecycle.faults.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/mongo-orderLifecycle.faults.log",
+      "ok": true,
+      "passedTests": 9,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-orderLifecycle.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1579,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "backend/integration/orderLifecycle.mongo.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/mongo-orderLifecycle.mongo.log",
+      "ok": true,
+      "passedTests": 16,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-orderProtection",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 750,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "backend/integration/orderProtection.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/mongo-orderProtection.log",
+      "ok": true,
+      "passedTests": 8,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-phase3Financial.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1669,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "backend/integration/phase3Financial.mongo.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/mongo-phase3Financial.mongo.log",
+      "ok": true,
+      "passedTests": 17,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-phase3Smtp.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 3079,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "backend/integration/phase3Smtp.mongo.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/mongo-phase3Smtp.mongo.log",
+      "ok": true,
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-rc002Exposure.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 2758,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "backend/integration/rc002Exposure.mongo.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/mongo-rc002Exposure.mongo.log",
+      "ok": true,
+      "passedTests": 25,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "RC002-original-race: captured empty snapshot cannot admit a second $60 into a $100 position",
+          "passed": true
+        },
+        {
+          "name": "RC002-origin-manual-manual",
+          "passed": true
+        },
+        {
+          "name": "RC002-origin-manual-robo",
+          "passed": true
+        },
+        {
+          "name": "RC002-origin-robo-manual",
+          "passed": true
+        },
+        {
+          "name": "RC002-origin-robo-robo",
+          "passed": true
+        },
+        {
+          "name": "RC002-lag-full",
+          "passed": true
+        },
+        {
+          "name": "RC002-lag-partial",
+          "passed": true
+        },
+        {
+          "name": "RC002-terminal-cancel",
+          "passed": true
+        },
+        {
+          "name": "RC002-terminal-expiry",
+          "passed": true
+        },
+        {
+          "name": "RC002-headroom",
+          "passed": true
+        },
+        {
+          "name": "RC002-symbol-slot",
+          "passed": true
+        },
+        {
+          "name": "RC002-retry",
+          "passed": true
+        },
+        {
+          "name": "RC002-replacement",
+          "passed": true
+        },
+        {
+          "name": "RC002-fill-during-cancel",
+          "passed": true
+        },
+        {
+          "name": "RC002-external-conflict",
+          "passed": true
+        },
+        {
+          "name": "RC002-close-headroom",
+          "passed": true
+        },
+        {
+          "name": "RC002-protection-generations",
+          "passed": true
+        },
+        {
+          "name": "RC002-invalid-observation",
+          "passed": true
+        },
+        {
+          "name": "RC002-incomplete-discovery",
+          "passed": true
+        },
+        {
+          "name": "RC002-bootstrap-uncovered",
+          "passed": true
+        },
+        {
+          "name": "RC002-uningested-fill",
+          "passed": true
+        },
+        {
+          "name": "RC002-stale-reducing-quantity",
+          "passed": true
+        },
+        {
+          "name": "RC002-reduce-while-disabled",
+          "passed": true
+        },
+        {
+          "name": "RC002-emergency-supersedes-replacement",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "mongo-targetedNotification.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 782,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "backend/integration/targetedNotification.mongo.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/mongo-targetedNotification.mongo.log",
+      "ok": true,
+      "passedTests": 24,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "SMTP custom notification event-key idempotency",
+          "passed": true
+        },
+        {
+          "name": "SMTP custom content rejects empty oversized and transport fields",
+          "passed": true
+        },
+        {
+          "name": "SMTP targeted delivery sends only requested outbox record",
+          "passed": true
+        },
+        {
+          "name": "SMTP historical pending records untouched",
+          "passed": true
+        },
+        {
+          "name": "SMTP missing recipient zero transport",
+          "passed": true
+        },
+        {
+          "name": "SMTP missing config zero transport",
+          "passed": true
+        },
+        {
+          "name": "SMTP configured recipient only no caller overrides",
+          "passed": true
+        },
+        {
+          "name": "SMTP target not found zero unrelated claim",
+          "passed": true
+        },
+        {
+          "name": "SMTP already sent target zero resend",
+          "passed": true
+        },
+        {
+          "name": "SMTP active lease blocks targeted duplicate",
+          "passed": true
+        },
+        {
+          "name": "SMTP concurrent target claim sends once",
+          "passed": true
+        },
+        {
+          "name": "SMTP provider accepted persists provider identity",
+          "passed": true
+        },
+        {
+          "name": "SMTP uncertain post-transport state is not auto-retried",
+          "passed": true
+        },
+        {
+          "name": "SMTP batch dispatcher skips uncertain record",
+          "passed": true
+        },
+        {
+          "name": "SMTP crash after transport boundary stays fenced after lease expiry",
+          "passed": true
+        },
+        {
+          "name": "SMTP generic CONN timeout after DATA is uncertain",
+          "passed": true
+        },
+        {
+          "name": "SMTP definitive pre-acceptance failure remains retryable",
+          "passed": true
+        },
+        {
+          "name": "SMTP ambiguous provider result is uncertain",
+          "passed": true
+        },
+        {
+          "name": "SMTP accepted response persistence failure cannot resend",
+          "passed": true
+        },
+        {
+          "name": "SMTP negative DATA response is definitive rejection",
+          "passed": true
+        },
+        {
+          "name": "SMTP production transport path uses only configured recipient",
+          "passed": true
+        },
+        {
+          "name": "SMTP existing deliverNext behavior preserved",
+          "passed": true
+        },
+        {
+          "name": "SMTP existing notification tick behavior preserved",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "frontend-tests",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 4289,
+      "command": [
+        "npm",
+        "test",
+        "--",
+        "--watchAll=false",
+        "--runInBand"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/frontend-tests.log",
+      "ok": true,
+      "passedTests": 40,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "frontend-build",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 9980,
+      "command": [
+        "npm",
+        "run",
+        "build"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/frontend-build.log",
+      "ok": true
+    },
+    {
+      "name": "mongo-nonOwnerAuthorization.fullstack",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1249,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "backend/integration/nonOwnerAuthorization.fullstack.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/mongo-nonOwnerAuthorization.fullstack.log",
+      "ok": true,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "mongo-phase3Admission.mongo",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 1312,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "backend/integration/phase3Admission.mongo.test.js"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/mongo-phase3Admission.mongo.log",
+      "ok": true,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "provider-contract",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 133,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "scripts/acceptance/provider.test.cjs"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/provider-contract.log",
+      "ok": true,
+      "passedTests": 2,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "process-acceptance",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 18840,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "scripts/acceptance/process.test.cjs"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/process-acceptance.log",
+      "ok": true,
+      "passedTests": 9,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "rc-dispatch",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 57454,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "scripts/acceptance/rcDispatch.test.cjs"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/rc-dispatch.log",
+      "ok": true,
+      "passedTests": 25,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "RC001-final-account-emergency-stop",
+          "passed": true
+        },
+        {
+          "name": "RC001-final-account-disable",
+          "passed": true
+        },
+        {
+          "name": "RC001-final-account-lease-takeover",
+          "passed": true
+        },
+        {
+          "name": "RC001-final-account-lease-expiry",
+          "passed": true
+        },
+        {
+          "name": "RC001-final-account-heartbeat-loss",
+          "passed": true
+        },
+        {
+          "name": "RC001-awaited-renewal-stop",
+          "passed": true
+        },
+        {
+          "name": "RC001-awaited-renewal-reenable-generation",
+          "passed": true
+        },
+        {
+          "name": "RC001-claim-before-stop-resume",
+          "passed": true
+        },
+        {
+          "name": "RC001-claim-before-stop-process-death",
+          "passed": true
+        },
+        {
+          "name": "RC001-claim-before-stop-lease-takeover",
+          "passed": true
+        },
+        {
+          "name": "RC001-transmitted-acknowledge",
+          "passed": true
+        },
+        {
+          "name": "RC001-transmitted-accepted500",
+          "passed": true
+        },
+        {
+          "name": "RC001-ambiguous-claim-commit",
+          "passed": true
+        },
+        {
+          "name": "RC001-disable-preserves-manual-protection-reduction",
+          "passed": true
+        },
+        {
+          "name": "RC001-protection-final-account-takeover",
+          "passed": true
+        },
+        {
+          "name": "RC001-protection-final-account-expiry",
+          "passed": true
+        },
+        {
+          "name": "RC001-reduction-final-account-takeover",
+          "passed": true
+        },
+        {
+          "name": "RC001-reduction-final-account-expiry",
+          "passed": true
+        },
+        {
+          "name": "RC001-run-once-final-account-stop",
+          "passed": true
+        },
+        {
+          "name": "RC001-legacy-control-writer-generation",
+          "passed": true
+        },
+        {
+          "name": "RC001-process-death-before-claim",
+          "passed": true
+        },
+        {
+          "name": "RC001-process-death-after-acceptance-before-persistence",
+          "passed": true
+        },
+        {
+          "name": "RC001-held-post-response-stop-then-fill",
+          "passed": true
+        },
+        {
+          "name": "RC001-dispatch-transaction-retry",
+          "passed": true
+        },
+        {
+          "name": "RC001-dispatch-transaction-abort",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "rc-exit-dispatch",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 20542,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "scripts/acceptance/rcExitDispatch.test.cjs"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/rc-exit-dispatch.log",
+      "ok": true,
+      "passedTests": 10,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "RC001-protection-cancel-final-account-takeover",
+          "passed": true
+        },
+        {
+          "name": "RC001-protection-cancel-final-account-expiry",
+          "passed": true
+        },
+        {
+          "name": "RC001-close-post-final-account-takeover",
+          "passed": true
+        },
+        {
+          "name": "RC001-close-post-final-account-expiry",
+          "passed": true
+        },
+        {
+          "name": "RC001-close-protection-cancel-final-account-takeover",
+          "passed": true
+        },
+        {
+          "name": "RC001-close-protection-cancel-final-account-expiry",
+          "passed": true
+        },
+        {
+          "name": "RC001-close-exit-cancel-final-account-takeover",
+          "passed": true
+        },
+        {
+          "name": "RC001-close-exit-cancel-final-account-expiry",
+          "passed": true
+        },
+        {
+          "name": "RC001-reducing-replacement-final-account-disable",
+          "passed": true
+        },
+        {
+          "name": "RC001-reducing-replacement-final-account-emergency-stop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "rc-exposure-process",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 3802,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "scripts/acceptance/rc002.process.test.cjs"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/rc-exposure-process.log",
+      "ok": true,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": [
+        {
+          "name": "RC002-real-worker-lock-and-coverage",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "browser-lifecycle",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 41998,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "frontend/node_modules/@playwright/test/cli.js",
+        "test",
+        "--config=scripts/acceptance/playwright.config.cjs",
+        "browser.spec.cjs",
+        "--reporter=list,json"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/browser-lifecycle.log",
+      "ok": true,
+      "passedTests": 14,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    },
+    {
+      "name": "browser-core-screens",
+      "code": 0,
+      "processCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "durationMs": 50591,
+      "command": [
+        "/private/tmp/day-trader-paper-15a85b1-open-3ero6hz7/node-v24.21.0-darwin-arm64/bin/node",
+        "frontend/node_modules/@playwright/test/cli.js",
+        "test",
+        "--config=scripts/acceptance/playwright.config.cjs",
+        "screens.spec.cjs",
+        "--reporter=list,json"
+      ],
+      "log": "/private/tmp/day-trader-targeted-smtp/verifier/browser-core-screens.log",
+      "ok": true,
+      "passedTests": 8,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "flakyTests": 0,
+      "requiredScenarioResults": []
+    }
+  ],
+  "requiredAcceptance": [
+    {
+      "name": "mongo-targetedNotification.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "runtime",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "backend-install",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "frontend-install",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "verification-tests",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "backend-tests",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-integration",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-orderLifecycle.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-orderLifecycle.faults",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-orderProtection",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-phase3Financial.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-phase3Admission.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-phase3Smtp.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-nonOwnerAuthorization.fullstack",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "frontend-tests",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "frontend-build",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "provider-contract",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "process-acceptance",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "browser-lifecycle",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "browser-core-screens",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-externalPaperHarness.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-fractionalExecution.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "rc-dispatch",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "mongo-rc002Exposure.mongo",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "rc-exposure-process",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    },
+    {
+      "name": "rc-exit-dispatch",
+      "status": "VERIFIED",
+      "reason": "Required deterministic local check executed and passed"
+    }
+  ],
+  "releaseCandidate": true,
+  "status": "VERIFIED RELEASE CANDIDATE",
+  "externalAcceptance": [
+    {
+      "name": "External Alpaca paper acceptance",
+      "status": "NOT RUN",
+      "reason": "Requires explicit operator authorization; the verifier uses only the controlled local provider"
+    },
+    {
+      "name": "External SMTP inbox receipt",
+      "status": "NOT RUN",
+      "reason": "Local SMTP acceptance proves the capture boundary, not external delivery or inbox receipt"
+    },
+    {
+      "name": "Deployed-environment and operational acceptance",
+      "status": "NOT RUN",
+      "reason": "No deployment is performed by this verifier"
+    }
+  ],
+  "generatedAt": "2026-09-21T15:47:52.973Z",
+  "runtime": "v24.21.0",
+  "deterministicChecksPass": true
+}

@@ -163,3 +163,50 @@ Fresh npm audits are separate authorized operations and have completed: backend0
 The hardened backend has no shell/package manager and runs as UID1000. Health/readiness tooling must invoke Node directly; authorized owner bootstrap can invoke `/usr/local/bin/node /app/scripts/bootstrap-owner.js` with protected external input. Never install repair packages into a running container. Rebuild through the reviewed Dockerfile and repeat the image/security gates. The current static frontend expects external same-origin API routing unless intentionally rebuilt with a public API origin; nginx alone does not proxy API requests.
 
 Before deployment, enforce the exact startup/configuration assumptions in the [zlib backend](evidence/rc-repair/image-hardening/node-zlib/README.md) and [frontend](evidence/rc-repair/image-hardening/node-zlib/frontend-disposition.md) dispositions. Added native libraries, preloads, FFI or nginx modules reopen the security gate. Local GO does not authorize activation or certify backup/restore, revocation, monitoring/soak, external account or inbox acceptance.
+
+## One-message SMTP acceptance support
+
+SMTP host/sender/authentication remain external runtime configuration. The sole
+recipient authority for targeted delivery is `ROBO_NOTIFICATION_RECIPIENT`, a
+single plain mailbox. Owner-profile email is diagnostic only and is never a
+fallback. No recipient, sender, provider, SMTP host, cc/bcc or envelope can be
+supplied through the new service inputs. These are internal services, not HTTP
+mail-relay endpoints.
+
+For a separately authorized acceptance run, call
+`enqueueNotification({ eventKey, accountId, environment: 'paper', subject, text })`
+from `services/roboNotificationService`, then call `deliverById(String(record._id))`
+exactly once. Use a unique `smtp-acceptance:<run-id>` event key and unmistakable
+PAPER MVP test content. Enqueue returns the existing record on duplicate keys,
+without overwriting content or dispatching. Content limits are 512 characters for
+eventKey, 256 for accountId, 200 for subject, and 20,000 for plain text; subject
+newlines and unsupported fields are rejected. No acceptance worker is installed.
+
+Targeted delivery never falls back to `deliverNext`. It atomically claims only
+the requested eligible record with the existing 120-second lease and attempt
+limit. Missing host/sender/recipient leaves the record unchanged and returns
+`unconfigured` before transport. Unavailable targets return `not_found`,
+`not_eligible`, `leased`, or `terminal`. Existing batch/scheduled operations remain
+separate; **do not start them for acceptance** or replay historical notifications.
+
+Before SMTP, targeted delivery durably fences the record as `delivery_uncertain`.
+This is not proof that transmission occurred. It prevents blind application-level
+resend after process death, uncertain transport, or failed acceptance persistence.
+Explicit provider acceptance of exactly one configured recipient changes it to
+`provider_accepted` and persists the message ID/timestamp. Definitive DNS or
+pre-DATA command failure, or an explicit negative DATA response, follows existing
+bounded retry timing. Generic CONN/socket/timeouts can occur after DATA and remain
+uncertain. No raw upstream error/credentials are persisted.
+
+Both normal dispatchers exclude `delivery_uncertain`, even after lease expiry.
+Ordinary completion releases the lease. Process death or database failure can
+leave the fence with its expiring lease; neither authorizes resend. Operator
+inspection/provider or mailbox evidence is required; no automatic uncertain-state
+reset is provided. Existing general-batch retry policy for ordinary records has
+not been redesigned. This is not SMTP-level exactly-once delivery.
+
+An external acceptance run must be separately authorized after exact-SHA hosted
+CI, configure real SMTP separately, send at most one targeted message, and verify
+actual recipient receipt. Provider acceptance alone is not inbox receipt. An
+uncertain response is a reason to inspect, never to blindly resend. No real SMTP
+configuration or external-send evidence is supplied by the controlled tests.

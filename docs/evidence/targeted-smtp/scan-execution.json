@@ -1,0 +1,20 @@
+{
+  "command": [
+    "docker",
+    "scout",
+    "cves",
+    "--platform",
+    "linux/arm64",
+    "--locations",
+    "--format",
+    "sarif",
+    "--output",
+    "/private/tmp/day-trader-targeted-smtp/backend.sarif.json",
+    "local://sha256:45b9a917717d1bf6cc113c589fa069b70591aab6502bda91d4eed3bf45844d7d"
+  ],
+  "startedAt": "2026-09-21T15:55:14.573244+00:00",
+  "authorizedScanInvocations": 1,
+  "metadataScope": "package URLs and layer digests only; no uploads/enrollment/monitoring/paid services",
+  "exitCode": 0,
+  "endedAt": "2026-09-21T15:55:27.202721+00:00"
+}

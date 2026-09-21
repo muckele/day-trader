@@ -199,12 +199,38 @@ export const EXTERNAL_PAPER_REQUIRED_SCENARIOS = [
   "malformed lookup never authorizes cleanup",
   "optional request ID absence does not fabricate IDs"
 ];
+export const SMTP_REQUIRED_SCENARIOS = [
+  "SMTP custom notification event-key idempotency",
+  "SMTP custom content rejects empty oversized and transport fields",
+  "SMTP targeted delivery sends only requested outbox record",
+  "SMTP historical pending records untouched",
+  "SMTP missing recipient zero transport",
+  "SMTP missing config zero transport",
+  "SMTP configured recipient only no caller overrides",
+  "SMTP target not found zero unrelated claim",
+  "SMTP already sent target zero resend",
+  "SMTP active lease blocks targeted duplicate",
+  "SMTP concurrent target claim sends once",
+  "SMTP provider accepted persists provider identity",
+  "SMTP uncertain post-transport state is not auto-retried",
+  "SMTP batch dispatcher skips uncertain record",
+  "SMTP crash after transport boundary stays fenced after lease expiry",
+  "SMTP generic CONN timeout after DATA is uncertain",
+  "SMTP definitive pre-acceptance failure remains retryable",
+  "SMTP ambiguous provider result is uncertain",
+  "SMTP accepted response persistence failure cannot resend",
+  "SMTP negative DATA response is definitive rejection",
+  "SMTP production transport path uses only configured recipient",
+  "SMTP existing deliverNext behavior preserved",
+  "SMTP existing notification tick behavior preserved"
+];
 export function buildMongoChecks(files) {
   return files.filter(name => name.endsWith('.test.js')).sort().map(name => ({
     name: name === 'mvpPersistence.test.js' ? 'mongo-integration' : `mongo-${name.replace(/\.test\.js$/, '')}`,
     command: process.execPath,
     args: ['--test', '--test-reporter=tap', `backend/integration/${name}`],
     summary: 'tap', minimumTests: mongoMinimums[name] || 1,
+    ...(name === 'targetedNotification.mongo.test.js' ? { requiredScenarios: SMTP_REQUIRED_SCENARIOS, minimumTests: SMTP_REQUIRED_SCENARIOS.length } : {}),
     ...(name === 'fractionalExecution.mongo.test.js' ? { requiredScenarios: FRACTIONAL_REQUIRED_SCENARIOS } : {}),
     ...(name === 'externalPaperHarness.mongo.test.js' ? { requiredScenarios: EXTERNAL_PAPER_REQUIRED_SCENARIOS } : {}),
     ...(name === 'rc002Exposure.mongo.test.js' ? { requiredScenarios: RC002_REQUIRED_SCENARIOS } : {})
@@ -212,7 +238,7 @@ export function buildMongoChecks(files) {
 }
 
 export const REQUIRED_LOCAL_GATES = [
-  'runtime', 'backend-install', 'frontend-install', 'verification-tests', 'backend-tests',
+  'mongo-targetedNotification.mongo', 'runtime', 'backend-install', 'frontend-install', 'verification-tests', 'backend-tests',
   'mongo-integration', 'mongo-orderLifecycle.mongo', 'mongo-orderLifecycle.faults', 'mongo-orderProtection',
   'mongo-phase3Financial.mongo', 'mongo-phase3Admission.mongo', 'mongo-phase3Smtp.mongo', 'mongo-nonOwnerAuthorization.fullstack',
   'frontend-tests', 'frontend-build', 'provider-contract', 'process-acceptance', 'browser-lifecycle', 'browser-core-screens',

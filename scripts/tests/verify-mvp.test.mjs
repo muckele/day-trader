@@ -280,3 +280,14 @@ test('acceptance convergence requires every named race and hard-failure scenario
  assert.equal(v.validateAcceptanceExecution(gate,tap(gate.requiredScenarios)).ok,true);
  for(const name of required)assert.equal(v.validateAcceptanceExecution(gate,tap(gate.requiredScenarios.filter(n=>n!==name))).ok,false,name);
 });
+
+test('targeted SMTP gate requires each notification scenario and cannot be omitted', async () => {
+  const { SMTP_REQUIRED_SCENARIOS, REQUIRED_LOCAL_GATES, buildMongoChecks, validateAcceptanceExecution } = await import('../verify-mvp.mjs');
+  assert.ok(SMTP_REQUIRED_SCENARIOS?.length >= 14);
+  const gate = buildMongoChecks(['targetedNotification.mongo.test.js'])[0];
+  assert.ok(REQUIRED_LOCAL_GATES.includes(gate.name));
+  assert.deepEqual(gate.requiredScenarios, SMTP_REQUIRED_SCENARIOS);
+  const output = SMTP_REQUIRED_SCENARIOS.map((s, i) => `ok ${i + 1} - ${s}`).join('\n') + `\n# tests ${SMTP_REQUIRED_SCENARIOS.length}\n# pass ${SMTP_REQUIRED_SCENARIOS.length}\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n`;
+  assert.equal(validateAcceptanceExecution(gate, output).ok, true);
+  for (const scenario of SMTP_REQUIRED_SCENARIOS) assert.equal(validateAcceptanceExecution(gate, output.replace(scenario, 'missing scenario')).ok, false);
+});
