@@ -1,5 +1,6 @@
 // Test-process preload only. Production destination/account validation still runs.
 // Never import this from application code or enable it via a production flag.
+require('./local-network-only.cjs');
 const axios = require('../../backend/node_modules/axios/dist/node/axios.cjs');
 const target = new URL(process.env.ACCEPTANCE_PROVIDER_URL || '');
 if (process.env.NODE_ENV !== 'test' || target.hostname !== '127.0.0.1' || target.protocol !== 'http:' || process.env.BROKER_API_KEY !== 'acceptance-dummy') throw new Error('Isolated acceptance transport configuration required');

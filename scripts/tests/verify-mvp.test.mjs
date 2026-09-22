@@ -308,3 +308,34 @@ test('PF001 real-nginx gate requires every scenario without skips or duplicates'
   }
   assert.equal(v.buildRequiredAcceptance([]).find(c => c.name === gate.name).status, 'BLOCKED');
 });
+
+test('startup and readiness named evidence cannot be omitted skipped duplicated or replaced by totals', async () => {
+  const v = await import('../verify-mvp.mjs');
+  const checks = v.buildReleaseChecks({ backendTests: ['runtimeReadiness.test.js'], integrationFiles: ['startupReadiness.mongo.test.js'] });
+  for (const [name, names] of [['mongo-startupReadiness.mongo', v.STARTUP_REQUIRED_SCENARIOS], ['backend-tests', v.READINESS_REQUIRED_SCENARIOS]]) {
+    const check = checks.find(c => c.name === name); assert.ok(check);
+    for (const n of names) assert.ok(check.requiredScenarios.includes(n));
+    const required = check.requiredScenarios;
+    const records = required.map((n, i) => `ok ${i+1} - ${n}`);
+    const count = Math.max(check.minimumTests, records.length);
+    const summary = `\n# tests ${count}\n# pass ${count}\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n`;
+    assert.equal(v.validateAcceptanceExecution(check, records.join('\n') + summary).ok, true);
+    for (const n of names) {
+      const index = required.indexOf(n);
+      for (const replacement of ['', `ok 999 - ${n} # SKIP`, `not ok 999 - ${n}`, `${records[index]}\n${records[index]}`]) {
+        const changed = [...records]; changed[index] = replacement;
+        assert.equal(v.validateAcceptanceExecution(check, changed.join('\n') + summary).ok, false, n);
+      }
+    }
+    assert.equal(v.validateAcceptanceExecution(check, records.join('\n')).ok, false);
+  }
+  assert.ok(v.REQUIRED_LOCAL_GATES.includes('mongo-startupReadiness.mongo'));
+});
+
+test('runtime verifier children deny external sockets while dependency fetch stage remains explicit', async () => {
+  const { acceptanceNetworkEnvironment } = await import('../verify-mvp.mjs');
+  assert.deepEqual(acceptanceNetworkEnvironment({ name: 'backend-install' }), {});
+  const env = { ...buildTestEnvironment(process.env), ...acceptanceNetworkEnvironment({ name: 'backend-tests' }) };
+  const child = spawnSync(process.execPath, ['-e', "const assert=require('assert');const net=require('net');assert.throws(()=>net.connect({host:'api.alpaca.markets',port:443}),/non-loopback/);"], { env, encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+});

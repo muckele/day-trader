@@ -46,7 +46,7 @@ async function startHarness() {
  for(let i=0;i<100;i++){
   try{
    if(!cookie){const login=await fetch(baseURL+'/api/login',{method:'POST',headers:{'Content-Type':'application/json',origin:baseURL},body:JSON.stringify({username:'acceptance-owner',password:'local-test-password'})});if(login.ok)cookie=login.headers.get('set-cookie')?.split(';')[0];}
-   if(cookie){const check=await fetch(baseURL+'/api/readiness',{headers:{cookie}});if(check.ok&&(await check.json()).persistence.ready){ready=true;break;}}
+   if(cookie){const check=await fetch(baseURL+'/api/readiness',{headers:{cookie}});const state=await check.json();if(check.ok&&state.contractVersion===2&&state.runtimeReady&&state.maintenanceReady){ready=true;break;}}
   }catch{}
   if(child.exitCode!==null)throw new Error(logs);await new Promise(r=>setTimeout(r,100));
  }

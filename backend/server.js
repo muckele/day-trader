@@ -13,6 +13,7 @@ const requireMongo = require('./middleware/requireMongo');
 const mongoState = require('./utils/mongoState');
 const { ensureTradingIndexes } = require('./services/tradingIndexService');
 const { executionReadiness } = require('./services/executionReadiness');
+const { getRuntimeReadiness } = require('./services/runtimeReadiness');
 const { ensureResearchIndexes } = require('./services/researchIndexService');
 const { buildMongoConnectionTargets } = require('./utils/mongoConnectionConfig');
 const {
@@ -276,15 +277,9 @@ const authRateLimit = createRateLimit({
 app.post('/api/register', authRateLimit, authHandlers.register);
 app.post('/api/login', authRateLimit, authHandlers.login);
 app.use('/api', auth);
-app.get('/api/readiness', (req, res) => {
-  const persistence = executionReadiness.snapshot();
-  res.status(persistence.ready ? 200 : 503).json({
-    persistence, executionEnvironment: 'alpaca-paper',
-    releaseReady: false,
-    releaseBlockers: ['External paper-account and deployed-environment acceptance have not been recorded'],
-    notificationConfigured: Boolean(process.env.SMTP_HOST && process.env.ROBO_NOTIFICATION_RECIPIENT),
-    accountBindingConfigured: Boolean(process.env.ALPACA_EXPECTED_PAPER_ACCOUNT_ID)
-  });
+app.get('/api/readiness', async (req, res) => {
+  const readiness = await getRuntimeReadiness();
+  res.status(readiness.runtimeReady ? 200 : 503).json(readiness);
 });
 
 // 7. Mount the Alpaca trade routes

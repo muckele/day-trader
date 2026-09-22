@@ -1,4 +1,4 @@
-const { test, expect } = require('../../frontend/node_modules/@playwright/test');
+const { test, expect } = require('./isolated-playwright.cjs');
 const { startHarness } = require('./harness.cjs');
 let h;
 test.beforeEach(async () => { h = await startHarness(); });

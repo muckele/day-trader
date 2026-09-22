@@ -22,6 +22,15 @@ export async function runChecks(checks, execute) {
   return { ok: results.every(result => result.code === 0), checks: results };
 }
 
+export function acceptanceNetworkEnvironment(check) {
+  // Dependency fetches are the only network-enabled verifier stage. Every Node
+  // test/runtime child is constrained to synthetic loopback services; browser
+  // contexts separately abort nonlocal traffic including external fonts.
+  return check.name.endsWith('-install') ? {} : {
+    NODE_OPTIONS: `--require=${path.join(root, 'scripts/acceptance/local-network-only.cjs')}`
+  };
+}
+
 const mongoMinimums = { 'mvpPersistence.test.js':4, 'orderLifecycle.mongo.test.js':16, 'orderLifecycle.faults.test.js':9, 'orderProtection.test.js':8, 'phase3Financial.mongo.test.js':17, 'phase3Smtp.mongo.test.js':4, 'externalPaperHarness.mongo.test.js':24, 'fractionalExecution.mongo.test.js':24 };
 export const RC001_REQUIRED_SCENARIOS = [
   'RC001-final-account-emergency-stop', 'RC001-final-account-disable',
@@ -224,12 +233,55 @@ export const SMTP_REQUIRED_SCENARIOS = [
   "SMTP existing deliverNext behavior preserved",
   "SMTP existing notification tick behavior preserved"
 ];
+export const STARTUP_REQUIRED_SCENARIOS = [
+  "STARTUP production legacy duplicates make zero User index attempts",
+  "STARTUP original Users and indexes are preserved",
+  "STARTUP exact owner auth rejects duplicate password nonowner and registration",
+  "STARTUP repeated readiness has zero writes external requests or worker starts",
+  "STARTUP changed controls are current without normalizing settings",
+  "STARTUP missing settings fail without creation",
+  "STARTUP ambiguous settings fail without normalization",
+  "STARTUP wrong owner configuration and missing owner remain rejected",
+  "STARTUP reconnect and model reimport never build User indexes",
+  "STARTUP existing unique User indexes remain untouched",
+  "STARTUP actual failed index bootstrap blocks readiness",
+  "STARTUP actual failed write bootstrap blocks readiness",
+  "STARTUP nonempty protective preflight uses expiresAt and state",
+  "STARTUP maintenance readiness is affirmative without external acceptance"
+];
+export const READINESS_REQUIRED_SCENARIOS = [
+  "READINESS maintenance is distinct from unverified external acceptance",
+  "READINESS rejects missing owner configuration",
+  "READINESS rejects malformed owner configuration",
+  "READINESS rejects missing auth secret",
+  "READINESS rejects missing owner",
+  "READINESS rejects invalid owner session",
+  "READINESS rejects missing settings",
+  "READINESS rejects ambiguous settings",
+  "READINESS rejects wrong settings identity type",
+  "READINESS rejects enabled flag",
+  "READINESS rejects isEnabled flag",
+  "READINESS rejects missing enable flag",
+  "READINESS rejects live mode",
+  "READINESS rejects live enablement",
+  "READINESS rejects unsuppressed scheduler",
+  "READINESS rejects live destination",
+  "READINESS rejects credential bearing destination",
+  "READINESS rejects missing account binding",
+  "READINESS rejects malformed account binding",
+  "READINESS rejects missing broker credentials",
+  "READINESS pending failed indexes and failed majority write block execution",
+  "READINESS late bootstrap cannot override invalidation",
+  "READINESS disconnect and changes during bounded reads fail closed",
+  "READINESS read failure is sanitized and cannot yield readiness"
+];
 export function buildMongoChecks(files) {
   return files.filter(name => name.endsWith('.test.js')).sort().map(name => ({
     name: name === 'mvpPersistence.test.js' ? 'mongo-integration' : `mongo-${name.replace(/\.test\.js$/, '')}`,
     command: process.execPath,
     args: ['--test', '--test-reporter=tap', `backend/integration/${name}`],
     summary: 'tap', minimumTests: mongoMinimums[name] || 1,
+    ...(name === 'startupReadiness.mongo.test.js' ? { requiredScenarios: STARTUP_REQUIRED_SCENARIOS, minimumTests: STARTUP_REQUIRED_SCENARIOS.length } : {}),
     ...(name === 'targetedNotification.mongo.test.js' ? { requiredScenarios: SMTP_REQUIRED_SCENARIOS, minimumTests: SMTP_REQUIRED_SCENARIOS.length } : {}),
     ...(name === 'fractionalExecution.mongo.test.js' ? { requiredScenarios: FRACTIONAL_REQUIRED_SCENARIOS } : {}),
     ...(name === 'externalPaperHarness.mongo.test.js' ? { requiredScenarios: EXTERNAL_PAPER_REQUIRED_SCENARIOS } : {}),
@@ -252,7 +304,7 @@ export const PF001_REQUIRED_SCENARIOS = [
 ];
 
 export const REQUIRED_LOCAL_GATES = [
-  'frontend-nginx',
+  'frontend-nginx', 'mongo-startupReadiness.mongo',
   'mongo-targetedNotification.mongo', 'runtime', 'backend-install', 'frontend-install', 'verification-tests', 'backend-tests',
   'mongo-integration', 'mongo-orderLifecycle.mongo', 'mongo-orderLifecycle.faults', 'mongo-orderProtection',
   'mongo-phase3Financial.mongo', 'mongo-phase3Admission.mongo', 'mongo-phase3Smtp.mongo', 'mongo-nonOwnerAuthorization.fullstack',
@@ -316,7 +368,7 @@ export function buildReleaseChecks({backendTests,integrationFiles}) {
     { name:'runtime',command:process.execPath,args:[path.join(root,'scripts/verify-runtime.mjs')] },
     ...['backend','frontend'].map(dir=>({name:`${dir}-install`,command:'npm',args:['ci','--ignore-scripts','--no-audit','--no-fund'],cwd:path.join(root,dir)})),
     {name:'verification-tests',command:process.execPath,args:['--test','--test-reporter=tap','scripts/tests/verify-mvp.test.mjs'],summary:'tap',minimumTests:10},
-    {name:'backend-tests',command:process.execPath,args:['--test','--test-reporter=tap',...backendTests.map(name=>`tests/${name}`)],cwd:path.join(root,'backend'),summary:'tap',minimumTests:369,requiredScenarios:QUANTITY_REQUIRED_SCENARIOS},
+    {name:'backend-tests',command:process.execPath,args:['--test','--test-reporter=tap',...backendTests.map(name=>`tests/${name}`)],cwd:path.join(root,'backend'),summary:'tap',minimumTests:369,requiredScenarios:[...QUANTITY_REQUIRED_SCENARIOS, ...READINESS_REQUIRED_SCENARIOS]},
     ...regularMongo,
     {name:'frontend-tests',command:'npm',args:['test','--','--watchAll=false','--runInBand'],cwd:path.join(root,'frontend'),summary:'jest',minimumTests:26},
     {name:'frontend-build',command:'npm',args:['run','build'],cwd:path.join(root,'frontend')},
@@ -351,7 +403,7 @@ async function main() {
     if(check.summary==='playwright')await rm(jsonReport,{force:true});
     return new Promise(resolve=>{
       const start=Date.now();
-      const child=spawn(check.command,check.args,{cwd:check.cwd||root,detached:process.platform!=='win32',env:{...env,...(check.summary==='playwright'?{PLAYWRIGHT_JSON_OUTPUT_NAME:jsonReport}:{})},stdio:['ignore','pipe','pipe']});
+      const child=spawn(check.command,check.args,{cwd:check.cwd||root,detached:process.platform!=='win32',env:{...env,...acceptanceNetworkEnvironment(check),...(check.summary==='playwright'?{PLAYWRIGHT_JSON_OUTPUT_NAME:jsonReport}:{})},stdio:['ignore','pipe','pipe']});
       let output='',timedOut=false,killTimer;
       child.stdout.on('data',data=>{output+=data;});child.stderr.on('data',data=>{output+=data;});child.on('error',error=>{output+=error.message;});
       const terminate=signal=>{try{if(process.platform!=='win32'&&child.pid)process.kill(-child.pid,signal);else child.kill(signal);}catch{}};
