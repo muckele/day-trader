@@ -336,6 +336,6 @@ test('runtime verifier children deny external sockets while dependency fetch sta
   const { acceptanceNetworkEnvironment } = await import('../verify-mvp.mjs');
   assert.deepEqual(acceptanceNetworkEnvironment({ name: 'backend-install' }), {});
   const env = { ...buildTestEnvironment(process.env), ...acceptanceNetworkEnvironment({ name: 'backend-tests' }) };
-  const child = spawnSync(process.execPath, ['-e', "const assert=require('assert');const net=require('net');assert.throws(()=>net.connect({host:'api.alpaca.markets',port:443}),/non-loopback/);"], { env, encoding: 'utf8' });
+  const child = spawnSync(process.execPath, ['-e', "const assert=require('assert');const net=require('net');assert.throws(()=>net.connect({host:'203.0.113.1',port:443}),/non-loopback/);"], { env, encoding: 'utf8' });
   assert.equal(child.status, 0, child.stderr);
 });
