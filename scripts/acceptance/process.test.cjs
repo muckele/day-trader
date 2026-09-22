@@ -78,7 +78,8 @@ for (const mode of ['acknowledge', 'accepted500']) {
 }
 test('owner browser enables then logs out and closes; independent worker persists entry visible after new login', { timeout: 60000 }, async t => fixture(t, async h => {
   const { chromium } = require('../../frontend/node_modules/@playwright/test');
-  const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined });
+  const { restrictBrowserContext, localBrowserArgs } = require('./browser-network-only.cjs');
+  const browser = await chromium.launch({ headless: true, args: localBrowserArgs, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined });
   async function login(page) {
     await page.goto(h.baseURL + '/login');
     await page.getByPlaceholder('Username').fill('acceptance-owner'); await page.getByPlaceholder('Password').fill('local-test-password');
@@ -86,7 +87,11 @@ test('owner browser enables then logs out and closes; independent worker persist
   }
   try {
     await Settings.updateOne({ userId: h.ownerId }, { $set: { isEnabled: false, enabled: false } });
-    const context = await browser.newContext({ viewport: { width: 1360, height: 1000 } }); const page = await context.newPage();
+    const context = await browser.newContext({ viewport: { width: 1360, height: 1000 }, serviceWorkers: 'block' });
+    const blocked = await restrictBrowserContext(context); const probePage = await context.newPage();
+    await assert.rejects(probePage.goto('https://network-boundary.invalid/probe'), /ERR_BLOCKED_BY_CLIENT/);
+    assert.deepEqual(blocked, ['https://network-boundary.invalid']);
+    await probePage.close(); const page = await context.newPage();
     await login(page); await page.goto(h.baseURL + '/robo');
     await page.getByLabel('Max Trade Amount', { exact: false }).fill('500');
     await page.getByRole('button', { name: 'Save Settings', exact: true }).click();
@@ -100,7 +105,8 @@ test('owner browser enables then logs out and closes; independent worker persist
     assert.equal(h.provider.state.posts.length, 1); assert.equal(await Decision.countDocuments({ status: 'submitted' }), 1);
     const intent = await Intent.findOne().lean(); assert.equal(intent.origin, 'robotrader'); assert.equal(intent.status, 'acknowledged'); assert.ok(intent.reservedCents > 0);
     assert.equal(await BrokerOrder.countDocuments(), 1); assert.ok(await Outbox.countDocuments()); assert.ok(await Audit.countDocuments({ eventType: 'robotrader_worker_run' }));
-    const reopened = await browser.newContext({ viewport: { width: 1360, height: 1000 } }); const newPage = await reopened.newPage();
+    const reopened = await browser.newContext({ viewport: { width: 1360, height: 1000 }, serviceWorkers: 'block' });
+    await restrictBrowserContext(reopened); const newPage = await reopened.newPage();
     await login(newPage); await newPage.goto(h.baseURL + '/robo');
     await newPage.getByText('AAPL', { exact: true }).first().waitFor();
     await newPage.getByRole('button', { name: 'Disable RoboTrader', exact: true }).waitFor();

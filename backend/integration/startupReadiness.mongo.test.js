@@ -69,7 +69,8 @@ test('STARTUP reconnect and model reimport never build User indexes', async () =
   await h.control('reconnect');
   for (let i = 0; i < 80; i++) { if ((await read()).body.maintenanceReady) break; await new Promise(r => setTimeout(r, 50)); }
   assert.equal((await read()).body.maintenanceReady, true);
-  assert.deepEqual(userBuilds(await h.control('snapshot')), []);
+  const ledger = await h.control('snapshot'); assert.equal(ledger.userRecompiled, true);
+  assert.deepEqual(userBuilds(ledger), []);
   assert.deepEqual(await h.db.collection('users').find().sort({ _id: 1 }).toArray(), h.before.users);
   assert.deepEqual(await h.db.collection('users').listIndexes().toArray(), h.before.indexes);
 });

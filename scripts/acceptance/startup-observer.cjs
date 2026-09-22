@@ -5,7 +5,7 @@ const mongoose = require(root + '/backend/node_modules/mongoose');
 if (process.env.STARTUP_SYNTHETIC !== 'true' || !process.env.MONGO_URI?.includes('/mvp_startup_')) {
   throw new Error('Synthetic startup fixture required');
 }
-const ledger = { commands: [], externalAttempts: [], workerTimers: 0, injectedFaults: 0 };
+const ledger = { commands: [], externalAttempts: [], workerTimers: 0, injectedFaults: 0, userRecompiled: false };
 if (process.env.STARTUP_FAULT === 'index') {
   const createIndex = mongoose.Collection.prototype.createIndex;
   mongoose.Collection.prototype.createIndex = function (...args) {
@@ -48,8 +48,13 @@ process.on('message', async message => {
   try {
     if (message.startup === 'reconnect') {
       await mongoose.disconnect();
-      require(root + '/backend/models/User');
       await mongoose.connect(process.env.MONGO_URI);
+      const previous = require(root + '/backend/models/User');
+      mongoose.deleteModel('User');
+      delete require.cache[require.resolve(root + '/backend/models/User')];
+      const recompiled = require(root + '/backend/models/User');
+      await recompiled.init();
+      ledger.userRecompiled = recompiled !== previous;
       mongoose.connection.emit('reconnected');
     }
     if (message.startup === 'env') Object.assign(process.env, message.values);
