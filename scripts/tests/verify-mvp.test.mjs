@@ -291,3 +291,20 @@ test('targeted SMTP gate requires each notification scenario and cannot be omitt
   assert.equal(validateAcceptanceExecution(gate, output).ok, true);
   for (const scenario of SMTP_REQUIRED_SCENARIOS) assert.equal(validateAcceptanceExecution(gate, output.replace(scenario, 'missing scenario')).ok, false);
 });
+
+test('PF001 real-nginx gate requires every scenario without skips or duplicates', async () => {
+  const v = await import('../verify-mvp.mjs');
+  const gate = v.buildReleaseChecks({ backendTests: [], integrationFiles: [] }).find(c => c.name === 'frontend-nginx');
+  assert.ok(v.REQUIRED_LOCAL_GATES.includes(gate.name));
+  assert.equal(v.PF001_REQUIRED_SCENARIOS.length, 11);
+  assert.deepEqual(gate.requiredScenarios, v.PF001_REQUIRED_SCENARIOS);
+  const rows = gate.requiredScenarios.map((name, i) => `ok ${i + 1} - ${name}\n`);
+  const summary = '# tests 11\n# pass 11\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n';
+  assert.equal(v.validateAcceptanceExecution(gate, rows.join('') + summary).ok, true);
+  for (let i = 0; i < rows.length; i++) {
+    for (const replacement of ['', rows[i].replace('ok ', 'not ok '), rows[i].trimEnd() + ' # SKIP\n', rows[i] + rows[i]]) {
+      assert.equal(v.validateAcceptanceExecution(gate, rows.map((r, n) => n === i ? replacement : r).join('') + summary).ok, false);
+    }
+  }
+  assert.equal(v.buildRequiredAcceptance([]).find(c => c.name === gate.name).status, 'BLOCKED');
+});

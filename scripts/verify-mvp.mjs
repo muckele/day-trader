@@ -237,7 +237,22 @@ export function buildMongoChecks(files) {
   }));
 }
 
+export const PF001_REQUIRED_SCENARIOS = [
+  "PF001 valid JavaScript MIME",
+  "PF001 valid CSS MIME",
+  "PF001 missing JavaScript",
+  "PF001 missing CSS",
+  "PF001 missing nested resource",
+  "PF001 query string missing JavaScript",
+  "PF001 query string missing CSS",
+  "PF001 application deep and dotted routes",
+  "PF001 static directories have no listing",
+  "PF001 browser missing script onerror without parsing SPA",
+  "PF001 nginx config and graceful shutdown"
+];
+
 export const REQUIRED_LOCAL_GATES = [
+  'frontend-nginx',
   'mongo-targetedNotification.mongo', 'runtime', 'backend-install', 'frontend-install', 'verification-tests', 'backend-tests',
   'mongo-integration', 'mongo-orderLifecycle.mongo', 'mongo-orderLifecycle.faults', 'mongo-orderProtection',
   'mongo-phase3Financial.mongo', 'mongo-phase3Admission.mongo', 'mongo-phase3Smtp.mongo', 'mongo-nonOwnerAuthorization.fullstack',
@@ -305,6 +320,7 @@ export function buildReleaseChecks({backendTests,integrationFiles}) {
     ...regularMongo,
     {name:'frontend-tests',command:'npm',args:['test','--','--watchAll=false','--runInBand'],cwd:path.join(root,'frontend'),summary:'jest',minimumTests:26},
     {name:'frontend-build',command:'npm',args:['run','build'],cwd:path.join(root,'frontend')},
+    {name:'frontend-nginx',command:process.execPath,args:['--test','--test-reporter=tap','scripts/acceptance/pf001.test.mjs'],summary:'tap',minimumTests:PF001_REQUIRED_SCENARIOS.length,requiredScenarios:PF001_REQUIRED_SCENARIOS},
     ...browserMongo,
     {name:'provider-contract',command:process.execPath,args:['--test','--test-reporter=tap','scripts/acceptance/provider.test.cjs'],summary:'tap',minimumTests:1},
     {name:'process-acceptance',command:process.execPath,args:['--test','--test-reporter=tap','scripts/acceptance/process.test.cjs'],summary:'tap',minimumTests:9,timeoutMs:600000},
