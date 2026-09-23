@@ -1,0 +1,5 @@
+const test=require('node:test'),assert=require('node:assert/strict'),{validate,globalIP,SOURCE}=require('../tools/config.cjs'),{F,B,VERSION}=require('../tools/policy.cjs');
+const base=()=>({version:VERSION,source:SOURCE,profile:'production',run:'dapt-run',paperAlready:6,paperMaximum:60,dataMaximum:60,expectedOwner:'a'.repeat(24),username:'synthetic',capability:'x'.repeat(64),upstreams:{[F]:['8.8.8.8'],[B]:['1.1.1.1']},approvedProduction:true});
+test('explicit production validates',()=>assert.ok(validate(base())));
+for(const overrides of [{testCA:'/tmp/ca'},{profile:'fixture'},{version:'old'},{approvedProduction:false},{rejectUnauthorized:false},{source:'wrong'},{paperAlready:49}])test('reject unsafe config '+Object.keys(overrides),()=>assert.throws(()=>validate({...base(),...overrides})));
+for(const ip of ['127.0.0.1','172.29.93.10','10.0.0.1','169.254.169.254','192.168.0.1','100.64.0.1','::1','::ffff:1.1.1.1','224.0.0.1','0.0.0.0','198.18.0.1'])test('reject production address '+ip,()=>assert.equal(globalIP(ip),false));

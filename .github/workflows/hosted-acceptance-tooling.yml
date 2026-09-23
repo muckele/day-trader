@@ -1,0 +1,32 @@
+name: Bounded hosted acceptance tooling pilot
+on:
+  push:
+    branches: [codex/hosted-acceptance-tooling]
+permissions:
+  contents: read
+concurrency:
+  group: hosted-acceptance-tooling-pilot
+  cancel-in-progress: false
+jobs:
+  synthetic:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify repository remains public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: test "$(gh api repos/${GITHUB_REPOSITORY} --jq .visibility)" = public
+      - name: Install signed Python certificate support
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-cryptography
+      - name: Measure, build sequentially, and qualify synthetic tooling
+        run: bash tooling/hosted-acceptance/hosted.sh
+      - name: Remove ephemeral private test state
+        if: always()
+        run: sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted PILOT_STATE="$RUNNER_TEMP/acceptance-pilot" python3 tooling/hosted-acceptance/cleanup.py

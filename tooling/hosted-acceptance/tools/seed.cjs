@@ -1,0 +1,12 @@
+'use strict';
+const fs=require('fs'),mongoose=require('/app/node_modules/mongoose'),bcrypt=require('/app/node_modules/bcryptjs');
+(async()=>{const x=JSON.parse(fs.readFileSync('/private/synthetic.json'));await mongoose.connect('mongodb://127.0.0.1:27017/acceptance?replicaSet=acceptance');const id=new mongoose.Types.ObjectId(x.ownerId),now=new Date(),accountId='synthetic-paper-account';
+await mongoose.connection.collection('users').insertOne({_id:id,username:x.username,hash:await bcrypt.hash(x.password,12),sessionVersion:0});
+const Settings=require('/app/models/RoboSettings');await new Settings({userId:id,mode:'paper',enabled:false,isEnabled:false,liveTradingExplicitlyEnabled:false,pausedReason:'Synthetic production-tooling rehearsal'}).save();
+const Decision=require('/app/models/RoboTradeDecision');const d=await Decision.create({userId:id,accountId,environment:'paper',runId:'synthetic-run',idempotencyKey:'synthetic-decision',symbol:'SYN',status:'rejected',reasoningSummary:'Synthetic observed decision',rejectionReasons:['Synthetic historical record']});
+const Order=require('/app/models/RoboTradeOrder');await Order.create({userId:id,accountId,decisionId:d._id,environment:'paper',symbol:'SYN',side:'buy',qty:3,filledQty:3,filledAvgPrice:90,status:'filled',clientOrderId:'synthetic-robo-order',lastReconciledAt:now,reconciliationStatus:'matched',submittedAt:now,filledAt:now});
+const Intent=require('/app/models/OrderIntent');const intent=await Intent.create({accountId,broker:'alpaca',environment:'paper',executionSource:'alpaca-paper',idempotencyKey:'synthetic-intent',userId:String(id),symbol:'SYN',side:'buy',qty:3,status:'filled',filledQty:3,filledNotionalCents:27000,reservedCents:0});
+const Fill=require('/app/models/Fill');await Fill.create({accountId,broker:'alpaca',executionSource:'alpaca-paper',intentId:intent._id,externalOrderId:'synthetic-order',cumulativeQty:3,symbol:'SYN',side:'buy',qty:3,price:90,notional:270,notionalCents:27000});
+await require('/app/models/RoboAuditLog').create({userId:id,eventType:'robotrader_synthetic_observation',payload:{summary:'Synthetic history'}});
+await require('/app/models/NotificationOutbox').create({accountId,environment:'paper',eventKey:'synthetic-notification',subject:'Synthetic acceptance notification',text:'Never send',state:'provider_accepted',attempts:1,providerAcceptedAt:now});
+await mongoose.disconnect();console.log('NONEMPTY_SYNTHETIC_SEED_COMPLETE');})().catch(()=>{console.error('SEED_FAILED');process.exit(1)});
