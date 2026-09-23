@@ -28,14 +28,21 @@ package versions from retained qualification manifests. The pilot compares
 backend authored files, Node binary, selected Debian package versions and
 frontend static bytes. It prints resulting image identities. These comparisons
 do not prove whole-image byte identity, full dependency equivalence, or transfer
-exact-image security evidence. Material mismatch blocks qualification.
+exact-image security evidence. Authored/Node/static mismatches or unexpected selected package differences block
+qualification. The sole allowlisted synthetic-only difference is signed Debian
+`tzdata` 2026b-0+deb12u1 to 2026c-0+deb12u1, discovered on the first reconstruction.
+Its exact version difference is reported and no production-image binding is
+claimed; timezone content differs. This is not an all-dependency comparison.
 
 The inherited controller retains exact method/path/query policies, one-shot
 private intake, fixed HTTPS destinations, CA and hostname verification, request
 reservations, and phase transitions. The hosted `load()` path rejects production
 profiles. Synthetic tests include the actual browser, UI login, nonempty observed
 records, readiness before and after an exact backend restart, session continuity,
-logout/revocation, TLS negatives, network denial and gateway failure. A failed or
+logout/revocation, TLS negatives, known listening IPv4/IPv6 denial targets, request-framing
+negatives, charged uncertain responses, a durable route ceiling and gateway
+failure. The IPv6 probe is inside the gateway namespace; external IPv6 routing
+is not exercised. A failed or
 unexecuted check is not a passing integration result.
 
 Synthetic credentials, certificates, session profiles and disposable database
@@ -53,8 +60,9 @@ user-namespace Chromium sandbox support is required. The controller needs the
 tooling runtime for two containers: a network-none non-root browser/TLS shim
 with Xvfb, and a separate fixed-destination HTTPS gateway. It does not need the
 application build stages, disposable Mongo or stand-ins for production operation.
-Plan for 2 vCPU, 4 GiB RAM, and 6 GiB free disk including the conservative current
-tooling image, temporary browser profile and 2 GiB reserve. Runtime image size
+Plan for 2 vCPU, 4 GiB RAM, and 4 GiB free disk including the measured 1.12 GiB
+tooling image (shared by both containers), temporary browser profile and about
+2 GiB reserve. Runtime image size
 and peak process memory must be measured after successful qualification before
 calling this a measured minimum. A smaller purpose-built runtime could reduce
 storage but is outside this pilot.

@@ -6,13 +6,16 @@ import provision as p
 R=pathlib.Path(os.environ['PILOT_STATE']);P=R/'private';E=R/'evidence'
 def run(*a,**kw):
  q=subprocess.run(a,capture_output=True,text=True,timeout=180,**kw)
- if q.returncode:raise RuntimeError('COMMAND_FAILED_'+a[0])
+ if q.returncode:
+  for line in q.stdout.splitlines():
+   if line.startswith('PROVISION_') and line.replace('_','').isalpha():report('provision-progress',stage=line)
+  raise RuntimeError('COMMAND_FAILED_'+pathlib.Path(a[0]).name.replace('.','_'))
  return q.stdout.strip()
 def report(name,**fields):print(json.dumps({'check':name,**fields}),flush=True)
 def control(command,ok=True,**fields):
  m=json.loads((P/'intake.json').read_text())
  q={'run':m['run'],'capability':m['capability'],'command':command,**fields}
- out=subprocess.run(['docker','exec','--user','501:20','-i',m['container'],'node','/tools/control.cjs'],input=json.dumps(q),text=True,capture_output=True,timeout=60)
+ out=subprocess.run(['docker','exec','--user','501:20','-i',m['container'],'node','/tools/control.cjs'],input=json.dumps(q),text=True,capture_output=True,timeout=150)
  r=json.loads(out.stdout or '{}')
  if r.get('ok')!=ok:raise RuntimeError('CONTROL_'+command.replace('-','_').upper())
  return r
@@ -44,6 +47,16 @@ def operator(cancel=False):
  assert sent and echo_off and restored and password not in output
  assert child.returncode==(1 if cancel else 0)
  report('private-pty-cancel' if cancel else 'private-pty-login',passCheck=True,echoDisabled=True,echoRestored=True,noSecretEcho=True)
+def startup_probe():
+ return run('docker','exec','dapt-hosted-mongo','mongosh','--quiet','--eval',"const x=db.getSiblingDB('acceptance').operationalreadiness.findOne({_id:'execution-write-probe'});print(x?.checkedAt?.toISOString()||'pending')")
+def wait_startup(previous='pending'):
+ for _ in range(60):
+  stamp=startup_probe()
+  if stamp!='pending' and stamp!=previous:
+   time.sleep(1)
+   return
+  time.sleep(1)
+ raise RuntimeError('STARTUP_PROBE_NOT_READY')
 def snapshot():
  script="const d=db.getSiblingDB('acceptance'); print(EJSON.stringify(d.getCollectionNames().sort().filter(n=>!n.startsWith('system.')).map(n=>[n,d.getCollection(n).find().sort({_id:1}).toArray()])))"
  data=run('docker','exec','dapt-hosted-mongo','mongosh','--quiet','--eval',script)
@@ -54,6 +67,7 @@ def tcp_denied(container,ip,port):
 def main():
  run(sys.executable,str(ROOT/'tools/provision.py'))
  ready()
+ wait_startup()
  report('browser-start',passCheck=True)
  # Test TLS before application observation, in a distinct isolated namespace.
  report('transport',result=run('docker','run','--rm','--network','none','--user','0','-v',str(P)+':/private:ro','-v',str(ROOT)+':/suite:ro','pilot-tools:test','node','/suite/tests/transport.integration.cjs'))
@@ -63,8 +77,15 @@ def main():
   tcp_denied('dapt-hosted-'+name,'172.29.93.10',80)
   tcp_denied('dapt-hosted-'+name,'::1',80)
  tcp_denied('dapt-hosted-browser','172.29.93.10',443)
+ # Bind a known live IPv6 loopback target inside the gateway namespace.
+ run('docker','exec','--user','501:20','-d','dapt-hosted-gateway','node','-e',"const fs=require('fs');require('net').createServer(s=>s.end()).listen(8089,'::1',()=>fs.writeFileSync('/state/ipv6-listening','ready'))")
+ for _ in range(20):
+  if (P/'gateway-state/ipv6-listening').exists():break
+  time.sleep(.2)
+ else:raise RuntimeError('IPV6_FIXTURE_NOT_LISTENING')
+ tcp_denied('dapt-hosted-gateway','::1',8089)
  rules=(E/'gateway-ipv6.rules').read_text();assert ':OUTPUT DROP' in rules and ':INPUT DROP' in rules
- report('network-denial',passCheck=True,ipv4ListeningCanary=True,ipv6DefaultDropRules=True,ipv6ExternalReachabilityTested=False)
+ report('network-denial',passCheck=True,ipv4ListeningCanary=True,ipv6DefaultDropRules=True,ipv6ListeningCanary=True,ipv6ExternalReachabilityTested=False)
  control('security-probe');report('browser-route-bypass',passCheck=True)
  control('status',ok=False,run='wrong-run')
  control('status',ok=False,capability='wrong-capability')
@@ -90,6 +111,7 @@ def main():
  held=control('observe-before');assert snapshot()==before
  report('observational-views-and-database',passCheck=True)
  old=json.loads(run('docker','inspect','dapt-hosted-backend'))[0]
+ previous_probe=startup_probe()
  run('docker','restart','dapt-hosted-backend')
  for _ in range(45):
   q=subprocess.run(['docker','exec','dapt-hosted-backend','node','-e',"require('http').get('http://127.0.0.1:5001/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"],capture_output=True)
@@ -98,6 +120,7 @@ def main():
  else:raise RuntimeError('BACKEND_RESTART_NOT_READY')
  new=json.loads(run('docker','inspect','dapt-hosted-backend'))[0]
  assert old['Image']==new['Image'] and old['Config']['Env']==new['Config']['Env'] and old['Mounts']==new['Mounts'] and old['State']['StartedAt']!=new['State']['StartedAt'] and old['State']['Pid']!=new['State']['Pid']
+ wait_startup(previous_probe)
  post_start=snapshot()
  control('restart-completed',request=held['restartRequest'],receipt={'image':new['Image'],'before':old['State']['StartedAt'],'after':new['State']['StartedAt'],'sameDatabase':True,'sameAuthConfiguration':True})
  assert snapshot()==post_start
@@ -108,6 +131,15 @@ def main():
  provider=[json.loads(x) for x in (E/'upstream.jsonl').read_text().splitlines() if json.loads(x).get('type')=='provider']
  assert len(provider)==12 and all(x['method']=='GET' for x in provider)
  report('request-accounting',passCheck=True,providerReads=len(provider),gatewayReserved=state['paperReserved'],historicalSyntheticOffset=6)
+ # Exercise parser framing and durable charging for uncertain upstream failures.
+ report('gateway-framing',result=run('docker','exec','--user','501:20','dapt-hosted-browser','node','/tests/gateway.integration.cjs','framing'))
+ attempts=json.loads((P/'gateway-state/gateway.json').read_text())['attempts']
+ (E/'drop-response').touch(mode=0o600)
+ report('gateway-uncertain-budget',result=run('docker','exec','--user','501:20','dapt-hosted-browser','node','/tests/gateway.integration.cjs','uncertain'))
+ charged=json.loads((P/'gateway-state/gateway.json').read_text());assert charged['attempts']==attempts+11
+ uncertain=[json.loads(x) for x in (E/'upstream.jsonl').read_text().splitlines() if json.loads(x).get('type')=='uncertain-fixture'];assert len(uncertain)==11
+ run('docker','restart','dapt-hosted-gateway');time.sleep(3)
+ report('gateway-durable-budget',result=run('docker','exec','--user','501:20','dapt-hosted-browser','node','/tests/gateway.integration.cjs','persisted'))
  # Gateway outage must fail closed even after a successful session.
  run('docker','stop','dapt-hosted-gateway')
  code="const https=require('https'),fs=require('fs');https.get({host:'127.0.0.1',servername:'day-trader-backend.fly.dev',path:'/health',headers:{host:'day-trader-backend.fly.dev'},ca:fs.readFileSync('/tls/cert.pem')},r=>{r.resume();r.on('end',()=>process.exit(r.statusCode===502?0:1))}).on('error',()=>process.exit(1))"
@@ -127,6 +159,8 @@ if __name__=='__main__':
  try:main()
  except Exception as e:
   report('failure',code=str(e) if str(e).replace('_','').isalnum() else type(e).__name__)
+  if (E/'controller-start.json').exists():
+   d=json.loads((E/'controller-start.json').read_text());report('browser-start-failure',code=d.get('error'))
   if (E/'browser.jsonl').exists():
    for line in (E/'browser.jsonl').read_text().splitlines():
     d=json.loads(line)

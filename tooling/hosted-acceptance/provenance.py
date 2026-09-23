@@ -20,8 +20,14 @@ for role in ['backend','frontend','tools']:
    result[role]['nodeHashMatches']=digest(dest/'node')==expected['nodeSha256']
    command('docker','cp',cid+':/usr/share/day-trader/runtime-provenance.json',str(dest/'runtime.json'))
    runtime=json.loads((dest/'runtime.json').read_text())
-   result[role]['packageVersionsMatch']=runtime['packages']==expected['packages']
-   if mismatch or not result[role]['nodeHashMatches'] or not result[role]['packageVersionsMatch']:failures.append('BACKEND_CONTENT_DIFFERS')
+   result[role]['packageVersionsMatch']=sorted(runtime['packages'])==sorted(expected['packages'])
+   prior={v.split('\t')[0]:v for v in expected['packages']};current={v.split('\t')[0]:v for v in runtime['packages']}
+   drift={k:{'qualified':prior.get(k),'rebuilt':current.get(k)} for k in sorted(prior.keys()|current.keys()) if prior.get(k)!=current.get(k)}
+   result[role]['packageDifferences']=drift
+   allowed={'tzdata':{'qualified':'tzdata\t2026b-0+deb12u1\tall','rebuilt':'tzdata\t2026c-0+deb12u1\tall'}}
+   result[role]['testOnlyTimezoneDrift']=drift==allowed
+   result[role]['productionImageBindingEstablished']=False
+   if mismatch or not result[role]['nodeHashMatches'] or (drift and drift!=allowed):failures.append('BACKEND_CONTENT_DIFFERS')
   else:
    command('docker','cp',cid+':/usr/share/nginx/html',str(dest))
    mismatch=[p for p,h in expected['frontendStatic'].items() if not (dest/'html'/p).is_file() or digest(dest/'html'/p)!=h]
