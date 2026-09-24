@@ -6,11 +6,16 @@ process.umask(0o077);
 let stage='A';const children=[];
 const resources={mkdir:['/profile/home/.pki/nssdb','/profile/home','/profile/chromium'], 'certutil-init':['/profile/home/.pki/nssdb'], 'certutil-import':['/profile/home/.pki/nssdb','/tls/cert.pem'], Xvfb:['/tmp','/tmp/.X11-unix','/tmp/.X11-unix/X99','/tmp/.X99-lock'], 'TLS-shim':['/tls/key.pem','/tls/cert.pem','/gateway/gateway.sock'], browser:['/opt/chromium/chrome-linux/chrome','/profile/chromium']};
 function start(component,command,args){
- const spawnStage=stage;const child=spawn(command,args,{stdio:['ignore','pipe','pipe']});let output='';
- function retain(b){if(output.length<16384){output=(output+b.toString()).slice(0,16384);d.raw(component,output);}}
- child.stdout.on('data',retain);child.stderr.on('data',retain);
+ const spawnStage=stage;
+ const child=spawn(command,args,{stdio:['ignore','pipe','pipe'],env:component==='browser'?{...process.env,DEBUG:'pw:browser',DEBUG_COLORS:'0'}:process.env});
+ const capture=require('./startup-capture.cjs').capture({component,stage:spawnStage,pid:process.pid,childPid:child.pid,kind:'child-output'});
+ const retain=stream=>b=>{capture.push(b,stream);d.raw(component,capture.snapshot());};
+ child.stdout.on('data',retain('stdout'));child.stderr.on('data',retain('stderr'));
  child.on('error',e=>{child.spawnFailure=e;d.failure(component,stage,e)});
- child.on('close',(exitCode,signal)=>d.record(component,spawnStage,'exit',{exitCode,signal,error:d.facts({message:output}),resources:(resources[component]||[]).map(p=>d.metadata(p))}));
+ child.on('close',(exitCode,signal)=>{
+  const captured=capture.snapshot(true);d.raw(component,captured);
+  d.record(component,spawnStage,'exit',{exitCode,signal,error:d.facts({message:captured.lines.map(r=>r.text).join('\n')}),resources:(resources[component]||[]).map(p=>d.metadata(p))});
+ });
  children.push(child);return child;
 }
 async function command(component,cmd,args){const c=start(component,cmd,args);await new Promise((resolve,reject)=>{c.once('error',reject);c.once('exit',code=>code===0?resolve():reject(Object.assign(Error('STARTUP_COMMAND_FAILED'),{code:'ERR_STARTUP_COMMAND'})))});}

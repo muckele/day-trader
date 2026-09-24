@@ -34,7 +34,7 @@ test('actual Chromium/browser failure capture preserves original boundary',()=>{
  const fs=require('node:fs'),vm=require('node:vm'),writes=[];
  const fakeFs={mkdirSync(){},writeFileSync(p,x){writes.push([p,x])},appendFileSync(p,x){writes.push([p,x])},lstatSync(){throw Object.assign(Error(),{code:'ENOENT'})}};
  const module={exports:{}};
- vm.runInNewContext(fs.readFileSync(require.resolve('../tools/startup-diagnostics.cjs'),'utf8'),{module,require:n=>n==='node:fs'?fakeFs:require(n),process:{pid:10,getuid:()=>501,getgid:()=>20}});
+ vm.runInNewContext(fs.readFileSync(require.resolve('../tools/startup-diagnostics.cjs'),'utf8'),{module,require:n=>n==='node:fs'?fakeFs:n==='./startup-capture.cjs'?require('../tools/startup-capture.cjs'):require(n),process:{pid:10,getuid:()=>501,getgid:()=>20}});
  module.exports.failure('Chromium/browser','L',Object.assign(Error("EACCES: permission denied, mkdir '/profile/chromium'"),{code:'EACCES',syscall:'mkdir',path:'/profile/chromium'}));
  assert.ok(writes.some(([p])=>p==='/evidence/startup-private/Chromium_browser.txt'));
  const record=JSON.parse(writes.find(([p])=>p.endsWith('.jsonl'))[1]);assert.equal(record.error.code,'EACCES');assert.equal(record.error.syscall,'mkdir');assert.equal(record.error.path,'/profile/chromium');

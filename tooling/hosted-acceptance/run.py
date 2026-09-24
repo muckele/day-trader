@@ -159,20 +159,23 @@ def main():
   # Only preselected booleans/counts leave the runner, never response bodies.
   report(name,passCheck=True)
 def startup_summary():
- # Only public startup facts are read; never browser profile contents or raw diagnostics.
- files=[E/'startup-diagnostics.jsonl',E/'startup-tls-ready.json',E/'controller-start.json']
+ # Raw captures are read only here, then redacted and checked before any emission.
+ from startup_publication import prepare
  secrets=[]
- if (P/'synthetic.json').exists():secrets.append(json.loads((P/'synthetic.json').read_text())['password'].encode())
- if (P/'config/run.json').exists():secrets.append(json.loads((P/'config/run.json').read_text())['capability'].encode())
+ if (P/'synthetic.json').exists():secrets.append(json.loads((P/'synthetic.json').read_text())['password'])
+ if (P/'config/run.json').exists():secrets.append(json.loads((P/'config/run.json').read_text())['capability'])
  if (P/'backend.env').exists():
-  secrets.extend(line.split('=',1)[1].encode() for line in (P/'backend.env').read_text().splitlines() if line.startswith('JWT_SECRET='))
- public_data=b''.join(f.read_bytes() for f in files if f.exists())
- if any(value and value in public_data for value in secrets) or b'PRIVATE KEY-----' in public_data:
-  report('startup-diagnostic-leakage',passCheck=False)
-  raise RuntimeError('DIAGNOSTIC_PUBLICATION_BLOCKED')
- report('startup-diagnostic-leakage',passCheck=True,knownCredentialValues=len(secrets),browserProfileRead=False)
- if files[0].exists():
-  for line in files[0].read_text().splitlines():report('startup-diagnostic',facts=json.loads(line))
+  secrets.extend(line.split('=',1)[1] for line in (P/'backend.env').read_text().splitlines() if line.startswith('JWT_SECRET='))
+ for f in P.rglob('*.pem'):
+  if f.is_file() and f.stat().st_size<16384:
+   text=f.read_text()
+   if 'PRIVATE KEY' in text:
+    secrets.extend([text.strip(),''.join(x for x in text.splitlines() if not x.startswith('-----'))])
+    secrets.extend(x for x in text.splitlines() if not x.startswith('-----') and len(x)>16)
+ records,gate=prepare(E,secrets)
+ for row in records:print(json.dumps(row),flush=True)
+ print(json.dumps(gate),flush=True)
+
 if __name__=='__main__':
  code=0
  try:main()

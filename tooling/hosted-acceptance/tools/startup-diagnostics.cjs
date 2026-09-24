@@ -1,5 +1,5 @@
 'use strict';
-// Public records contain extracted facts only. Bounded originals stay ephemeral.
+// Facts and bounded originals pass a separate host publication gate before emission.
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const privateRoot='/evidence/startup-private',publicFile='/evidence/startup-diagnostics.jsonl';
 const roots=['/profile','/control','/tools','/opt/chromium','/tls','/gateway','/tmp','/dev/shm','/proc','/config'];
@@ -26,16 +26,21 @@ function facts(error){
  return {name:named,...(code?{code}:{}),...(Number.isInteger(e.errno)?{errno:e.errno}:{}),...(syscall?{syscall}:{}),...(e.path||inferred?{path:safePath(e.path||inferred[2])}:{}),...(['127.0.0.1','::1'].includes(e.address)?{address:e.address}:{}),...(Number.isInteger(e.port)?{port:e.port}:{}),...(signal?{signal}:{}),...(exit?{exitCode:Number(exit)}:{}),...(pid?{childPid:Number(pid)}:{}),descriptions};
 }
 function record(component,stage,status,details={}){
- const row={component,stage,status,pid:process.pid,uid:process.getuid(),gid:process.getgid(),...details};
+ const row={at:new Date().toISOString(),component,stage,status,pid:process.pid,uid:process.getuid(),gid:process.getgid(),...details};
  fs.appendFileSync(publicFile,JSON.stringify(row)+'\n',{mode:0o600});
 }
 function privateFilename(component){return String(component).replace(/[^A-Za-z0-9_-]/g,'_').slice(0,64)+'.txt';}
 function raw(component,value){
  fs.mkdirSync(privateRoot,{recursive:true,mode:0o700});
- fs.writeFileSync(path.join(privateRoot,privateFilename(component)),String(value).slice(0,16384),{mode:0o600});
+ fs.writeFileSync(path.join(privateRoot,privateFilename(component)),typeof value==='string'?value:JSON.stringify(value),{mode:0o600});
 }
 function failure(component,stage,e){
- try{raw(component,JSON.stringify({name:e.name,code:e.code,errno:e.errno,syscall:e.syscall,path:e.path,address:e.address,port:e.port,message:String(e.message||'').slice(0,12000),stack:String(e.stack||'').slice(0,4000)}));}catch{}
+ try{
+  const c=require('./startup-capture.cjs').capture({component,stage,pid:process.pid,kind:'exception'});
+  c.push(String(e.message||''),'exception');
+  const fields=Object.fromEntries(['code','errno','syscall','path','signal'].map(k=>[k,e[k]===undefined?null:e[k]]));
+  raw(component,{...c.snapshot(true),originalFields:fields,absentOriginalFields:Object.keys(fields).filter(k=>fields[k]===null)});
+ }catch{}
  const error=facts(e),p=error.path;record(component,stage,'failed',{error,...(p&&p.startsWith('/')?{object:metadata(p),parent:metadata(path.dirname(p))}:{})});
 }
 function metadata(target,probe=false){

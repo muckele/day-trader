@@ -42,6 +42,7 @@ docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
 docker info --format 'os={{.OSType}} arch={{.Architecture}} storage={{.Driver}} security={{json .SecurityOptions}}'
 docker buildx version
 node --test tooling/hosted-acceptance/tests/*.test.cjs
+python3 tooling/hosted-acceptance/tests/startup_publication_test.py
 mkdir "$PILOT_STATE/application"
 git archive 852fb22d9facf4bfe0bca7f419e22ee4bfbba17f backend frontend | tar -x -C "$PILOT_STATE/application"
 # No persistent cache imports/exports; logs here contain only public build inputs.

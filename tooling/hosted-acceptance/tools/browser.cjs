@@ -13,6 +13,10 @@ function rpc(path,q){return new Promise((resolve,reject)=>{const s=net.createCon
 const gateway=phase=>rpc('/gateway/control.sock',{run:c.run,capability:c.capability,phase});
 (async()=>{
 const instance=crypto.randomUUID();let stage='PREFLIGHT',busy=false,pending=null,consumed=false,issued=null,sequence=0,beforeNonce=null,credentialCanary=null;const responses=[];
+const executable='/opt/chromium/chrome-linux/chrome';
+const version=require('node:child_process').spawnSync(executable,['--version'],{encoding:'utf8',timeout:5000,maxBuffer:4096});
+const browserVersion=(version.stdout||'').match(/(?:Chromium|Google Chrome(?: for Testing)?) [0-9.]+/);
+diagnostic.record('browser','K','versions',{playwrightVersion:require('/opt/acceptance/node_modules/playwright/package.json').version,browserVersion:browserVersion?browserVersion[0]:'not emitted',versionProbeExit:version.status,executable,executableSha256:crypto.createHash('sha256').update(fs.readFileSync(executable)).digest('hex')});
 startupStage='K';diagnostic.preflight();startupStage='L';diagnostic.record('Chromium',startupStage,'attempt');
 const context=await chromium.launchPersistentContext('/profile/chromium',{executablePath:'/opt/chromium/chrome-linux/chrome',headless:false,chromiumSandbox:true,serviceWorkers:'block',ignoreHTTPSErrors:false,acceptDownloads:false,viewport:{width:1280,height:900},ignoreDefaultArgs:['--unsafely-disable-devtools-self-xss-warnings','--enable-unsafe-swiftshader'],args:['--disable-breakpad','--disable-crash-reporter','--disable-quic','--host-resolver-rules=MAP day-trader-frontend.fly.dev 127.0.0.1, MAP day-trader-backend.fly.dev 127.0.0.1, MAP fonts.googleapis.com 127.0.0.1, MAP fonts.gstatic.com 127.0.0.1, MAP * ~NOTFOUND']});
 startupStage='M';diagnostic.record('Chromium',startupStage,'complete');
