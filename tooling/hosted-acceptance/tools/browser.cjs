@@ -1,5 +1,5 @@
 'use strict';
-const diagnostic=require('./startup-diagnostics.cjs'),probe=require('./crashpad-probe.cjs');let startupStage='I';
+const diagnostic=require('./startup-diagnostics.cjs'),probe=require('./crashpad-probe.cjs'),attestation=require('./sandbox-attestation.cjs');let startupStage='I';
 diagnostic.record('browser',startupStage,'entered');
 process.on('uncaughtExceptionMonitor',e=>diagnostic.failure('browser',startupStage,e));
 const fs=require('fs'),net=require('net'),https=require('https'),crypto=require('crypto'),{chromium}=require('/opt/acceptance/node_modules/playwright');
@@ -16,14 +16,15 @@ const instance=crypto.randomUUID();let stage='PREFLIGHT',busy=false,pending=null
 const executable='/opt/chromium/chrome-linux/chrome';
 const version=require('node:child_process').spawnSync(executable,['--version'],{encoding:'utf8',timeout:5000,maxBuffer:4096});
 const browserVersion=(version.stdout||'').match(/(?:Chromium|Google Chrome(?: for Testing)?) [0-9.]+/);
-diagnostic.record('browser','K','versions',{playwrightVersion:require('/opt/acceptance/node_modules/playwright/package.json').version,browserVersion:browserVersion?browserVersion[0]:'not emitted',versionProbeExit:version.status,executable,executableSha256:crypto.createHash('sha256').update(fs.readFileSync(executable)).digest('hex')});
+const browserIdentity={playwrightVersion:require('/opt/acceptance/node_modules/playwright/package.json').version,browserVersion:browserVersion?browserVersion[0]:'not emitted',versionProbeExit:version.status,executable,executableSha256:crypto.createHash('sha256').update(fs.readFileSync(executable)).digest('hex')};
+diagnostic.record('browser','K','versions',browserIdentity);
 startupStage='K';diagnostic.preflight();probe.metadata('before');startupStage='L';diagnostic.record('Chromium',startupStage,'attempt');
 const context=await chromium.launchPersistentContext('/profile/chromium',{executablePath:'/opt/chromium/chrome-linux/chrome',headless:false,chromiumSandbox:true,serviceWorkers:'block',ignoreHTTPSErrors:false,acceptDownloads:false,viewport:{width:1280,height:900},ignoreDefaultArgs:['--unsafely-disable-devtools-self-xss-warnings','--enable-unsafe-swiftshader'],args:['--disable-breakpad','--disable-crash-reporter','--disable-quic','--host-resolver-rules=MAP day-trader-frontend.fly.dev 127.0.0.1, MAP day-trader-backend.fly.dev 127.0.0.1, MAP fonts.googleapis.com 127.0.0.1, MAP fonts.gstatic.com 127.0.0.1, MAP * ~NOTFOUND']});
 startupStage='M';diagnostic.record('Chromium',startupStage,'complete');
 const intercept=route=>{const r=route.request(),u=new URL(r.url()),h={...r.headers(),host:u.host};if(r.method()==='POST'&&!h['content-length'])h['content-length']=String(Buffer.byteLength(r.postData()||''));const d=u.protocol==='https:'&&!u.port&&!u.username&&!u.password&&parseRequest({method:r.method(),target:u.pathname+u.search,rawHeaders:Object.entries(h).flat()},assets);return d?route.continue():route.abort('blockedbyclient');};await context.route('**/*',intercept);
 const page=context.pages()[0]||await context.newPage();page.setDefaultTimeout(20000);
 context.on('response',r=>{const u=new URL(r.url());if(u.origin===BACK){responses.push({seq:++sequence,path:u.pathname,status:r.status(),method:r.request().method(),response:r});event({type:'response',seq:sequence,path:Object.hasOwn(require('./policy.cjs').routes,u.pathname)||['/api/login','/api/logout'].includes(u.pathname)?u.pathname:'other',status:r.status(),method:r.request().method()});}});
-startupStage='N';await page.goto('chrome://sandbox');diagnostic.record('browser',startupStage,'complete');startupStage='O';const sandboxText=await page.locator('body').innerText();if(!/Namespace Sandbox\s+Yes/i.test(sandboxText)||!/Seccomp-BPF sandbox\s+Yes/i.test(sandboxText))throw Error('SANDBOX_REQUIRED');save('sandbox',{pass:true,namespace:true,seccomp:true});diagnostic.record('browser',startupStage,'complete');
+startupStage='N';await page.goto('chrome://sandbox');diagnostic.record('browser',startupStage,'complete');startupStage='O';await attestation.observeAndAssert(page,browserIdentity);save('sandbox',{pass:true,namespace:true,seccomp:true});diagnostic.record('browser',startupStage,'complete');
 if(probe.enabled()){await probe.finish(context,page);probe.metadata('after');return;}
 startupStage='P';diagnostic.record('browser',startupStage,'attempt');await page.goto(FRONT+'/login');await page.getByRole('button',{name:'Log In',exact:true}).waitFor();stage='AWAIT_CREDENTIAL';
 function fail(){stage='FAILED';pending=null;credentialCanary=null;event({type:'failed'});}

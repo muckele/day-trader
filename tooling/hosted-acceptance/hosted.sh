@@ -20,7 +20,7 @@ p=pathlib.Path(os.environ['PILOT_STATE'])/'disk-samples'
 a=[int(x) for x in p.read_text().split()]
 print(json.dumps({'diskInitialAvailableBytes':a[0],'diskMinimumObservedAvailableBytes':min(a),'diskMaximumObservedConsumptionBytes':max(a)-min(a),'sampleSeconds':10}))
 PY
-  if [[ $PILOT_DIAGNOSTIC_ONLY == 1 ]]; then echo HOSTED_CRASHPAD_EXPERIMENT_JOB_FINISHED; elif [[ $code == 0 ]]; then echo HOSTED_TOOLING_PILOT_VERIFIED; else echo HOSTED_TOOLING_PILOT_BLOCKED; fi
+  if [[ $PILOT_DIAGNOSTIC_ONLY == 1 ]]; then if [[ $code == 0 ]]; then echo HOSTED_BROWSER_SANDBOX_ATTESTATION_VERIFIED; else echo HOSTED_BROWSER_SANDBOX_ATTESTATION_BLOCKED; fi; elif [[ $code == 0 ]]; then echo HOSTED_TOOLING_PILOT_VERIFIED; else echo HOSTED_TOOLING_PILOT_BLOCKED; fi
   python3 - <<'PY2' >> "$GITHUB_STEP_SUMMARY"
 import pathlib,os
 for line in (pathlib.Path(os.environ['PILOT_STATE'])/'public.log').read_text().splitlines():
@@ -45,6 +45,7 @@ docker buildx version
 node --test tooling/hosted-acceptance/tests/*.test.cjs
 python3 tooling/hosted-acceptance/tests/startup_publication_test.py
 python3 tooling/hosted-acceptance/tests/crashpad_experiment_test.py
+python3 tooling/hosted-acceptance/tests/sandbox_verification_test.py
 mkdir "$PILOT_STATE/application"
 git archive 852fb22d9facf4bfe0bca7f419e22ee4bfbba17f backend frontend | tar -x -C "$PILOT_STATE/application"
 # No persistent cache imports/exports; logs here contain only public build inputs.
@@ -53,4 +54,4 @@ docker build --platform linux/amd64 --progress plain --build-arg REACT_APP_API_U
 docker build --platform linux/amd64 --progress plain -f tooling/hosted-acceptance/Dockerfile -t pilot-tools:test "$PILOT_STATE/application"
 docker pull mongo:7.0.16
 python3 tooling/hosted-acceptance/provenance.py
-sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted PILOT_STATE="$PILOT_STATE" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" PILOT_CRASHPAD_EXPERIMENT="$PILOT_CRASHPAD_EXPERIMENT" PILOT_DIAGNOSTIC_ONLY="$PILOT_DIAGNOSTIC_ONLY" python3 tooling/hosted-acceptance/crashpad_experiment.py
+sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted PILOT_STATE="$PILOT_STATE" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" PILOT_CRASHPAD_EXPERIMENT="$PILOT_CRASHPAD_EXPERIMENT" PILOT_DIAGNOSTIC_ONLY="$PILOT_DIAGNOSTIC_ONLY" python3 tooling/hosted-acceptance/sandbox_verification.py

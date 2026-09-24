@@ -33,17 +33,19 @@ test('crash inspection reads metadata only, without opening file contents or pri
 });
 test('actual browser experiment path attests sandbox and exits before any app navigation',async()=>{
  const fs=require('node:fs'),vm=require('node:vm'),rows=[],navigations=[],calls=[];let closed=false;
- const page={setDefaultTimeout(){},goto:async url=>navigations.push(url),locator:()=>({innerText:async()=> 'Namespace Sandbox Yes\nSeccomp-BPF sandbox Yes'}),evaluate:async fn=>fn(),waitForTimeout:async()=>{}};
+ const fixture={url:'chrome://sandbox/',tableCount:1,evaluationCount:1,rows:[['Layer 1 Sandbox','Namespace'],['PID namespaces','Yes'],['Network namespaces','Yes'],['Seccomp-BPF sandbox','Yes']],assessment:'You are adequately sandboxed.'};
+ const page={url:()=>fixture.url,setDefaultTimeout(){},goto:async url=>navigations.push(url),waitForFunction:async()=>{},evaluate:async fn=>fn.name==='readDom'?fixture:fn(),waitForTimeout:async()=>{}};
  const context={route:async()=>{},pages:()=>[page],on(){},close:async()=>{closed=true}};
  const diagnostic={record:(...r)=>rows.push(r),preflight(){},failure(){assert.fail('unexpected browser failure')}};
  const runtimeProbe={enabled:()=>true,metadata:phase=>calls.push(phase),finish:(ctx,p)=>probe.finish(ctx,p,diagnostic.record)};
  const fakeFs={readFileSync:p=>p==='/config/assets.json'?'[]':Buffer.from('synthetic binary'),writeFileSync(){},appendFileSync(){}};
  const req=n=>{
+  if(n==='./sandbox-attestation.cjs')return {observeAndAssert:(p,id)=>require('../tools/sandbox-attestation.cjs').observeAndAssert(p,id,diagnostic.record)};
   if(n==='./startup-diagnostics.cjs')return diagnostic;if(n==='./crashpad-probe.cjs')return runtimeProbe;
   if(n==='fs')return fakeFs;if(n==='./config.cjs')return {load:()=>({run:'synthetic'})};
   if(n==='./policy.cjs')return {parseRequest(){},F:'frontend.invalid',B:'backend.invalid'};
   if(n==='/opt/acceptance/node_modules/playwright')return {chromium:{launchPersistentContext:async()=>context}};
-  if(n==='/opt/acceptance/node_modules/playwright/package.json')return {version:'synthetic'};
+  if(n==='/opt/acceptance/node_modules/playwright/package.json')return {version:'1.58.2'};
   if(n==='node:child_process')return {spawnSync:()=>({stdout:'Google Chrome for Testing 145.0.7632.6',status:0})};
   return require(n);
  };

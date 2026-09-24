@@ -46,4 +46,11 @@ class Publication(unittest.TestCase):
   self.assertNotIn('/home/runner',safe);self.assertNotIn('/private/config',safe);self.assertIn('/profile/chromium',safe);self.assertIn('source.cc:123',safe)
   for obj in ['{"capability":"unknown-secret","upstreams":{}}','{"Authorization":"Bearer unknown"}','HOME=/private/runner']:
    with self.assertRaises(Withheld):clean(obj,[])
+ def test_source_derived_sandbox_failure_observations_survive_publication(self):
+  # Constructed source-derived table, not prior B runtime evidence.
+  with tempfile.TemporaryDirectory() as temp:
+   e=pathlib.Path(temp)
+   observed={'component':'Chromium-sandbox','pageUrl':'chrome://sandbox/','actualRows':[['Layer 1 Sandbox','Namespace'],['PID namespaces','No'],['Network namespaces','Yes'],['Seccomp-BPF sandbox','No']],'assessment':'You are NOT adequately sandboxed.','checks':[{'label':'PID namespaces','observed':['No'],'pass':False}],'pass':False,'errors':['TABLE_READINESS_TIMEOUT']}
+   (e/'startup-diagnostics.jsonl').write_text(json.dumps(observed)+'\n')
+   rows,_=prepare(e,[]);self.assertEqual(rows[0]['check'],'startup-facts');self.assertEqual(rows[0]['data'][0],observed)
 if __name__=='__main__':unittest.main()
