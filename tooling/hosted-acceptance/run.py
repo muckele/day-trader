@@ -158,7 +158,7 @@ def main():
   d=json.loads((E/(name+'.json')).read_text());assert d['pass']
   # Only preselected booleans/counts leave the runner, never response bodies.
   report(name,passCheck=True)
-def startup_summary():
+def startup_summary(evidence=E,trial=None):
  # Raw captures are read only here, then redacted and checked before any emission.
  from startup_publication import prepare
  secrets=[]
@@ -166,15 +166,16 @@ def startup_summary():
  if (P/'config/run.json').exists():secrets.append(json.loads((P/'config/run.json').read_text())['capability'])
  if (P/'backend.env').exists():
   secrets.extend(line.split('=',1)[1] for line in (P/'backend.env').read_text().splitlines() if line.startswith('JWT_SECRET='))
- for f in P.rglob('*.pem'):
+ for f in [P/name/'key.pem' for name in ['tls','upstream','negative/wrong','negative/expired','negative/untrusted']]:
   if f.is_file() and f.stat().st_size<16384:
    text=f.read_text()
    if 'PRIVATE KEY' in text:
     secrets.extend([text.strip(),''.join(x for x in text.splitlines() if not x.startswith('-----'))])
     secrets.extend(x for x in text.splitlines() if not x.startswith('-----') and len(x)>16)
- records,gate=prepare(E,secrets)
- for row in records:print(json.dumps(row),flush=True)
- print(json.dumps(gate),flush=True)
+ records,gate=prepare(evidence,secrets)
+ for row in records:print(json.dumps({**row,**({'trial':trial} if trial else {})}),flush=True)
+ print(json.dumps({**gate,**({'trial':trial} if trial else {})}),flush=True)
+ return records
 
 if __name__=='__main__':
  code=0

@@ -7,6 +7,20 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 R=pathlib.Path(os.environ['PILOT_STATE']);T=pathlib.Path(__file__).resolve().parent;P=R/'private';E=R/'evidence';PREFIX='dapt-hosted'
 BACK='pilot-backend:test';FRONT='pilot-frontend:test';MONGO='mongo:7.0.16';TOOL='pilot-tools:test'
 
+CRASH_TARGET='/profile/home/.config/google-chrome-for-testing/Crash Reports'
+BASELINE_CRASH='ro,mode=000,size=1m'
+WRITABLE_CRASH='rw,mode=0700,uid=501,gid=20,size=1m'
+def experiment_enabled():
+ return all(os.environ.get(k)==v for k,v in {'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','PILOT_DIAGNOSTIC_ONLY':'1','PILOT_CRASHPAD_EXPERIMENT':'aba-v1'}.items())
+def browser_options(profile,evidence,crash=BASELINE_CRASH,experiment=False):
+ if crash not in [BASELINE_CRASH,WRITABLE_CRASH] or (crash!=BASELINE_CRASH and not experiment):raise RuntimeError('CRASH_POLICY_REJECTED')
+ if experiment and not experiment_enabled():raise RuntimeError('HOSTED_DIAGNOSTIC_ONLY')
+ options=['--network','none','--user','501:20','--cap-drop','ALL','--security-opt','no-new-privileges','--security-opt','seccomp='+str(T/'chromium-seccomp.json'),'--shm-size','512m','--tmpfs','/control:mode=0700,uid=501,gid=20,size=1m','--ulimit','core=0:0','--tmpfs',CRASH_TARGET+':'+crash,'-e','HOME=/profile/home','-e','DISPLAY=:99','-v',str(T.parent/'tests')+':/tests:ro','-v',str(T)+':/tools:ro','-v',str(P/'config')+':/config:ro','-v',str(evidence)+':/evidence','-v',str(P/'tls')+':/tls:ro','-v',str(profile)+':/profile','-v',PREFIX+'-gateway:/gateway:ro']
+ if experiment:
+  options.extend(['--hostname','dapt-hosted-browser-experiment'])
+  for key,value in {'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','PILOT_DIAGNOSTIC_ONLY':'1','PILOT_CRASHPAD_EXPERIMENT':'aba-v1'}.items():options.extend(['-e',key+'='+value])
+ return options
+
 def run(*a,**kw):
  p=subprocess.run(a,capture_output=True,text=True,timeout=120,**kw)
  if p.returncode:raise RuntimeError('COMMAND_FAILED '+a[0]+' '+a[1]+' '+str(p.returncode))
@@ -61,6 +75,8 @@ if __name__=='__main__':
  common=['-v',str(T)+':/tools:ro','-v',str(P/'config')+':/config:ro','-v',str(E)+':/evidence']
  drun('gateway',['--network',netname,'--ip','172.29.93.20','--user','0','--cap-drop','ALL','--cap-add','NET_ADMIN','--cap-add','DAC_OVERRIDE','--cap-add','SETUID','--cap-add','SETGID','--cap-add','SETPCAP','--security-opt','no-new-privileges',*common,'-v',str(P/'upstream')+':/upstream-trust:ro','-v',str(P/'gateway-state')+':/state','-v',PREFIX+'-gateway:/gateway'],TOOL,'sh','/tools/gateway-start.sh')
  time.sleep(3)
- cid=drun('browser',['--network','none','--user','501:20','--cap-drop','ALL','--security-opt','no-new-privileges','--security-opt','seccomp='+str(T/'chromium-seccomp.json'),'--shm-size','512m','--tmpfs','/control:mode=0700,uid=501,gid=20,size=1m','--ulimit','core=0:0','--tmpfs','/profile/home/.config/google-chrome-for-testing/Crash Reports:ro,mode=000,size=1m','-e','HOME=/profile/home','-e','DISPLAY=:99','-v',str(T.parent/'tests')+':/tests:ro',*common,'-v',str(P/'tls')+':/tls:ro','-v',str(P/'profile')+':/profile','-v',PREFIX+'-gateway:/gateway:ro'],TOOL,'sh','/tools/browser-start.sh')
+ if experiment_enabled():
+  save(P/'configured','configured');save(E/'resources.json',RES);print('SYNTHETIC_STACK_CREATED');raise SystemExit(0)
+ cid=drun('browser',browser_options(P/'profile',E),TOOL,'sh','/tools/browser-start.sh')
  save(P/'intake.json',{'container':cid,'run':PREFIX,'capability':config['capability'],'lock':LOCK,'source':config['source'],'destination':'https://day-trader-backend.fly.dev'});save(P/'configured','configured')
  save(E/'resources.json',RES);print('SYNTHETIC_STACK_CREATED')
