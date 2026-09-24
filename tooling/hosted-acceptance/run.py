@@ -67,6 +67,9 @@ def tcp_denied(container,ip,port):
 def main():
  run(sys.executable,str(ROOT/'tools/provision.py'))
  ready()
+ if os.environ.get('PILOT_DIAGNOSTIC_ONLY')=='1':
+  report('diagnostic-startup-reached-ready',passCheck=True,qualificationExecuted=False)
+  return
  wait_startup()
  report('browser-start',passCheck=True)
  # Test TLS before application observation, in a distinct isolated namespace.
@@ -155,9 +158,26 @@ def main():
   d=json.loads((E/(name+'.json')).read_text());assert d['pass']
   # Only preselected booleans/counts leave the runner, never response bodies.
   report(name,passCheck=True)
+def startup_summary():
+ # Only public startup facts are read; never browser profile contents or raw diagnostics.
+ files=[E/'startup-diagnostics.jsonl',E/'startup-tls-ready.json',E/'controller-start.json']
+ secrets=[]
+ if (P/'synthetic.json').exists():secrets.append(json.loads((P/'synthetic.json').read_text())['password'].encode())
+ if (P/'config/run.json').exists():secrets.append(json.loads((P/'config/run.json').read_text())['capability'].encode())
+ if (P/'backend.env').exists():
+  secrets.extend(line.split('=',1)[1].encode() for line in (P/'backend.env').read_text().splitlines() if line.startswith('JWT_SECRET='))
+ public_data=b''.join(f.read_bytes() for f in files if f.exists())
+ if any(value and value in public_data for value in secrets) or b'PRIVATE KEY-----' in public_data:
+  report('startup-diagnostic-leakage',passCheck=False)
+  raise RuntimeError('DIAGNOSTIC_PUBLICATION_BLOCKED')
+ report('startup-diagnostic-leakage',passCheck=True,knownCredentialValues=len(secrets),browserProfileRead=False)
+ if files[0].exists():
+  for line in files[0].read_text().splitlines():report('startup-diagnostic',facts=json.loads(line))
 if __name__=='__main__':
+ code=0
  try:main()
  except Exception as e:
+  code=1
   report('failure',code=str(e) if str(e).replace('_','').isalnum() else type(e).__name__)
   if (E/'controller-start.json').exists():
    d=json.loads((E/'controller-start.json').read_text());report('browser-start-failure',code=d.get('error'))
@@ -165,4 +185,7 @@ if __name__=='__main__':
    for line in (E/'browser.jsonl').read_text().splitlines():
     d=json.loads(line)
     if d.get('type')=='check-rejected':report('controller-rejection',code=d['code'])
-  sys.exit(1)
+ finally:
+  try:startup_summary()
+  except Exception:code=1;report('startup-summary',passCheck=False)
+ sys.exit(code)

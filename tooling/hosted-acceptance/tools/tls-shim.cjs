@@ -1,4 +1,6 @@
 'use strict';
+const diagnostic=require('./startup-diagnostics.cjs');
+process.on('uncaughtExceptionMonitor',e=>diagnostic.failure('TLS-shim','H',e));
 const https=require('node:https'),http=require('node:http'),fs=require('node:fs');
 require('./config.cjs').load();
 const {parseRequest}=require('./policy.cjs');const assets=JSON.parse(fs.readFileSync('/config/assets.json'));
@@ -17,4 +19,5 @@ const server=https.createServer({key:fs.readFileSync('/tls/key.pem'),cert:fs.rea
 server.on('connect',(_,s)=>s.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'));
 server.on('upgrade',(_,s)=>s.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'));
 server.on('clientError',(_,s)=>s.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'));
-server.listen(443,'127.0.0.1');
+server.on('error',e=>{diagnostic.failure('TLS-shim','H',e);process.exitCode=1;});
+server.listen(443,'127.0.0.1',()=>{const receipt={pid:process.pid,address:'127.0.0.1',port:443};fs.writeFileSync('/evidence/startup-tls-ready.json',JSON.stringify(receipt),{mode:0o600});diagnostic.record('TLS-shim','H','listen',receipt);});

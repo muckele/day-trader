@@ -2,6 +2,7 @@
 set -euo pipefail
 [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted && ${GITHUB_REF:-} == refs/heads/codex/hosted-acceptance-tooling ]] || exit 2
 [[ ${GITHUB_RUN_ATTEMPT:-} == 1 ]] || { echo 'Reruns are outside the pilot; use the remaining reviewed push if authorized.'; exit 2; }
+export PILOT_DIAGNOSTIC_ONLY=1
 export PILOT_STATE="$RUNNER_TEMP/acceptance-pilot"
 mkdir -m 700 "$PILOT_STATE"
 exec > >(tee "$PILOT_STATE/public.log") 2>&1
@@ -18,7 +19,7 @@ p=pathlib.Path(os.environ['PILOT_STATE'])/'disk-samples'
 a=[int(x) for x in p.read_text().split()]
 print(json.dumps({'diskInitialAvailableBytes':a[0],'diskMinimumObservedAvailableBytes':min(a),'diskMaximumObservedConsumptionBytes':max(a)-min(a),'sampleSeconds':10}))
 PY
-  if [[ $code == 0 ]]; then echo HOSTED_TOOLING_PILOT_VERIFIED; else echo HOSTED_TOOLING_PILOT_BLOCKED; fi
+  if [[ $PILOT_DIAGNOSTIC_ONLY == 1 ]]; then echo HOSTED_BROWSER_DIAGNOSTIC_COMPLETE; elif [[ $code == 0 ]]; then echo HOSTED_TOOLING_PILOT_VERIFIED; else echo HOSTED_TOOLING_PILOT_BLOCKED; fi
   python3 - <<'PY2' >> "$GITHUB_STEP_SUMMARY"
 import pathlib,os
 for line in (pathlib.Path(os.environ['PILOT_STATE'])/'public.log').read_text().splitlines():
@@ -49,4 +50,4 @@ docker build --platform linux/amd64 --progress plain --build-arg REACT_APP_API_U
 docker build --platform linux/amd64 --progress plain -f tooling/hosted-acceptance/Dockerfile -t pilot-tools:test "$PILOT_STATE/application"
 docker pull mongo:7.0.16
 python3 tooling/hosted-acceptance/provenance.py
-sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted PILOT_STATE="$PILOT_STATE" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted python3 tooling/hosted-acceptance/run.py
+sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted PILOT_STATE="$PILOT_STATE" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted PILOT_DIAGNOSTIC_ONLY="$PILOT_DIAGNOSTIC_ONLY" python3 tooling/hosted-acceptance/run.py
