@@ -74,6 +74,9 @@ def main():
  report('qualification-begin',source=qualification.SOURCE,profile='production-rehearsal',swapBytes=swap,tmpfsMayUseSwap=True,crashContentsRead=False)
  run(sys.executable,str(ROOT/'tools/provision.py'))
  ready()
+ if os.environ.get('PILOT_STARTUP_PROBE_DIAGNOSTIC')=='once-v1':
+  from startup_probe_diagnostic import diagnose_once
+  diagnose_once(qualification.private_values(P),report)
  wait_startup()
  report('browser-start',passCheck=True)
  pre=json.loads((E/'market-preauth.json').read_text());state=json.loads((P/'gateway-state/gateway.json').read_text())
