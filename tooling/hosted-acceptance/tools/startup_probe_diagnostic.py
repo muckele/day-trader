@@ -6,6 +6,13 @@ from startup_publication import clean,variants,Withheld
 PROBE=('docker','exec','dapt-hosted-mongo','mongosh','--quiet','--eval',"const x=db.getSiblingDB('acceptance').operationalreadiness.findOne({_id:'execution-write-probe'});print(x?.checkedAt?.toISOString()||'pending')")
 WINDOW=32768
 ISO=r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z'
+METHODS={'toISOString','Date.prototype.toISOString','Date.prototype.toISOString()','findOne','getSiblingDB'}
+def method_identifier(text):
+ matches=re.findall(r'^TypeError: Method ([^\r\n]{1,160}) called on incompatible receiver ([^\r\n]{1,160})$',text,re.MULTILINE)
+ if len(matches)!=1:return {'identifier':'METHOD_IDENTIFIER_UNRECOGNIZED','receiver':'unrecognized'}
+ method,receiver=matches[0]
+ return {'identifier':method if method in METHODS else 'METHOD_IDENTIFIER_UNRECOGNIZED','receiver':receiver if receiver in ['undefined','null'] else 'other'}
+
 def window(stream):
  stream.flush();stream.seek(0,2);size=stream.tell();stream.seek(0)
  if size<=WINDOW:return stream.read().decode('utf-8','replace'),size,False
@@ -58,7 +65,7 @@ def execute(args,secrets,timeout=180):
   except OSError as error:launched=False;errno=error.errno
   out,out_size,out_truncated=window(stdout);err,err_size,err_truncated=window(stderr)
  elapsed=round(time.monotonic()-start,3);classification=category(code,out,err,timed_out,launched)
- record={'exitCode':code,'timeout':timed_out,'elapsedSeconds':elapsed,'stdoutBytes':out_size,'stderrBytes':err_size,'stdoutTruncated':out_truncated,'stderrTruncated':err_truncated,'stdoutExcerpt':excerpt(out,secrets),'stderrExcerpt':excerpt(err,secrets),'classification':classification,'dockerClientLaunched':launched,'execProcessLaunched':False if classification in ['CLIENT_LAUNCH_ERROR','EXEC_LAUNCH_ERROR'] else True if code==0 or classification in ['CONNECTION_REFUSED','NOT_PRIMARY','SERVER_SELECTION','EVALUATION_ERROR'] else None,'launchErrno':errno}
+ record={'exitCode':code,'timeout':timed_out,'elapsedSeconds':elapsed,'stdoutBytes':out_size,'stderrBytes':err_size,'stdoutTruncated':out_truncated,'stderrTruncated':err_truncated,'stdoutExcerpt':excerpt(out,secrets),'stderrExcerpt':excerpt(err,secrets),'classification':classification,'dockerClientLaunched':launched,'execProcessLaunched':False if classification in ['CLIENT_LAUNCH_ERROR','EXEC_LAUNCH_ERROR'] else True if code==0 or classification in ['CONNECTION_REFUSED','NOT_PRIMARY','SERVER_SELECTION','EVALUATION_ERROR'] else None,'launchErrno':errno,'method':method_identifier(err)}
  # Defense in depth before any caller can publish the structured result.
  if any(v in json.dumps(record) for v in variants(secrets)):raise RuntimeError('PROBE_PUBLICATION_REJECTED')
  return record,out
@@ -84,22 +91,47 @@ def readonly_diagnostics(secrets):
  mongo=container_state('dapt-hosted-mongo',secrets)
  version,v=execute(('docker','exec','dapt-hosted-mongo','mongosh','--version'),secrets,8)
  version_value=v.strip() if re.fullmatch(r'\d{1,3}\.\d{1,3}\.\d{1,3}',v.strip()) else None
- hello="const h=await db.hello();print(JSON.stringify({ok:h.ok,isWritablePrimary:h.isWritablePrimary??h.ismaster,secondary:h.secondary,setName:h.setName}))"
- h,hout=execute(('docker','exec','dapt-hosted-mongo','mongosh','--quiet','--eval',hello),secrets,8)
- lookup="const x=await db.getSiblingDB('acceptance').operationalreadiness.findOne({_id:'execution-write-probe'},{_id:0,checkedAt:1});print(JSON.stringify({documentFound:!!x,checkedAtPresent:!!x&&Object.hasOwn(x,'checkedAt'),checkedAtValidDate:!!x&&x.checkedAt instanceof Date&&!isNaN(x.checkedAt.getTime())}))"
- q,qout=execute(('docker','exec','dapt-hosted-mongo','mongosh','--quiet','--eval',lookup),secrets,8)
+ from startup_token import HELLO,LOOKUP,ALTERNATIVE,parse_lookup,parse_token
+ h,hout=execute(('docker','exec','dapt-hosted-mongo','mongosh','--quiet','--eval',HELLO),secrets,8)
+ q,qout=execute(('docker','exec','dapt-hosted-mongo','mongosh','--quiet','--eval',LOOKUP),secrets,8)
+ lookup_fields=parse_lookup(qout) if q['exitCode']==0 else {'classification':'COMMAND_ERROR','documentFound':False,'checkedAtPresent':False,'checkedAtIsCanonicalBsonDate':False}
+ a,aout=execute(('docker','exec','dapt-hosted-mongo','mongosh','--quiet','--eval',ALTERNATIVE),secrets,8)
+ alternative_token=None
+ if a['exitCode']==0:
+  try:alternative_token=parse_token(aout)
+  except ValueError:pass
+ alternative={'command':a,'valid':alternative_token is not None,'sameCheckedAt':alternative_token is not None and alternative_token==lookup_fields.get('token')}
  backend=container_state('dapt-hosted-backend',secrets)
  health="const q=require('http').get('http://127.0.0.1:5001/health',r=>{console.log(r.statusCode);r.resume()});q.setTimeout(2000,()=>q.destroy());q.on('error',()=>{console.log('HEALTH_CONNECTION_ERROR');process.exitCode=1})"
  b,bout=execute(('docker','exec','dapt-hosted-backend','node','-e',health),secrets,8)
  boolean=lambda v:type(v) is bool
  hello_fields=safe_fields(hout,{'ok':lambda v:type(v) in [int,float] and v in [0,1],'isWritablePrimary':boolean,'secondary':boolean,'setName':lambda v:v=='acceptance'})
- lookup_fields=safe_fields(qout,{k:boolean for k in ['documentFound','checkedAtPresent','checkedAtValidDate']})
- return {'mongo':mongo,'mongosh':{'command':version,'available':True if version['exitCode']==0 else False if version['classification']=='EXEC_LAUNCH_ERROR' else None,'version':version_value},'hello':{'command':h,'fields':hello_fields},'lookup':{'command':q,'fields':lookup_fields},'backend':backend,'backendHealth':{'command':b,'ready':b['exitCode']==0 and bout.strip()=='200'},'startupProbeRecordReady':q['exitCode']==0 and all(lookup_fields.get(k) is True for k in ['documentFound','checkedAtPresent','checkedAtValidDate'])}
+ return {'mongo':mongo,'mongosh':{'command':version,'available':True if version['exitCode']==0 else False if version['classification']=='EXEC_LAUNCH_ERROR' else None,'version':version_value},'hello':{'command':h,'fields':hello_fields},'lookup':{'command':q,'fields':lookup_fields},'alternative':alternative,'backend':backend,'backendHealth':{'command':b,'ready':b['exitCode']==0 and bout.strip()=='200'},'startupProbeRecordReady':q['exitCode']==0 and all(lookup_fields.get(k) is True for k in ['documentFound','checkedAtPresent','checkedAtIsCanonicalBsonDate'])}
+
+def expression_gate(original,diagnostics):
+ hello=diagnostics.get('hello',{});fields=hello.get('fields',{});lookup=diagnostics.get('lookup',{});lf=lookup.get('fields',{});alt=diagnostics.get('alternative',{});mongo=diagnostics.get('mongo',{});backend=diagnostics.get('backend',{});shell=diagnostics.get('mongosh',{})
+ checks={
+  'originalExitOne':original.get('exitCode')==1 and original.get('timeout') is False,
+  'timestampConversionMethod':original.get('classification')=='EVALUATION_ERROR' and original.get('method',{}).get('identifier') in ['toISOString','Date.prototype.toISOString','Date.prototype.toISOString()'],
+  'dockerExecWorks':original.get('dockerClientLaunched') is True and original.get('execProcessLaunched') is True,
+  'mongoshWorks':shell.get('available') is True and shell.get('version')=='2.3.8',
+  'helloSucceeded':hello.get('command',{}).get('exitCode')==0 and fields.get('ok')==1,
+  'expectedWritablePrimary':fields.get('setName')=='acceptance' and fields.get('isWritablePrimary') is True and fields.get('secondary') is False,
+  'documentExists':lookup.get('command',{}).get('exitCode')==0 and lf.get('documentFound') is True,
+  'checkedAtExists':lf.get('checkedAtPresent') is True,
+  'canonicalBsonDate':lf.get('checkedAtIsCanonicalBsonDate') is True,
+  'sameValueAlternativeWorks':alt.get('command',{}).get('exitCode')==0 and alt.get('valid') is True and alt.get('sameCheckedAt') is True,
+  'mongoHealthy':mongo.get('running') is True and mongo.get('restartCount')==0 and fields.get('isWritablePrimary') is True,
+  'backendInitializationEvidence':backend.get('running') is True and backend.get('restartCount')==0 and diagnostics.get('backendHealth',{}).get('ready') is True and diagnostics.get('startupProbeRecordReady') is True
+ }
+ return {'identified':all(checks.values()),'criteria':checks,'classification':'HOSTED_STARTUP_PROBE_EXPRESSION_ROOT_CAUSE_'+('IDENTIFIED' if all(checks.values()) else 'UNRESOLVED')}
 
 def diagnose_once(secrets,report):
  result=probe_subprocess(PROBE,secrets)
  report('startup-probe-attempt',attempt=1,targetDatabase='acceptance',query='execution-write-probe lookup',**result)
  failed=result['exitCode']!=0 or result['timeout']
- report('startup-probe-readonly',**readonly_diagnostics(secrets))
+ diagnostics=readonly_diagnostics(secrets)
+ report('startup-probe-readonly',**diagnostics)
+ report('startup-expression-gate',**expression_gate(result,diagnostics))
  report('startup-probe-diagnostic-stop',outcome='FAILED_CAPTURED' if failed else 'NOT_REPRODUCED',rootCauseAutomaticallyEstablished=False,credentialsSubmitted=False,fullQualificationExecuted=False)
  raise RuntimeError('STARTUP_PROBE_DIAGNOSTIC_STOP')

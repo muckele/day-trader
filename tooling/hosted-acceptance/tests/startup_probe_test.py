@@ -52,10 +52,11 @@ class ProbeDiagnostic(unittest.TestCase):
    elif '--version' in args:out='2.3.9'
    elif 'node' in args:out='200'
    elif 'db.hello' in args[-1]:out=json.dumps({'ok':1,'isWritablePrimary':True,'secondary':False,'setName':'acceptance','hosts':['secret.host']})
-   else:out=json.dumps({'documentFound':True,'checkedAtPresent':True,'checkedAtValidDate':True,'arbitraryDocument':'never-publish'})
+   elif 'DAPT_DATE:' in args[-1]:out='DAPT_DATE:{"$date":{"$numberLong":"1790000000000"}}'
+   else:out=json.dumps({'state':'VALUE','serverBsonDate':True,'value':{'$date':{'$numberLong':'1790000000000'}}})
    kw['stdout'].write(out.encode());return subprocess.CompletedProcess(args,0)
   with patch.object(m.subprocess,'run',side_effect=run):r=m.readonly_diagnostics([])
-  text=json.dumps(r);self.assertNotIn('secret.host',text);self.assertNotIn('never-publish',text);self.assertTrue(r['mongo']['running']);self.assertTrue(r['mongo']['pidPresent']);self.assertTrue(r['mongosh']['available']);self.assertTrue(r['hello']['fields']['isWritablePrimary']);self.assertTrue(r['lookup']['fields']['checkedAtValidDate']);self.assertTrue(r['backendHealth']['ready'])
+  text=json.dumps(r);self.assertNotIn('secret.host',text);self.assertNotIn('never-publish',text);self.assertTrue(r['mongo']['running']);self.assertTrue(r['mongo']['pidPresent']);self.assertTrue(r['mongosh']['available']);self.assertTrue(r['hello']['fields']['isWritablePrimary']);self.assertTrue(r['lookup']['fields']['checkedAtIsCanonicalBsonDate']);self.assertTrue(r['backendHealth']['ready'])
   self.assertTrue(all(a[:2] in [('docker','exec'),('docker','inspect')] for a in calls));self.assertFalse(any(any(word in ' '.join(a) for word in ['insertOne','updateOne','deleteOne','rs.initiate','--env']) for a in calls))
  def test_diagnostic_success_does_not_continue_or_claim_root_cause(self):
   m=self.module();rows=[]
