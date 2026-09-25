@@ -14,7 +14,7 @@ test('successful login cookie is retained privately even if subsequent UI wait f
  const vm=require('node:vm'),source=fs.readFileSync(require.resolve('../tools/browser.cjs'),'utf8');
  const fn=source.slice(source.indexOf('async function login('),source.indexOf('const commands='));
  const session={name:'daytrader_session',value:'synthetic-partial-session',secure:true,httpOnly:true};
- const scope={gateway:async()=>{},stage:'AWAIT_CREDENTIAL',credentialCanary:null,issued:null,c:{username:'synthetic'},BACK:'https://backend.invalid',context:{cookies:async()=>[session]},page:{waitForResponse:async()=>({status:()=>200}),getByPlaceholder:()=>({fill:async()=>{}}),getByRole:(_,opts)=>({click:async()=>{},waitFor:async()=>{if(opts.name==='Sign Out')throw Error('UI_WAIT_FAILED')}})},save(){},instance:'synthetic',routeGuard:{assert(){}}};
+ const scope={entry:{arm(){}},gateway:async()=>{},stage:'AWAIT_CREDENTIAL',credentialCanary:null,issued:null,c:{username:'synthetic'},BACK:'https://backend.invalid',context:{cookies:async()=>[session]},page:{waitForResponse:async()=>({status:()=>200}),getByPlaceholder:()=>({fill:async()=>{}}),getByRole:(_,opts)=>({click:async()=>{},waitFor:async()=>{if(opts.name==='Sign Out')throw Error('UI_WAIT_FAILED')}})},save(){},instance:'synthetic',routeGuard:{assert(){}}};
  vm.runInNewContext(fn+';globalThis.login=login;',scope);await assert.rejects(scope.login('synthetic-password'),/UI_WAIT_FAILED/);assert.equal(scope.issued?.value,session.value);
 });
 test('private publication retrieves current accepted session even before issued assignment',async()=>{

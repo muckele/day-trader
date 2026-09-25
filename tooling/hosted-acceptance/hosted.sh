@@ -52,6 +52,7 @@ python3 tooling/hosted-acceptance/tests/startup_publication_test.py
 python3 tooling/hosted-acceptance/tests/crashpad_experiment_test.py
 python3 tooling/hosted-acceptance/tests/sandbox_verification_test.py
 python3 tooling/hosted-acceptance/tests/qualification_test.py
+python3 tooling/hosted-acceptance/tests/entry_accounting_test.py
 mkdir "$PILOT_STATE/application"
 git archive 852fb22d9facf4bfe0bca7f419e22ee4bfbba17f backend frontend | tar -x -C "$PILOT_STATE/application"
 # No persistent cache imports/exports; logs here contain only public build inputs.

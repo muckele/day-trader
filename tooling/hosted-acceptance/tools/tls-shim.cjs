@@ -13,6 +13,7 @@ const server=https.createServer({key:fs.readFileSync('/tls/key.pem'),cert:fs.rea
   const parsed=parseRequest({method:req.method,target:req.url,rawHeaders:req.rawHeaders},assets);if(!parsed){res.writeHead(403);return res.end();}
   const headers={};for(const k of ['host','origin','content-type','content-length','cookie','accept','accept-encoding','access-control-request-method','access-control-request-headers','if-none-match','if-modified-since','cache-control'])if(req.headers[k])headers[k]=req.headers[k];
   if(req.headers['transfer-encoding']){res.writeHead(400);return res.end();}
+  fs.appendFileSync('/evidence/tls-forward.jsonl',JSON.stringify({path:parsed.path,method:parsed.method,queryPresent:parsed.target.includes('?')})+'\n');
   const u=http.request({socketPath:'/gateway/gateway.sock',path:parsed.target,method:parsed.method,headers,timeout:12000},r=>{res.writeHead(r.statusCode,r.headers);r.pipe(res);});
   u.on('timeout',()=>u.destroy());u.on('error',()=>{if(!res.headersSent)res.writeHead(502);res.end();});req.pipe(u);
 });

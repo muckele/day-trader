@@ -38,8 +38,9 @@ test('actual browser experiment path attests sandbox and exits before any app na
  const context={route:async()=>{},pages:()=>[page],on(){},close:async()=>{closed=true}};
  const diagnostic={record:(...r)=>rows.push(r),preflight(){},failure(){assert.fail('unexpected browser failure')}};
  const runtimeProbe={enabled:()=>true,metadata:phase=>calls.push(phase),finish:(ctx,p)=>probe.finish(ctx,p,diagnostic.record)};
- const fakeFs={readFileSync:p=>p==='/config/assets.json'?'[]':Buffer.from('synthetic binary'),writeFileSync(){},appendFileSync(){}};
+ const fakeFs={existsSync:()=>false,readFileSync:p=>p==='/config/assets.json'?'[]':Buffer.from('synthetic binary'),writeFileSync(){},appendFileSync(){}};
  const req=n=>{
+  if(n==='./entry-policy.cjs')return require('../tools/entry-policy.cjs');
   if(n==='./private-leakage.cjs')return require('../tools/private-leakage.cjs');
   if(n==='./sandbox-attestation.cjs')return {observeAndAssert:(p,id)=>require('../tools/sandbox-attestation.cjs').observeAndAssert(p,id,diagnostic.record)};
   if(n==='./startup-diagnostics.cjs')return diagnostic;if(n==='./crashpad-probe.cjs')return runtimeProbe;

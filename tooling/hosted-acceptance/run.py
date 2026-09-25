@@ -76,6 +76,13 @@ def main():
  ready()
  wait_startup()
  report('browser-start',passCheck=True)
+ pre=json.loads((E/'market-preauth.json').read_text());state=json.loads((P/'gateway-state/gateway.json').read_text())
+ upstream=[json.loads(x) for x in (E/'upstream.jsonl').read_text().splitlines()]
+ assert pre['pass'] and pre['status']==401 and state['counts']['PREFLIGHT:market-status']==1 and state['paperReserved']==6
+ assert not any(x.get('type')=='provider' for x in upstream)
+ assert len([x for x in upstream if x.get('type')=='application' and x.get('host')=='backend' and x.get('path')=='/api/market/status' and x.get('status')==401])==1
+ report('market-preauth',passCheck=True,backendRequests=1,status=401,providerReads=0,cost=0)
+
  # Test TLS before application observation, in a distinct isolated namespace.
  report('transport',result=run('docker','run','--rm','--network','none','--user','0','-v',str(P)+':/private:ro','-v',str(ROOT)+':/suite:ro','pilot-tools:test','node','/suite/tests/transport.integration.cjs'))
  run('docker','exec','dapt-hosted-standin','node','-e',"const s=require('net').connect(80,'127.0.0.1',()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1))")
@@ -113,13 +120,13 @@ def main():
  control('credential-consume',ok=False,request=challenge['request'],password='expired-synthetic')
  control('credential-cancel',request=challenge['request']);restart_browser()
  report('private-protocol-expiry',passCheck=True)
+ before=snapshot()
  credential_attempted=True
  operator()
+ held=control('observe-before');assert snapshot()==before
  publication_secrets.extend(control('publication-secrets')['values'])
  assert control('status')['credentialConsumed'] is True
  report('credential-one-use',passCheck=True)
- before=snapshot()
- held=control('observe-before');assert snapshot()==before
  report('observational-views-and-database',passCheck=True)
  old=json.loads(run('docker','inspect','dapt-hosted-backend'))[0]
  previous_probe=startup_probe()
@@ -138,10 +145,10 @@ def main():
  control('logout')
  report('restart-readiness-session-logout-revocation',passCheck=True)
  # Runtime reservation receipts are independent of actual provider request logs.
- state=json.loads((P/'gateway-state/gateway.json').read_text());assert state['paperReserved']==18
- provider=[json.loads(x) for x in (E/'upstream.jsonl').read_text().splitlines() if json.loads(x).get('type')=='provider']
- assert len(provider)==12 and all(x['method']=='GET' for x in provider)
- report('request-accounting',passCheck=True,providerReads=len(provider),gatewayReserved=state['paperReserved'],historicalSyntheticOffset=6)
+ from entry_accounting import reconcile
+ state=json.loads((P/'gateway-state/gateway.json').read_text())
+ def rows(name):return [json.loads(x) for x in (E/name).read_text().splitlines()]
+ report('request-accounting',**reconcile(state,rows('gateway.jsonl'),rows('upstream.jsonl'),rows('tls-forward.jsonl'),rows('browser.jsonl')))
  # Exercise parser framing and durable charging for uncertain upstream failures.
  report('gateway-framing',result=run('docker','exec','--user','501:20','dapt-hosted-browser','node','/tests/gateway.integration.cjs','framing'))
  attempts=json.loads((P/'gateway-state/gateway.json').read_text())['attempts']
@@ -207,8 +214,18 @@ if __name__=='__main__':
    report('final-leakage',passCheck=True,**scan)
    if not session_values_available:raise RuntimeError('SESSION_PUBLICATION_VALUES_UNAVAILABLE')
    startup_summary()
+   from entry_accounting import boundary_summary
+   def safe_rows(name):return [json.loads(x) for x in (E/name).read_text().splitlines()] if (E/name).exists() else []
+   report('entry-boundaries',**boundary_summary(safe_rows('gateway.jsonl'),safe_rows('upstream.jsonl'),safe_rows('tls-forward.jsonl')))
+
+   # Sanitized, bounded route counts survive a failure before full reconciliation.
+   if (E/'browser.jsonl').exists():
+    from collections import Counter
+    counts=Counter((x.get('phase'),x.get('path'),x.get('classification')) for x in (json.loads(line) for line in (E/'browser.jsonl').read_text().splitlines()) if x.get('type')=='entry-route')
+    report('entry-route-counts',routes=[{'phase':p,'path':r,'classification':c,'count':n} for (p,r,c),n in counts.items()])
+
    if (E/'route-policy.json').exists():
-    route=json.loads((E/'route-policy.json').read_text());report('route-policy',**{k:route[k] for k in ['unexpected','blockedFonts','rejected','pass']})
+    route=json.loads((E/'route-policy.json').read_text());report('route-policy',**{k:route[k] for k in ['unexpected','blockedFonts','rejected','entry','pass']})
     qualification.require_route(route)
   except Exception:code=1;report('startup-summary',passCheck=False)
 

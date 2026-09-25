@@ -1,6 +1,7 @@
 'use strict';
 const F='day-trader-frontend.fly.dev',B='day-trader-backend.fly.dev',VERSION='production-observational-v2';
 const routes={
+ '/api/market/status':{id:'market-status',cost:0},
  '/api/me':{id:'me',cost:0},'/api/readiness':{id:'readiness',cost:0},'/health':{id:'health',cost:0},
  '/api/robotrader/settings':{id:'settings',cost:0},
  '/api/robotrader/decisions':{id:'decisions',query:{environment:'paper',limit:'25'},cost:0},
@@ -38,7 +39,10 @@ function parseRequest(req,assets=[]){
  const query=Object.keys(expect).sort().map(k=>k+'='+expect[k]).join('&');
  return Object.freeze({host:h.host,method,path,target:path+(query?'?'+query:''),id:definition.id,cost:definition.cost,headers:h});
 }
+function requestCost(d,phase){return d.id==='market-status'?(phase==='BEFORE'?1:0):d.cost;}
+function marketStatusExpected(phase){return phase==='PREFLIGHT'?401:phase==='BEFORE'?200:null;}
 function limitFor(id,phase){
+ if(id==='market-status')return ['PREFLIGHT','BEFORE'].includes(phase)?1:0;
  if(id.startsWith('static:'))return 5;
  if(['me','health'].includes(id))return 12;
  if(id==='readiness')return ['BEFORE','AFTER'].includes(phase)?2:0;
@@ -50,4 +54,4 @@ function limitFor(id,phase){
  if(phase==='AFTER'&&['settings','decisions','robo-orders','performance','audit','robo-health','reconciliation'].includes(id))return 1;
  return 0;
 }
-module.exports={parseRequest,limitFor,routes,F,B,VERSION};
+module.exports={parseRequest,limitFor,requestCost,marketStatusExpected,routes,F,B,VERSION};
