@@ -3,13 +3,14 @@ const fs=require('node:fs'),path=require('node:path');
 const d=require('./startup-diagnostics.cjs');
 const target='/profile/home/.config/google-chrome-for-testing/Crash Reports';
 function enabled(env=process.env){return env.GITHUB_ACTIONS==='true'&&env.RUNNER_ENVIRONMENT==='github-hosted'&&env.PILOT_DIAGNOSTIC_ONLY==='1'&&env.PILOT_CRASHPAD_EXPERIMENT==='aba-v1';}
+function qualification(env=process.env){return Object.entries({GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',PILOT_QUALIFICATION:'full-v1',PILOT_PROFILE:'production-rehearsal',PILOT_DIAGNOSTIC_ONLY:'0',GITHUB_REF:'refs/heads/codex/hosted-acceptance-tooling',GITHUB_RUN_ATTEMPT:'1',PILOT_REPOSITORY_VISIBILITY:'public',PILOT_APPLICATION_SOURCE:'852fb22d9facf4bfe0bca7f419e22ee4bfbba17f'}).every(([k,v])=>env[k]===v)&&!env.PILOT_CRASHPAD_EXPERIMENT;}
 function mountInfo(text){
  const line=text.split('\n').map(l=>l.split(' ')).find(a=>a[4]?.replace(/\\040/g,' ')===target);
  if(!line)throw Error('CRASH_MOUNT_ABSENT');
  const sep=line.indexOf('-');return {target,type:line[sep+1],mountFlags:line[5].split(',').sort(),superOptions:line[sep+3].split(',').sort()};
 }
 function metadata(phase){
- if(!enabled())return;
+ if(!enabled()&&!qualification())return;
  const mount=mountInfo(fs.readFileSync('/proc/self/mountinfo','utf8'));
  const counts={files:0,directories:0,bytes:0,allocatedBytes:0,otherEntries:0,visited:0,complete:true};
  // Metadata only. Never open a crash file; do not follow symlinks or publish names.
@@ -33,4 +34,4 @@ async function finish(context,page,record=d.record){
  record('startup-probe','O','responsive',{launchReturned:true,evaluation:true,namespaceSandbox:true,seccompSandbox:true});
  await context.close();record('startup-probe','O','closed',{normalClose:true,applicationNavigation:false,credentialsSubmitted:false});
 }
-module.exports={enabled,mountInfo,metadata,finish,target};
+module.exports={qualification,enabled,mountInfo,metadata,finish,target};

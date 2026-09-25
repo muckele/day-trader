@@ -20,7 +20,9 @@ jobs:
       - name: Verify repository remains public
         env:
           GH_TOKEN: ${{ github.token }}
-        run: test "$(gh api repos/${GITHUB_REPOSITORY} --jq .visibility)" = public
+        run: |
+          test "$(gh api repos/${GITHUB_REPOSITORY} --jq .visibility)" = public
+          echo "PILOT_REPOSITORY_VISIBILITY=public" >> "$GITHUB_ENV"
       - name: Install signed Python certificate support
         run: |
           sudo apt-get update

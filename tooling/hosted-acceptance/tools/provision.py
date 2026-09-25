@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hosted_qualification as qualification_mode
 import os,pathlib,subprocess,json,secrets,hashlib,time,shutil,datetime
 from cryptography import x509
 from cryptography.x509.oid import NameOID
@@ -12,13 +13,18 @@ BASELINE_CRASH='ro,mode=000,size=1m'
 WRITABLE_CRASH='rw,mode=0700,uid=501,gid=20,size=1m'
 def experiment_enabled():
  return all(os.environ.get(k)==v for k,v in {'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','PILOT_DIAGNOSTIC_ONLY':'1','PILOT_CRASHPAD_EXPERIMENT':'aba-v1'}.items())
-def browser_options(profile,evidence,crash=BASELINE_CRASH,experiment=False):
- if crash not in [BASELINE_CRASH,WRITABLE_CRASH] or (crash!=BASELINE_CRASH and not experiment):raise RuntimeError('CRASH_POLICY_REJECTED')
+def browser_options(profile,evidence,crash=BASELINE_CRASH,experiment=False,qualification=False):
+ if qualification:
+  qualification_mode.require()
+  if experiment or crash!=WRITABLE_CRASH:raise RuntimeError('CRASH_POLICY_REJECTED')
+ if crash not in [BASELINE_CRASH,WRITABLE_CRASH] or (crash!=BASELINE_CRASH and not experiment and not qualification):raise RuntimeError('CRASH_POLICY_REJECTED')
  if experiment and not experiment_enabled():raise RuntimeError('HOSTED_DIAGNOSTIC_ONLY')
  options=['--network','none','--user','501:20','--cap-drop','ALL','--security-opt','no-new-privileges','--security-opt','seccomp='+str(T/'chromium-seccomp.json'),'--shm-size','512m','--tmpfs','/control:mode=0700,uid=501,gid=20,size=1m','--ulimit','core=0:0','--tmpfs',CRASH_TARGET+':'+crash,'-e','HOME=/profile/home','-e','DISPLAY=:99','-v',str(T.parent/'tests')+':/tests:ro','-v',str(T)+':/tools:ro','-v',str(P/'config')+':/config:ro','-v',str(evidence)+':/evidence','-v',str(P/'tls')+':/tls:ro','-v',str(profile)+':/profile','-v',PREFIX+'-gateway:/gateway:ro']
  if experiment:
   options.extend(['--hostname','dapt-hosted-browser-experiment'])
   for key,value in {'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','PILOT_DIAGNOSTIC_ONLY':'1','PILOT_CRASHPAD_EXPERIMENT':'aba-v1'}.items():options.extend(['-e',key+'='+value])
+ if qualification:
+  for key,value in qualification_mode.GUARDS.items():options.extend(['-e',key+'='+value])
  return options
 
 def run(*a,**kw):
@@ -35,6 +41,7 @@ def drun(role,opts,image,*args):
  name=PREFIX+'-'+role;cid=run('docker','run','-d','--name',name,'--label','day-trader.acceptance='+PREFIX,'--label','day-trader.tool-lock='+LOCK,'--log-driver','none',*opts,image,*args);RES['containers'].append(cid);save(E/'resources.json',RES);return cid
 if __name__=='__main__':
  if os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('RUNNER_ENVIRONMENT')!='github-hosted':raise SystemExit('HOSTED_ONLY')
+ if os.environ.get('PILOT_QUALIFICATION'):qualification_mode.require()
  R.mkdir(mode=0o700,exist_ok=True);P.mkdir(mode=0o700,exist_ok=True);E.mkdir(mode=0o700,exist_ok=True)
  if (P/'configured').exists():raise SystemExit('Existing run; no reset')
  BACK=run('docker','image','inspect',BACK,'--format','{{.Id}}');FRONT=run('docker','image','inspect',FRONT,'--format','{{.Id}}')
@@ -77,6 +84,6 @@ if __name__=='__main__':
  time.sleep(3)
  if experiment_enabled():
   save(P/'configured','configured');save(E/'resources.json',RES);print('SYNTHETIC_STACK_CREATED');raise SystemExit(0)
- cid=drun('browser',browser_options(P/'profile',E),TOOL,'sh','/tools/browser-start.sh')
+ cid=drun('browser',browser_options(P/'profile',E,WRITABLE_CRASH,qualification=True) if os.environ.get('PILOT_QUALIFICATION') else browser_options(P/'profile',E),TOOL,'sh','/tools/browser-start.sh')
  save(P/'intake.json',{'container':cid,'run':PREFIX,'capability':config['capability'],'lock':LOCK,'source':config['source'],'destination':'https://day-trader-backend.fly.dev'});save(P/'configured','configured')
  save(E/'resources.json',RES);print('SYNTHETIC_STACK_CREATED')

@@ -3,6 +3,9 @@ import os,sys,pathlib,json,subprocess,time,pty,termios,select,signal,hashlib
 ROOT=pathlib.Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT/'tools'))
 import provision as p
+import hosted_qualification as qualification
+publication_secrets=[]
+credential_attempted=False
 R=pathlib.Path(os.environ['PILOT_STATE']);P=R/'private';E=R/'evidence'
 def run(*a,**kw):
  q=subprocess.run(a,capture_output=True,text=True,timeout=180,**kw)
@@ -65,11 +68,12 @@ def tcp_denied(container,ip,port):
  code="const s=require('net').connect({host:process.argv[1],port:Number(process.argv[2])});s.on('connect',()=>process.exit(1));s.on('error',()=>process.exit(0));s.setTimeout(1500,()=>process.exit(0))"
  run('docker','exec','--user','501:20',container,'node','-e',code,ip,str(port))
 def main():
+ global credential_attempted
+ qualification.claim(R)
+ swap={k:int(v.split()[0])*1024 for k,v in (line.split(':',1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines()) if k in ['SwapTotal','SwapFree','SwapCached']}
+ report('qualification-begin',source=qualification.SOURCE,profile='production-rehearsal',swapBytes=swap,tmpfsMayUseSwap=True,crashContentsRead=False)
  run(sys.executable,str(ROOT/'tools/provision.py'))
  ready()
- if os.environ.get('PILOT_DIAGNOSTIC_ONLY')=='1':
-  report('diagnostic-startup-reached-ready',passCheck=True,qualificationExecuted=False)
-  return
  wait_startup()
  report('browser-start',passCheck=True)
  # Test TLS before application observation, in a distinct isolated namespace.
@@ -109,7 +113,11 @@ def main():
  control('credential-consume',ok=False,request=challenge['request'],password='expired-synthetic')
  control('credential-cancel',request=challenge['request']);restart_browser()
  report('private-protocol-expiry',passCheck=True)
+ credential_attempted=True
  operator()
+ publication_secrets.extend(control('publication-secrets')['values'])
+ assert control('status')['credentialConsumed'] is True
+ report('credential-one-use',passCheck=True)
  before=snapshot()
  held=control('observe-before');assert snapshot()==before
  report('observational-views-and-database',passCheck=True)
@@ -150,10 +158,7 @@ def main():
  report('gateway-outage',passCheck=True)
  control('credential-consume',ok=False,request=challenge['request'],password='replayed-synthetic')
  report('replay-rejected',passCheck=True)
- secret=json.loads((P/'synthetic.json').read_text())['password'].encode();cap=json.loads((P/'config/run.json').read_text())['capability'].encode()
- for f in E.rglob('*'):
-  if f.is_file():assert secret not in f.read_bytes() and cap not in f.read_bytes()
- report('evidence-leakage',passCheck=True)
+ report('evidence-leakage',passCheck=True,**qualification.scan([E,ROOT,R/'public.log'],qualification.private_values(P)+publication_secrets))
  for name in ['login','views-before','readiness-before','readiness-after','restart','logout','leakage','sandbox']:
   d=json.loads((E/(name+'.json')).read_text());assert d['pass']
   # Only preselected booleans/counts leave the runner, never response bodies.
@@ -161,17 +166,7 @@ def main():
 def startup_summary(evidence=E,trial=None):
  # Raw captures are read only here, then redacted and checked before any emission.
  from startup_publication import prepare
- secrets=[]
- if (P/'synthetic.json').exists():secrets.append(json.loads((P/'synthetic.json').read_text())['password'])
- if (P/'config/run.json').exists():secrets.append(json.loads((P/'config/run.json').read_text())['capability'])
- if (P/'backend.env').exists():
-  secrets.extend(line.split('=',1)[1] for line in (P/'backend.env').read_text().splitlines() if line.startswith('JWT_SECRET='))
- for f in [P/name/'key.pem' for name in ['tls','upstream','negative/wrong','negative/expired','negative/untrusted']]:
-  if f.is_file() and f.stat().st_size<16384:
-   text=f.read_text()
-   if 'PRIVATE KEY' in text:
-    secrets.extend([text.strip(),''.join(x for x in text.splitlines() if not x.startswith('-----'))])
-    secrets.extend(x for x in text.splitlines() if not x.startswith('-----') and len(x)>16)
+ secrets=qualification.private_values(P)+publication_secrets
  records,gate=prepare(evidence,secrets)
  for row in records:print(json.dumps({**row,**({'trial':trial} if trial else {})}),flush=True)
  print(json.dumps({**gate,**({'trial':trial} if trial else {})}),flush=True)
@@ -190,6 +185,31 @@ if __name__=='__main__':
     d=json.loads(line)
     if d.get('type')=='check-rejected':report('controller-rejection',code=d['code'])
  finally:
-  try:startup_summary()
+  # Retrieve only controller-private session values through the existing capability channel.
+  # They remain in host memory and are never emitted or saved as evidence.
+  session_values_available=not credential_attempted
+  try:
+   if (P/'intake.json').exists():
+    publication_secrets.extend(control('publication-secrets')['values'])
+    session_values_available=True
+    control('leakage')
+    control('shutdown')
+    for _ in range(50):
+     state=json.loads(run('docker','inspect','dapt-hosted-browser'))[0]['State']
+     if not state['Running']:break
+     time.sleep(.2)
+    else:raise RuntimeError('BROWSER_SHUTDOWN_TIMEOUT')
+    if state['ExitCode']!=0:raise RuntimeError('BROWSER_SHUTDOWN_FAILED')
+    report('browser-normal-shutdown',passCheck=True,controllerExitCode=state['ExitCode'])
+  except Exception:code=1;report('private-finalization',passCheck=False)
+  try:
+   scan=qualification.scan([E,ROOT,R/'public.log'],qualification.private_values(P)+publication_secrets)
+   report('final-leakage',passCheck=True,**scan)
+   if not session_values_available:raise RuntimeError('SESSION_PUBLICATION_VALUES_UNAVAILABLE')
+   startup_summary()
+   if (E/'route-policy.json').exists():
+    route=json.loads((E/'route-policy.json').read_text());report('route-policy',**{k:route[k] for k in ['unexpected','blockedFonts','rejected','pass']})
+    qualification.require_route(route)
   except Exception:code=1;report('startup-summary',passCheck=False)
+
  sys.exit(code)

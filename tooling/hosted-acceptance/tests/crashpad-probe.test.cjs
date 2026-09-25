@@ -40,6 +40,7 @@ test('actual browser experiment path attests sandbox and exits before any app na
  const runtimeProbe={enabled:()=>true,metadata:phase=>calls.push(phase),finish:(ctx,p)=>probe.finish(ctx,p,diagnostic.record)};
  const fakeFs={readFileSync:p=>p==='/config/assets.json'?'[]':Buffer.from('synthetic binary'),writeFileSync(){},appendFileSync(){}};
  const req=n=>{
+  if(n==='./private-leakage.cjs')return require('../tools/private-leakage.cjs');
   if(n==='./sandbox-attestation.cjs')return {observeAndAssert:(p,id)=>require('../tools/sandbox-attestation.cjs').observeAndAssert(p,id,diagnostic.record)};
   if(n==='./startup-diagnostics.cjs')return diagnostic;if(n==='./crashpad-probe.cjs')return runtimeProbe;
   if(n==='fs')return fakeFs;if(n==='./config.cjs')return {load:()=>({run:'synthetic'})};
@@ -52,4 +53,10 @@ test('actual browser experiment path attests sandbox and exits before any app na
  vm.runInNewContext(fs.readFileSync(require.resolve('../tools/browser.cjs'),'utf8'),{require:req,process:{on(){},exit(){assert.fail('unexpected exit')}},URL,setTimeout});
  await new Promise(resolve=>setImmediate(resolve));
  assert.equal(closed,true);assert.deepEqual(navigations,['chrome://sandbox']);assert.deepEqual(calls,['before','after']);assert.ok(rows.some(r=>r[0]==='startup-probe'&&r[2]==='closed'));assert.ok(!rows.some(r=>['P','Q'].includes(r[1])));
+});
+
+test('full qualification collects crash metadata without selecting diagnostic early return',()=>{
+ const env={GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',PILOT_QUALIFICATION:'full-v1',PILOT_PROFILE:'production-rehearsal',PILOT_DIAGNOSTIC_ONLY:'0',GITHUB_REF:'refs/heads/codex/hosted-acceptance-tooling',GITHUB_RUN_ATTEMPT:'1',PILOT_REPOSITORY_VISIBILITY:'public',PILOT_APPLICATION_SOURCE:'852fb22d9facf4bfe0bca7f419e22ee4bfbba17f'};
+ assert.equal(probe.qualification(env),true);assert.equal(probe.enabled(env),false);
+ for(const k of Object.keys(env))assert.equal(probe.qualification({...env,[k]:'wrong'}),false);
 });
