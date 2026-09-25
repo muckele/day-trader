@@ -13,7 +13,7 @@ class ProbeDiagnostic(unittest.TestCase):
    return subprocess.CompletedProcess(args,code)
   return run
  def test_original_probe_argv_and_timeout_unchanged(self):
-  m=self.module();tree=ast.parse((ROOT/'run.py').read_text());fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='startup_probe');args=[ast.literal_eval(a) for a in fn.body[0].value.args]
+  m=self.module();args=['docker','exec','dapt-hosted-mongo','mongosh','--quiet','--eval',"const x=db.getSiblingDB('acceptance').operationalreadiness.findOne({_id:'execution-write-probe'});print(x?.checkedAt?.toISOString()||'pending')"]
   self.assertEqual(list(m.PROBE),args)
   with patch.object(m.subprocess,'run',side_effect=self.fake()) as run:
    result=m.probe_subprocess(m.PROBE,secrets=[])
@@ -68,6 +68,6 @@ class ProbeDiagnostic(unittest.TestCase):
   with patch.object(m.subprocess,'run',side_effect=self.fake(1,err=b'TypeError: evaluation failed')) as run,patch.object(m,'readonly_diagnostics',return_value={'safe':True}) as diag:
    with self.assertRaisesRegex(RuntimeError,'STARTUP_PROBE_DIAGNOSTIC_STOP'):m.diagnose_once([],lambda name,**fields:rows.append({'check':name,**fields}))
   self.assertEqual(run.call_count,1);diag.assert_called_once();self.assertEqual(rows[-1]['outcome'],'FAILED_CAPTURED')
- def test_diagnostic_fork_is_before_wait_and_no_later_phases_move(self):
-  s=(ROOT/'run.py').read_text();self.assertLess(s.index('diagnose_once('),s.index(" wait_startup()\n report('browser-start'"));self.assertIn('PILOT_STARTUP_PROBE_DIAGNOSTIC=once-v1',(ROOT/'hosted.sh').read_text())
+ def test_diagnostic_fork_is_not_enabled_in_full_qualification(self):
+  self.assertNotIn('diagnose_once(',(ROOT/'run.py').read_text());self.assertIn('unset PILOT_STARTUP_PROBE_DIAGNOSTIC',(ROOT/'hosted.sh').read_text())
 if __name__=='__main__':unittest.main()

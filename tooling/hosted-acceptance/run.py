@@ -51,13 +51,24 @@ def operator(cancel=False):
  assert child.returncode==(1 if cancel else 0)
  report('private-pty-cancel' if cancel else 'private-pty-login',passCheck=True,echoDisabled=True,echoRestored=True,noSecretEcho=True)
 def startup_probe():
- return run('docker','exec','dapt-hosted-mongo','mongosh','--quiet','--eval',"const x=db.getSiblingDB('acceptance').operationalreadiness.findOne({_id:'execution-write-probe'});print(x?.checkedAt?.toISOString()||'pending')")
-def wait_startup(previous='pending'):
+ from startup_token import ALTERNATIVE,parse_token
+ from startup_probe_diagnostic import execute
+ record,out=execute(('docker','exec','dapt-hosted-mongo','mongosh','--quiet','--eval',ALTERNATIVE),qualification.private_values(P)+publication_secrets)
+ if record['exitCode']!=0 or record['timeout']:
+  report('startup-probe-failure',**record)
+  raise RuntimeError('STARTUP_PROBE_COMMAND_FAILED')
+ try:return parse_token(out)
+ except (ValueError,TypeError):
+  report('startup-probe-failure',tokenInvalid=True,**record)
+  raise RuntimeError('STARTUP_PROBE_TOKEN_INVALID') from None
+
+def wait_startup(previous=None):
  for _ in range(60):
   stamp=startup_probe()
-  if stamp!='pending' and stamp!=previous:
+  if stamp is not None and stamp!=previous:
+   report('startup-ready',token=stamp,previousToken=previous,changed=previous is not None and stamp!=previous)
    time.sleep(1)
-   return
+   return stamp
   time.sleep(1)
  raise RuntimeError('STARTUP_PROBE_NOT_READY')
 def snapshot():
@@ -74,9 +85,6 @@ def main():
  report('qualification-begin',source=qualification.SOURCE,profile='production-rehearsal',swapBytes=swap,tmpfsMayUseSwap=True,crashContentsRead=False)
  run(sys.executable,str(ROOT/'tools/provision.py'))
  ready()
- if os.environ.get('PILOT_STARTUP_PROBE_DIAGNOSTIC')=='once-v1':
-  from startup_probe_diagnostic import diagnose_once
-  diagnose_once(qualification.private_values(P),report)
  wait_startup()
  report('browser-start',passCheck=True)
  pre=json.loads((E/'market-preauth.json').read_text());state=json.loads((P/'gateway-state/gateway.json').read_text())
@@ -133,6 +141,7 @@ def main():
  report('observational-views-and-database',passCheck=True)
  old=json.loads(run('docker','inspect','dapt-hosted-backend'))[0]
  previous_probe=startup_probe()
+ if previous_probe is None:raise RuntimeError('PRE_RESTART_STARTUP_TOKEN_MISSING')
  run('docker','restart','dapt-hosted-backend')
  for _ in range(45):
   q=subprocess.run(['docker','exec','dapt-hosted-backend','node','-e',"require('http').get('http://127.0.0.1:5001/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"],capture_output=True)
