@@ -81,10 +81,21 @@ def tcp_denied(container,ip,port):
 def run_security_probe():
  from security_probe_evidence import begin,collect
  baseline=begin(E);passed=False
+ transport_only=os.environ.get('PILOT_SECURITY_PROBE_DIAGNOSTIC')=='transport-once-v1'
+ if transport_only:
+  import transport_evidence
+  transport_baseline=transport_evidence.begin(E)
  try:
-  control('security-probe');passed=True
+  control('security-probe-health-diagnostic' if transport_only else 'security-probe');passed=True
  finally:
+  if transport_only:
+   # Read-only container facts only; never make another connection after health.
+   states=transport_evidence.container_states(qualification.private_values(P)+publication_secrets)
+   report('gateway-transport-diagnostics',**transport_evidence.collect(E,transport_baseline),containers=states)
   report('security-probe-diagnostics',**collect(E,baseline))
+  if transport_only:
+   report('gateway-transport-diagnostic-stop',healthCommandSucceeded=passed,credentialsSubmitted=False,fullQualificationExecuted=False)
+   raise RuntimeError('GATEWAY_TRANSPORT_DIAGNOSTIC_STOP') from None
   if os.environ.get('PILOT_SECURITY_PROBE_DIAGNOSTIC')=='once-v1':
    report('security-probe-diagnostic-stop',probePassed=passed,credentialsSubmitted=False,fullQualificationExecuted=False)
    raise RuntimeError('SECURITY_PROBE_DIAGNOSTIC_STOP') from None

@@ -4,7 +4,7 @@ set -euo pipefail
 [[ ${GITHUB_RUN_ATTEMPT:-} == 1 ]] || { echo 'Reruns are outside the pilot; use the remaining reviewed push if authorized.'; exit 2; }
 export PILOT_DIAGNOSTIC_ONLY=0
 unset PILOT_STARTUP_PROBE_DIAGNOSTIC
-export PILOT_SECURITY_PROBE_DIAGNOSTIC=once-v1
+export PILOT_SECURITY_PROBE_DIAGNOSTIC=transport-once-v1
 unset PILOT_CRASHPAD_EXPERIMENT
 export PILOT_QUALIFICATION=full-v1
 export PILOT_PROFILE=production-rehearsal
@@ -59,6 +59,7 @@ python3 tooling/hosted-acceptance/tests/startup_probe_test.py
 python3 tooling/hosted-acceptance/tests/startup_expression_test.py
 python3 tooling/hosted-acceptance/tests/startup_repair_test.py
 python3 tooling/hosted-acceptance/tests/security_probe_evidence_test.py
+python3 tooling/hosted-acceptance/tests/transport_evidence_test.py
 mkdir "$PILOT_STATE/application"
 git archive 852fb22d9facf4bfe0bca7f419e22ee4bfbba17f backend frontend | tar -x -C "$PILOT_STATE/application"
 # No persistent cache imports/exports; logs here contain only public build inputs.

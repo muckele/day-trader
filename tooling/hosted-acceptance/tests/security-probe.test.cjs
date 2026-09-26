@@ -2,12 +2,12 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {securityProbe,fetchPair,observeBoundary}=require('../tools/security-probe.cjs');
 const poison='https://secret.invalid/private cookie=generated-secret /Users/private/token';
-function fixture(failure,denied=403,control=401,recordFailure=0){
+function fixture(failure,denied=403,control=401,recordFailure=0,healthOnly=false){
  const receipts=[],calls=[],invalidate=[];const error=Object.assign(Error(poison),{name:'UntrustedName',code:poison});
  const op=async(name,value)=>{calls.push(name);if(failure?.includes(name))throw error;return value;};
  const page={on:()=>{},off:()=>{},url:()=> 'https://day-trader-backend.fly.dev/health',goto:()=>op('navigation',{status:()=>200}),close:()=>op('close'),evaluate:async fn=>{calls.push('evaluate');const old=global.fetch;global.fetch=async path=>op(path.includes('recommendations')?'denied':'control',{status:path.includes('recommendations')?denied:control});try{return await fn();}finally{global.fetch=old;}}};
  const context={newPage:()=>op('create',page),unroute:()=>op('unroute'),route:()=>op('restore')};
- return {receipts,calls,invalidate,run:()=>securityProbe({context,intercept:()=>{},currentStage:()=> 'AWAIT_CREDENTIAL',invalidate:()=>invalidate.push(true),record:r=>{if(recordFailure&&r.stages[recordFailure-1].started&&!r.stages[recordFailure-1].completed)throw error;receipts.push(structuredClone(r));}}),last:()=>receipts.at(-1)};
+ return {receipts,calls,invalidate,run:()=>securityProbe({healthOnly,context,intercept:()=>{},currentStage:()=> 'AWAIT_CREDENTIAL',invalidate:()=>invalidate.push(true),record:r=>{if(recordFailure&&r.stages[recordFailure-1].started&&!r.stages[recordFailure-1].completed)throw error;receipts.push(structuredClone(r));}}),last:()=>receipts.at(-1)};
 }
 const row=(f,n)=>f.last().stages[n-1];
 test('successful fixture preserves all operations and ten stage receipts',async()=>{const f=fixture();await f.run();assert.deepEqual(f.calls,['create','navigation','unroute','evaluate','denied','control','restore','close']);assert.equal(f.last().pass,true);assert.equal(f.last().stages.length,10);assert.ok(f.last().stages.every(x=>x.started&&x.completed&&x.success));assert.equal(row(f,3).httpStatus,200);assert.equal(row(f,3).expectedOriginReached,true);assert.equal(row(f,5).httpStatus,403);assert.equal(row(f,6).httpStatus,401);});
@@ -21,3 +21,5 @@ test('wrong controller stage fails before creating any page',async()=>{let creat
 test('safe error categories expose no exception text, URLs, paths or arbitrary code',()=>{const {safeError}=require('../tools/security-probe.cjs');for(const message of [poison,'net::ERR_CERT_AUTHORITY_INVALID '+poison,'Refused because Content Security Policy '+poison,'Failed to fetch '+poison]){const r=safeError({name:'TypeError',message,stack:poison,code:poison});assert.deepEqual(Object.keys(r),['errorClass','safeErrorCode']);assert.ok(!JSON.stringify(r).includes(poison));assert.ok(!JSON.stringify(r).includes('secret.invalid'));}});
 
 for(const stage of [7,8])test('evidence write failure cannot prevent cleanup stage '+stage,async()=>{const f=fixture([],403,401,stage);await assert.rejects(f.run());assert.ok(f.calls.includes('restore'));assert.ok(f.calls.includes('close'));assert.equal(f.last().pass,false);assert.equal(f.last().evidenceWriteFailed,true);});
+
+for(const failure of [[],['navigation']])test('Run G stops after the same single health request even on '+(failure.length?'failure':'success'),async()=>{const f=fixture(failure,403,401,0,true);if(failure.length)await assert.rejects(f.run());else await f.run();assert.deepEqual(f.calls,['create','navigation','close']);for(const n of [4,5,6,7,9,10])assert.equal(row(f,n).started,false);assert.equal(f.last().pass,false);});

@@ -19,7 +19,7 @@ async function fetchPair(){
  }
  return {stages};
 }
-async function securityProbe({context,intercept,currentStage,invalidate,record}){
+async function securityProbe({context,intercept,currentStage,invalidate,record,healthOnly=false}){
  const stages=STAGES.map(stage=>({stage,started:false,completed:false,success:null}));
  stages[2].pathId='health';stages[4].pathId='denied-recommendations-query';stages[5].pathId='control-me';
  stages[8].expectedStatus=403;stages[8].actualStatus=null;stages[9].expectedStatus=401;stages[9].actualStatus=null;
@@ -33,7 +33,7 @@ async function securityProbe({context,intercept,currentStage,invalidate,record})
   await operation(1,async()=>{if(currentStage()!=='AWAIT_CREDENTIAL')throw Error();});
   p=await operation(2,()=>context.newPage());p.on('console',consoleError);
   await operation(3,()=>p.goto(BACK+'/health'),response=>({responseReceived:!!response,httpStatus:response?.status()??null,expectedOriginReached:(()=>{try{return new URL(p.url()).origin===BACK;}catch{return false;}})()}));
-  try{
+  if(!healthOnly)try{
    removalAttempted=true;await operation(4,()=>context.unroute('**/*',intercept));
    // A returned unroute call is recorded, not treated as proof that routing is absent.
    let fetched;
@@ -51,10 +51,10 @@ async function securityProbe({context,intercept,currentStage,invalidate,record})
   }
  }catch{failed=true;}
  finally{if(p){try{await operation(8,()=>p.close());}catch{failed=true;}finally{p.off('console',consoleError);}}}
- if(!failed){
+ if(!failed&&!healthOnly){
   for(const n of [9,10]){begin(n);const ok=stages[n-1].actualStatus===stages[n-1].expectedStatus;end(n,ok,ok?{}:{errorClass:'Error',safeErrorCode:'STATUS_MISMATCH'});if(!ok)break;}
  }
- publish();if(evidenceWriteFailed)throw Error('SECURITY_PROBE_EVIDENCE_FAILED');if(failed)throw Error();return {denied:stages[8].actualStatus,control:stages[9].actualStatus,pass:true};
+ publish();if(evidenceWriteFailed)throw Error('SECURITY_PROBE_EVIDENCE_FAILED');if(failed)throw Error();if(healthOnly)return {healthOnly:true,pass:false};return {denied:stages[8].actualStatus,control:stages[9].actualStatus,pass:true};
 }
 function observeBoundary(req,res,boundary,write){
  const pathId={'/health':'health','/api/recommendations?x=1':'denied-recommendations-query','/api/me':'control-me'}[req.url];

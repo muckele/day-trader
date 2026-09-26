@@ -15,11 +15,11 @@ const server=http.createServer({maxHeaderSize:16384,requestTimeout:15000},async(
  const authCount=state.counts['global:'+d.id]||0;
  if(count>=limitFor(d.id,state.phase)||(['login','logout'].includes(d.id)&&authCount>=1)||state.paperReserved+cost>c.paperMaximum){log({event:'budget-denied',route:d.id});res.writeHead(429);return res.end();}
  state.counts[key]=count+1;state.counts['global:'+d.id]=authCount+1;state.paperReserved+=cost;state.attempts++;persist();
- const id=state.attempts;let body=Buffer.alloc(0);try{
+ const id=state.attempts,trace=require('./transport-observation.cjs').gatewayTrace(id,d);let body=Buffer.alloc(0),forwardStarted=false;try{
   for await(const chunk of req){if(body.length+chunk.length>4096)throw Error();body=Buffer.concat([body,chunk]);}
   if(Number(d.headers['content-length']||0)!==body.length)throw Error();
-  const r=await forward(c,d,body,up=>{if([300,301,302,303,305,307,308].includes(up.statusCode)){up.resume();log({id,event:'redirect-denied',route:d.id,status:up.statusCode});res.writeHead(502);return res.end();}log({id,event:'forward',phase,route:d.id,method:d.method,status:up.statusCode,cost,paperReserved:state.paperReserved});res.writeHead(up.statusCode,up.headers);up.pipe(res);});r.on('error',()=>{log({id,event:'upstream-error',route:d.id});if(!res.headersSent)res.writeHead(502);res.end();});
- }catch{body.fill(0);log({id,event:'transport-rejected',route:d.id});if(!res.headersSent)res.writeHead(502);res.end();}
+  forwardStarted=true;const r=await forward(c,d,body,up=>{if([300,301,302,303,305,307,308].includes(up.statusCode)){trace.branch('GATEWAY_REDIRECT_DENIED');up.resume();log({id,event:'redirect-denied',route:d.id,status:up.statusCode});res.writeHead(502);return res.end();}log({id,event:'forward',phase,route:d.id,method:d.method,status:up.statusCode,cost,paperReserved:state.paperReserved});res.writeHead(up.statusCode,up.headers);up.pipe(res);},trace);r.on('error',e=>{trace.branch('GATEWAY_UPSTREAM_REQUEST_ERROR',e);log({id,event:'upstream-error',route:d.id});if(!res.headersSent)res.writeHead(502);res.end();});
+ }catch(e){trace.branch(forwardStarted?'GATEWAY_FORWARD_THROW':'GATEWAY_TRANSPORT_BODY_REJECTED',e);body.fill(0);log({id,event:'transport-rejected',route:d.id});if(!res.headersSent)res.writeHead(502);res.end();}
 });
 for(const ev of ['connect','upgrade'])server.on(ev,(_,s)=>s.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'));server.on('clientError',(_,s)=>s.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'));
 for(const p of ['/gateway/gateway.sock','/gateway/control.sock'])if(fs.existsSync(p))fs.unlinkSync(p);
