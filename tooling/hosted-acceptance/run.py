@@ -78,6 +78,18 @@ def snapshot():
 def tcp_denied(container,ip,port):
  code="const s=require('net').connect({host:process.argv[1],port:Number(process.argv[2])});s.on('connect',()=>process.exit(1));s.on('error',()=>process.exit(0));s.setTimeout(1500,()=>process.exit(0))"
  run('docker','exec','--user','501:20',container,'node','-e',code,ip,str(port))
+def run_security_probe():
+ from security_probe_evidence import begin,collect
+ baseline=begin(E);passed=False
+ try:
+  control('security-probe');passed=True
+ finally:
+  report('security-probe-diagnostics',**collect(E,baseline))
+  if os.environ.get('PILOT_SECURITY_PROBE_DIAGNOSTIC')=='once-v1':
+   report('security-probe-diagnostic-stop',probePassed=passed,credentialsSubmitted=False,fullQualificationExecuted=False)
+   raise RuntimeError('SECURITY_PROBE_DIAGNOSTIC_STOP') from None
+ report('browser-route-bypass',passCheck=True)
+
 def main():
  global credential_attempted
  qualification.claim(R)
@@ -111,7 +123,7 @@ def main():
  tcp_denied('dapt-hosted-gateway','::1',8089)
  rules=(E/'gateway-ipv6.rules').read_text();assert ':OUTPUT DROP' in rules and ':INPUT DROP' in rules
  report('network-denial',passCheck=True,ipv4ListeningCanary=True,ipv6DefaultDropRules=True,ipv6ListeningCanary=True,ipv6ExternalReachabilityTested=False)
- control('security-probe');report('browser-route-bypass',passCheck=True)
+ run_security_probe()
  control('status',ok=False,run='wrong-run')
  control('status',ok=False,capability='wrong-capability')
  q=subprocess.run([sys.executable,str(ROOT/'tools/credential-intake.py'),str(P/'intake.json')],input='',text=True,capture_output=True)

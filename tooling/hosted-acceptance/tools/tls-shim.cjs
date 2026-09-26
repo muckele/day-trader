@@ -6,6 +6,7 @@ require('./config.cjs').load();
 const {parseRequest}=require('./policy.cjs');const assets=JSON.parse(fs.readFileSync('/config/assets.json'));
 const names=new Set(['day-trader-frontend.fly.dev','day-trader-backend.fly.dev','fonts.googleapis.com','fonts.gstatic.com']);
 const server=https.createServer({key:fs.readFileSync('/tls/key.pem'),cert:fs.readFileSync('/tls/cert.pem'),minVersion:'TLSv1.2',maxHeaderSize:16384},(req,res)=>{
+ require('./security-probe.cjs').observeBoundary(req,res,'tls');
   const host=req.headers.host,sni=req.socket.servername;
   if(!names.has(host)||host!==sni||req.rawHeaders.filter((v,i)=>i%2===0&&v.toLowerCase()==='host').length!==1){res.writeHead(421);return res.end();}
   if(!req.url.startsWith('/')||req.url.startsWith('//')){res.writeHead(400);return res.end();}

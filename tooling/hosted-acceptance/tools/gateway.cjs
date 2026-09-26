@@ -8,6 +8,7 @@ persist();
 const sequence=['PREFLIGHT','AUTH','BEFORE','HOLD','AFTER','LOGOUT','DONE'];
 const control=net.createServer(s=>{let b='';s.setTimeout(2000,()=>s.destroy());s.on('data',x=>{b+=x;if(b.length>2048)return s.destroy();if(!b.includes('\n'))return;try{const q=JSON.parse(b);if(Object.keys(q).sort().join(',')!=='capability,phase,run'||q.run!==c.run||q.capability!==c.capability||sequence.indexOf(q.phase)!==sequence.indexOf(state.phase)+1)throw Error();state.phase=q.phase;persist();s.end('{"ok":true}');}catch{s.end('{"ok":false}');}});});
 const server=http.createServer({maxHeaderSize:16384,requestTimeout:15000},async(req,res)=>{
+ require('./security-probe.cjs').observeBoundary(req,res,'gateway');
  const d=parseRequest({method:req.method,target:req.url,rawHeaders:req.rawHeaders},assets);if(!d){log({event:'denied',...require('./private-leakage.cjs').routeMetadata('https://'+(req.headers.host||'invalid')+req.url,req.method,state.phase)});res.writeHead(403);return res.end();}
  const phase=state.phase,cost=requestCost(d,phase),key=phase+':'+d.id,count=state.counts[key]||0;
  // Login/logout ceiling is GLOBAL, including uncertain transport outcomes.
