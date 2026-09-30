@@ -78,10 +78,14 @@ def snapshot():
 def tcp_denied(container,ip,port):
  code="const s=require('net').connect({host:process.argv[1],port:Number(process.argv[2])});s.on('connect',()=>process.exit(1));s.on('error',()=>process.exit(0));s.setTimeout(1500,()=>process.exit(0))"
  run('docker','exec','--user','501:20',container,'node','-e',code,ip,str(port))
+def network_marker(stage):
+ from standin_exit_evidence import marker
+ report('standin-precheck-state',**marker(E,stage))
+
 def run_security_probe():
  from security_probe_evidence import begin,collect
  baseline=begin(E);passed=False
- transport_only=os.environ.get('PILOT_SECURITY_PROBE_DIAGNOSTIC')=='transport-once-v1'
+ transport_only=os.environ.get('PILOT_SECURITY_PROBE_DIAGNOSTIC') in ['transport-once-v1','standin-exit-once-v1']
  if transport_only:
   import transport_evidence
   transport_baseline=transport_evidence.begin(E)
@@ -93,6 +97,9 @@ def run_security_probe():
    states=transport_evidence.container_states(qualification.private_values(P)+publication_secrets)
    report('gateway-transport-diagnostics',**transport_evidence.collect(E,transport_baseline),containers=states)
   report('security-probe-diagnostics',**collect(E,baseline))
+  if os.environ.get('PILOT_SECURITY_PROBE_DIAGNOSTIC')=='standin-exit-once-v1':
+   report('standin-exit-diagnostic-stop',healthCommandSucceeded=passed,credentialsSubmitted=False,fullQualificationExecuted=False)
+   raise RuntimeError('STANDIN_EXIT_DIAGNOSTIC_STOP') from None
   if transport_only:
    report('gateway-transport-diagnostic-stop',healthCommandSucceeded=passed,credentialsSubmitted=False,fullQualificationExecuted=False)
    raise RuntimeError('GATEWAY_TRANSPORT_DIAGNOSTIC_STOP') from None
@@ -119,21 +126,29 @@ def main():
 
  # Test TLS before application observation, in a distinct isolated namespace.
  report('transport',result=run('docker','run','--rm','--network','none','--user','0','-v',str(P)+':/private:ro','-v',str(ROOT)+':/suite:ro','pilot-tools:test','node','/suite/tests/transport.integration.cjs'))
+ network_marker('NP01_BEFORE_STANDIN_SELF_CANARY')
  run('docker','exec','dapt-hosted-standin','node','-e',"const s=require('net').connect(80,'127.0.0.1',()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1))")
+ network_marker('NP02_AFTER_STANDIN_SELF_CANARY')
  for name in ['browser','gateway']:
   # Private stand-in reachable only on permitted gateway 443; port 80 and IPv6 denied.
   tcp_denied('dapt-hosted-'+name,'172.29.93.10',80)
+  network_marker('NP03_AFTER_BROWSER_PORT80_DENIAL' if name=='browser' else 'NP05_AFTER_GATEWAY_PORT80_DENIAL')
   tcp_denied('dapt-hosted-'+name,'::1',80)
+  network_marker('NP04_AFTER_BROWSER_IPV6_PORT80_DENIAL' if name=='browser' else 'NP06_AFTER_GATEWAY_IPV6_PORT80_DENIAL')
  tcp_denied('dapt-hosted-browser','172.29.93.10',443)
+ network_marker('NP07_AFTER_BROWSER_DIRECT_443_DENIAL')
  # Bind a known live IPv6 loopback target inside the gateway namespace.
  run('docker','exec','--user','501:20','-d','dapt-hosted-gateway','node','-e',"const fs=require('fs');require('net').createServer(s=>s.end()).listen(8089,'::1',()=>fs.writeFileSync('/state/ipv6-listening','ready'))")
  for _ in range(20):
   if (P/'gateway-state/ipv6-listening').exists():break
   time.sleep(.2)
  else:raise RuntimeError('IPV6_FIXTURE_NOT_LISTENING')
+ network_marker('NP08_AFTER_GATEWAY_IPV6_CANARY_SETUP')
  tcp_denied('dapt-hosted-gateway','::1',8089)
+ network_marker('NP09_AFTER_GATEWAY_IPV6_CANARY_DENIAL')
  rules=(E/'gateway-ipv6.rules').read_text();assert ':OUTPUT DROP' in rules and ':INPUT DROP' in rules
  report('network-denial',passCheck=True,ipv4ListeningCanary=True,ipv6DefaultDropRules=True,ipv6ListeningCanary=True,ipv6ExternalReachabilityTested=False)
+ network_marker('NP10_BEFORE_SECURITY_HEALTH')
  run_security_probe()
  control('status',ok=False,run='wrong-run')
  control('status',ok=False,capability='wrong-capability')
@@ -227,6 +242,11 @@ if __name__=='__main__':
     d=json.loads(line)
     if d.get('type')=='check-rejected':report('controller-rejection',code=d['code'])
  finally:
+  # Publish even if a precheck fails before health; publication cannot skip cleanup.
+  try:
+   from standin_exit_evidence import collect
+   report('standin-exit-diagnostics',**collect(E))
+  except Exception:code=1;report('standin-exit-diagnostics',evidenceValid=False)
   # Retrieve only controller-private session values through the existing capability channel.
   # They remain in host memory and are never emitted or saved as evidence.
   session_values_available=not credential_attempted

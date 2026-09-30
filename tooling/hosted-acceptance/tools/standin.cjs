@@ -1,5 +1,6 @@
 'use strict';
 // TEST ONLY server: original application responses, plus separate provider boundary.
+const lifecycle=require('./standin-lifecycle.cjs').observe();
 const https=require('https'),http=require('http'),fs=require('fs');
 const F='day-trader-frontend.fly.dev',B='day-trader-backend.fly.dev',P='paper-api.alpaca.markets';
 const log=r=>fs.appendFileSync('/evidence/upstream.jsonl',JSON.stringify({at:new Date().toISOString(),...r})+'\n');
@@ -13,7 +14,7 @@ const server=https.createServer({key:fs.readFileSync('/certs/key.pem'),cert:fs.r
  }
  if(fs.existsSync('/evidence/drop-response')){log({type:'uncertain-fixture',method:req.method,path:req.url});req.socket.destroy();return;}
  const u=http.request({hostname:'127.0.0.1',port:h===F?8080:5001,path:req.url,method:req.method,headers:req.headers},r=>{log({type:'application',host:h===F?'frontend':'backend',method:req.method,path:req.url,status:r.statusCode});res.writeHead(r.statusCode,r.headers);r.pipe(res);});u.on('error',()=>{res.writeHead(503);res.end();});req.pipe(u);
-});const transportObservation=require('./transport-observation.cjs').observeStandin(server);server.listen(443,'0.0.0.0');
+});const transportObservation=require('./transport-observation.cjs').observeStandin(server);lifecycle.https(server);server.listen(443,'0.0.0.0');
 
 // Known listening forbidden port proves firewall denial rather than connection refusal.
-require('net').createServer(s=>s.end('synthetic-canary')).listen(80,'0.0.0.0');
+const canary=require('net').createServer(s=>s.end('synthetic-canary'));lifecycle.canary(canary);canary.listen(80,'0.0.0.0');
