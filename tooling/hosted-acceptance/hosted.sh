@@ -4,7 +4,7 @@ set -euo pipefail
 [[ ${GITHUB_RUN_ATTEMPT:-} == 1 ]] || { echo 'Reruns are outside the pilot; use the remaining reviewed push if authorized.'; exit 2; }
 export PILOT_DIAGNOSTIC_ONLY=0
 unset PILOT_STARTUP_PROBE_DIAGNOSTIC
-export PILOT_SECURITY_PROBE_DIAGNOSTIC=standin-exit-once-v1
+export PILOT_SECURITY_PROBE_DIAGNOSTIC=
 unset PILOT_CRASHPAD_EXPERIMENT
 export PILOT_QUALIFICATION=full-v1
 export PILOT_PROFILE=production-rehearsal

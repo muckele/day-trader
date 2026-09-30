@@ -55,3 +55,6 @@ def collect(evidence):
   for key in ['restartCount','exitCodeIfStopped']:require(row[key] is None or type(row[key]) is int and 0<=row[key]<=999999)
   require(row['exitKind'] in ['RUNNING','STOPPED','OOM_KILLED','UNKNOWN'])
  return {'lifecycle':lifecycle,'timeline':timeline,'firstStoppedStage':next((r['stage'] for r in timeline if r['running'] is False),None),'oomObserved':any(r['OOMKilled'] is True for r in timeline)}
+
+def require_running(state):
+ if state.get('running') is not True or state.get('pidPresent') is not True or state.get('OOMKilled') is not False:raise RuntimeError('STANDIN_NOT_RUNNING_AFTER_PRECHECKS')

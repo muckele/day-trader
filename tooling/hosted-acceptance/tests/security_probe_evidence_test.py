@@ -42,4 +42,11 @@ class SecurityEvidence(unittest.TestCase):
    exec(compile(ast.Module(body=[fn],type_ignores=[]),'security-driver','exec'),ns)
    with patch.dict(os.environ,{'PILOT_SECURITY_PROBE_DIAGNOSTIC':'once-v1'}),patch.object(m,'begin',return_value={}),patch.object(m,'collect',return_value={'safe':True}),self.assertRaisesRegex(RuntimeError,'SECURITY_PROBE_DIAGNOSTIC_STOP'):ns['run_security_probe']()
    self.assertEqual(rows[-1][0],'security-probe-diagnostic-stop');self.assertFalse(rows[-1][1]['credentialsSubmitted']);self.assertFalse(rows[-1][1]['fullQualificationExecuted'])
+ def test_full_probe_rejects_forbidden_downstream_even_if_browser_status_assertions_pass(self):
+  from unittest.mock import patch
+  import security_probe_evidence as m,os
+  fn=next(n for n in ast.parse((ROOT/'run.py').read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='run_security_probe')
+  ns={'E':pathlib.Path('/fixture'),'control':lambda *a:None,'report':lambda *a,**k:None,'os':os}
+  exec(compile(ast.Module(body=[fn],type_ignores=[]),'full-security','exec'),ns)
+  with patch.dict(os.environ,{'PILOT_SECURITY_PROBE_DIAGNOSTIC':''}),patch.object(m,'begin',return_value={}),patch.object(m,'collect',return_value={'forbiddenDownstreamObserved':True}),self.assertRaisesRegex(RuntimeError,'SECURITY_PROBE_DOWNSTREAM_VIOLATION'):ns['run_security_probe']()
 if __name__=='__main__':unittest.main()

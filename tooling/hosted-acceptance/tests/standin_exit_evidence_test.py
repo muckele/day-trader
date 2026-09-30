@@ -52,4 +52,9 @@ class StandinExitEvidence(unittest.TestCase):
   import standin_exit_evidence as m
   with tempfile.TemporaryDirectory() as d,patch.object(m,'state',return_value={'running':True,'pidPresent':True,'restartCount':0,'exitCodeIfStopped':None,'OOMKilled':False,'exitKind':'RUNNING'}):
    r=m.marker(pathlib.Path(d)/'absent',m.NP[0]);self.assertTrue(r['evidenceWriteFailed']);self.assertTrue(r['running'])
+ def test_full_qualification_rejects_dead_or_unverifiable_standin_without_restart(self):
+  import standin_exit_evidence as m
+  m.require_running({'running':True,'pidPresent':True,'OOMKilled':False})
+  for state in [{'running':False,'pidPresent':False,'OOMKilled':False},{'running':None,'pidPresent':None,'OOMKilled':None},{'running':True,'pidPresent':True,'OOMKilled':True}]:
+   with self.assertRaisesRegex(RuntimeError,'STANDIN_NOT_RUNNING_AFTER_PRECHECKS'):m.require_running(state)
 if __name__=='__main__':unittest.main()

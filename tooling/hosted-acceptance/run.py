@@ -80,7 +80,7 @@ def tcp_denied(container,ip,port):
  run('docker','exec','--user','501:20',container,'node','-e',code,ip,str(port))
 def network_marker(stage):
  from standin_exit_evidence import marker
- report('standin-precheck-state',**marker(E,stage))
+ row=marker(E,stage);report('standin-precheck-state',**row);return row
 
 def run_security_probe():
  from security_probe_evidence import begin,collect
@@ -96,7 +96,8 @@ def run_security_probe():
    # Read-only container facts only; never make another connection after health.
    states=transport_evidence.container_states(qualification.private_values(P)+publication_secrets)
    report('gateway-transport-diagnostics',**transport_evidence.collect(E,transport_baseline),containers=states)
-  report('security-probe-diagnostics',**collect(E,baseline))
+  evidence=collect(E,baseline);report('security-probe-diagnostics',**evidence)
+  if not transport_only and os.environ.get('PILOT_SECURITY_PROBE_DIAGNOSTIC')!='once-v1' and evidence.get('forbiddenDownstreamObserved') is not False:raise RuntimeError('SECURITY_PROBE_DOWNSTREAM_VIOLATION')
   if os.environ.get('PILOT_SECURITY_PROBE_DIAGNOSTIC')=='standin-exit-once-v1':
    report('standin-exit-diagnostic-stop',healthCommandSucceeded=passed,credentialsSubmitted=False,fullQualificationExecuted=False)
    raise RuntimeError('STANDIN_EXIT_DIAGNOSTIC_STOP') from None
@@ -148,7 +149,10 @@ def main():
  network_marker('NP09_AFTER_GATEWAY_IPV6_CANARY_DENIAL')
  rules=(E/'gateway-ipv6.rules').read_text();assert ':OUTPUT DROP' in rules and ':INPUT DROP' in rules
  report('network-denial',passCheck=True,ipv4ListeningCanary=True,ipv6DefaultDropRules=True,ipv6ListeningCanary=True,ipv6ExternalReachabilityTested=False)
- network_marker('NP10_BEFORE_SECURITY_HEALTH')
+ standin=network_marker('NP10_BEFORE_SECURITY_HEALTH')
+ from standin_exit_evidence import require_running
+ require_running(standin)
+ report('standin-survived-prechecks',passCheck=True)
  run_security_probe()
  control('status',ok=False,run='wrong-run')
  control('status',ok=False,capability='wrong-capability')

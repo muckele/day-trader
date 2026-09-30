@@ -17,4 +17,5 @@ const server=https.createServer({key:fs.readFileSync('/certs/key.pem'),cert:fs.r
 });const transportObservation=require('./transport-observation.cjs').observeStandin(server);lifecycle.https(server);server.listen(443,'0.0.0.0');
 
 // Known listening forbidden port proves firewall denial rather than connection refusal.
-const canary=require('net').createServer(s=>s.end('synthetic-canary'));lifecycle.canary(canary);canary.listen(80,'0.0.0.0');
+// The existing self-check deliberately disconnects; only its observed reset is benign.
+const canary=require('net').createServer(s=>{s.on('error',e=>{if(e.code!=='ECONNRESET')throw e;});s.end('synthetic-canary');});lifecycle.canary(canary);canary.listen(80,'0.0.0.0');
