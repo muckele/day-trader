@@ -2,6 +2,7 @@
 const crypto = require('node:crypto');
 const {decodeFrame,canonicalBytes,receiptSigningBytes} = require('./contracts.cjs');
 const kinds = ['RELEASE_RECEIPT','RESTART_RECEIPT','LEDGER_RECEIPT','MAINTENANCE_RECEIPT','DB_RECEIPT'];
+const admissionGuards = new WeakMap();
 const trusts = new WeakMap(), receipts = new WeakMap(), manifests = new WeakMap(), entries = new WeakMap();
 const hash = x => crypto.createHash('sha256').update(x).digest('hex');
 const safe = x => Number.isSafeInteger(x) && x >= 0;
@@ -57,12 +58,17 @@ function createTrustContext(options) {
     const handle=opaque('TRUST_CONTEXT');trusts.set(handle,{expected:freeze(expected),keys:freeze(keys),notBefore:freeze(notBefore),publicKeys,now:options.now,maxAgeMs:options.maxAgeMs,deadline:options.deadline,consumedNonces,consumedReceipts,lastNow:null});return handle;
   }catch(e){fail(e.code==='INVALID_FRAME'?'INVALID_FRAME':e.code==='SIGNATURE_INVALID'?'SIGNATURE_INVALID':'IDENTITY_MISMATCH');}
 }
-function time(frame,state) {
+function sampleTime(state) {
   let now;try { now=state.now(); } catch { fail('EXPIRED'); }
   if(!safe(now)||state.lastNow!==null&&now<state.lastNow)fail('EXPIRED');state.lastNow=now;
+  return now;
+}
+function timeAt(frame,state,now) {
+  if(!safe(now)||state.lastNow!==null&&now<state.lastNow)fail('EXPIRED');
   const p=frame.payload;if(now>=state.deadline||p.issuedAt<state.notBefore[frame.kind]||p.issuedAt>now||p.expiresAt<=now||p.expiresAt>state.deadline||now-p.issuedAt>state.maxAgeMs)fail('EXPIRED');
   if(frame.kind==='RESTART_RECEIPT'&&p.completedAt>now)fail('EXPIRED');return now;
 }
+function time(frame,state) {return timeAt(frame,state,sampleTime(state));}
 function validate(frame,state) {time(frame,state);if(!equal(bindings(frame),state.expected[frame.kind]))fail();predicates(frame,state.expected);}
 function verifyReceipt(bytes,kind,trust) {
   const state=trusts.get(trust);if(!state||!kinds.includes(kind))fail();
@@ -95,6 +101,41 @@ function validateAssetResponse(entry,body,contentType) {
   if(body.length!==entry.size||hash(body)!==entry.hash||contentType!==entry.mime)fail('OBSERVATION_FAILED');
   return freeze({entryId:'frontend-asset:'+entry.path,hash:entry.hash,sizeMatch:true,hashMatch:true,mimeMatch:true});
 }
+// This guard is only for the real budget/policy composition. Its receipt frames,
+// original trusts and asset/release binding never leave the private module maps.
+function createAdmissionReceiptGuard(ledger,trust,release,assets,maintenance,restart=null) {
+  const manifest=manifests.get(assets);
+  if(!manifest||manifest.release!==release)fail();
+  const candidates=[[ledger,'LEDGER_RECEIPT'],[release,'RELEASE_RECEIPT'],[maintenance,'MAINTENANCE_RECEIPT']];
+  if(restart!==null)candidates.push([restart,'RESTART_RECEIPT']);
+  const records=candidates.map(([handle,kind])=>{
+    const saved=receipts.get(handle),state=saved&&trusts.get(saved.trust);
+    if(!saved||!state||saved.frame.kind!==kind||kind==='LEDGER_RECEIPT'&&saved.trust!==trust)fail();
+    if(!equal(bindings(saved.frame),state.expected[kind]))fail();predicates(saved.frame,state.expected);
+    return {frame:saved.frame,state};
+  });
+  const runId=records[0].frame.runId,config=records[0].frame.payload.configIdentity;
+  if(records.some(r=>r.frame.runId!==runId||(r.frame.kind==='RESTART_RECEIPT'?r.state.expected.RELEASE_RECEIPT.payload.configIdentity:r.frame.payload.configIdentity)!==config))fail();
+  if(manifest.runId!==runId||manifest.digest!==records[1].frame.payload.assetManifestDigest)fail();
+  const guard=opaque('ADMISSION_RECEIPT_GUARD');
+  admissionGuards.set(guard,{records,sampled:false,used:false});return guard;
+}
+function sampleAdmissionReceiptGuard(guard) {
+  const saved=admissionGuards.get(guard);if(!saved||saved.sampled||saved.used)fail('REPLAY');
+  saved.sampled=true;
+  // One bounded pass: ledger first, then each distinct policy receipt trust.
+  const states=[...new Set(saved.records.map(r=>r.state))];
+  try {saved.wallMs=Math.max(...states.map(sampleTime));return saved.wallMs;}
+  catch(error) {saved.used=true;throw error;}
+}
+function validateAdmissionReceiptGuard(guard,wallMs) {
+  const saved=admissionGuards.get(guard);if(!saved||!saved.sampled||saved.used)fail('REPLAY');
+  saved.used=true;
+  if(!safe(wallMs)||wallMs<saved.wallMs)fail('EXPIRED');
+  // No clock or verifier callback here. Include all later known samples made by
+  // policy capabilities, and reject instead of dropping a later observed time.
+  for(const {frame,state} of saved.records)timeAt(frame,state,wallMs);
+}
 function createReceiptAdapters(trust) {
   if(!trusts.has(trust))fail();return Object.freeze({
     verifyRelease:handle=>{const r=inspectReceipt(handle,'RELEASE_RECEIPT',trust);return r&&freeze({runId:r.runId,origins:r.origins,expiresAt:r.expiresAt,configIdentity:r.configIdentity,assetManifestDigest:r.assetManifestDigest});},
@@ -103,4 +144,4 @@ function createReceiptAdapters(trust) {
     verifyGate:(kind,handle,binding)=>{const receiptKind={maintenance:'MAINTENANCE_RECEIPT',restart:'RESTART_RECEIPT'}[kind];if(!receiptKind)return false;const r=inspectReceipt(handle,receiptKind,trust);return !!(r&&binding&&r.runId===binding.runId&&r.configIdentity===binding.configIdentity&&safe(binding.wallMs)&&binding.wallMs>=r.issuedAt&&binding.wallMs<r.expiresAt&&safe(binding.expiresAt)&&binding.wallMs<binding.expiresAt);}
   });
 }
-module.exports={createTrustContext,verifyReceipt,inspectReceipt,verifyAssets,inspectAssets,validateAssetResponse,createReceiptAdapters};
+module.exports={createAdmissionReceiptGuard,sampleAdmissionReceiptGuard,validateAdmissionReceiptGuard,createTrustContext,verifyReceipt,inspectReceipt,verifyAssets,inspectAssets,validateAssetResponse,createReceiptAdapters};

@@ -1,6 +1,6 @@
 'use strict';
 const { inspectReceipt } = require('./receipts.cjs');
-const { admitRequest, claimEligibility, revalidateEligibility } = require('./route-policy.cjs');
+const { admitRequest, claimEligibility, revalidateBudgetEligibility } = require('./route-policy.cjs');
 const { decodeFrame } = require('./contracts.cjs');
 const catalogue = require('../contracts/routes.json');
 const permits = new WeakMap(), usedLedgers = new WeakSet(), usedRuns = new Set();
@@ -19,6 +19,7 @@ function opaque(kind) {
   return Object.freeze(Object.defineProperty({ kind }, 'toJSON', { value: () => fail('PRIVACY_FAILED') }));
 }
 function routeSpec(routeId, phase, claim) {
+  if (typeof phase !== 'string' || !Object.hasOwn(phaseLetters, phase)) fail('ROUTE_DENIED');
   const letter = phaseLetters[phase];
   if (!letter || typeof routeId !== 'string') fail('ROUTE_DENIED');
   if (claim && routeId.startsWith('frontend-asset:') && catalogue.assets.phases.includes(letter)) {
@@ -65,12 +66,12 @@ function createBudget(receipt, ports) {
   }
   function checkClaim(claim, request, policy) {
     currentLedger();
-    const decision = revalidateEligibility(claim, request, policy);
+    const decision = revalidateBudgetEligibility(claim, request, policy, receipt, trust);
     if (decision.kind !== 'ELIGIBLE') latch(decision.code ?? 'ROUTE_DENIED');
     if (decision.runId !== ledger.runId || decision.configIdentity !== ledger.configIdentity) latch('IDENTITY_MISMATCH');
-    // Policy revalidation calls trusted capabilities: check receipt freshness again
-    // after them, while retaining its original identity and original trust.
-    currentLedger(); active();
+    // The budget-only policy guard checks all nominal receipts and final facts at
+    // one shared final time. No external callback follows that guard result.
+    active();
     return decision;
   }
   function enqueue(operation) {

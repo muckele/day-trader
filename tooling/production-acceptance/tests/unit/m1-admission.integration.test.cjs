@@ -167,3 +167,150 @@ test('composition_same_run_different_verified_release_configuration_denied', asy
   await assert.rejects(b.authorize(g.request(), g.policy), { code: 'IDENTITY_MISMATCH' });
   assert.equal(f.intents.length, 0);
 });
+
+// Real independent receipt trusts reproduce a later ledger clock sample. The clocks
+// are monotonic; all synthetic signatures and gate/body handles remain genuine.
+for (const boundary of ['issue', 'consume']) {
+  test('composition_late_ledger_sample_cannot_expire_release_at_' + boundary, async () => {
+    let armed = false, checks = 0;
+    const f = fixture({ expiries: { RELEASE_RECEIPT: 170 }, journal: () => {
+      if (boundary === 'issue') { f.time.wallMs = 169; armed = true; }
+      return Promise.resolve();
+    } });
+    const trust = receipts.createTrustContext({ ...f.options, consumedReceipts: new Set(), consumedNonces: new Set(), now: () => {
+      if (armed && ++checks === (boundary === 'issue' ? 3 : 2)) f.time.wallMs = 170;
+      return f.time.wallMs;
+    } });
+    const ledger = receipts.verifyReceipt(f.sign(f.frames.LEDGER_RECEIPT), 'LEDGER_RECEIPT', trust);
+    const b = createBudget(ledger, { ...f.ports, trust }), req = f.request();
+    if (boundary === 'issue') await assert.rejects(b.authorize(req, f.policy), { code: 'EXPIRED' });
+    else {
+      const permit = await b.authorize(req, f.policy); f.time.wallMs = 169; armed = true;
+      assert.deepEqual(b.consumePermit(permit, req, f.policy), { kind: 'FAIL', code: 'EXPIRED' });
+      assert.equal(b.consumePermit(permit, req, f.policy).code, 'REPLAY');
+    }
+    assert.equal(f.time.wallMs, 170); assert.equal(f.adapters.verifyRelease(f.release), null);
+    assert.equal(b.finalize(null).PAPER.allocated, 2);
+  });
+  test('composition_late_policy_sample_cannot_expire_ledger_at_' + boundary, async () => {
+    let armed = false, checks = 0;
+    const f = fixture({ expiries: { LEDGER_RECEIPT: 170 }, journal: () => {
+      if (boundary === 'issue') { f.time.wallMs = 169; armed = true; }
+      return Promise.resolve();
+    } });
+    const originalClock = f.context.clock;
+    f.context.clock = () => { if (armed && ++checks === 2) f.time.wallMs = 170; return originalClock(); };
+    const b = f.budget(), req = f.request();
+    if (boundary === 'issue') await assert.rejects(b.authorize(req, f.policy), Error);
+    else {
+      const permit = await b.authorize(req, f.policy); f.time.wallMs = 169; armed = true;
+      assert.equal(b.consumePermit(permit, req, f.policy).kind, 'FAIL');
+    }
+    assert.equal(f.time.wallMs, 170); assert.equal(b.finalize(null).PAPER.allocated, 2);
+  });
+}
+
+for (const target of ['request', 'body', 'gateEpoch', 'session', 'phase', 'policyEpoch', 'readiness']) {
+  test('composition_late_ledger_callback_mutation_' + target + '_denied', async () => {
+    let armed = false, checks = 0, req;
+    const login = target === 'body', bytes = Buffer.from('{"username":"synthetic","password":"offline"}');
+    const f = fixture(login ? { phase: A } : {});
+    const trust = receipts.createTrustContext({ ...f.options, consumedReceipts: new Set(), consumedNonces: new Set(), now: () => {
+      if (armed && ++checks === 2) {
+        if (target === 'request') req.rawTarget = '/api/orders';
+        if (target === 'body') bytes[0] = 32;
+        if (target === 'gateEpoch') f.state.gateEpoch++;
+        if (target === 'policyEpoch') f.state.policyEpoch++;
+        if (target === 'session') f.state.sessionHandle = f.brand('session');
+        if (target === 'phase') f.state.phase = C;
+        if (target === 'readiness') f.state.readiness = f.brand('readiness');
+      }
+      return f.time.wallMs;
+    } });
+    const ledger = receipts.verifyReceipt(f.sign(f.frames.LEDGER_RECEIPT), 'LEDGER_RECEIPT', trust);
+    const b = createBudget(ledger, { ...f.ports, trust });
+    req = login ? f.request('/api/login', { method: 'POST', headers: [['content-type', 'application/json']], bytes }) : f.request();
+    const permit = await b.authorize(req, f.policy); armed = true;
+    assert.equal(b.consumePermit(permit, req, f.policy).kind, 'FAIL');
+    assert.equal(b.finalize(null).PAPER.allocated, login ? 0 : 2);
+  });
+}
+
+test('composition_nominal_freshness_guard_rejects_copies_replay_and_failed_sample', () => {
+  const f = fixture();
+  const make = () => receipts.createAdmissionReceiptGuard(f.ledger, f.trust, f.release, f.assets, f.maintenance);
+  for (const args of [[{ ...f.ledger }, f.trust, f.release, f.assets, f.maintenance],
+    [f.ledger, {}, f.release, f.assets, f.maintenance], [f.ledger, f.trust, { ...f.release }, f.assets, f.maintenance],
+    [f.ledger, f.trust, f.release, { ...f.assets }, f.maintenance], [f.ledger, f.trust, f.release, f.assets, { ...f.maintenance }]]) {
+    assert.throws(() => receipts.createAdmissionReceiptGuard(...args), { code: 'IDENTITY_MISMATCH' });
+  }
+  const guard = make();
+  assert.throws(() => receipts.sampleAdmissionReceiptGuard({ ...guard }), { code: 'REPLAY' });
+  assert.throws(() => receipts.validateAdmissionReceiptGuard(guard, 160), { code: 'REPLAY' });
+  assert.equal(receipts.sampleAdmissionReceiptGuard(guard), 160);
+  assert.throws(() => receipts.sampleAdmissionReceiptGuard(guard), { code: 'REPLAY' });
+  receipts.validateAdmissionReceiptGuard(guard, 160);
+  assert.throws(() => receipts.validateAdmissionReceiptGuard(guard, 160), { code: 'REPLAY' });
+  assert.throws(() => JSON.stringify(guard), { code: 'PRIVACY_FAILED' });
+  const failed = make(); f.time.wallMs = NaN;
+  assert.throws(() => receipts.sampleAdmissionReceiptGuard(failed), { code: 'EXPIRED' });
+  f.time.wallMs = 160;
+  assert.throws(() => receipts.validateAdmissionReceiptGuard(failed, 160), { code: 'REPLAY' });
+});
+
+for (const target of ['release', 'maintenance', 'ledger', 'restart', 'maxAge', 'snapshotExpiry', 'run', 'Home', 'rollback', 'invalid', 'throws']) {
+  test('composition_final_policy_sample_' + target + '_boundary_denied', async () => {
+    let armed = false, checks = 0;
+    const receiptKind = { release: 'RELEASE_RECEIPT', maintenance: 'MAINTENANCE_RECEIPT', ledger: 'LEDGER_RECEIPT', restart: 'RESTART_RECEIPT' }[target];
+    const f = fixture({ phase: target === 'Home' ? A : B, expiries: receiptKind ? { [receiptKind]: 170 } : {} });
+    if (target === 'restart') f.postRestart();
+    if (target === 'Home') {
+      f.state.sessionIssued = true; f.state.sessionHandle = f.brand('session');
+      f.state.homeTransition = f.brand('transition'); f.state.homeArmedAt = 1000;
+    }
+    if (target === 'snapshotExpiry') f.state.expiresAt = 170;
+    const originalClock = f.context.clock;
+    f.context.clock = () => {
+      if (armed && ++checks === 3) {
+        if (receiptKind || target === 'snapshotExpiry') f.time.wallMs = 170;
+        if (target === 'maxAge') f.time.wallMs = 161;
+        if (target === 'run') f.time.monotonicMs = 1201000;
+        if (target === 'Home') f.time.monotonicMs = 11000;
+        if (target === 'rollback') f.time.wallMs = 159;
+        if (target === 'invalid') f.time.wallMs = NaN;
+        if (target === 'throws') throw new Error('private clock error');
+      }
+      return originalClock();
+    };
+    let b;
+    if (target === 'maxAge') {
+      const trust = receipts.createTrustContext({ ...f.options, maxAgeMs: 60, consumedReceipts: new Set(), consumedNonces: new Set() });
+      const ledger = receipts.verifyReceipt(f.sign(f.frames.LEDGER_RECEIPT), 'LEDGER_RECEIPT', trust);
+      b = createBudget(ledger, { ...f.ports, trust });
+    } else b = f.budget();
+    const req = target === 'Home' ? f.request('/', { origin: f.frames.RELEASE_RECEIPT.payload.origins.FRONTEND }) : f.request();
+    const permit = await b.authorize(req, f.policy); armed = true;
+    const denied = b.consumePermit(permit, req, f.policy);
+    assert.equal(denied.kind, 'FAIL');
+    assert.equal(b.consumePermit(permit, req, f.policy).code, 'REPLAY');
+    assert.equal(b.finalize(null).PAPER.allocated, target === 'Home' ? 0 : 2);
+  });
+}
+
+for (const expiresAt of [170, 200]) {
+  test('composition_shared_final_wall_independent_clocks_release_' + expiresAt, async () => {
+    let armed = false, checks = 0;
+    const f = fixture({ expiries: { RELEASE_RECEIPT: expiresAt } });
+    const trust = receipts.createTrustContext({ ...f.options, consumedReceipts: new Set(), consumedNonces: new Set(), now: () => {
+      // The independent ledger clock reports 170 while the policy stays at 169.
+      return armed && ++checks >= 2 ? 170 : f.time.wallMs;
+    } });
+    const ledger = receipts.verifyReceipt(f.sign(f.frames.LEDGER_RECEIPT), 'LEDGER_RECEIPT', trust);
+    const b = createBudget(ledger, { ...f.ports, trust }), req = f.request(), permit = await b.authorize(req, f.policy);
+    f.time.wallMs = 169; armed = true;
+    const admission = b.consumePermit(permit, req, f.policy);
+    assert.equal(admission.kind, expiresAt === 170 ? 'FAIL' : 'ADMITTED');
+    assert.equal(f.time.wallMs, 169);
+    assert.equal(b.finalize(null).PAPER.allocated, 2);
+  });
+}

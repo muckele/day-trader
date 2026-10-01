@@ -220,6 +220,26 @@ if (require.main === module) {
     const f = fixture(), b = f.budget(); await b.reserve('performance', 1, B);
     await assert.rejects(b.reserve('robo-health', 1, B), { code: 'REPLAY' });
   });
+  test('reserve_rejects_nonprimitive_phase_before_coercion_allocation_or_journal', async () => {
+    for (const make of [increment => ({ label: 'not-a-phase-enum', toString() { increment(); return B; } }), () => new String(B)]) {
+      let coercions = 0;
+      // A separate object captures the counter without evaluating any phase coercion.
+      const phase = make(() => { coercions++; });
+      const f = fixture(), b = f.budget();
+      await assert.rejects(b.reserve('performance', 1, phase), { code: 'ROUTE_DENIED' });
+      assert.equal(coercions, 0); assert.equal(f.intents.length, 0);
+      assert.equal(b.finalize(null).PAPER.allocated, 0);
+    }
+  });
+  test('primitive_P_and_AWAIT_CREDENTIAL_keep_the_shared_route_ceiling', async () => {
+    for (const phases of [['PREFLIGHT', 'AWAIT_CREDENTIAL'], ['AWAIT_CREDENTIAL', 'PREFLIGHT']]) {
+      const f = fixture(), b = f.budget();
+      const reservation = await b.reserve('health', 1, phases[0]);
+      assert.equal(reservation.phase, phases[0]); assert.equal(f.intents[0].phase, phases[0]);
+      await assert.rejects(b.reserve('health', 2, phases[1]), { code: 'BUDGET_EXCEEDED' });
+      assert.equal(f.intents.length, 1); assert.equal(b.finalize(null).PAPER.allocated, 0);
+    }
+  });
   test('journal_rejection_and_invalid_ack_shapes_never_issue_permit', async () => {
     for (const journal of [() => Promise.reject(new Error('private provider value')), () => Promise.resolve(true), () => undefined]) {
       const f = fixture({ journal }), b = f.budget();

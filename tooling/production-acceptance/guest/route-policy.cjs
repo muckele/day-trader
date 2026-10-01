@@ -1,5 +1,6 @@
 'use strict';
 const { createHash } = require('node:crypto');
+const { createAdmissionReceiptGuard, sampleAdmissionReceiptGuard, validateAdmissionReceiptGuard } = require('./receipts.cjs');
 const catalogue = require('../contracts/routes.json');
 const failureCodes = new Set(require('../contracts/schema.json').definitions.Failure.values);
 function errorCode(error) { try { return failureCodes.has(error?.code) ? error.code : 'INTERNAL_FAILURE'; } catch { return 'INTERNAL_FAILURE'; } }
@@ -101,9 +102,9 @@ function createPolicy(release, assets, context) {
   } catch (e) { invalid(errorCode(e)); }
 }
 function canonicalPath(path) { return /^\/[A-Za-z0-9_./-]*$/.test(path) && !path.includes('//') && !path.split('/').some(segment => segment === '.' || segment === '..'); }
-function current(state, request) {
+function current(state, request, captured = null) {
   if (state.failed) invalid('ROUTE_DENIED');
-  const time = state.context.clock(), supplied = state.context.snapshot(request);
+  const time = captured ? captured.time : state.context.clock(), supplied = captured ? captured.supplied : state.context.snapshot(request);
   exactKeys(time, ['monotonicMs', 'wallMs']); exactKeys(supplied, snapshotKeys);
   const s = { ...supplied };
   if (s.redirectObserved !== false) invalid('ROUTE_DENIED');
@@ -294,7 +295,7 @@ function consistent(state, request, captured, snapshot) {
   if (!sameFacts(captured, now) || snapshotKeys.some(k => s[k] !== snapshot[k])) invalid('IDENTITY_MISMATCH');
   return final;
 }
-function validate(record, request, policy) {
+function validate(record, request, policy, ledgerBinding = null) {
   const state = policies.get(policy);
   if (!record || record.invalid || state !== record.state || request !== record.request) invalid('IDENTITY_MISMATCH');
   const { s, time, letter } = current(state, request), parsed = parseRequest(request, state, s);
@@ -310,6 +311,23 @@ function validate(record, request, policy) {
   if (record.selected.row.id === 'frontend-document' && record.facts.path === '/' && time.monotonicMs - s.homeArmedAt >= catalogue.home.windowMs) invalid('DEADLINE');
   const final = consistent(state, request, parsed.f, s);
   finalTimeChecks({ ...record.selected, viewResponse }, s, final.time, letter);
+  if (ledgerBinding) {
+    const guard = createAdmissionReceiptGuard(ledgerBinding.receipt, ledgerBinding.trust,
+      state.release, state.assets, s.maintenance, letter === 'C' ? s.restart : null);
+    const receiptWallMs = sampleAdmissionReceiptGuard(guard);
+    const sampledTime = state.context.clock();
+    exactKeys(sampledTime, ['monotonicMs', 'wallMs']);
+    if (!safe(sampledTime.wallMs) || sampledTime.wallMs < final.time.wallMs) invalid('EXPIRED');
+    // Trusted snapshot/clock capabilities are synchronous read-only observations.
+    // Capture once after all clocks; then only pure facts/body/time checks remain.
+    const supplied = state.context.snapshot(request);
+    const shared = current(state, request, { supplied, time: { monotonicMs: sampledTime.monotonicMs,
+      wallMs: Math.max(receiptWallMs, sampledTime.wallMs) } });
+    const now = facts(request); checkBody(request, now, state);
+    if (!sameFacts(record.facts, now) || bindingKeys.some(k => shared.s[k] !== record.snapshot[k])) invalid('IDENTITY_MISMATCH');
+    finalTimeChecks({ ...record.selected, viewResponse }, shared.s, shared.time, shared.letter);
+    validateAdmissionReceiptGuard(guard, shared.time.wallMs);
+  }
   return record.decision;
 }
 function claimEligibility(decision, request, policy) {
@@ -324,4 +342,9 @@ function revalidateEligibility(claim, request, policy) {
   try { return validate(record, request, policy); }
   catch (e) { if (record) { record.invalid = true; fatal(record.state, errorCode(e)); } return fatal(policies.get(policy), errorCode(e)); }
 }
-module.exports = { createPolicy, admitRequest, claimEligibility, revalidateEligibility };
+function revalidateBudgetEligibility(claim, request, policy, ledgerReceipt, ledgerTrust) {
+  const record = claims.get(claim);
+  try { return validate(record, request, policy, { receipt: ledgerReceipt, trust: ledgerTrust }); }
+  catch (e) { if (record) { record.invalid = true; fatal(record.state, errorCode(e)); } return fatal(policies.get(policy), errorCode(e)); }
+}
+module.exports = { revalidateBudgetEligibility, createPolicy, admitRequest, claimEligibility, revalidateEligibility };
