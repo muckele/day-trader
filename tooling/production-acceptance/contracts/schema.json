@@ -1,0 +1,1590 @@
+{
+  "schemaVersion": 1,
+  "maxDepth": 8,
+  "publicRunMaxBytes": 262144,
+  "canonicalDomain": "acceptance:v1:",
+  "phaseEvents": {
+    "PREFLIGHT": [
+      "validate",
+      "abort"
+    ],
+    "AWAIT_CREDENTIAL": [
+      "consumeCredential",
+      "abort"
+    ],
+    "AUTHENTICATING": [
+      "login",
+      "abort"
+    ],
+    "OBSERVE_BEFORE_RESTART": [
+      "observeBefore",
+      "abort"
+    ],
+    "HOLD_FOR_RESTART": [
+      "acceptRestartReceipt",
+      "abort"
+    ],
+    "OBSERVE_AFTER_RESTART": [
+      "observeAfter",
+      "abort"
+    ],
+    "LOGOUT": [
+      "signOut",
+      "abort"
+    ],
+    "VERIFY_REVOCATION": [
+      "verifyRevocation",
+      "abort"
+    ],
+    "FINALIZE": [
+      "finalize",
+      "abort"
+    ],
+    "DONE": [
+      "readResult"
+    ],
+    "FAILED": [
+      "cleanup",
+      "readResult"
+    ]
+  },
+  "definitions": {
+    "RunId": {
+      "type": "string",
+      "pattern": "[0-9a-f]{32}",
+      "max": 32
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "[0-9a-f]{64}",
+      "max": 64
+    },
+    "Phase": {
+      "type": "enum",
+      "values": [
+        "PREFLIGHT",
+        "AWAIT_CREDENTIAL",
+        "AUTHENTICATING",
+        "OBSERVE_BEFORE_RESTART",
+        "HOLD_FOR_RESTART",
+        "OBSERVE_AFTER_RESTART",
+        "LOGOUT",
+        "VERIFY_REVOCATION",
+        "FINALIZE",
+        "DONE",
+        "FAILED"
+      ]
+    },
+    "Failure": {
+      "type": "enum",
+      "values": [
+        "INVALID_FRAME",
+        "IDENTITY_MISMATCH",
+        "SIGNATURE_INVALID",
+        "EXPIRED",
+        "REPLAY",
+        "TOPOLOGY_INVALID",
+        "ROLE_INVALID",
+        "TRANSPORT_LOST",
+        "TLS_INVALID",
+        "ROUTE_DENIED",
+        "BUDGET_EXCEEDED",
+        "ACCOUNTING_UNCERTAIN",
+        "CREDENTIAL_INVALID",
+        "SESSION_MISMATCH",
+        "READINESS_FAILED",
+        "OBSERVATION_FAILED",
+        "STORAGE_INVALID",
+        "PRIVACY_FAILED",
+        "CLEANUP_INCOMPLETE",
+        "DEADLINE",
+        "INTERNAL_FAILURE"
+      ]
+    },
+    "Destination": {
+      "type": "enum",
+      "values": [
+        "FRONTEND",
+        "BACKEND"
+      ]
+    },
+    "Id": {
+      "type": "string",
+      "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+      "max": 128
+    },
+    "Counter": {
+      "type": "integer",
+      "min": 0,
+      "max": 9007199254740991
+    },
+    "Seq": {
+      "type": "integer",
+      "min": 1,
+      "max": 9007199254740991
+    },
+    "Boolean": {
+      "type": "boolean"
+    },
+    "Classification": {
+      "type": "enum",
+      "values": [
+        "PUBLIC_FIXED",
+        "PRIVATE_MEMORY",
+        "PRIVATE_TMPFS",
+        "FORBIDDEN_INPUT"
+      ]
+    },
+    "Asset": {
+      "type": "object",
+      "fields": {
+        "path": {
+          "type": "string",
+          "pattern": "/[A-Za-z0-9/_-]+(?:\\.[A-Za-z0-9_-]+)?",
+          "max": 512
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "size": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "mime": {
+          "type": "enum",
+          "values": [
+            "text/html",
+            "text/css",
+            "application/javascript",
+            "application/json",
+            "image/png",
+            "image/jpeg",
+            "image/svg+xml",
+            "image/x-icon",
+            "font/woff",
+            "font/woff2"
+          ]
+        }
+      }
+    },
+    "Origin": {
+      "type": "string",
+      "pattern": "https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+",
+      "max": 253
+    },
+    "Instance": {
+      "type": "object",
+      "fields": {
+        "id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+          "max": 128
+        },
+        "startedAt": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        }
+      }
+    },
+    "Allowance": {
+      "type": "object",
+      "fields": {
+        "historicalCharged": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "unresolved": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "ceiling": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "fullRunReserved": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "remaining": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        }
+      }
+    },
+    "Deltas": {
+      "type": "object",
+      "fields": {
+        "ownerSessionGenerationIncrement": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "startupBookkeeping": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "readinessBookkeeping": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        }
+      }
+    },
+    "Scope": {
+      "type": "object",
+      "fields": {
+        "decisions": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "orders": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "intents": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "fills": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "reservations": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "budgets": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "protection": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "closeState": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "roboSettings": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "recommendations": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "watchlists": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "audit": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "outbox": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        },
+        "leases": {
+          "type": "enum",
+          "values": [
+            true
+          ]
+        }
+      }
+    },
+    "RuntimeIdentity": {
+      "type": "object",
+      "fields": {
+        "baseImage": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "kernel": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "initramfs": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "kernelConfig": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "rolePolicy": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "bootstrap": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "controller": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "proxy": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "node": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "python": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "playwright": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "chromium": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "hostLauncher": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "hostBroker": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "vmConfiguration": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "macOSCompatibility": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "sdkCompatibility": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        }
+      }
+    },
+    "Control": {
+      "type": "object",
+      "fields": {
+        "phase": {
+          "ref": "Phase"
+        },
+        "event": {
+          "type": "enum",
+          "values": [
+            "validate",
+            "abort",
+            "consumeCredential",
+            "login",
+            "observeBefore",
+            "acceptRestartReceipt",
+            "observeAfter",
+            "signOut",
+            "verifyRevocation",
+            "finalize",
+            "readResult",
+            "cleanup"
+          ]
+        },
+        "destination": {
+          "ref": "Destination"
+        }
+      }
+    },
+    "Release": {
+      "type": "object",
+      "fields": {
+        "issuedAt": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "expiresAt": {
+          "type": "integer",
+          "min": 1,
+          "max": 9007199254740991
+        },
+        "keyId": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "[0-9a-f]{128}",
+          "max": 128
+        },
+        "intendedApp": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+          "max": 128
+        },
+        "environment": {
+          "type": "enum",
+          "values": [
+            "production"
+          ]
+        },
+        "appSHA": {
+          "type": "string",
+          "pattern": "[0-9a-f]{40}",
+          "max": 40
+        },
+        "frontendRegistryDigest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "frontendPlatformDigest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "backendRegistryDigest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "backendPlatformDigest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "origins": {
+          "type": "object",
+          "fields": {
+            "FRONTEND": {
+              "ref": "Origin"
+            },
+            "BACKEND": {
+              "ref": "Origin"
+            }
+          }
+        },
+        "assetManifestDigest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "configIdentity": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "operationId": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+          "max": 128
+        },
+        "expectedInstances": {
+          "type": "array",
+          "item": {
+            "type": "string",
+            "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+            "max": 128
+          },
+          "min": 1,
+          "max": 64
+        }
+      }
+    },
+    "Restart": {
+      "type": "object",
+      "fields": {
+        "issuedAt": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "expiresAt": {
+          "type": "integer",
+          "min": 1,
+          "max": 9007199254740991
+        },
+        "keyId": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "[0-9a-f]{128}",
+          "max": 128
+        },
+        "approvedOperationId": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+          "max": 128
+        },
+        "nonce": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "action": {
+          "type": "enum",
+          "values": [
+            "backend-restart-only"
+          ]
+        },
+        "intendedApp": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+          "max": 128
+        },
+        "environment": {
+          "type": "enum",
+          "values": [
+            "production"
+          ]
+        },
+        "backendRegistryDigest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "backendPlatformDigest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "preInstances": {
+          "type": "array",
+          "item": {
+            "ref": "Instance"
+          },
+          "min": 1,
+          "max": 64
+        },
+        "postInstances": {
+          "type": "array",
+          "item": {
+            "ref": "Instance"
+          },
+          "min": 1,
+          "max": 64
+        },
+        "sameConfig": {
+          "type": "boolean"
+        },
+        "completedAt": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "success": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Ledger": {
+      "type": "object",
+      "fields": {
+        "issuedAt": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "expiresAt": {
+          "type": "integer",
+          "min": 1,
+          "max": 9007199254740991
+        },
+        "keyId": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "[0-9a-f]{128}",
+          "max": 128
+        },
+        "authority": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+          "max": 128
+        },
+        "PAPER": {
+          "ref": "Allowance"
+        },
+        "stock": {
+          "ref": "Allowance"
+        },
+        "canonicalAdapter": {
+          "type": "enum",
+          "values": [
+            "alpaca-paper"
+          ]
+        },
+        "configIdentity": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        }
+      }
+    },
+    "Maintenance": {
+      "type": "object",
+      "fields": {
+        "issuedAt": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "expiresAt": {
+          "type": "integer",
+          "min": 1,
+          "max": 9007199254740991
+        },
+        "keyId": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "[0-9a-f]{128}",
+          "max": 128
+        },
+        "authority": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+          "max": 128
+        },
+        "configIdentity": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "comparisonScope": {
+          "ref": "Scope"
+        },
+        "comparisonComplete": {
+          "type": "boolean"
+        },
+        "ownerExactMatch": {
+          "type": "boolean"
+        },
+        "accountExactMatch": {
+          "type": "boolean"
+        },
+        "uniquePreexistingSettings": {
+          "type": "boolean"
+        },
+        "paperOnly": {
+          "type": "boolean"
+        },
+        "automationDisabled": {
+          "type": "boolean"
+        },
+        "schedulerSuppressed": {
+          "type": "boolean"
+        },
+        "notificationWorkersSuppressed": {
+          "type": "boolean"
+        },
+        "noAutomationLease": {
+          "type": "boolean"
+        },
+        "noProtectionLease": {
+          "type": "boolean"
+        },
+        "noTradingWork": {
+          "type": "boolean"
+        },
+        "noCloseWork": {
+          "type": "boolean"
+        },
+        "noReconciliationWork": {
+          "type": "boolean"
+        },
+        "noReservations": {
+          "type": "boolean"
+        },
+        "exclusiveWindow": {
+          "type": "boolean"
+        },
+        "allowedDeltas": {
+          "ref": "Deltas"
+        },
+        "identityComparisonId": {
+          "ref": "IdentityComparisonId"
+        }
+      }
+    },
+    "DB": {
+      "type": "object",
+      "fields": {
+        "issuedAt": {
+          "type": "integer",
+          "min": 0,
+          "max": 9007199254740991
+        },
+        "expiresAt": {
+          "type": "integer",
+          "min": 1,
+          "max": 9007199254740991
+        },
+        "keyId": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "[0-9a-f]{128}",
+          "max": 128
+        },
+        "authority": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+          "max": 128
+        },
+        "configIdentity": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}",
+          "max": 64
+        },
+        "interval": {
+          "type": "enum",
+          "values": [
+            "BEFORE",
+            "RESTART",
+            "AFTER",
+            "LOGOUT"
+          ]
+        },
+        "comparisonScope": {
+          "ref": "Scope"
+        },
+        "comparisonComplete": {
+          "type": "boolean"
+        },
+        "ownerExactMatch": {
+          "type": "boolean"
+        },
+        "accountExactMatch": {
+          "type": "boolean"
+        },
+        "uniquePreexistingSettings": {
+          "type": "boolean"
+        },
+        "economicUnchanged": {
+          "type": "boolean"
+        },
+        "configurationUnchanged": {
+          "type": "boolean"
+        },
+        "concurrentWritesAccounted": {
+          "type": "boolean"
+        },
+        "ttlAccounted": {
+          "type": "boolean"
+        },
+        "snapshotConsistent": {
+          "type": "boolean"
+        },
+        "observedDeltas": {
+          "ref": "Deltas"
+        },
+        "allowedDeltas": {
+          "ref": "Deltas"
+        },
+        "identityComparisonId": {
+          "ref": "IdentityComparisonId"
+        }
+      }
+    },
+    "PublicRecord": {
+      "type": "union",
+      "tag": "recordKind",
+      "variants": {
+        "PHASE": {
+          "type": "object",
+          "fields": {
+            "recordKind": {
+              "type": "enum",
+              "values": [
+                "PHASE"
+              ]
+            },
+            "phase": {
+              "ref": "Phase"
+            },
+            "outcome": {
+              "type": "enum",
+              "values": [
+                "PASS",
+                "FAIL"
+              ]
+            }
+          }
+        },
+        "ROUTE": {
+          "type": "object",
+          "fields": {
+            "recordKind": {
+              "type": "enum",
+              "values": [
+                "ROUTE"
+              ]
+            },
+            "phase": {
+              "ref": "Phase"
+            },
+            "routeId": {
+              "type": "enum",
+              "values": [
+                "frontend-document",
+                "frontend-asset",
+                "health",
+                "me",
+                "login",
+                "readiness",
+                "market-status",
+                "settings",
+                "decisions",
+                "robo-orders",
+                "performance",
+                "audit",
+                "robo-health",
+                "reconciliation",
+                "portfolio-account",
+                "portfolio-equity",
+                "activity-orders",
+                "activity-trades",
+                "notifications",
+                "logout",
+                "preflight-login",
+                "preflight-logout",
+                "home-recommendations",
+                "home-watchlist"
+              ]
+            },
+            "outcome": {
+              "type": "enum",
+              "values": [
+                "ADMITTED",
+                "ABORT_EXPECTED",
+                "REPLAY_PRIVATE",
+                "DENIED",
+                "UNCERTAIN"
+              ]
+            },
+            "httpStatus": {
+              "type": "enum",
+              "values": [
+                "NONE",
+                "200",
+                "401"
+              ]
+            },
+            "paperCost": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            },
+            "stockCost": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            },
+            "elapsedMs": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            }
+          }
+        },
+        "UI": {
+          "type": "object",
+          "fields": {
+            "recordKind": {
+              "type": "enum",
+              "values": [
+                "UI"
+              ]
+            },
+            "phase": {
+              "ref": "Phase"
+            },
+            "view": {
+              "type": "enum",
+              "values": [
+                "ROBO",
+                "PORTFOLIO",
+                "ACTIVITY"
+              ]
+            },
+            "schemaValidation": {
+              "type": "boolean"
+            },
+            "renderedData": {
+              "type": "boolean"
+            },
+            "validEmptyState": {
+              "type": "boolean"
+            },
+            "noError": {
+              "type": "boolean"
+            },
+            "rowCount": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            }
+          }
+        },
+        "READINESS": {
+          "type": "object",
+          "fields": {
+            "recordKind": {
+              "type": "enum",
+              "values": [
+                "READINESS"
+              ]
+            },
+            "phase": {
+              "ref": "Phase"
+            },
+            "runtimeReady": {
+              "type": "boolean"
+            },
+            "maintenanceReady": {
+              "type": "boolean"
+            },
+            "checks": {
+              "type": "object",
+              "fields": {
+                "ownerConfiguration": {
+                  "type": "enum",
+                  "values": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "authenticationConfiguration": {
+                  "type": "enum",
+                  "values": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "databaseConnected": {
+                  "type": "enum",
+                  "values": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "ownerIdentity": {
+                  "type": "enum",
+                  "values": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "ownerSettings": {
+                  "type": "enum",
+                  "values": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "persistence": {
+                  "type": "enum",
+                  "values": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "paperMode": {
+                  "type": "enum",
+                  "values": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "automationDisabled": {
+                  "type": "enum",
+                  "values": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "schedulerSuppressed": {
+                  "type": "enum",
+                  "values": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "paperDestination": {
+                  "type": "enum",
+                  "values": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "paperBindingConfiguration": {
+                  "type": "enum",
+                  "values": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "paperCredentialConfiguration": {
+                  "type": "enum",
+                  "values": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "IDENTITY": {
+          "type": "object",
+          "fields": {
+            "recordKind": {
+              "type": "enum",
+              "values": [
+                "IDENTITY"
+              ]
+            },
+            "phase": {
+              "ref": "Phase"
+            },
+            "ownerExactMatch": {
+              "type": "boolean"
+            },
+            "sessionContinuity": {
+              "type": "boolean"
+            },
+            "releaseDigest": {
+              "type": "string",
+              "pattern": "[0-9a-f]{64}",
+              "max": 64
+            },
+            "policyDigest": {
+              "type": "string",
+              "pattern": "[0-9a-f]{64}",
+              "max": 64
+            }
+          }
+        },
+        "ACCOUNTING": {
+          "type": "object",
+          "fields": {
+            "recordKind": {
+              "type": "enum",
+              "values": [
+                "ACCOUNTING"
+              ]
+            },
+            "reserved": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            },
+            "attempted": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            },
+            "confirmed": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            },
+            "uncertain": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            },
+            "stockReserved": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            },
+            "durableHandoff": {
+              "type": "boolean"
+            }
+          }
+        },
+        "STORAGE": {
+          "type": "object",
+          "fields": {
+            "recordKind": {
+              "type": "enum",
+              "values": [
+                "STORAGE"
+              ]
+            },
+            "policyDigest": {
+              "type": "string",
+              "pattern": "[0-9a-f]{64}",
+              "max": 64
+            },
+            "fileCount": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            },
+            "directoryCount": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            },
+            "logicalBytes": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            },
+            "allocatedBytes": {
+              "type": "integer",
+              "min": 0,
+              "max": 9007199254740991
+            },
+            "crashContentsRead": {
+              "type": "enum",
+              "values": [
+                false
+              ]
+            },
+            "cleanupComplete": {
+              "type": "boolean"
+            }
+          }
+        },
+        "CLEANUP": {
+          "type": "object",
+          "fields": {
+            "recordKind": {
+              "type": "enum",
+              "values": [
+                "CLEANUP"
+              ]
+            },
+            "processesExited": {
+              "type": "boolean"
+            },
+            "privateStateRemoved": {
+              "type": "boolean"
+            },
+            "vmStopped": {
+              "type": "boolean"
+            },
+            "brokerStopped": {
+              "type": "boolean"
+            },
+            "publicScanPassed": {
+              "type": "boolean"
+            },
+            "outcome": {
+              "type": "enum",
+              "values": [
+                "PASS",
+                "FAIL"
+              ]
+            }
+          }
+        },
+        "FAILURE": {
+          "type": "object",
+          "fields": {
+            "recordKind": {
+              "type": "enum",
+              "values": [
+                "FAILURE"
+              ]
+            },
+            "phase": {
+              "ref": "Phase"
+            },
+            "failure": {
+              "ref": "Failure"
+            }
+          }
+        }
+      }
+    },
+    "Assets": {
+      "type": "object",
+      "fields": {
+        "entries": {
+          "type": "array",
+          "item": {
+            "ref": "Asset"
+          },
+          "min": 1,
+          "max": 128
+        }
+      }
+    },
+    "IdentityComparisonId": {
+      "type": "string",
+      "pattern": "[0-9a-f]{64}",
+      "max": 64,
+      "classification": "PRIVATE_MEMORY",
+      "meaning": "Opaque run-specific random comparison identifier; never hash owner/account values; independent expected value required at verification"
+    }
+  },
+  "frames": {
+    "CONTROL": {
+      "maxBytes": 256,
+      "schema": {
+        "type": "object",
+        "fields": {
+          "version": {
+            "type": "enum",
+            "values": [
+              1
+            ]
+          },
+          "kind": {
+            "type": "enum",
+            "values": [
+              "CONTROL"
+            ]
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "[0-9a-f]{32}",
+            "max": 32
+          },
+          "sequence": {
+            "type": "integer",
+            "min": 1,
+            "max": 9007199254740991
+          },
+          "payload": {
+            "ref": "Control"
+          }
+        }
+      }
+    },
+    "RELEASE_RECEIPT": {
+      "maxBytes": 16384,
+      "schema": {
+        "type": "object",
+        "fields": {
+          "version": {
+            "type": "enum",
+            "values": [
+              1
+            ]
+          },
+          "kind": {
+            "type": "enum",
+            "values": [
+              "RELEASE_RECEIPT"
+            ]
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "[0-9a-f]{32}",
+            "max": 32
+          },
+          "sequence": {
+            "type": "integer",
+            "min": 1,
+            "max": 9007199254740991
+          },
+          "payload": {
+            "ref": "Release"
+          }
+        }
+      }
+    },
+    "RESTART_RECEIPT": {
+      "maxBytes": 16384,
+      "schema": {
+        "type": "object",
+        "fields": {
+          "version": {
+            "type": "enum",
+            "values": [
+              1
+            ]
+          },
+          "kind": {
+            "type": "enum",
+            "values": [
+              "RESTART_RECEIPT"
+            ]
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "[0-9a-f]{32}",
+            "max": 32
+          },
+          "sequence": {
+            "type": "integer",
+            "min": 1,
+            "max": 9007199254740991
+          },
+          "payload": {
+            "ref": "Restart"
+          }
+        }
+      }
+    },
+    "LEDGER_RECEIPT": {
+      "maxBytes": 16384,
+      "schema": {
+        "type": "object",
+        "fields": {
+          "version": {
+            "type": "enum",
+            "values": [
+              1
+            ]
+          },
+          "kind": {
+            "type": "enum",
+            "values": [
+              "LEDGER_RECEIPT"
+            ]
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "[0-9a-f]{32}",
+            "max": 32
+          },
+          "sequence": {
+            "type": "integer",
+            "min": 1,
+            "max": 9007199254740991
+          },
+          "payload": {
+            "ref": "Ledger"
+          }
+        }
+      }
+    },
+    "MAINTENANCE_RECEIPT": {
+      "maxBytes": 16384,
+      "schema": {
+        "type": "object",
+        "fields": {
+          "version": {
+            "type": "enum",
+            "values": [
+              1
+            ]
+          },
+          "kind": {
+            "type": "enum",
+            "values": [
+              "MAINTENANCE_RECEIPT"
+            ]
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "[0-9a-f]{32}",
+            "max": 32
+          },
+          "sequence": {
+            "type": "integer",
+            "min": 1,
+            "max": 9007199254740991
+          },
+          "payload": {
+            "ref": "Maintenance"
+          }
+        }
+      }
+    },
+    "DB_RECEIPT": {
+      "maxBytes": 16384,
+      "schema": {
+        "type": "object",
+        "fields": {
+          "version": {
+            "type": "enum",
+            "values": [
+              1
+            ]
+          },
+          "kind": {
+            "type": "enum",
+            "values": [
+              "DB_RECEIPT"
+            ]
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "[0-9a-f]{32}",
+            "max": 32
+          },
+          "sequence": {
+            "type": "integer",
+            "min": 1,
+            "max": 9007199254740991
+          },
+          "payload": {
+            "ref": "DB"
+          }
+        }
+      }
+    },
+    "ASSET_MANIFEST": {
+      "maxBytes": 16384,
+      "schema": {
+        "type": "object",
+        "fields": {
+          "version": {
+            "type": "enum",
+            "values": [
+              1
+            ]
+          },
+          "kind": {
+            "type": "enum",
+            "values": [
+              "ASSET_MANIFEST"
+            ]
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "[0-9a-f]{32}",
+            "max": 32
+          },
+          "sequence": {
+            "type": "integer",
+            "min": 1,
+            "max": 9007199254740991
+          },
+          "payload": {
+            "ref": "Assets"
+          }
+        }
+      }
+    },
+    "RUNTIME_IDENTITY": {
+      "maxBytes": 16384,
+      "schema": {
+        "type": "object",
+        "fields": {
+          "version": {
+            "type": "enum",
+            "values": [
+              1
+            ]
+          },
+          "kind": {
+            "type": "enum",
+            "values": [
+              "RUNTIME_IDENTITY"
+            ]
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "[0-9a-f]{32}",
+            "max": 32
+          },
+          "sequence": {
+            "type": "integer",
+            "min": 1,
+            "max": 9007199254740991
+          },
+          "payload": {
+            "ref": "RuntimeIdentity"
+          }
+        }
+      }
+    },
+    "PUBLIC_RECORD": {
+      "maxBytes": 4096,
+      "schema": {
+        "type": "object",
+        "fields": {
+          "version": {
+            "type": "enum",
+            "values": [
+              1
+            ]
+          },
+          "kind": {
+            "type": "enum",
+            "values": [
+              "PUBLIC_RECORD"
+            ]
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "[0-9a-f]{32}",
+            "max": 32
+          },
+          "sequence": {
+            "type": "integer",
+            "min": 1,
+            "max": 9007199254740991
+          },
+          "payload": {
+            "ref": "PublicRecord"
+          }
+        }
+      }
+    }
+  }
+}
