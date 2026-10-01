@@ -27,7 +27,7 @@ p=pathlib.Path(os.environ['PILOT_STATE'])/'disk-samples'
 a=[int(x) for x in p.read_text().split()]
 print(json.dumps({'diskInitialAvailableBytes':a[0],'diskMinimumObservedAvailableBytes':min(a),'diskMaximumObservedConsumptionBytes':max(a)-min(a),'sampleSeconds':10}))
 PY
-  echo HOSTED_PRIVATE_FINALIZATION_DIAGNOSTIC_COMPLETE # K is diagnostic even if the failure does not reproduce.
+  if [[ $code == 0 ]]; then echo HOSTED_TOOLING_PILOT_VERIFIED; else echo HOSTED_TOOLING_PILOT_BLOCKED; fi
   python3 - <<'PY2' >> "$GITHUB_STEP_SUMMARY"
 import pathlib,os
 for line in (pathlib.Path(os.environ['PILOT_STATE'])/'public.log').read_text().splitlines():
@@ -62,6 +62,7 @@ python3 tooling/hosted-acceptance/tests/security_probe_evidence_test.py
 python3 tooling/hosted-acceptance/tests/transport_evidence_test.py
 python3 tooling/hosted-acceptance/tests/standin_exit_evidence_test.py
 python3 tooling/hosted-acceptance/tests/finalization_diagnostics_test.py
+python3 tooling/hosted-acceptance/tests/drop_response_marker_test.py
 mkdir "$PILOT_STATE/application"
 git archive 852fb22d9facf4bfe0bca7f419e22ee4bfbba17f backend frontend | tar -x -C "$PILOT_STATE/application"
 # No persistent cache imports/exports; logs here contain only public build inputs.

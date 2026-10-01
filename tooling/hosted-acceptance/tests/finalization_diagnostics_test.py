@@ -66,5 +66,6 @@ class Diagnostics(unittest.TestCase):
   self.assertNotIn('finalization.control',main)
   self.assertIn("publication_secrets.extend(control('publication-secrets')['values'])",main)
   shell=(pathlib.Path(__file__).resolve().parents[1]/'hosted.sh').read_text()
-  self.assertNotIn('echo HOSTED_TOOLING_PILOT_VERIFIED',shell)
+  self.assertIn('export PILOT_QUALIFICATION=full-v1',shell)
+  self.assertNotIn('HOSTED_PRIVATE_FINALIZATION_DIAGNOSTIC_COMPLETE',shell)
 if __name__=='__main__':unittest.main()

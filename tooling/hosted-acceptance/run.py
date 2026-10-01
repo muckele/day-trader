@@ -6,6 +6,8 @@ import provision as p
 import hosted_qualification as qualification
 publication_secrets=[]
 credential_attempted=False
+marker_ready=False
+from drop_response_marker import create as create_drop_response,verify as verify_drop_response
 R=pathlib.Path(os.environ['PILOT_STATE']);P=R/'private';E=R/'evidence'
 def run(*a,**kw):
  q=subprocess.run(a,capture_output=True,text=True,timeout=180,**kw)
@@ -110,7 +112,7 @@ def run_security_probe():
  report('browser-route-bypass',passCheck=True)
 
 def main():
- global credential_attempted
+ global credential_attempted,marker_ready
  qualification.claim(R)
  swap={k:int(v.split()[0])*1024 for k,v in (line.split(':',1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines()) if k in ['SwapTotal','SwapFree','SwapCached']}
  report('qualification-begin',source=qualification.SOURCE,profile='production-rehearsal',swapBytes=swap,tmpfsMayUseSwap=True,crashContentsRead=False)
@@ -206,7 +208,8 @@ def main():
  # Exercise parser framing and durable charging for uncertain upstream failures.
  report('gateway-framing',result=run('docker','exec','--user','501:20','dapt-hosted-browser','node','/tests/gateway.integration.cjs','framing'))
  attempts=json.loads((P/'gateway-state/gateway.json').read_text())['attempts']
- (E/'drop-response').touch(mode=0o600)
+ report('drop-response-marker',phase='before-uncertain',**create_drop_response(E))
+ marker_ready=True
  report('gateway-uncertain-budget',result=run('docker','exec','--user','501:20','dapt-hosted-browser','node','/tests/gateway.integration.cjs','uncertain'))
  charged=json.loads((P/'gateway-state/gateway.json').read_text());assert charged['attempts']==attempts+11
  uncertain=[json.loads(x) for x in (E/'upstream.jsonl').read_text().splitlines() if json.loads(x).get('type')=='uncertain-fixture'];assert len(uncertain)==11
@@ -260,7 +263,11 @@ if __name__=='__main__':
    if (P/'intake.json').exists():
     publication_secrets.extend(finalization.control('publication-secrets',P/'intake.json')['values'])
     session_values_available=True
-    finalization.control('leakage',P/'intake.json')
+    if marker_ready:report('drop-response-marker',phase='before-final-browser-leakage',**verify_drop_response(E))
+    leakage=finalization.control('leakage',P/'intake.json')
+    assert leakage['pass'] is True and leakage['hits']==0 and leakage['crashContentsRead'] is False
+    report('final-browser-leakage',passCheck=True,files=leakage['files'],hits=leakage['hits'],encodedRepresentations=leakage['encodedRepresentations'],crashContentsRead=leakage['crashContentsRead'])
+    if marker_ready:report('drop-response-marker',phase='after-final-browser-leakage',**verify_drop_response(E))
     finalization.control('shutdown',P/'intake.json')
     state=finalization.poll()
     finalization.receipt(report,state['ExitCode'])
