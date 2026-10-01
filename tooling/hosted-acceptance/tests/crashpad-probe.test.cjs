@@ -40,6 +40,7 @@ test('actual browser experiment path attests sandbox and exits before any app na
  const runtimeProbe={enabled:()=>true,metadata:phase=>calls.push(phase),finish:(ctx,p)=>probe.finish(ctx,p,diagnostic.record)};
  const fakeFs={existsSync:()=>false,readFileSync:p=>p==='/config/assets.json'?'[]':Buffer.from('synthetic binary'),writeFileSync(){},appendFileSync(){}};
  const req=n=>{
+  if(n==='./browser-finalization.cjs')return {observe:()=>require('../tools/browser-finalization.cjs').observe({instance:'00000000-0000-4000-8000-000000000001',process:new (require('events').EventEmitter)(),write(){}})};
   if(n==='./entry-policy.cjs')return require('../tools/entry-policy.cjs');
   if(n==='./private-leakage.cjs')return require('../tools/private-leakage.cjs');
   if(n==='./sandbox-attestation.cjs')return {observeAndAssert:(p,id)=>require('../tools/sandbox-attestation.cjs').observeAndAssert(p,id,diagnostic.record)};

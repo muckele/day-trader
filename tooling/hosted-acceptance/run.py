@@ -254,20 +254,23 @@ if __name__=='__main__':
   # Retrieve only controller-private session values through the existing capability channel.
   # They remain in host memory and are never emitted or saved as evidence.
   session_values_available=not credential_attempted
+  from finalization_diagnostics import Diagnostics,collect as collect_finalization
+  finalization=Diagnostics(E)
   try:
    if (P/'intake.json').exists():
-    publication_secrets.extend(control('publication-secrets')['values'])
+    publication_secrets.extend(finalization.control('publication-secrets',P/'intake.json')['values'])
     session_values_available=True
-    control('leakage')
-    control('shutdown')
-    for _ in range(50):
-     state=json.loads(run('docker','inspect','dapt-hosted-browser'))[0]['State']
-     if not state['Running']:break
-     time.sleep(.2)
-    else:raise RuntimeError('BROWSER_SHUTDOWN_TIMEOUT')
-    if state['ExitCode']!=0:raise RuntimeError('BROWSER_SHUTDOWN_FAILED')
-    report('browser-normal-shutdown',passCheck=True,controllerExitCode=state['ExitCode'])
-  except Exception:code=1;report('private-finalization',passCheck=False)
+    finalization.control('leakage',P/'intake.json')
+    finalization.control('shutdown',P/'intake.json')
+    state=finalization.poll()
+    finalization.receipt(report,state['ExitCode'])
+    finalization.complete()
+  except Exception:
+   code=1;finalization.mark('PF_FAILURE',completed=True,success=False,failure='UNCLASSIFIED_FINALIZATION_ERROR')
+   finalization.snapshot()
+   report('private-finalization',passCheck=False)
+  try:report('private-finalization-diagnostics',**collect_finalization(E))
+  except Exception:code=1;report('private-finalization-diagnostics',evidenceValid=False)
   try:
    scan=qualification.scan([E,ROOT,R/'public.log'],qualification.private_values(P)+publication_secrets)
    report('final-leakage',passCheck=True,**scan)
