@@ -87,9 +87,15 @@ function encode(value) {
   return JSON.stringify(value);
 }
 function canonicalBytes(frame) { if (!validated.has(frame)) invalid(); return Buffer.from(encode(frame), 'utf8'); }
+// Only a fully validated receipt can reach the signature-free canonical encoder.
+function receiptSigningBytes(frame) {
+  if (!validated.has(frame) || !['RELEASE_RECEIPT','RESTART_RECEIPT','LEDGER_RECEIPT','MAINTENANCE_RECEIPT','DB_RECEIPT'].includes(frame.kind)) invalid();
+  const payload = { ...frame.payload }; delete payload.signature;
+  return Buffer.from(`acceptance:v1:${frame.kind}\0` + encode({ ...frame, payload }), 'utf8');
+}
 class PublicRunBudget {
   #usedBytes = 0;
   get usedBytes() { return this.#usedBytes; }
   append(frame) { if (!validated.has(frame) || frame.kind !== 'PUBLIC_RECORD') invalid(); const size = canonicalBytes(frame).length; if (size > schema.publicRunMaxBytes - this.#usedBytes) invalid(); this.#usedBytes += size; }
 }
-module.exports = { decodeFrame, canonicalBytes, PublicRunBudget };
+module.exports = { decodeFrame, canonicalBytes, receiptSigningBytes, PublicRunBudget };

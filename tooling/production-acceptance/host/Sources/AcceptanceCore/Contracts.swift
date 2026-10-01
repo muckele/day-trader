@@ -204,6 +204,12 @@ public enum Contracts {
         guard let result = String(data: bytes, encoding: .utf8) else { throw ContractError.invalidFrame }; return result
     }
     public static func canonicalBytes(_ frame: ValidatedFrame) throws -> Data { try Data(encode(frame.value).utf8) }
+    public static func receiptSigningBytes(_ frame: ValidatedFrame) throws -> Data {
+        guard [.releaseReceipt, .restartReceipt, .ledgerReceipt, .maintenanceReceipt, .dbReceipt].contains(frame.kind), var payload = frame.value["payload"] as? [String: Any] else { throw ContractError.invalidFrame }
+        payload.removeValue(forKey: "signature")
+        var value = frame.value; value["payload"] = payload
+        return try Data(("acceptance:v1:" + frame.kind.rawValue + "\0" + encode(value)).utf8)
+    }
 }
 public final class PublicRunBudget {
     public private(set) var usedBytes = 0
