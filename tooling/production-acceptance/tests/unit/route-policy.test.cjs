@@ -149,8 +149,9 @@ test('GET_OPTIONS_body_rejected', () => {
 test('body_proof_wrong_request_or_mutated_bytes_rejected', () => {
   const f = fixture(A); const { r, d } = eligible(f, '/api/me');
   const other = f.request('/api/me'); other.bodyProof = r.bodyProof; assert.equal(admitRequest(other, f.policy).kind, 'FAIL');
-  const copy = { ...r }; assert.equal(claimEligibility(d, copy, f.policy).kind, 'FAIL');
-  const fake = f.request('/api/me'); fake.bodyProof = { runId: RUN, requestId: fake.requestId, byteLength: 0, schema: 'ABSENT', validated: true }; assert.equal(admitRequest(fake, f.policy).kind, 'FAIL');
+  const copied = fixture(A); const original = eligible(copied, '/api/me');
+  assert.equal(claimEligibility(original.d, { ...original.r }, copied.policy).kind, 'FAIL');
+  const forged = fixture(A); const fake = forged.request('/api/me'); fake.bodyProof = { runId: RUN, requestId: fake.requestId, byteLength: 0, schema: 'ABSENT', validated: true }; assert.equal(admitRequest(fake, forged.policy).kind, 'FAIL');
   const f2 = fixture(A); const bytes = Buffer.from('{"username":"u","password":"p"}'); const req = f2.request('/api/login', { method: 'POST', headers: [['content-type', 'application/json']], bytes }); bytes[bytes.indexOf('p"}')] = 113; assert.equal(admitRequest(req, f2.policy).kind, 'FAIL');
   const f3 = fixture(); const x = f3.request(); x.path = '/api/me'; x.rawTarget = '/api/me'; assert.equal(admitRequest(x, f3.policy).kind, 'FAIL');
   assert.throws(() => JSON.stringify(r.bodyProof));
@@ -207,7 +208,7 @@ test('freshness_and_phase_invalidation', () => {
   const f = fixture(); eligible(f, '/api/market/status'); f.state.marketResponse = f.response('marketResponse'); f.time.monotonicMs += 60000; f.time.wallMs += 60000;
   assert.equal(admitRequest(market(f), f.policy).kind, 'REPLAY_PRIVATE');
   f.time.monotonicMs++; f.time.wallMs++; for (let i = 0; i < 4; i++) assert.equal(admitRequest(market(f), f.policy).kind, 'ABORT_EXPECTED'); assert.equal(admitRequest(market(f), f.policy).kind, 'FAIL');
-  denied(f, '/api/robotrader/settings');
+  const staleView = fixture(); eligible(staleView, '/api/market/status'); staleView.state.marketResponse = staleView.response('marketResponse'); staleView.time.monotonicMs += 60001; staleView.time.wallMs += 60001; denied(staleView, '/api/robotrader/settings');
   for (const metadata of [{ schemaValid: false }, { source: 'SIMULATOR' }, { marketState: 'UNKNOWN' }, { asOf: 1000001 }, { receivedAt: 100001 }, { sessionEpoch: 2 }]) {
     const g = fixture(); eligible(g, '/api/market/status'); g.state.marketResponse = g.response('marketResponse', metadata); assert.equal(admitRequest(market(g), g.policy).kind, 'FAIL');
   }
@@ -293,4 +294,80 @@ test('trusted_redirect_provenance_denies_permitted_same_host_routes_and_claims',
   assert.equal(claim.kind, 'CLAIMED'); g.state.redirectObserved = true; assert.equal(revalidateEligibility(claim, r, g.policy).kind, 'FAIL');
   const h = fixture(); eligible(h, '/api/market/status'); h.state.marketResponse = h.response('marketResponse'); h.state.redirectObserved = true;
   assert.equal(admitRequest(market(h), h.policy).kind, 'FAIL');
+});
+// Exactly two deterministic samples: initial predicate boundary, then its expiry.
+function crossingClock(f, first, final) {
+  let reads = 0;
+  f.context.clock = () => ({ ...(reads++ === 0 ? first : final) });
+  return () => assert.equal(reads, 2, 'one initial and one final sample, no resampling loop');
+}
+function marketEvidence(f) { eligible(f, '/api/market/status'); f.state.marketResponse = f.response('marketResponse'); }
+test('final_clock_market_expiry_uses_one_bounded_abort_slot', () => {
+  for (const phase of [B, C]) {
+    const f = fixture(phase); marketEvidence(f);
+    const checkReads = crossingClock(f, { monotonicMs: 160000, wallMs: 1060000 }, { monotonicMs: 160001, wallMs: 1060001 });
+    assert.deepEqual(admitRequest(market(f), f.policy), { kind: 'ABORT_EXPECTED', code: 'MARKET_TIMER' }); checkReads();
+    for (let i = 0; i < 3; i++) assert.equal(admitRequest(market(f), f.policy).kind, 'ABORT_EXPECTED');
+    assert.equal(admitRequest(market(f), f.policy).kind, 'FAIL');
+  }
+});
+test('final_clock_wall_expiry_does_not_consume_a_replay_slot', () => {
+  const f = fixture(); marketEvidence(f);
+  const checkReads = crossingClock(f, { monotonicMs: 100000, wallMs: 1060000 }, { monotonicMs: 100001, wallMs: 1060001 });
+  assert.equal(admitRequest(market(f), f.policy).kind, 'ABORT_EXPECTED'); checkReads();
+  // Qualified wall correction by 1ms cannot refund monotonic counters.
+  f.context.clock = () => ({ monotonicMs: 100001, wallMs: 1060000 });
+  for (let i = 0; i < 32; i++) assert.equal(admitRequest(market(f), f.policy).kind, 'REPLAY_PRIVATE');
+  assert.equal(admitRequest(market(f), f.policy).kind, 'FAIL');
+});
+test('final_clock_home_denial_window_expiry_fails', () => {
+  for (const path of ['/api/recommendations', '/api/watchlist/default']) {
+    const f = fixture(A); home(f);
+    const checkReads = crossingClock(f, { monotonicMs: 109999, wallMs: 1000000 }, { monotonicMs: 110000, wallMs: 1000001 });
+    assert.equal(admitRequest(f.request(path), f.policy).kind, 'FAIL'); checkReads();
+  }
+});
+test('final_clock_home_document_window_expiry_fails', () => {
+  const f = fixture(A); home(f);
+  const checkReads = crossingClock(f, { monotonicMs: 109999, wallMs: 1000000 }, { monotonicMs: 110000, wallMs: 1000001 });
+  assert.equal(admitRequest(f.request('/', { origin: F }), f.policy).kind, 'FAIL'); checkReads();
+});
+test('final_clock_hold_timer_deadline_expiry_fails', () => {
+  const f = fixture(H); f.state.holdStartedAt = f.time.monotonicMs;
+  const checkReads = crossingClock(f, { monotonicMs: 699999, wallMs: 1000000 }, { monotonicMs: 700000, wallMs: 1000001 });
+  assert.deepEqual(admitRequest(market(f), f.policy), { kind: 'FAIL', code: 'DEADLINE' }); checkReads();
+});
+test('final_clock_view_freshness_expiry_fails_before_reservation', () => {
+  for (const phase of [B, C]) for (const [path, options] of [['/api/robotrader/settings', {}], ['/api/robotrader/performance', { queryPairs: [['environment', 'paper']] }]]) {
+    const f = fixture(phase); marketEvidence(f);
+    const checkReads = crossingClock(f, { monotonicMs: 160000, wallMs: 1060000 }, { monotonicMs: 160001, wallMs: 1060001 });
+    assert.deepEqual(admitRequest(f.request(path, options), f.policy), { kind: 'FAIL', code: 'OBSERVATION_FAILED' }); checkReads();
+  }
+});
+test('final_clock_claim_view_freshness_expiry_fails', () => {
+  const f = fixture(); marketEvidence(f); const { r, d } = eligible(f);
+  const checkReads = crossingClock(f, { monotonicMs: 160000, wallMs: 1060000 }, { monotonicMs: 160001, wallMs: 1060001 });
+  assert.deepEqual(claimEligibility(d, r, f.policy), { kind: 'FAIL', code: 'OBSERVATION_FAILED' }); checkReads();
+});
+test('final_clock_revalidate_view_freshness_expiry_fails', () => {
+  const f = fixture(); marketEvidence(f); const { r, d } = eligible(f); const claim = claimEligibility(d, r, f.policy); assert.equal(claim.kind, 'CLAIMED');
+  const checkReads = crossingClock(f, { monotonicMs: 160000, wallMs: 1060000 }, { monotonicMs: 160001, wallMs: 1060001 });
+  assert.deepEqual(revalidateEligibility(claim, r, f.policy), { kind: 'FAIL', code: 'OBSERVATION_FAILED' }); checkReads();
+});
+test('final_clock_claim_home_document_expiry_fails', () => {
+  const f = fixture(A); home(f); const { r, d } = eligible(f, '/', { origin: F });
+  const checkReads = crossingClock(f, { monotonicMs: 109999, wallMs: 1000000 }, { monotonicMs: 110000, wallMs: 1000001 });
+  assert.deepEqual(claimEligibility(d, r, f.policy), { kind: 'FAIL', code: 'DEADLINE' }); checkReads();
+});
+test('final_clock_revalidate_home_document_expiry_fails', () => {
+  const f = fixture(A); home(f); const { r, d } = eligible(f, '/', { origin: F }); const claim = claimEligibility(d, r, f.policy); assert.equal(claim.kind, 'CLAIMED');
+  const checkReads = crossingClock(f, { monotonicMs: 109999, wallMs: 1000000 }, { monotonicMs: 110000, wallMs: 1000001 });
+  assert.deepEqual(revalidateEligibility(claim, r, f.policy), { kind: 'FAIL', code: 'DEADLINE' }); checkReads();
+});
+test('final_clock_future_market_timestamp_is_invalid_evidence', () => {
+  for (const timer of [true, false]) {
+    const f = fixture(); marketEvidence(f);
+    const checkReads = crossingClock(f, { monotonicMs: 100000, wallMs: 1000000 }, { monotonicMs: 100001, wallMs: 999999 });
+    assert.deepEqual(admitRequest(timer ? market(f) : f.request(), f.policy), { kind: 'FAIL', code: 'OBSERVATION_FAILED' }); checkReads();
+  }
 });

@@ -170,9 +170,9 @@ function response(state, s, time, kind, responseHandle) {
   if (!r || r.kind !== kind || r.runId !== s.runId || !safe(r.receivedAt) || r.receivedAt > time.monotonicMs) invalid('OBSERVATION_FAILED');
   const attempt = kind === 'preauthResponse' ? state.preauthAttempt : state.marketScopes.get(phases[s.phase]);
   if (!attempt || r.requestId !== attempt.requestId || r.sequence !== attempt.sequence) invalid('OBSERVATION_FAILED');
-  if (kind === 'preauthResponse') { if (r.status !== 401 || r.sessionHandle !== null || !['P', 'A'].includes(phases[r.phase])) invalid('OBSERVATION_FAILED'); return r; }
+  if (kind === 'preauthResponse') { if (r.status !== 401 || r.sessionHandle !== null || !['P', 'A'].includes(phases[r.phase])) invalid('OBSERVATION_FAILED'); return Object.freeze({ ...r }); }
   if (r.status !== 200 || r.schemaValid !== true || r.source !== 'PAPER' || !['OPEN', 'CLOSED'].includes(r.marketState) || !safe(r.asOf) || r.asOf > time.wallMs || r.phase !== s.phase || ['sessionHandle', 'sessionEpoch', 'policyEpoch', 'gateEpoch'].some(k => r[k] !== s[k])) invalid('OBSERVATION_FAILED');
-  return r;
+  return Object.freeze({ ...r });
 }
 function viewMarket(state, s, time, letter) {
   const record = state.marketScopes.get(letter);
@@ -181,13 +181,18 @@ function viewMarket(state, s, time, letter) {
     const r = response(state, s, time, 'marketResponse', s.marketResponse);
     if (!fresh(r, time)) invalid('OBSERVATION_FAILED');
     if (record) record.responseHandle = s.marketResponse;
+    return r;
   }
+  return null;
 }
 function fresh(r, time) { return time.monotonicMs - r.receivedAt <= catalogue.timer.freshnessMs && time.wallMs - r.asOf <= catalogue.timer.freshnessMs; }
+function holdWindow(s, time) {
+  if (s.holdStartedAt === null || time.monotonicMs < s.holdStartedAt || time.monotonicMs - s.holdStartedAt >= catalogue.timer.holdDeadlineMs) invalid('DEADLINE');
+}
 function marketDecision(state, s, time, letter) {
   if (['H', 'L', 'V'].includes(letter) || (letter === 'A' && s.sessionIssued)) {
-    if (letter === 'H' && (s.holdStartedAt === null || time.monotonicMs < s.holdStartedAt || time.monotonicMs - s.holdStartedAt >= catalogue.timer.holdDeadlineMs)) invalid('DEADLINE');
-    return abortTimer(state, letter);
+    if (letter === 'H') holdWindow(s, time);
+    return { exception: 'TIMER_ABORT' };
   }
   if (['P', 'A'].includes(letter)) {
     if (s.sessionIssued || s.documentPath !== '/login') invalid();
@@ -195,18 +200,40 @@ function marketDecision(state, s, time, letter) {
     response(state, s, time, 'preauthResponse', s.preauthResponse);
     if (state.preauthHandle && state.preauthHandle !== s.preauthResponse) invalid('OBSERVATION_FAILED');
     state.preauthHandle = s.preauthResponse;
-    if (state.preauthReplays >= catalogue.timer.preauthReplayCeiling) invalid();
-    state.preauthReplays++; return opaque({ kind: 'REPLAY_PRIVATE', responseHandle: s.preauthResponse });
+    return { exception: 'PREAUTH_REPLAY' };
   }
   if (!['B', 'C'].includes(letter)) invalid();
-  if (!deeper(state, s, time)) return abortTimer(state, letter);
+  if (!deeper(state, s, time)) return { exception: 'TIMER_ABORT' };
   const key = 'market-status:/api/market/status:' + letter;
   if (!(state.counts.get(key) ?? 0)) return null;
   const r = response(state, s, time, 'marketResponse', s.marketResponse);
   const record = state.marketScopes.get(letter);
   if (record?.responseHandle && record.responseHandle !== s.marketResponse) invalid('OBSERVATION_FAILED');
   state.marketScopes.set(letter, { ...record, responseHandle: s.marketResponse });
-  if (!fresh(r, time)) return abortTimer(state, letter);
+  return { exception: 'MARKET_RESPONSE', response: r };
+}
+function finalTimeChecks(selected, s, time, letter) {
+  const r = selected.viewResponse ?? selected.response;
+  if (r && (r.receivedAt > time.monotonicMs || r.asOf > time.wallMs)) invalid('OBSERVATION_FAILED');
+  if (selected.exception === 'HOME' || (selected.row?.id === 'frontend-document' && selected.row.path === '/')) {
+    if (s.homeArmedAt === null || time.monotonicMs < s.homeArmedAt || time.monotonicMs - s.homeArmedAt >= catalogue.home.windowMs) invalid('DEADLINE');
+  }
+  if (selected.exception === 'TIMER_ABORT' && letter === 'H') holdWindow(s, time);
+  if (selected.viewResponse && !fresh(selected.viewResponse, time)) invalid('OBSERVATION_FAILED');
+}
+function finishException(state, selected, s, time, letter) {
+  // Only the final classification consumes an exception slot; no route slot is used.
+  if (selected.exception === 'HOME') {
+    if ((state.homeTransition !== null && state.homeTransition !== s.homeTransition) || state.homeClosed || state.homeSeen.has(selected.path)) invalid();
+    state.homeTransition = s.homeTransition; state.homeSeen.add(selected.path);
+    if (state.homeSeen.size === catalogue.home.paths.length) state.homeClosed = true;
+    return Object.freeze({ kind: 'ABORT_EXPECTED', code: 'HOME_TRANSITION' });
+  }
+  if (selected.exception === 'PREAUTH_REPLAY') {
+    if (state.preauthReplays >= catalogue.timer.preauthReplayCeiling) invalid();
+    state.preauthReplays++; return opaque({ kind: 'REPLAY_PRIVATE', responseHandle: s.preauthResponse });
+  }
+  if (selected.exception === 'TIMER_ABORT' || !fresh(selected.response, time)) return abortTimer(state, letter);
   const count = state.replays.get(letter) ?? 0;
   if (count >= catalogue.timer.phaseReplayCeiling) invalid();
   state.replays.set(letter, count + 1); return opaque({ kind: 'REPLAY_PRIVATE', responseHandle: s.marketResponse });
@@ -216,16 +243,14 @@ function route(state, parsed, s, time, letter) {
   baseGates(state, s, letter, time);
   if (destination === 'BACKEND' && f.method === 'GET' && !f.queryPairs.length && catalogue.home.paths.includes(f.path)) {
     if (letter !== 'A' || !s.sessionIssued || !s.homeTransition || s.homeArmedAt === null || time.monotonicMs < s.homeArmedAt || time.monotonicMs - s.homeArmedAt >= catalogue.home.windowMs) invalid();
-    if (state.homeTransition === null) state.homeTransition = s.homeTransition;
-    if (state.homeTransition !== s.homeTransition || state.homeClosed || state.homeSeen.has(f.path)) invalid();
-    state.homeSeen.add(f.path); if (state.homeSeen.size === catalogue.home.paths.length) state.homeClosed = true;
-    return { outcome: Object.freeze({ kind: 'ABORT_EXPECTED', code: 'HOME_TRANSITION' }) };
+    if ((state.homeTransition !== null && state.homeTransition !== s.homeTransition) || state.homeClosed || state.homeSeen.has(f.path)) invalid();
+    return { exception: 'HOME', path: f.path };
   }
   if (destination === 'BACKEND' && f.method === 'GET' && f.path === catalogue.timer.path && !f.queryPairs.length) {
-    const outcome = marketDecision(state, s, time, letter); if (outcome) return { outcome };
+    const selected = marketDecision(state, s, time, letter); if (selected) return selected;
   }
   let row = catalogue.routes.find(r => r.destination === destination && r.method === f.method && r.path === f.path && r.query.length === f.queryPairs.length && r.query.every(([k, v]) => f.queryPairs.some(pair => pair[0] === k && pair[1] === v)));
-  let key, limit;
+  let key, limit, viewResponse = null;
   if (!row && destination === 'FRONTEND' && f.method === 'GET' && !f.queryPairs.length && state.assetMap.has(f.path) && catalogue.assets.phases.includes(letter)) {
     row = { id: 'frontend-asset:' + f.path, paperCost: 0 }; key = row.id; limit = catalogue.assets.runCeiling;
   } else if (row && row.ceilings[letter]) { key = row.id + ':' + f.path + ':' + letter; limit = row.ceilings[letter]; }
@@ -234,10 +259,10 @@ function route(state, parsed, s, time, letter) {
   if (row.id === 'frontend-document' && f.path === '/' && (!s.sessionIssued || !s.homeTransition || s.homeArmedAt === null || time.monotonicMs - s.homeArmedAt < 0 || time.monotonicMs - s.homeArmedAt >= catalogue.home.windowMs)) invalid();
   if (['B', 'C'].includes(letter) && !['health', 'me', 'readiness'].includes(row.id)) {
     if (!deeper(state, s, time)) invalid('READINESS_FAILED');
-    if (row.id !== 'market-status') viewMarket(state, s, time, letter);
+    if (row.id !== 'market-status') viewResponse = viewMarket(state, s, time, letter);
   }
   const cost = Object.freeze({ PAPER: typeof row.paperCost === 'number' ? row.paperCost : row.paperCost[letter], stock: 0 });
-  return { row, key, limit, cost };
+  return { row, key, limit, cost, viewResponse };
 }
 function admitRequest(request, policy) {
   const state = policies.get(policy); if (!state) return fail('IDENTITY_MISMATCH');
@@ -246,8 +271,9 @@ function admitRequest(request, policy) {
     if (state.seenRequests.has(request) || state.requestIds.has(parsed.f.requestId) || state.sequenceIds.has(parsed.f.sequence)) invalid('REPLAY');
     state.seenRequests.add(request); state.requestIds.add(parsed.f.requestId); state.sequenceIds.add(parsed.f.sequence);
     const selected = route(state, parsed, s, time, letter);
-    consistent(state, request, parsed.f, s);
-    if (selected.outcome) return selected.outcome;
+    const final = consistent(state, request, parsed.f, s);
+    finalTimeChecks(selected, s, final.time, letter);
+    if (selected.exception) return finishException(state, selected, s, final.time, letter);
     const count = state.counts.get(selected.key) ?? 0;
     if (count >= selected.limit) invalid();
     // No await or external call between testing and consuming the private route ceiling.
@@ -262,9 +288,11 @@ function admitRequest(request, policy) {
   } catch (e) { return fatal(state, errorCode(e)); }
 }
 function consistent(state, request, captured, snapshot) {
-  const { s } = current(state, request), now = facts(request);
+  const final = current(state, request), now = facts(request);
+  const { s } = final;
   checkBody(request, now, state);
   if (!sameFacts(captured, now) || snapshotKeys.some(k => s[k] !== snapshot[k])) invalid('IDENTITY_MISMATCH');
+  return final;
 }
 function validate(record, request, policy) {
   const state = policies.get(policy);
@@ -272,14 +300,16 @@ function validate(record, request, policy) {
   const { s, time, letter } = current(state, request), parsed = parseRequest(request, state, s);
   if (!sameFacts(parsed.f, record.facts) || bindingKeys.some(k => s[k] !== record.snapshot[k])) invalid('IDENTITY_MISMATCH');
   // Recheck gates and freshness, without reserving another ceiling or replay/abort slot.
+  let viewResponse = null;
   baseGates(state, s, letter, time);
   if (['B', 'C'].includes(letter) && !['health', 'me', 'readiness'].includes(record.selected.row.id)) {
     if (!deeper(state, s, time)) invalid('READINESS_FAILED');
-    if (record.selected.row.id !== 'market-status') viewMarket(state, s, time, letter);
+    if (record.selected.row.id !== 'market-status') viewResponse = viewMarket(state, s, time, letter);
   }
   if (record.selected.row.id === 'login' && s.sessionIssued) invalid('SESSION_MISMATCH');
   if (record.selected.row.id === 'frontend-document' && record.facts.path === '/' && time.monotonicMs - s.homeArmedAt >= catalogue.home.windowMs) invalid('DEADLINE');
-  consistent(state, request, parsed.f, s);
+  const final = consistent(state, request, parsed.f, s);
+  finalTimeChecks({ ...record.selected, viewResponse }, s, final.time, letter);
   return record.decision;
 }
 function claimEligibility(decision, request, policy) {
