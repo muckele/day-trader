@@ -29,6 +29,14 @@ public final class TrustContext {
     fileprivate let expected: [String: [String: Any]], keys: [String: Curve25519.Signing.PublicKey]
     fileprivate let now: () -> Int, maxAgeMs: Int, deadline: Int, notBefore: [String: Int], replay: ReceiptReplayState
     fileprivate var lastNow: Int?
+    fileprivate init(releaseExpected: [String: Any], key: Data, maxAgeMs: Int, notBefore: Int, deadline: Int, time: ReleaseTime) throws {
+        guard key.count == 32, maxAgeMs > 0, maxAgeMs <= 9007199254740991,
+              deadline > 0, deadline <= 9007199254740991, notBefore >= 0, notBefore < deadline else { throw ReceiptError.identityMismatch }
+        self.expected = [ReceiptKind.release.rawValue: releaseExpected]
+        self.keys = [ReceiptKind.release.rawValue: try Curve25519.Signing.PublicKey(rawRepresentation: key)]
+        self.now = { time.wall }; self.maxAgeMs = maxAgeMs; self.deadline = deadline
+        self.notBefore = [ReceiptKind.release.rawValue: notBefore]; self.replay = ReceiptReplayState()
+    }
     public init(options: [String: Any], now: @escaping () -> Int, replay: ReceiptReplayState = ReceiptReplayState()) throws {
         let copy = try JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: options)) as? [String: Any]
         guard let copy, let expected = copy["expected"] as? [String: [String: Any]], let rawKeys = copy["publicKeys"] as? [String: String], let maxAgeMs = copy["maxAgeMs"] as? Int, let deadline = copy["deadline"] as? Int,
@@ -135,5 +143,51 @@ public enum ReceiptVerifier {
     public static func validateAssetResponse(_ entry: AssetEntry, body: Data?, contentType: String) throws -> AssetProof {
         guard inspect(entry.release, kind: .release, trust: entry.release.trust) != nil, let body, body.count == entry.size, digest(body) == entry.hash, contentType == entry.mime else { throw ReceiptError.observationFailed }
         return AssetProof(entryId: "frontend-asset:" + entry.path, hash: entry.hash, sizeMatch: true, hashMatch: true, mimeMatch: true)
+    }
+}
+
+// Release-only trust keeps broker processes free of maintenance/DB identity pins.
+// It uses the same strict codec, binding, signature, time and replay verifier.
+private final class ReleaseTime { var wall = -1 }
+extension TrustContext {
+    fileprivate convenience init(releaseFrame: ValidatedFrame, key: Data, maxAgeMs: Int, notBefore: Int, deadline: Int, time: ReleaseTime) throws {
+        try self.init(releaseExpected: bindings(releaseFrame.value), key: key, maxAgeMs: maxAgeMs, notBefore: notBefore, deadline: deadline, time: time)
+    }
+}
+public final class ReleaseAuthority: @unchecked Sendable {
+    fileprivate let trust: TrustContext
+    fileprivate let time: ReleaseTime
+    public init(expectedRelease: Data, publicKey: Data, maxAgeMs: Int, notBefore: Int, deadline: Int) throws {
+        let frame = try Contracts.decode(expectedRelease, kind: .releaseReceipt)
+        let time = ReleaseTime()
+        self.trust = try TrustContext(releaseFrame: frame, key: publicKey, maxAgeMs: maxAgeMs, notBefore: notBefore, deadline: deadline, time: time)
+        self.time = time
+    }
+}
+public final class VerifiedRelease: @unchecked Sendable {
+    fileprivate let receipt: VerifiedReceipt, authority: ReleaseAuthority
+    fileprivate init(_ receipt: VerifiedReceipt, _ authority: ReleaseAuthority) { self.receipt = receipt; self.authority = authority }
+}
+extension ReceiptVerifier {
+    public static func verifyRelease(_ data: Data, authority: ReleaseAuthority, atWallTime: Int) throws -> VerifiedRelease {
+        authority.trust.replay.lock.lock(); defer { authority.trust.replay.lock.unlock() }
+        authority.time.wall = atWallTime
+        return VerifiedRelease(try verify(data, kind: .release, trust: authority.trust), authority)
+    }
+    public static func inspectRelease(_ release: VerifiedRelease, authority: ReleaseAuthority, atWallTime: Int) -> [String: Any]? {
+        guard release.authority === authority else { return nil }
+        authority.trust.replay.lock.lock(); defer { authority.trust.replay.lock.unlock() }
+        authority.time.wall = atWallTime
+        return inspect(release.receipt, kind: .release, trust: authority.trust)
+    }
+}
+
+extension ReceiptVerifier {
+    // Pure deadline calculation after validation at the same qualified wall sample.
+    // No trailing clock callback can age the admission after its final check.
+    public static func releaseUseDeadline(_ release: VerifiedRelease, authority: ReleaseAuthority, atWallTime: Int) -> Int? {
+        guard let payload = inspectRelease(release, authority: authority, atWallTime: atWallTime),
+              let issued = payload["issuedAt"] as? Int, let expires = payload["expiresAt"] as? Int else { return nil }
+        return min(expires, authority.trust.deadline, issued + authority.trust.maxAgeMs + 1)
     }
 }
