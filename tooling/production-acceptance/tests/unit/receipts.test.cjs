@@ -43,6 +43,10 @@ function bad(name,kind,mutate,{unsigned=false,clock=160,override}={}) {
   negatives.push({name,kind,json:candidate.toString(),clock,override});
 }
 for(const kind of kinds){
+  const original=sign(frames[kind]),altered=clone(original);altered.payload.issuedAt=101;
+  negatives.push({name:'altered_message_'+kind,kind,json:JSON.stringify(altered),clock:160,
+    controlJSON:JSON.stringify(original),resignedControlJSON:JSON.stringify(sign(altered)),
+    controlSigningBytes:signingBytes(original).toString('hex'),signingBytes:signingBytes(altered).toString('hex')});
   bad('bad_signature_'+kind,kind,f=>{f.payload.signature='1'.repeat(128);},{unsigned:true});
   const f=sign(frames[kind],wrongPair.privateKey);negatives.push({name:'wrong_signer_'+kind,kind,json:JSON.stringify(f),clock:160});
   bad('expired_'+kind,kind,f=>{f.payload.expiresAt=159;});
@@ -80,7 +84,30 @@ bad('ledger_wrong_config','LEDGER_RECEIPT',f=>{f.payload.configIdentity='c'.repe
 bad('ledger_insufficient_envelope','LEDGER_RECEIPT',f=>{f.payload.PAPER.fullRunReserved=13;f.payload.PAPER.remaining=4;});
 bad('ledger_stock_envelope','LEDGER_RECEIPT',f=>{f.payload.stock.ceiling=1;f.payload.stock.fullRunReserved=1;});
 for(const kind of kinds)test('valid_'+kind,()=>{const h=verified(kind);assert.equal(api.inspectReceipt(h,kind,trust()),null,'other trust cannot adopt a handle');const t=trust();assert.equal(api.inspectReceipt(verified(kind,t),kind,t).kind,kind);});
-for(const v of negatives)test(v.name,()=>assert.throws(()=>api.verifyReceipt(Buffer.from(v.json),v.kind,trust(v.clock,v.override)),Error));
+test('all_five_altered_message_fixture_coverage',()=>{
+ assert.deepEqual(negatives.filter(v=>v.name.startsWith('altered_message_')).map(v=>v.kind).sort(),[...kinds].sort());
+ for(const kind of kinds) for(const prefix of ['bad_signature_','wrong_signer_','wrong_domain_','altered_message_'])
+  assert.equal(negatives.filter(row=>row.kind===kind&&row.name===prefix+kind).length,1,prefix+kind);
+});
+function assertAlteredMessage(row,configuration) {
+ const original=JSON.parse(row.controlJSON),altered=JSON.parse(row.json),restored=clone(altered);
+ assert.equal(original.payload.issuedAt,100);assert.equal(altered.payload.issuedAt,101);
+ assert.equal(altered.payload.signature,original.payload.signature);
+ restored.payload.issuedAt=100;assert.deepEqual(restored,original,'only the signed issuedAt field changes');
+ const control=contracts.receiptSigningBytes(contracts.decodeFrame(Buffer.from(row.controlJSON),row.kind));
+ const changed=contracts.receiptSigningBytes(contracts.decodeFrame(Buffer.from(row.json),row.kind));
+ assert.equal(control.toString('hex'),row.controlSigningBytes);assert.equal(changed.toString('hex'),row.signingBytes);
+ assert.notDeepEqual(changed,control);
+ for(const json of [row.controlJSON,row.resignedControlJSON]) {
+  const t=api.createTrustContext({...configuration,now:()=>160});
+  assert.equal(api.inspectReceipt(api.verifyReceipt(Buffer.from(json),row.kind,t),row.kind,t).kind,row.kind);
+ }
+ const resigned=JSON.parse(row.resignedControlJSON),resignedCopy=clone(resigned);resignedCopy.payload.signature=altered.payload.signature;
+ assert.deepEqual(resignedCopy,altered,'newly signed control changes only signature');
+ assert.notEqual(resigned.payload.signature,original.payload.signature);
+ assert.throws(()=>api.verifyReceipt(Buffer.from(row.json),row.kind,api.createTrustContext({...configuration,now:()=>160})),{code:'SIGNATURE_INVALID'});
+}
+for(const v of negatives)test(v.name,()=>v.name.startsWith('altered_message_')?assertAlteredMessage(v,options):assert.throws(()=>api.verifyReceipt(Buffer.from(v.json),v.kind,trust(v.clock,v.override)),Error));
 test('replay_denied_all_kinds_and_nonce_once',()=>{for(const kind of kinds){const t=trust();const f=bytes(sign(frames[kind]));api.verifyReceipt(f,kind,t);assert.throws(()=>api.verifyReceipt(f,kind,t),Error);}});
 test('forged_copied_and_expired_handles_denied_at_later_use',()=>{let now=160;const t=api.createTrustContext({...clone(options),now:()=>now});const h=verified('RELEASE_RECEIPT',t);assert.equal(api.inspectReceipt({},'RELEASE_RECEIPT',t),null);assert.equal(api.inspectReceipt({...h},'RELEASE_RECEIPT',t),null);assert.throws(()=>JSON.stringify(h),Error);now=200;assert.equal(api.inspectReceipt(h,'RELEASE_RECEIPT',t),null);});
 test('assets_are_bound_and_response_is_exact_private_proof',()=>{const t=trust(),r=verified('RELEASE_RECEIPT',t),a=api.verifyAssets(assetBytes,r);assert.equal(api.inspectAssets(a,r).digest,hash(assetBytes));assert.equal(api.inspectAssets({...a},r),null);const e=a.entries[0];const p=api.validateAssetResponse(e,assetBody,e.mime);assert.deepEqual(Object.keys(p).sort(),['entryId','hash','hashMatch','mimeMatch','sizeMatch'].sort());assert.equal(p.hashMatch,true);assert.throws(()=>api.validateAssetResponse({...e},assetBody,e.mime),Error);});
@@ -139,7 +166,14 @@ test('selected_postrestart_trust_rejects_unexpired_old_maintenance_and_requires_
 });
 if(process.env.RECEIPT_EXCHANGE){fs.mkdirSync(process.env.RECEIPT_EXCHANGE,{recursive:true});fs.writeFileSync(path.join(process.env.RECEIPT_EXCHANGE,'node.json'),JSON.stringify({options,positive:kinds.map(kind=>({kind,json:JSON.stringify(sign(frames[kind])),signingBytes:signingBytes(frames[kind]).toString('hex')})),negative:negatives,asset:assetBytes.toString(),assetBody:assetBody.toString('hex'),postMaintenance:{options:postOptions,json:JSON.stringify(sign(postMaintenance)),earlyJSON:JSON.stringify(sign({...postMaintenance,payload:{...postMaintenance.payload,issuedAt:149}}))}}));}
 if(process.env.RECEIPT_SWIFT_INPUT)test('actual_swift_generated_all_five_verified_node_and_tamper_domain_signer_denied',()=>{
- const produced=JSON.parse(fs.readFileSync(process.env.RECEIPT_SWIFT_INPUT));assert.equal(produced.positive.length,5);assert.equal(produced.negative.length,15);
+ const produced=JSON.parse(fs.readFileSync(process.env.RECEIPT_SWIFT_INPUT));assert.equal(produced.positive.length,5);assert.equal(produced.negative.length,20);
+ assert.deepEqual(produced.positive.map(row=>row.kind).sort(),[...kinds].sort());
+ for(const kind of kinds) for(const mode of ['tampered','wrong-domain','wrong-signer','altered-message'])
+  assert.equal(produced.negative.filter(row=>row.kind===kind&&row.mode===mode).length,1,kind+':'+mode);
  for(const row of produced.positive){const t=api.createTrustContext({...produced.options,now:()=>160}),buffer=Buffer.from(row.json);assert.equal(api.inspectReceipt(api.verifyReceipt(buffer,row.kind,t),row.kind,t).kind,row.kind);assert.equal(contracts.receiptSigningBytes(contracts.decodeFrame(buffer,row.kind)).toString('hex'),row.signingBytes);}
+ for(const row of produced.negative){if(row.mode==='altered-message'){
+  assert.deepEqual(JSON.parse(row.controlJSON),JSON.parse(produced.positive.find(control=>control.kind===row.kind).json));
+  assertAlteredMessage(row,produced.options);
+ }}
  for(const row of produced.negative)assert.throws(()=>api.verifyReceipt(Buffer.from(row.json),row.kind,api.createTrustContext({...produced.options,now:()=>160})),{code:'SIGNATURE_INVALID'});
 });

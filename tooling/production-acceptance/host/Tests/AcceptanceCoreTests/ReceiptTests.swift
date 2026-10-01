@@ -65,17 +65,79 @@ import Testing
             let producedJSON = try wire(frame);positive.append(["kind":kind.rawValue,"json":producedJSON,"signingBytes":signedBytes.map { String(format:"%02x",$0) }.joined()])
             let ownTrust = try TrustContext(options:options,now:{160}), h = try ReceiptVerifier.verify(Data(producedJSON.utf8),kind:kind,trust:ownTrust)
             #expect(ReceiptVerifier.inspect(h,kind:kind,trust:ownTrust)?["kind"] as? String == kind.rawValue)
-            for mode in ["tampered","wrong-domain","wrong-signer"] {
+            for mode in ["tampered","wrong-domain","wrong-signer","altered-message"] {
                 var bad = frame, bp = p
+                if mode == "altered-message" { bp["issuedAt"] = 101 }
                 if mode == "tampered" { bp["signature"] = String(repeating:"f",count:128) }
                 if mode == "wrong-domain" { bp["signature"] = try key.signature(for:Data(("acceptance:v1:OTHER\0"+canonical).utf8)).map { String(format:"%02x",$0) }.joined() }
                 if mode == "wrong-signer" { bp["signature"] = try other.signature(for:signedBytes).map { String(format:"%02x",$0) }.joined() }
-                bad["payload"] = bp;let badJSON = try wire(bad);negative.append(["kind":kind.rawValue,"mode":mode,"json":badJSON])
+                bad["payload"] = bp;let badJSON = try wire(bad)
+                var candidate = ["kind":kind.rawValue,"mode":mode,"json":badJSON]
+                if mode == "altered-message" {
+                    #expect(p["issuedAt"] as? Int == 100); #expect(bp["signature"] as? String == p["signature"] as? String)
+                    let alteredBytes = try Contracts.receiptSigningBytes(Contracts.decode(Data(badJSON.utf8),kind:FrameKind(rawValue:kind.rawValue)!))
+                    #expect(alteredBytes != signedBytes)
+                    var control = bad, cp = bp
+                    cp["signature"] = try key.signature(for:alteredBytes).map { String(format:"%02x",$0) }.joined(); control["payload"] = cp
+                    let controlJSON = try wire(control)
+                    _ = try ReceiptVerifier.verify(Data(controlJSON.utf8),kind:kind,trust:TrustContext(options:options,now:{160}))
+                    candidate["controlJSON"] = producedJSON; candidate["resignedControlJSON"] = controlJSON
+                    candidate["controlSigningBytes"] = signedBytes.map { String(format:"%02x",$0) }.joined()
+                    candidate["signingBytes"] = alteredBytes.map { String(format:"%02x",$0) }.joined()
+                }
+                negative.append(candidate)
                 #expect(throws:ReceiptError.signatureInvalid) { _ = try ReceiptVerifier.verify(Data(badJSON.utf8),kind:kind,trust:TrustContext(options:options,now:{160})) }
+            }
+        }
+        #expect(positive.count == 5)
+        #expect(Set(positive.compactMap { $0["kind"] }) == Set(ReceiptKind.allCases.map(\.rawValue)))
+        #expect(negative.count == 20)
+        for kind in ReceiptKind.allCases {
+            for mode in ["tampered", "wrong-domain", "wrong-signer", "altered-message"] {
+                #expect(negative.filter { $0["kind"] == kind.rawValue && $0["mode"] == mode }.count == 1)
             }
         }
         let result:[String:Any] = ["options":options,"positive":positive,"negative":negative]
         try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys,.withoutEscapingSlashes]).write(to:directory().appendingPathComponent("swift.json"))
+    }
+    @Test func actual_node_altered_message_all_five_coverage() throws {
+        let f = try fixture(), negative = try #require(f["negative"] as? [[String:Any]])
+        let altered = negative.filter { ($0["name"] as? String ?? "").hasPrefix("altered_message_") }
+        #expect(altered.count == 5)
+        #expect(Set(altered.compactMap { $0["kind"] as? String }) == Set(ReceiptKind.allCases.map(\.rawValue)))
+        for kind in ReceiptKind.allCases {
+            for prefix in ["bad_signature_", "wrong_signer_", "wrong_domain_", "altered_message_"] {
+                let modeRows = negative.filter { $0["name"] as? String == prefix + kind.rawValue }
+                #expect(modeRows.count == 1)
+                let modeRow = try #require(modeRows.first), modeJSON = try #require(modeRow["json"] as? String)
+                #expect(throws:ReceiptError.signatureInvalid) { _ = try ReceiptVerifier.verify(Data(modeJSON.utf8),kind:kind,trust:trust(f)) }
+            }
+            let matches = altered.filter { $0["kind"] as? String == kind.rawValue }
+            #expect(matches.count == 1)
+            let row = try #require(matches.first), json = try #require(row["json"] as? String)
+            let originalJSON = try #require(row["controlJSON"] as? String), signedControl = try #require(row["resignedControlJSON"] as? String)
+            let original = try #require(JSONSerialization.jsonObject(with:Data(originalJSON.utf8)) as? [String:Any])
+            let candidate = try #require(JSONSerialization.jsonObject(with:Data(json.utf8)) as? [String:Any])
+            let op = try #require(original["payload"] as? [String:Any]), cp = try #require(candidate["payload"] as? [String:Any])
+            #expect(op["issuedAt"] as? Int == 100); #expect(cp["issuedAt"] as? Int == 101)
+            #expect(cp["signature"] as? String == op["signature"] as? String)
+            var restored = candidate, rp = cp; rp["issuedAt"] = 100; restored["payload"] = rp
+            #expect(NSDictionary(dictionary:restored).isEqual(to:original))
+            #expect(try Contracts.canonicalBytes(Contracts.decode(positive(f,kind),kind:FrameKind(rawValue:kind.rawValue)!)) == Contracts.canonicalBytes(Contracts.decode(Data(originalJSON.utf8),kind:FrameKind(rawValue:kind.rawValue)!)))
+            let originalBytes = try Contracts.receiptSigningBytes(Contracts.decode(Data(originalJSON.utf8),kind:FrameKind(rawValue:kind.rawValue)!))
+            let changedBytes = try Contracts.receiptSigningBytes(Contracts.decode(Data(json.utf8),kind:FrameKind(rawValue:kind.rawValue)!))
+            #expect(originalBytes != changedBytes)
+            #expect(originalBytes.map { String(format:"%02x",$0) }.joined() == row["controlSigningBytes"] as? String)
+            #expect(changedBytes.map { String(format:"%02x",$0) }.joined() == row["signingBytes"] as? String)
+            _ = try ReceiptVerifier.verify(Data(originalJSON.utf8),kind:kind,trust:trust(f))
+            _ = try ReceiptVerifier.verify(Data(signedControl.utf8),kind:kind,trust:trust(f))
+            let signedFrame = try #require(JSONSerialization.jsonObject(with:Data(signedControl.utf8)) as? [String:Any])
+            var signedRestored = signedFrame, sp = try #require(signedFrame["payload"] as? [String:Any])
+            #expect(sp["signature"] as? String != op["signature"] as? String)
+            sp["signature"] = cp["signature"]; signedRestored["payload"] = sp
+            #expect(NSDictionary(dictionary:signedRestored).isEqual(to:candidate))
+            #expect(throws:ReceiptError.signatureInvalid) { _ = try ReceiptVerifier.verify(Data(json.utf8),kind:kind,trust:trust(f)) }
+        }
     }
     @Test func fixed_full_envelope_signing_vectors() throws {
         let root = URL(fileURLWithPath:#filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
