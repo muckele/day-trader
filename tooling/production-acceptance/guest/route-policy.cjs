@@ -282,7 +282,7 @@ function admitRequest(request, policy) {
       const attempt = { requestId: parsed.f.requestId, sequence: s.sequence, responseHandle: null };
       if (letter === 'P') state.preauthAttempt = attempt; else state.marketScopes.set(letter, attempt);
     }
-    const decision = opaque({ kind: 'ELIGIBLE', routeId: selected.row.id, cost: selected.cost, runId: s.runId, requestId: parsed.f.requestId, sequence: s.sequence, phase: s.phase });
+    const decision = opaque({ kind: 'ELIGIBLE', routeId: selected.row.id, cost: selected.cost, runId: s.runId, configIdentity: state.releaseFacts.configIdentity, requestId: parsed.f.requestId, sequence: s.sequence, phase: s.phase });
     decisions.set(decision, { state, request, facts: parsed.f, snapshot: s, selected, decision, claimed: false, invalid: false });
     return decision;
   } catch (e) { return fatal(state, errorCode(e)); }
