@@ -1,0 +1,723 @@
+{
+  "schemaVersion": 1,
+  "maxBytes": 65536,
+  "maxDepth": 8,
+  "definitions": {
+    "identity": {
+      "type": "object",
+      "fields": {
+        "id": {
+          "type": "enum",
+          "values": [
+            "base",
+            "chromium",
+            "contracts",
+            "controller",
+            "guestBootstrap",
+            "guestProbes",
+            "hostBroker",
+            "hostLauncher",
+            "initramfs",
+            "kernel",
+            "kernelConfig",
+            "mke2fs",
+            "node",
+            "playwright",
+            "proxy",
+            "python",
+            "rolePolicy",
+            "rootfs",
+            "routePolicy",
+            "seccompPolicy",
+            "verifier"
+          ]
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "[a-f0-9]{64}",
+          "max": 64
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "min": 1,
+          "max": 68719476736
+        },
+        "version": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9._:+-]+",
+          "max": 128
+        },
+        "sourceId": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9._:+-]+",
+          "max": 128
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "fields": {
+        "layout": {
+          "type": "object",
+          "fields": {
+            "guest": {
+              "type": "enum",
+              "values": [
+                "/opt/acceptance/guest"
+              ]
+            },
+            "contracts": {
+              "type": "enum",
+              "values": [
+                "/opt/acceptance/contracts"
+              ]
+            },
+            "nodeModules": {
+              "type": "enum",
+              "values": [
+                "/opt/acceptance/node_modules"
+              ]
+            },
+            "probes": {
+              "type": "enum",
+              "values": [
+                "/opt/acceptance/tests/guest"
+              ]
+            },
+            "bootstrap": {
+              "type": "enum",
+              "values": [
+                "/opt/acceptance/guest/confinement.py"
+              ]
+            },
+            "controllerRoot": {
+              "type": "enum",
+              "values": [
+                "/run/acceptance/controller"
+              ]
+            },
+            "browserRoot": {
+              "type": "enum",
+              "values": [
+                "/run/acceptance/browser"
+              ]
+            },
+            "verifierRoot": {
+              "type": "enum",
+              "values": [
+                "/run/acceptance/verifier"
+              ]
+            },
+            "proxyRoot": {
+              "type": "enum",
+              "values": [
+                "/run/acceptance/proxy"
+              ]
+            }
+          }
+        },
+        "roles": {
+          "type": "object",
+          "fields": {
+            "controller": {
+              "type": "enum",
+              "values": [
+                10001
+              ]
+            },
+            "browser": {
+              "type": "enum",
+              "values": [
+                10002
+              ]
+            },
+            "verifier": {
+              "type": "enum",
+              "values": [
+                10003
+              ]
+            },
+            "proxy": {
+              "type": "enum",
+              "values": [
+                10004
+              ]
+            }
+          }
+        },
+        "devices": {
+          "type": "object",
+          "fields": {
+            "bootLoader": {
+              "type": "enum",
+              "values": [
+                "LINUX"
+              ]
+            },
+            "baseBlock": {
+              "type": "enum",
+              "values": [
+                "VIRTIO_READ_ONLY"
+              ]
+            },
+            "entropy": {
+              "type": "enum",
+              "values": [
+                1
+              ]
+            },
+            "serial": {
+              "type": "enum",
+              "values": [
+                1
+              ]
+            },
+            "serialAttachment": {
+              "type": "enum",
+              "values": [
+                "PRIVATE_PIPE"
+              ]
+            },
+            "vsock": {
+              "type": "enum",
+              "values": [
+                1
+              ]
+            },
+            "vsockHostCID": {
+              "type": "enum",
+              "values": [
+                2
+              ]
+            },
+            "vsockPort": {
+              "type": "enum",
+              "values": [
+                4050
+              ]
+            },
+            "network": {
+              "type": "enum",
+              "values": [
+                0
+              ]
+            },
+            "networkAttachments": {
+              "type": "enum",
+              "values": [
+                0
+              ]
+            },
+            "shares": {
+              "type": "enum",
+              "values": [
+                0
+              ]
+            },
+            "usb": {
+              "type": "enum",
+              "values": [
+                0
+              ]
+            },
+            "audio": {
+              "type": "enum",
+              "values": [
+                0
+              ]
+            },
+            "graphics": {
+              "type": "enum",
+              "values": [
+                0
+              ]
+            },
+            "input": {
+              "type": "enum",
+              "values": [
+                0
+              ]
+            },
+            "balloon": {
+              "type": "enum",
+              "values": [
+                0
+              ]
+            },
+            "extra": {
+              "type": "enum",
+              "values": [
+                0
+              ]
+            },
+            "hostTCPAdmin": {
+              "type": "enum",
+              "values": [
+                0
+              ]
+            }
+          }
+        },
+        "storage": {
+          "type": "object",
+          "fields": {
+            "baseReadOnly": {
+              "type": "enum",
+              "values": [
+                true
+              ]
+            },
+            "writableDisks": {
+              "type": "enum",
+              "values": [
+                0
+              ]
+            },
+            "runState": {
+              "type": "enum",
+              "values": [
+                "TMPFS"
+              ]
+            },
+            "guestSwap": {
+              "type": "enum",
+              "values": [
+                false
+              ]
+            },
+            "zramSwap": {
+              "type": "enum",
+              "values": [
+                false
+              ]
+            },
+            "hibernation": {
+              "type": "enum",
+              "values": [
+                false
+              ]
+            },
+            "saveRestore": {
+              "type": "enum",
+              "values": [
+                false
+              ]
+            },
+            "persistentCrash": {
+              "type": "enum",
+              "values": [
+                false
+              ]
+            },
+            "hostShares": {
+              "type": "enum",
+              "values": [
+                false
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "fields": {
+            "cpuCount": {
+              "type": "integer",
+              "min": 2,
+              "max": 8
+            },
+            "memoryBytes": {
+              "type": "integer",
+              "min": 2147483648,
+              "max": 17179869184
+            },
+            "runTmpfsBytes": {
+              "type": "integer",
+              "min": 268435456,
+              "max": 268435456
+            },
+            "crashTmpfsBytes": {
+              "type": "integer",
+              "min": 1048576,
+              "max": 1048576
+            },
+            "shmBytes": {
+              "type": "integer",
+              "min": 67108864,
+              "max": 67108864
+            },
+            "tmpfsInodes": {
+              "type": "integer",
+              "min": 1024,
+              "max": 65536
+            },
+            "aggregateTunnelBytes": {
+              "type": "integer",
+              "min": 1,
+              "max": 1073741824
+            },
+            "idleTimeoutMs": {
+              "type": "integer",
+              "min": 1,
+              "max": 120000
+            },
+            "runTimeoutMs": {
+              "type": "integer",
+              "min": 1,
+              "max": 1200000
+            },
+            "maxTunnels": {
+              "type": "integer",
+              "min": 16,
+              "max": 16
+            }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "fields": {
+            "nodePath": {
+              "type": "enum",
+              "values": [
+                "/opt/acceptance/runtime/node/bin/node"
+              ]
+            },
+            "pythonPath": {
+              "type": "enum",
+              "values": [
+                "/opt/acceptance/runtime/python/bin/python3"
+              ]
+            },
+            "browserPath": {
+              "type": "enum",
+              "values": [
+                "/opt/acceptance/runtime/chromium/chrome"
+              ]
+            },
+            "browserSandbox": {
+              "type": "enum",
+              "values": [
+                true
+              ]
+            },
+            "headless": {
+              "type": "enum",
+              "values": [
+                true
+              ]
+            },
+            "nativeABIOnly": {
+              "type": "enum",
+              "values": [
+                true
+              ]
+            },
+            "guestProxyAddress": {
+              "type": "enum",
+              "values": [
+                "127.0.0.1"
+              ]
+            },
+            "guestProxyPort": {
+              "type": "enum",
+              "values": [
+                3128
+              ]
+            },
+            "vsockRole": {
+              "type": "enum",
+              "values": [
+                "proxy"
+              ]
+            },
+            "consoleRole": {
+              "type": "enum",
+              "values": [
+                "controller"
+              ]
+            },
+            "secretInputs": {
+              "type": "enum",
+              "values": [
+                "NONE"
+              ]
+            },
+            "downloads": {
+              "type": "enum",
+              "values": [
+                false
+              ]
+            }
+          }
+        },
+        "kernelFeatures": {
+          "type": "array",
+          "item": {
+            "type": "enum",
+            "values": [
+              "CONFIG_NAMESPACES",
+              "CONFIG_PID_NS",
+              "CONFIG_SECCOMP",
+              "CONFIG_SECCOMP_FILTER",
+              "CONFIG_TMPFS",
+              "CONFIG_USER_NS",
+              "CONFIG_VIRTIO",
+              "CONFIG_VIRTIO_BLK",
+              "CONFIG_VIRTIO_CONSOLE",
+              "CONFIG_VIRTIO_VSOCKETS",
+              "CONFIG_VSOCKETS"
+            ]
+          },
+          "min": 11,
+          "max": 11
+        },
+        "compatibility": {
+          "type": "object",
+          "fields": {
+            "macOSMinimum": {
+              "type": "enum",
+              "values": [
+                "14.0"
+              ]
+            },
+            "sdkVersion": {
+              "type": "string",
+              "pattern": "[A-Za-z0-9._:+-]+",
+              "max": 32
+            },
+            "hostArchitecture": {
+              "type": "enum",
+              "values": [
+                "arm64"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "inputManifest": {
+    "type": "object",
+    "fields": {
+      "manifestVersion": {
+        "type": "enum",
+        "values": [
+          1
+        ]
+      },
+      "architecture": {
+        "type": "enum",
+        "values": [
+          "aarch64"
+        ]
+      },
+      "distribution": {
+        "type": "enum",
+        "values": [
+          "ubuntu-24.04"
+        ]
+      },
+      "policy": {
+        "ref": "policy"
+      },
+      "payloadState": {
+        "type": "enum",
+        "values": [
+          "INCOMPLETE",
+          "COMPLETE"
+        ]
+      },
+      "missingPayload": {
+        "type": "array",
+        "item": {
+          "type": "enum",
+          "values": [
+            "controller",
+            "guestBootstrap",
+            "guestProbes",
+            "proxy",
+            "rolePolicy",
+            "routePolicy",
+            "seccompPolicy",
+            "verifier"
+          ]
+        },
+        "min": 0,
+        "max": 8
+      },
+      "kind": {
+        "type": "enum",
+        "values": [
+          "ASSEMBLY_INPUTS"
+        ]
+      },
+      "artifacts": {
+        "type": "array",
+        "item": {
+          "ref": "identity"
+        },
+        "min": 0,
+        "max": 19
+      },
+      "tools": {
+        "type": "array",
+        "item": {
+          "ref": "identity"
+        },
+        "min": 1,
+        "max": 1
+      },
+      "provenance": {
+        "type": "object",
+        "fields": {
+          "sourceRevision": {
+            "type": "string",
+            "pattern": "[a-f0-9]{40}",
+            "max": 40
+          },
+          "approvalId": {
+            "type": "string",
+            "pattern": "[A-Za-z0-9._:+-]+",
+            "max": 128
+          },
+          "buildEnvironmentId": {
+            "type": "string",
+            "pattern": "[A-Za-z0-9._:+-]+",
+            "max": 128
+          },
+          "inputClass": {
+            "type": "enum",
+            "values": [
+              "SYNTHETIC",
+              "APPROVED_CANDIDATE"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "applianceManifest": {
+    "type": "object",
+    "fields": {
+      "manifestVersion": {
+        "type": "enum",
+        "values": [
+          1
+        ]
+      },
+      "architecture": {
+        "type": "enum",
+        "values": [
+          "aarch64"
+        ]
+      },
+      "distribution": {
+        "type": "enum",
+        "values": [
+          "ubuntu-24.04"
+        ]
+      },
+      "policy": {
+        "ref": "policy"
+      },
+      "payloadState": {
+        "type": "enum",
+        "values": [
+          "INCOMPLETE",
+          "COMPLETE"
+        ]
+      },
+      "missingPayload": {
+        "type": "array",
+        "item": {
+          "type": "enum",
+          "values": [
+            "controller",
+            "guestBootstrap",
+            "guestProbes",
+            "proxy",
+            "rolePolicy",
+            "routePolicy",
+            "seccompPolicy",
+            "verifier"
+          ]
+        },
+        "min": 0,
+        "max": 8
+      },
+      "kind": {
+        "type": "enum",
+        "values": [
+          "APPLIANCE_MANIFEST"
+        ]
+      },
+      "inputsDigest": {
+        "type": "string",
+        "pattern": "[a-f0-9]{64}",
+        "max": 64
+      },
+      "components": {
+        "type": "array",
+        "item": {
+          "ref": "identity"
+        },
+        "min": 0,
+        "max": 19
+      },
+      "outputs": {
+        "type": "array",
+        "item": {
+          "ref": "identity"
+        },
+        "min": 3,
+        "max": 3
+      },
+      "provenance": {
+        "type": "object",
+        "fields": {
+          "sourceRevision": {
+            "type": "string",
+            "pattern": "[a-f0-9]{40}",
+            "max": 40
+          },
+          "approvalId": {
+            "type": "string",
+            "pattern": "[A-Za-z0-9._:+-]+",
+            "max": 128
+          },
+          "buildEnvironmentId": {
+            "type": "string",
+            "pattern": "[A-Za-z0-9._:+-]+",
+            "max": 128
+          },
+          "assemblyMode": {
+            "type": "enum",
+            "values": [
+              "SYNTHETIC",
+              "NATIVE_ARM64_LINUX"
+            ]
+          },
+          "tools": {
+            "type": "array",
+            "item": {
+              "ref": "identity"
+            },
+            "min": 1,
+            "max": 1
+          }
+        }
+      },
+      "manifestSigning": {
+        "type": "enum",
+        "values": [
+          "UNPERFORMED"
+        ]
+      },
+      "runtimeQualification": {
+        "type": "enum",
+        "values": [
+          "UNPERFORMED"
+        ]
+      }
+    }
+  }
+}

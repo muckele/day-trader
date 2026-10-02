@@ -38,19 +38,20 @@ def _depth(text):
             if depth > _SCHEMA['maxDepth']: _invalid()
         elif c in ']}': depth -= 1
 
-def _check(value, rule, depth=0):
+def _check(value, rule, depth=0, definitions=None):
+    definitions = _SCHEMA['definitions'] if definitions is None else definitions
     if depth > 16: _invalid()
-    if 'ref' in rule: return _check(value, _SCHEMA['definitions'][rule['ref']], depth+1)
+    if 'ref' in rule: return _check(value, definitions[rule['ref']], depth+1, definitions)
     kind = rule['type']
     if kind == 'object':
         if type(value) is not dict or value.keys() != rule['fields'].keys(): _invalid()
-        for key, field in rule['fields'].items(): _check(value[key], field, depth+1)
+        for key, field in rule['fields'].items(): _check(value[key], field, depth+1, definitions)
     elif kind == 'array':
         if type(value) is not list or not rule['min'] <= len(value) <= rule['max']: _invalid()
-        for item in value: _check(item, rule['item'], depth+1)
+        for item in value: _check(item, rule['item'], depth+1, definitions)
     elif kind == 'union':
         if type(value) is not dict or type(value.get(rule['tag'])) is not str or value[rule['tag']] not in rule['variants']: _invalid()
-        _check(value, rule['variants'][value[rule['tag']]], depth+1)
+        _check(value, rule['variants'][value[rule['tag']]], depth+1, definitions)
     elif kind == 'enum':
         if not any(type(v) is type(value) and v == value for v in rule['values']): _invalid()
     elif kind == 'string':
@@ -106,3 +107,27 @@ class PublicRunBudget:
         size = len(canonical_bytes(frame))
         if size > _SCHEMA['publicRunMaxBytes'] - self._used_bytes: _invalid()
         self._used_bytes += size
+
+
+def decode_document(data, *, rule, definitions, max_bytes):
+    """Bounded plumbing for trusted finite schemas, never receipt authority."""
+    try:
+        if type(max_bytes) is not int or not 0 < max_bytes <= 65536: _invalid()
+        if type(data) is not bytes or len(data) > max_bytes: _invalid()
+        text = data.decode('utf-8', errors='strict'); _depth(text)
+        value = json.loads(text, object_pairs_hook=_pairs, parse_int=_integer,
+                           parse_float=lambda _: _invalid(), parse_constant=lambda _: _invalid())
+        _check(value, rule, definitions=definitions)
+        return value
+    except (ValueError, TypeError, KeyError, RecursionError, OverflowError): _invalid()
+
+
+def canonical_document(value, *, rule, definitions, max_bytes):
+    """Validate before canonical encoding; do not widen existing frame limits."""
+    try:
+        _check(value, rule, definitions=definitions)
+        result = json.dumps(value, sort_keys=True, ensure_ascii=False,
+                            separators=(',', ':'), allow_nan=False).encode('utf-8')
+        decode_document(result, rule=rule, definitions=definitions, max_bytes=max_bytes)
+        return result
+    except (ValueError, TypeError, KeyError, RecursionError, OverflowError): _invalid()

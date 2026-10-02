@@ -1,0 +1,441 @@
+"""Bounded offline appliance identity/assembly contract; no operational default.
+
+ImageToolRunner is an explicit trusted effect boundary. M3 accepts SYNTHETIC
+inputs only for assembly and emits nonbootable fixture files. Native population,
+image construction, signer trust and runtime qualification remain unavailable.
+"""
+from dataclasses import dataclass
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import stat
+import tarfile
+import tempfile
+from typing import Mapping, Protocol
+
+_spec = importlib.util.spec_from_file_location('acceptance_protocol', Path(__file__).resolve().parents[1] / 'guest/protocol.py')
+_protocol = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_protocol)
+_SCHEMA_PATH = Path(__file__).with_name('manifest.schema.json')
+_SCHEMA = json.loads(_SCHEMA_PATH.read_bytes())
+if (set(_SCHEMA) != {'schemaVersion','maxBytes','maxDepth','definitions','inputManifest','applianceManifest'}
+        or _SCHEMA['schemaVersion'] != 1 or _SCHEMA['maxBytes'] != 65536 or _SCHEMA['maxDepth'] != 8
+        or set(_SCHEMA['definitions']) != {'identity','policy'}):
+    raise ValueError('INVALID_MANIFEST')
+
+BASE_IDS = frozenset(['rootfs','kernel','initramfs','kernelConfig','node','python','playwright','chromium','hostLauncher','hostBroker','contracts'])
+PAYLOAD_IDS = frozenset(['guestBootstrap','controller','proxy','verifier','rolePolicy','seccompPolicy','routePolicy','guestProbes'])
+RUNTIME_IDS = frozenset(['node','python','playwright','chromium'])
+ARCHIVE_IDS = frozenset(['rootfs','node','python','playwright','chromium','contracts','guestProbes'])
+REQUIRED_FILES = {'node':'bin/node','python':'bin/python3','chromium':'chrome'}
+FEATURES = tuple(sorted(['CONFIG_NAMESPACES','CONFIG_PID_NS','CONFIG_SECCOMP','CONFIG_SECCOMP_FILTER','CONFIG_TMPFS','CONFIG_USER_NS','CONFIG_VIRTIO','CONFIG_VIRTIO_BLK','CONFIG_VIRTIO_CONSOLE','CONFIG_VIRTIO_VSOCKETS','CONFIG_VSOCKETS']))
+MAX_ARCHIVE_MEMBERS = 100000
+MAX_EXPANDED_BYTES = 68719476736
+MAX_SYNTHETIC_BYTES = 16 * 1024 * 1024
+
+class ApplianceError(ValueError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+def _fail(code): raise ApplianceError(code)
+def _sha(data): return hashlib.sha256(data).hexdigest()
+def _rule(value):
+    if type(value) is not dict: _fail('INVALID_MANIFEST')
+    key = {'ASSEMBLY_INPUTS':'inputManifest','APPLIANCE_MANIFEST':'applianceManifest'}.get(value.get('kind'))
+    if key is None: _fail('INVALID_MANIFEST')
+    return _SCHEMA[key]
+
+
+def _policy_shape(value, rule):
+    """Separate structural omissions from correctly shaped forbidden policy."""
+    if rule.get('type') == 'object':
+        if type(value) is not dict or value.keys() != rule['fields'].keys(): _fail('INVALID_MANIFEST')
+        for key, child in rule['fields'].items(): _policy_shape(value[key], child)
+
+
+def _semantics(value):
+    if value['architecture'] != 'aarch64': _fail('ARCHITECTURE')
+    _policy_shape(value['policy'], _SCHEMA['definitions']['policy'])
+    try: _protocol._check(value['policy'], _SCHEMA['definitions']['policy'], definitions=_SCHEMA['definitions'])
+    except _protocol.InvalidFrame: _fail('POLICY')
+    if value['policy']['kernelFeatures'] != list(FEATURES): _fail('KERNEL_FEATURE')
+    identities = value['artifacts'] if value['kind'] == 'ASSEMBLY_INPUTS' else value['components']
+    ids = [item['id'] for item in identities]
+    if ids != sorted(set(ids)) or set(ids) - BASE_IDS - PAYLOAD_IDS: _fail('UNAUTHORIZED_INPUT')
+    if not RUNTIME_IDS <= set(ids): _fail('MISSING_RUNTIME')
+    if not BASE_IDS <= set(ids): _fail('UNAUTHORIZED_INPUT')
+    missing = sorted(PAYLOAD_IDS - set(ids))
+    if value['missingPayload'] != missing or value['payloadState'] != ('INCOMPLETE' if missing else 'COMPLETE'):
+        _fail('PAYLOAD_INCOMPLETE')
+    tools = value['tools'] if value['kind'] == 'ASSEMBLY_INPUTS' else value['provenance']['tools']
+    if [item['id'] for item in tools] != ['mke2fs']: _fail('UNAUTHORIZED_INPUT')
+    if value['kind'] == 'APPLIANCE_MANIFEST':
+        if [x['id'] for x in value['outputs']] != ['base','initramfs','kernel']: _fail('UNAUTHORIZED_INPUT')
+        by_id = {x['id']:x for x in identities}
+        for item in value['outputs'][1:]:
+            if item != by_id[item['id']]: _fail('ARTIFACT_MISMATCH')
+
+
+def _validated(value):
+    try:
+        rule = _rule(value)
+        # Structural checks happen before semantic indexing. The same finite
+        # descriptor is used except policy/architecture checks classified below.
+        structural = {**rule, 'fields':dict(rule['fields'])}
+        structural['fields']['architecture'] = {'type':'string','pattern':'[A-Za-z0-9_]+','max':32}
+        _policy_shape(value.get('policy'), _SCHEMA['definitions']['policy'])
+        # Validate every non-policy field exactly; policy is still validated below.
+        fields = structural['fields']; fields.pop('policy')
+        remaining = dict(value); remaining.pop('policy')
+        _protocol._check(remaining, structural, definitions=_SCHEMA['definitions'])
+        _semantics(value)
+        _protocol._check(value, rule, definitions=_SCHEMA['definitions'])
+        return value
+    except ApplianceError: raise
+    except (ValueError, TypeError, KeyError, RecursionError, OverflowError): _fail('INVALID_MANIFEST')
+
+
+def _policy_wire_shape(rule):
+    """Trusted schema-derived type check before exact semantic error reporting.
+
+    No value is returned to callers before _validated enforces the original
+    complete schema and policy. Receipt decoding never uses this shape.
+    """
+    kind = rule['type']
+    if kind == 'object':
+        return {'type':'object','fields':{k:_policy_wire_shape(v) for k,v in rule['fields'].items()}}
+    if kind == 'array':
+        return {**rule,'item':_policy_wire_shape(rule['item'])}
+    if kind == 'integer': return {'type':'integer','min':0,'max':9007199254740991}
+    if kind == 'enum':
+        value = rule['values'][0]
+        if type(value) is bool: return {'type':'boolean'}
+        if type(value) is int: return {'type':'integer','min':0,'max':9007199254740991}
+        return {'type':'string','pattern':'[ -~]*','max':256}
+    return rule
+
+
+def _decode(data, kind):
+    try:
+        # Parse with M1 strict primitive using a schema-specific structural rule.
+        # Classification never adds a permissive generic JSON admission path.
+        rule = _SCHEMA['inputManifest' if kind == 'ASSEMBLY_INPUTS' else 'applianceManifest']
+        wire_rule = {**rule,'fields':dict(rule['fields'])}
+        wire_rule['fields']['architecture'] = {'type':'string','pattern':'[A-Za-z0-9_]+','max':32}
+        wire_rule['fields']['policy'] = _policy_wire_shape(_SCHEMA['definitions']['policy'])
+        value = _protocol.decode_document(data, rule=wire_rule, definitions=_SCHEMA['definitions'], max_bytes=65536)
+        return _validated(value)
+    except ApplianceError: raise
+    except _protocol.InvalidFrame: _fail('INVALID_MANIFEST')
+
+
+def decode_inputs(data: bytes) -> dict: return _decode(data, 'ASSEMBLY_INPUTS')
+def decode_appliance(data: bytes) -> dict: return _decode(data, 'APPLIANCE_MANIFEST')
+def canonical_manifest(value: dict) -> bytes:
+    _validated(value)
+    try:
+        return _protocol.canonical_document(value, rule=_rule(value), definitions=_SCHEMA['definitions'], max_bytes=65536)
+    except _protocol.InvalidFrame: _fail('INVALID_MANIFEST')
+
+def manifest_digest(value: dict) -> str: return _sha(canonical_manifest(value))
+
+
+def _safe_path(path, code='UNAUTHORIZED_INPUT'):
+    path = Path(path).absolute()
+    if '..' in path.parts: _fail(code)
+    for current in reversed([path, *path.parents]):
+        try:
+            if stat.S_ISLNK(current.lstat().st_mode): _fail(code)
+        except FileNotFoundError: pass
+    return path
+
+
+def _fingerprint(s): return (s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_mode,s.st_nlink)
+
+
+def _open_checked(path, code):
+    path = _safe_path(path, code)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        s = os.fstat(fd)
+        if not stat.S_ISREG(s.st_mode) or s.st_nlink != 1:
+            os.close(fd); _fail(code)
+        return os.fdopen(fd,'rb'), _fingerprint(s)
+    except OSError: _fail(code)
+
+
+def _hash_file(path, identity, code, destination=None):
+    source, before = _open_checked(path, code)
+    total = 0; digest = hashlib.sha256()
+    with source:
+        while True:
+            chunk = source.read(1024*1024)
+            if not chunk: break
+            total += len(chunk)
+            if total > identity['sizeBytes']: _fail(code)
+            digest.update(chunk)
+            if destination is not None: destination.write(chunk)
+        if _fingerprint(os.fstat(source.fileno())) != before: _fail(code)
+    if total != identity['sizeBytes'] or digest.hexdigest() != identity['sha256']: _fail(code)
+    try:
+        if _fingerprint(Path(path).lstat()) != before: _fail(code)
+    except OSError: _fail(code)
+    return before
+
+
+def _member_name(name):
+    if not name or len(name.encode()) > 4096 or '\\' in name or any(ord(c)<32 or ord(c)>126 for c in name): _fail('ARCHIVE_UNSAFE')
+    p = PurePosixPath(name)
+    if p.is_absolute() or '..' in p.parts or str(p) != name.rstrip('/') or str(p) == '.': _fail('ARCHIVE_UNSAFE')
+    return str(p)
+
+
+def _link_target(name, link, hard):
+    if not link or link.startswith('/') or '\\' in link: _fail('ARCHIVE_UNSAFE')
+    parts = [] if hard else name.split('/')[:-1]
+    for part in link.split('/'):
+        if part == '..':
+            if not parts: _fail('ARCHIVE_UNSAFE')
+            parts.pop()
+        elif part not in ['', '.']: parts.append(part)
+    if not parts: _fail('ARCHIVE_UNSAFE')
+    return _member_name('/'.join(parts))
+
+
+def _reject_known_secret(stream, max_bytes):
+    """Screen bounded archive members and direct authored payloads identically."""
+    tail = b''
+    consumed = 0
+    while True:
+        chunk = stream.read(65536)
+        if not chunk: break
+        consumed += len(chunk)
+        if consumed > max_bytes: _fail('INPUT_CHANGED')
+        window = tail + chunk
+        if b'PRIVATE KEY-----' in window: _fail('SECRET_MATERIAL')
+        tail = window[-128:]
+
+
+def _archive(path, id):
+    source, before = _open_checked(path, 'UNAUTHORIZED_INPUT')
+    entries = {}; total = 0
+    try:
+        with source, tarfile.open(fileobj=source,mode='r:*') as tf:
+            for member in tf:
+                name = _member_name(member.name)
+                if len(entries) >= MAX_ARCHIVE_MEMBERS or name in entries: _fail('ARCHIVE_UNSAFE')
+                total += member.size
+                if total > MAX_EXPANDED_BYTES or member.size < 0 or member.mode & 0o7000: _fail('ARCHIVE_UNSAFE')
+                if not (member.isfile() or member.isdir() or member.issym() or member.islnk()): _fail('ARCHIVE_UNSAFE')
+                if member.isfile() and member.mode & 0o022: _fail('ARCHIVE_UNSAFE')
+                lowered = name.lower(); pieces = lowered.split('/')
+                if any(p in {'.env','.aws','.ssh','id_rsa','id_ed25519','cookies.json','storagestate.json','credentials.json','credentials','secrets'} for p in pieces):
+                    _fail('SECRET_MATERIAL')
+                if id == 'rootfs' and (name == 'opt/acceptance' or name.startswith('opt/acceptance/') or (pieces[0] in ['root','home'] and not member.isdir())):
+                    _fail('UNAUTHORIZED_INPUT')
+                if member.isfile():
+                    # Reject recognizable private-key material, without treating
+                    # public CA certificates as secrets or exporting any bytes.
+                    stream = tf.extractfile(member)
+                    if stream is None: _fail('ARCHIVE_UNSAFE')
+                    with stream: _reject_known_secret(stream, member.size)
+                target = _link_target(name,member.linkname,member.islnk()) if member.issym() or member.islnk() else None
+                entries[name] = (member, target)
+            for name,(member,target) in entries.items():
+                for parent in PurePosixPath(name).parents:
+                    if str(parent) in entries and not entries[str(parent)][0].isdir(): _fail('ARCHIVE_UNSAFE')
+                seen = set(); cursor = name
+                while entries[cursor][1] is not None:
+                    if cursor in seen or len(seen)>32: _fail('ARCHIVE_UNSAFE')
+                    seen.add(cursor); cursor=entries[cursor][1]
+                    if cursor not in entries: _fail('ARCHIVE_UNSAFE')
+                if member.islnk() and not entries[cursor][0].isfile(): _fail('ARCHIVE_UNSAFE')
+            if id in REQUIRED_FILES:
+                member = entries.get(REQUIRED_FILES[id],(None,None))[0]
+                if member is None or not member.isfile() or not member.mode & 0o111: _fail('MISSING_RUNTIME')
+            if _fingerprint(os.fstat(source.fileno())) != before: _fail('INPUT_CHANGED')
+    except ApplianceError: raise
+    except (tarfile.TarError,OSError,ValueError): _fail('ARCHIVE_UNSAFE')
+
+
+def _kernel(path):
+    source, _ = _open_checked(path,'UNAUTHORIZED_INPUT')
+    with source: data=source.read(1024*1024+1)
+    if len(data)>1024*1024: _fail('KERNEL_FEATURE')
+    try: lines=data.decode('ascii').splitlines()
+    except UnicodeError: _fail('KERNEL_FEATURE')
+    for feature in FEATURES:
+        declarations = [line for line in lines if line.startswith(feature+'=')
+                        or re.fullmatch(r'#\s*'+re.escape(feature)+r'\s+is\s+not\s+set\s*', line.strip())]
+        if declarations != [feature+'=y']: _fail('KERNEL_FEATURE')
+
+
+@dataclass(frozen=True)
+class _Captured:
+    id: str
+    path: Path
+    identity_bytes: bytes
+    fingerprint: tuple
+    @property
+    def identity(self): return json.loads(self.identity_bytes)
+
+
+_INPUT_TOKEN = object()
+@dataclass(frozen=True, init=False)
+class ApprovedInputs:
+    """Checked integrity snapshot; not operator, signer or runtime authority."""
+    canonical: bytes
+    captured: tuple
+    tools: tuple
+    def __init__(self, canonical, captured, tools, *, _token=None):
+        if _token is not _INPUT_TOKEN: _fail('UNAUTHORIZED_INPUT')
+        object.__setattr__(self,'canonical',canonical)
+        object.__setattr__(self,'captured',captured)
+        object.__setattr__(self,'tools',tools)
+
+
+def validate_inputs(manifest: dict, *, locations: Mapping[str,Path], tool_locations: Mapping[str,Path], expected_inputs_digest: str) -> ApprovedInputs:
+    canonical = canonical_manifest(manifest)
+    if manifest['kind'] != 'ASSEMBLY_INPUTS': _fail('INVALID_MANIFEST')
+    if type(expected_inputs_digest) is not str or not re.fullmatch('[a-f0-9]{64}',expected_inputs_digest) or _sha(canonical) != expected_inputs_digest:
+        _fail('IDENTITY_MISMATCH')
+    if set(locations) != {x['id'] for x in manifest['artifacts']} or set(tool_locations) != {'mke2fs'}: _fail('UNAUTHORIZED_INPUT')
+    groups=[]
+    for identities, paths in [(manifest['artifacts'],locations),(manifest['tools'],tool_locations)]:
+        captured=[]
+        for identity in identities:
+            id=identity['id']; path=_safe_path(paths[id])
+            # Reject links separately from otherwise valid files with wrong bytes.
+            handle, _ = _open_checked(path,'UNAUTHORIZED_INPUT'); handle.close()
+            fingerprint=_hash_file(path,identity,'ARTIFACT_MISMATCH')
+            if id in ARCHIVE_IDS: _archive(path,id)
+            elif id in PAYLOAD_IDS:
+                source, _ = _open_checked(path,'UNAUTHORIZED_INPUT')
+                with source: _reject_known_secret(source, identity['sizeBytes'])
+            if id=='kernelConfig': _kernel(path)
+            if _hash_file(path,identity,'INPUT_CHANGED') != fingerprint: _fail('INPUT_CHANGED')
+            captured.append(_Captured(id,path,json.dumps(identity,sort_keys=True,separators=(',',':')).encode(),fingerprint))
+        groups.append(tuple(captured))
+    return ApprovedInputs(canonical,*groups,_token=_INPUT_TOKEN)
+
+
+@dataclass(frozen=True)
+class ImageCommand:
+    tool_path: Path
+    tool_identity_bytes: bytes
+    argv: tuple[str,...]
+    population: Path
+    output: Path
+    snapshots: tuple[tuple[str,Path],...]
+    @property
+    def tool_identity(self): return json.loads(self.tool_identity_bytes)
+
+
+class ImageToolRunner(Protocol):
+    def run(self, command: ImageCommand) -> None: ...
+
+
+def _unchanged(inputs):
+    for item in (*inputs.captured,*inputs.tools):
+        if _hash_file(item.path,item.identity,'INPUT_CHANGED') != item.fingerprint: _fail('INPUT_CHANGED')
+
+
+def _cleanup_owned(path, inode):
+    try:
+        s=path.lstat()
+        if stat.S_ISDIR(s.st_mode) and (s.st_dev,s.st_ino)==inode: shutil.rmtree(path)
+    except FileNotFoundError: pass
+
+
+def _publish(partial, output, names):
+    # Reserve final pathname exclusively; all bytes are validated before this.
+    # manifest.json is linked last. Never replace another producer's destination.
+    try: output.mkdir(mode=0o700)
+    except FileExistsError: _fail('OUTPUT_EXISTS')
+    s=output.lstat(); inode=(s.st_dev,s.st_ino)
+    fd=os.open(output,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        for name in names:
+            os.link(partial/name,name,dst_dir_fd=fd,follow_symlinks=False)
+        if (output.lstat().st_dev,output.lstat().st_ino)!=inode: _fail('OUTPUT_EXISTS')
+    except BaseException:
+        _cleanup_owned(output,inode)
+        raise
+    finally: os.close(fd)
+
+
+def assemble(inputs: ApprovedInputs, output: Path, *, image_tool: ImageToolRunner) -> dict:
+    if type(inputs) is not ApprovedInputs: _fail('UNAUTHORIZED_INPUT')
+    manifest=decode_inputs(inputs.canonical)
+    if os.path.lexists(output): _fail('OUTPUT_EXISTS')
+    output=_safe_path(output)
+    if image_tool is None or not callable(getattr(image_tool,'run',None)): _fail('TOOL_UNAVAILABLE')
+    if manifest['provenance']['inputClass'] != 'SYNTHETIC': _fail('TOOL_UNAVAILABLE')
+    if sum(x.identity['sizeBytes'] for x in (*inputs.captured,*inputs.tools))>MAX_SYNTHETIC_BYTES: _fail('UNAUTHORIZED_INPUT')
+    _unchanged(inputs)
+    if not output.parent.is_dir(): _fail('UNAUTHORIZED_INPUT')
+    partial=Path(tempfile.mkdtemp(prefix='.'+output.name+'.partial-',dir=output.parent))
+    s=partial.lstat(); inode=(s.st_dev,s.st_ino)
+    try:
+        staging=partial/'inputs'; staging.mkdir(mode=0o700)
+        snapshots=[]
+        for item in (*inputs.captured,*inputs.tools):
+            path=staging/(item.id+'.synthetic')
+            with path.open('xb') as f: _hash_file(item.path,item.identity,'INPUT_CHANGED',f)
+            path.chmod(0o400); snapshots.append((item.id,path))
+        paths=dict(snapshots); base=partial/'base.synthetic'
+        population=partial/'population-unperformed'
+        # This is the fixed future argv contract. The M3 fake receives only small
+        # archive snapshots, never an extracted rootfs or a real image file.
+        argv=(str(paths['mke2fs']),'-q','-t','ext4','-b','4096','-d',str(population),str(base),'262144')
+        command=ImageCommand(paths['mke2fs'],inputs.tools[0].identity_bytes,argv,population,base,tuple(snapshots))
+        try: image_tool.run(command)
+        except ApplianceError: raise
+        except Exception: _fail('TOOL_FAILURE')
+        _unchanged(inputs)
+        for item in (*inputs.captured,*inputs.tools):
+            _hash_file(paths[item.id],item.identity,'INPUT_CHANGED')
+        source,before=_open_checked(base,'ARTIFACT_MISMATCH')
+        with source: data=source.read(MAX_SYNTHETIC_BYTES+1)
+        if not data or len(data)>MAX_SYNTHETIC_BYTES or _fingerprint(base.lstat())!=before: _fail('ARTIFACT_MISMATCH')
+        outputs=[{'id':'base','sha256':_sha(data),'sizeBytes':len(data),'version':'synthetic-v1','sourceId':'synthetic-assembly'}]
+        by_id={x['id']:x for x in manifest['artifacts']}
+        for id in ['initramfs','kernel']:
+            with (partial/(id+'.synthetic')).open('xb') as f: _hash_file(paths[id],by_id[id],'INPUT_CHANGED',f)
+            outputs.append(by_id[id])
+        common={k:manifest[k] for k in ['manifestVersion','architecture','distribution','policy','payloadState','missingPayload']}
+        provenance={k:manifest['provenance'][k] for k in ['sourceRevision','approvalId','buildEnvironmentId']}
+        result={**common,'kind':'APPLIANCE_MANIFEST','inputsDigest':_sha(inputs.canonical),'components':manifest['artifacts'],'outputs':outputs,'provenance':{**provenance,'assemblyMode':'SYNTHETIC','tools':manifest['tools']},'manifestSigning':'UNPERFORMED','runtimeQualification':'UNPERFORMED'}
+        encoded=canonical_manifest(result)
+        proof={'inputsDigest':result['inputsDigest'],'manifestDigest':_sha(encoded),'components':manifest['artifacts'],'tools':manifest['tools'],'argv':list(argv),'assemblyMode':'SYNTHETIC','population':'UNPERFORMED'}
+        with (partial/'manifest.json').open('xb') as f: f.write(encoded)
+        with (partial/'provenance.json').open('xb') as f: f.write(json.dumps(proof,sort_keys=True,separators=(',',':')).encode())
+        for item in outputs: _hash_file(partial/(item['id']+'.synthetic'),item,'ARTIFACT_MISMATCH')
+        _publish(partial,output,['base.synthetic','initramfs.synthetic','kernel.synthetic','provenance.json','manifest.json'])
+        return decode_appliance(encoded)
+    except ApplianceError: raise
+    except (OSError,ValueError): _fail('TOOL_FAILURE')
+    finally: _cleanup_owned(partial,inode)
+
+
+def require_qualified(manifest: dict):
+    _validated(manifest)
+    if manifest['payloadState']=='INCOMPLETE': _fail('PAYLOAD_INCOMPLETE')
+    if manifest['provenance'].get('assemblyMode')=='SYNTHETIC': _fail('SYNTHETIC_ONLY')
+    _fail('SIGNING_UNAVAILABLE')
+
+
+def cli(argv):
+    """Future CLI syntax is reserved; no implicit real runner or input effects."""
+    return 78
+
+
+if __name__=='__main__':
+    import sys
+    sys.exit(cli(sys.argv[1:]))
