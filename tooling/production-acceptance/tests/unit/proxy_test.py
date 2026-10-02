@@ -350,5 +350,349 @@ class ProxyTests(unittest.TestCase):
             self.assertEqual(outcome.code, 'CONFIG_DENIED')
             self.assertEqual(sockets.calls, [])
 
+    # Independent deadline oracles: equality is expired, and ready data cannot
+    # renew an already elapsed idle/run lease.
+    def test_idle_and_run_deadlines_precede_late_header_data_broker_and_write(self):
+        class DeadlineClock(Clock):
+            def __init__(self, jump): super().__init__(); self.jump = jump
+            def wait(self, milliseconds): self.wall += self.jump; self.mono += self.jump
+
+        cases = [
+            (Stream([b'CON', REQUEST]), Stream(), 'header'),
+            (Stream([REQUEST, b'late']), Stream(), 'client'),
+            (Stream([REQUEST]), Stream([b'\x00\x04late']), 'broker'),
+            (Stream([REQUEST], partial=None), Stream(), 'write'),
+        ]
+        for client, broker, name in cases:
+            with self.subTest(path=name):
+                sockets, transport = Sockets([client]), Transport([broker])
+                outcome = proxy.serve_proxy(config(sockets, DeadlineClock(20)), transport)
+                self.assertEqual(outcome.code, 'IDLE_TIMEOUT')
+                self.assertNotIn(b'late', bytes(client.written) + bytes(broker.written))
+                self.assertEqual((client.closes, broker.closes,
+                                  sockets.listener.closes, transport.closes),
+                                 (1, 0 if name == 'header' else 1, 1, 1))
+
+        client, broker = Stream([REQUEST, b'late']), Stream()
+        sockets, transport = Sockets([client]), Transport([broker])
+        outcome = proxy.serve_proxy(
+            config(sockets, DeadlineClock(20), idle_timeout_ms=100, run_timeout_ms=20),
+            transport)
+        self.assertEqual(outcome.code, 'EXPIRED')
+        self.assertNotIn(b'late', broker.written)
+
+    def test_deadline_and_wall_rollback_rechecked_after_fallible_read(self):
+        class MutableClock(Clock): pass
+        class ClockedStream(Stream):
+            def __init__(self, clock, data, change):
+                super().__init__(data); self.clock, self.change = clock, change
+            def read(self, maximum):
+                message = super().read(maximum)
+                if self.read_bounds and len(self.read_bounds) == 2:
+                    self.change(self.clock)
+                return message
+
+        for code, change in [
+            ('IDLE_TIMEOUT', lambda clock: setattr(clock, 'mono', 30)),
+            ('CLOCK', lambda clock: setattr(clock, 'wall', 99)),
+        ]:
+            with self.subTest(code=code):
+                clock = MutableClock()
+                client = ClockedStream(clock, [REQUEST, b'late'], change)
+                broker = Stream()
+                sockets, transport = Sockets([client]), Transport([broker])
+                cfg = config(sockets, clock)
+                outcome = proxy.serve_proxy(cfg, transport)
+                self.assertEqual(outcome.code, code)
+                self.assertNotIn(b'late', broker.written)
+                self.assertEqual(proxy.serve_proxy(cfg, transport).code, 'TERMINAL')
+                self.assertEqual((client.closes, broker.closes,
+                                  sockets.listener.closes, transport.closes), (1, 1, 1, 1))
+
+    def test_deadline_is_rechecked_before_fallible_terminal_decisions(self):
+        class DeadlineTransport(Transport):
+            def __init__(self, clock, path, streams=()):
+                super().__init__(streams); self.clock, self.path = clock, path
+            def authenticate(self, binding):
+                if self.path == 'authenticate':
+                    self.clock.mono = 30
+                    raise OSError('late authenticate failure')
+                return super().authenticate(binding)
+            def check(self):
+                if self.path == 'check':
+                    self.clock.mono = 30
+                    raise OSError('late check failure')
+                return super().check()
+            def open(self, cid, service, binding):
+                if self.path == 'open':
+                    self.clock.mono = 30
+                    raise OSError('late open failure')
+                return super().open(cid, service, binding)
+
+        class DeadlineStream(Stream):
+            def __init__(self, clock, path, data=()):
+                super().__init__(data); self.clock, self.path = clock, path
+            def read(self, maximum):
+                if self.path == 'read' and len(self.read_bounds) == 1:
+                    self.clock.mono = 30
+                    raise OSError('late read failure')
+                return super().read(maximum)
+            def write(self, data):
+                if self.path == 'write':
+                    self.clock.mono = 30
+                    raise OSError('late write failure')
+                return super().write(data)
+            def end_write(self):
+                if self.path == 'end':
+                    self.clock.mono = 30
+                    raise OSError('late end failure')
+                return super().end_write()
+
+        for path in ('authenticate', 'check'):
+            with self.subTest(path=path):
+                clock, sockets = Clock(), Sockets(complete=False)
+                outcome = proxy.serve_proxy(
+                    config(sockets, clock, run_timeout_ms=20),
+                    DeadlineTransport(clock, path))
+                self.assertEqual(outcome.code, 'EXPIRED')
+
+        for path in ('read', 'write', 'open', 'end'):
+            with self.subTest(path=path):
+                clock = Clock()
+                client = DeadlineStream(clock, path, [REQUEST, b''])
+                broker = DeadlineStream(clock, path, [None])
+                sockets = Sockets([client])
+                transport = DeadlineTransport(clock, path, [broker])
+                outcome = proxy.serve_proxy(config(sockets, clock), transport)
+                self.assertEqual(outcome.code, 'IDLE_TIMEOUT')
+                self.assertEqual((client.closes, broker.closes if path != 'open' else 0,
+                                  sockets.listener.closes, transport.closes),
+                                 (1, 1 if path != 'open' else 0, 1, 1))
+
+        class DeadlineListener(Listener):
+            def __init__(self, clock): super().__init__((), ('127.0.0.1', 3128)); self.clock = clock
+            def accept(self):
+                self.clock.mono = 30
+                raise OSError('late accept failure')
+        class DeadlineSockets(Sockets):
+            def __init__(self, clock, path): super().__init__(complete=False); self.clock, self.path = clock, path
+            def listen(self, address, port, backlog):
+                if self.path == 'listen':
+                    self.clock.mono = 30
+                    raise OSError('late listen failure')
+                self.listener = DeadlineListener(self.clock)
+                return self.listener
+            def stop_requested(self):
+                self.clock.mono = 30
+                raise OSError('late stop failure')
+
+        for path in ('listen', 'accept'):
+            with self.subTest(path=path):
+                clock = Clock(); sockets = DeadlineSockets(clock, path)
+                outcome = proxy.serve_proxy(
+                    config(sockets, clock, run_timeout_ms=20), Transport())
+                self.assertEqual(outcome.code, 'EXPIRED')
+
+        class StopSockets(DeadlineSockets):
+            def listen(self, address, port, backlog):
+                self.listener = Listener((), ('127.0.0.1', 3128))
+                return self.listener
+        clock = Clock()
+        sockets = StopSockets(clock, 'stop')
+        outcome = proxy.serve_proxy(
+            config(sockets, clock, run_timeout_ms=20), Transport())
+        self.assertEqual(outcome.code, 'EXPIRED')
+
+    def test_backward_wall_between_iterations_fails_before_progress(self):
+        class WallRollbackClock(Clock):
+            def wait(self, milliseconds): self.wall = 99; self.mono += 1
+        client, broker = Stream([REQUEST, b'late']), Stream([None, b'\x00\x00'])
+        sockets, transport = Sockets([client]), Transport([broker])
+        cfg = config(sockets, WallRollbackClock())
+        outcome = proxy.serve_proxy(cfg, transport)
+        self.assertEqual(outcome.code, 'CLOCK')
+        self.assertNotIn(b'late', broker.written)
+        self.assertEqual(proxy.serve_proxy(cfg, transport).code, 'TERMINAL')
+        self.assertEqual((client.closes, broker.closes,
+                          sockets.listener.closes, transport.closes), (1, 1, 1, 1))
+
+    def _bootstrap_wire(self, change=None):
+        value = {
+            'aggregateBytes': 10000,
+            'capability': '07' * 32,
+            'configIdentity': 'a' * 64,
+            'expiresAt': 190,
+            'firstSequence': 1,
+            'handoff': {'commandFd': 3, 'confined': True, 'resultFd': 4,
+                        'role': 'PROXY', 'uid': 10004, 'waiting': True},
+            'idleTimeoutMs': 20,
+            'kind': 'PROXY_BOOTSTRAP',
+            'manifestIdentity': 'b' * 64,
+            'origins': {'BACKEND': 'https://backend.example.test',
+                        'FRONTEND': 'https://frontend.example.test'},
+            'rolePolicyIdentity': 'c' * 64,
+            'runId': '1' * 32,
+            'runTimeoutMs': 50,
+            'runtimeIdentity': 'd' * 64,
+            'version': 1,
+        }
+        if change: change(value)
+        body = json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        return len(body).to_bytes(2, 'big') + body
+
+    def test_inherited_entry_exact_frame_fixed_fds_and_pinned_admission(self):
+        class FakeOS:
+            def __init__(self, wire): self.input = bytearray(wire); self.reads=[]; self.writes=[]; self.closes=[]
+            def read(self, fd, size):
+                self.reads.append((fd, size)); part=bytes(self.input[:min(size, 7)]); del self.input[:len(part)]; return part
+            def write(self, fd, data): self.writes.append((fd, bytes(data))); return min(5, len(data))
+            def close(self, fd): self.closes.append(fd)
+        class FakeSocketModule:
+            AF_INET=2; AF_VSOCK=40; SOCK_STREAM=1; SOCK_NONBLOCK=2048; SOCK_CLOEXEC=524288
+            SOL_SOCKET=1; SO_ERROR=4; SHUT_WR=1; MSG_CTRUNC=8
+            @staticmethod
+            def CMSG_SPACE(size): return size + 16
+            def socket(self, *args): raise AssertionError('native socket must remain inert')
+        class FakeSelectorModule:
+            EVENT_READ=1; EVENT_WRITE=2
+            class DefaultSelector:
+                def __init__(self): pass
+                def close(self): pass
+        class FakeTime:
+            def time(self): return .1
+            def monotonic(self): return .01
+            def sleep(self, seconds): raise AssertionError('runner is injected')
+
+        captured=[]
+        def runner(cfg, transport):
+            captured.append((cfg, transport)); return proxy.ProxyOutcome('COMPLETE', 7)
+        fake_os = FakeOS(self._bootstrap_wire())
+        bindings = proxy.qualify_native_bindings(
+            fake_os, FakeSocketModule(), FakeSelectorModule(), FakeTime(),
+            platform_name='linux', machine='aarch64', runner=runner)
+        self.assertEqual(proxy.inherited_main(('--inherited',), bindings), 0)
+        self.assertEqual({fd for fd, _ in fake_os.reads}, {3})
+        self.assertEqual({fd for fd, _ in fake_os.writes}, {4})
+        self.assertEqual(fake_os.closes, [3, 4])
+        cfg, transport = captured[0]
+        self.assertEqual(cfg.destinations, HOSTS)
+        self.assertEqual((cfg.aggregate_bytes, cfg.idle_timeout_ms, cfg.run_timeout_ms),
+                         (10000, 20, 50))
+        self.assertEqual((transport.host_cid, transport.service), (2, 4050))
+        result = b''.join(data[:5] for _, data in fake_os.writes)
+        size = int.from_bytes(result[:2], 'big')
+        self.assertEqual(json.loads(result[2:2+size]), {
+            'code':'COMPLETE','kind':'PROXY_RESULT','runId':'1'*32,
+            'usedBytes':7,'version':1})
+
+        for mutate in [
+            lambda value: value.pop('runtimeIdentity'),
+            lambda value: value['handoff'].__setitem__('commandFd', 9),
+            lambda value: value['handoff'].__setitem__('confined', False),
+            lambda value: value.__setitem__('rolePolicyIdentity', 'z' * 64),
+        ]:
+            with self.subTest(mutate=mutate):
+                denied_os=FakeOS(self._bootstrap_wire(mutate))
+                denied=proxy.qualify_native_bindings(
+                    denied_os, FakeSocketModule(), FakeSelectorModule(), FakeTime(),
+                    platform_name='linux', machine='aarch64',
+                    runner=lambda *_: self.fail('invalid admission reached runner'))
+                self.assertEqual(proxy.inherited_main(('--inherited',), denied), 1)
+                self.assertEqual(denied_os.closes, [3, 4])
+
+    def test_native_entry_gate_and_socket_adapters_use_only_fixed_arguments(self):
+        class Endpoint:
+            def __init__(self, family, kind, protocol):
+                self.created=(family,kind,protocol); self.calls=[]; self.closes=0
+                self.recv=(b'x', (), 0, None); self.error=0
+            def setsockopt(self,*args): self.calls.append(('setsockopt',args))
+            def setblocking(self,value): self.calls.append(('setblocking',value))
+            def bind(self,address): self.calls.append(('bind',address))
+            def listen(self,backlog): self.calls.append(('listen',backlog))
+            def getsockname(self): return ('127.0.0.1',3128)
+            def accept(self): return Endpoint(2,1,0), ('127.0.0.1',40000)
+            def recvmsg(self,*args): self.calls.append(('recvmsg',args)); return self.recv
+            def send(self,data): self.calls.append(('send',bytes(data))); return len(data)
+            def shutdown(self,how): self.calls.append(('shutdown',how))
+            def connect_ex(self,address): self.calls.append(('connect_ex',address)); return 0
+            def getsockopt(self,*args): return self.error
+            def close(self): self.closes += 1
+        class SocketModule:
+            AF_INET=2; AF_VSOCK=40; SOCK_STREAM=1; SOCK_NONBLOCK=2048; SOCK_CLOEXEC=524288
+            SOL_SOCKET=1; SO_ERROR=4; SHUT_WR=1; MSG_CTRUNC=8
+            def __init__(self): self.created=[]
+            @staticmethod
+            def CMSG_SPACE(size): return size + 16
+            def socket(self,*args): endpoint=Endpoint(*args); self.created.append(endpoint); return endpoint
+        class Selector:
+            EVENT_READ=1; EVENT_WRITE=2
+            class DefaultSelector:
+                def __init__(self): self.calls=[]
+                def register(self,*args): self.calls.append(('register',args))
+                def select(self,*args): self.calls.append(('select',args)); return ((object(),2),)
+                def close(self): self.calls.append(('close',))
+        module=SocketModule()
+        sockets=proxy.NativeSockets(module, Selector, stop_fd=3, os_module=object())
+        listener=sockets.listen('127.0.0.1',3128,16)
+        self.assertEqual(module.created[0].created, (2, 1|2048|524288, 0))
+        self.assertIn(('bind',('127.0.0.1',3128)), module.created[0].calls)
+        self.assertIn(('listen',16), module.created[0].calls)
+        with self.assertRaises(proxy.ProxyError): sockets.listen('0.0.0.0',3128,16)
+
+        stream=listener.accept(); stream.socket.recv=((b'x'), ((1,1,b'fd'),), 0, None)
+        with self.assertRaises(Exception): stream.read(4096)
+        stream.socket.recv=(b'x', (), 8, None)
+        with self.assertRaises(Exception): stream.read(4096)
+        stream.socket.send_limit=1
+        original_send=stream.socket.send
+        stream.socket.send=lambda data: min(stream.socket.send_limit, original_send(data))
+        self.assertEqual(stream.write(b'abc'), 1)
+        binding=config(Sockets()).binding
+        transport=proxy.NativeVsockTransport(module, Selector, binding, 2, 4050)
+        self.assertIs(transport.authenticate(binding), binding)
+        with self.assertRaises(OSError): transport.authenticate(binding)
+        native=transport.open(2,4050,binding)
+        self.assertEqual(module.created[-1].created, (40, 1|2048|524288, 0))
+        self.assertIn(('connect_ex',(2,4050)), module.created[-1].calls)
+        with self.assertRaises(proxy.ProxyError): transport.open(3,4050,binding)
+        native.close(); listener.close(); transport.close()
+        self.assertTrue(all(endpoint.closes == 1 for endpoint in module.created))
+
+        empty=type('NoEffects',(),{'reads':[]})()
+        self.assertEqual(proxy.inherited_main((), empty), 64)
+        with self.assertRaises(proxy.ProxyError):
+            proxy.qualify_native_bindings(
+                object(), module, Selector, object(), platform_name='darwin',
+                machine='arm64', runner=lambda *_: None)
+
+    def test_native_stop_probe_accepts_only_fixed_task8_command_or_clean_eof(self):
+        class ReadySelector:
+            EVENT_READ=1
+            class DefaultSelector:
+                def register(self, *args): pass
+                def select(self, timeout): return ((object(), 1),)
+                def close(self): pass
+        class StopOS:
+            def __init__(self, parts): self.parts=list(parts); self.reads=[]
+            def read(self, fd, size):
+                self.reads.append((fd, size))
+                return self.parts.pop(0)
+
+        stop_os=StopOS([b'ST', b'OP'])
+        sockets=proxy.NativeSockets(object(), ReadySelector, stop_fd=3, os_module=stop_os)
+        self.assertFalse(sockets.stop_requested())
+        self.assertTrue(sockets.stop_requested())
+        self.assertEqual(stop_os.reads, [(3, 4), (3, 2)])
+
+        eof_os=StopOS([b''])
+        self.assertTrue(proxy.NativeSockets(
+            object(), ReadySelector, stop_fd=3, os_module=eof_os).stop_requested())
+        for denied in ([b'NO'], [b'S', b'']):
+            with self.subTest(denied=denied):
+                denied_sockets=proxy.NativeSockets(
+                    object(), ReadySelector, stop_fd=3, os_module=StopOS(denied))
+                with self.assertRaises(OSError):
+                    while not denied_sockets.stop_requested(): pass
+
 
 if __name__ == '__main__': unittest.main()

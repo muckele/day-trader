@@ -1,7 +1,9 @@
 """Finite guest CONNECT-to-vsock proxy with injected, offline-testable effects."""
 from dataclasses import dataclass, field
+import errno
 import hmac
 import importlib.util
+import json
 import pathlib
 import re
 
@@ -30,6 +32,11 @@ _LISTEN_PORT = 3128
 _HOST_CID = 2
 _VSOCK_SERVICE = 4050
 _OK = b'HTTP/1.1 200 Connection Established\r\n\r\n'
+_OUTCOME_CODES = frozenset({
+    'BYTE_LIMIT', 'CAPACITY', 'CHANNEL_DENIED', 'CLOCK', 'COMPLETE',
+    'CONFIG_DENIED', 'EXPIRED', 'IDENTITY_MISMATCH', 'IDLE_TIMEOUT',
+    'INTERNAL_FAILURE', 'LISTENER_DENIED', 'TERMINAL', 'TRANSPORT_LOST',
+})
 
 
 class ProxyError(ValueError):
@@ -41,6 +48,18 @@ class _ChannelDenied(Exception):
 
 
 class _TransportLost(Exception):
+    pass
+
+
+class _ClockFailure(Exception):
+    pass
+
+
+class _RunExpired(Exception):
+    pass
+
+
+class _IdleExpired(Exception):
     pass
 
 
@@ -73,6 +92,7 @@ class ProxyConfig:
     sockets: object
     phase: str = 'PREFLIGHT'
     event: str = 'validate'
+    native_admission: object = None
     _terminal: bool = field(default=False, init=False, repr=False)
 
 
@@ -241,6 +261,8 @@ def _same_binding(expected, actual):
 def _message(stream):
     try:
         message = stream.read(_CHUNK_LIMIT)
+    except _ChannelDenied:
+        raise
     except Exception:
         raise _TransportLost() from None
     if message is None:
@@ -297,6 +319,35 @@ def _consume_budget(used, amount, ceiling):
     return used + amount
 
 
+class _Timeline:
+    """Check both clocks before and after every injected fallible boundary."""
+    def __init__(self, config, initial):
+        self.config = config
+        self.start_mono = initial[1]
+        self.wall, self.mono = initial
+
+    def observe(self, tunnel=None):
+        try:
+            wall, monotonic = _sample(self.config.clock)
+        except ProxyError:
+            raise _ClockFailure() from None
+        if wall < self.wall or monotonic < self.mono:
+            raise _ClockFailure()
+        self.wall, self.mono = wall, monotonic
+        if (wall >= self.config.binding.expires_at
+                or monotonic - self.start_mono >= self.config.run_timeout_ms):
+            raise _RunExpired()
+        if tunnel is not None and monotonic - tunnel.last_progress >= self.config.idle_timeout_ms:
+            raise _IdleExpired()
+        return wall, monotonic
+
+    def progressed(self, tunnel):
+        # Observe once more before renewing a lease. A read that returned after
+        # the deadline is discarded and cannot revive the tunnel.
+        self.observe(tunnel)
+        tunnel.last_progress = self.mono
+
+
 def serve_proxy(config, transport):
     """Run one injected finite proxy authority; any terminal outcome is latched."""
     if type(config) is ProxyConfig and config._terminal:
@@ -315,56 +366,87 @@ def serve_proxy(config, transport):
         _close(transport)
         return ProxyOutcome('CONFIG_DENIED')
 
+    timeline = _Timeline(config, now)
+
+    def checked_message(stream, tunnel):
+        timeline.observe(tunnel)
+        try:
+            return _message(stream)
+        finally:
+            timeline.observe(tunnel)
+
+    def checked_write(stream, pending, tunnel):
+        timeline.observe(tunnel)
+        try:
+            return _write(stream, pending)
+        finally:
+            timeline.observe(tunnel)
+
+    def checked_end(stream, tunnel):
+        timeline.observe(tunnel)
+        try:
+            _end_write(stream)
+        finally:
+            timeline.observe(tunnel)
+
     try:
         try:
             actual = transport.authenticate(config.binding)
         except Exception:
+            timeline.observe()
             return ProxyOutcome('IDENTITY_MISMATCH')
+        timeline.observe()
         if not _same_binding(config.binding, actual):
             return ProxyOutcome('IDENTITY_MISMATCH')
 
         try:
             listener = config.sockets.listen(_LISTEN_ADDRESS, _LISTEN_PORT, _MAX_TUNNELS)
         except Exception:
+            timeline.observe()
             return ProxyOutcome('LISTENER_DENIED')
+        timeline.observe()
         if getattr(listener, 'endpoint', None) != (_LISTEN_ADDRESS, _LISTEN_PORT):
             return ProxyOutcome('LISTENER_DENIED')
 
-        start_mono = previous_mono = now[1]
         sequence = config.binding.first_sequence
         while True:
-            wall, monotonic = _sample(config.clock)
-            if monotonic < previous_mono:
-                outcome = 'CLOCK'
-                break
-            previous_mono = monotonic
-            if wall >= config.binding.expires_at or monotonic - start_mono >= config.run_timeout_ms:
-                outcome = 'EXPIRED'
-                break
+            _, monotonic = timeline.observe()
             try:
                 transport.check()
             except Exception:
+                timeline.observe()
                 outcome = 'TRANSPORT_LOST'
                 break
+            timeline.observe()
 
             try:
                 client = listener.accept()
             except Exception:
+                timeline.observe()
                 outcome = 'LISTENER_DENIED'
                 break
+            try:
+                timeline.observe()
+            except Exception:
+                if client is not None:
+                    _close(client)
+                raise
             if client is not None:
                 if len(tunnels) >= _MAX_TUNNELS:
                     _close(client)
                     outcome = 'CAPACITY'
                     break
-                tunnels.append(_Tunnel(client, monotonic))
+                tunnel = _Tunnel(client, timeline.mono)
+                tunnels.append(tunnel)
+                timeline.observe(tunnel)
 
             failure = None
             for tunnel in list(tunnels):
                 progressed = False
                 try:
+                    timeline.observe(tunnel)
                     if tunnel.broker is None:
-                        incoming = _message(tunnel.client)
+                        incoming = checked_message(tunnel.client, tunnel)
                         if incoming == b'':
                             raise _TransportLost()
                         if incoming:
@@ -385,11 +467,14 @@ def serve_proxy(config, transport):
                                 control = _control(config.binding, sequence, config.phase,
                                                    config.event, destination)
                                 sequence += 1
+                                timeline.observe(tunnel)
                                 try:
                                     tunnel.broker = transport.open(
                                         _HOST_CID, _VSOCK_SERVICE, config.binding)
                                 except Exception:
+                                    timeline.observe(tunnel)
                                     raise _TransportLost() from None
+                                timeline.observe(tunnel)
                                 tunnel.to_broker.extend(len(control).to_bytes(2, 'big'))
                                 tunnel.to_broker.extend(control)
                                 tunnel.to_client.extend(_OK)
@@ -398,17 +483,16 @@ def serve_proxy(config, transport):
                                         used, len(remainder), config.aggregate_bytes)
                                     tunnel.to_broker.extend(len(remainder).to_bytes(2, 'big'))
                                     tunnel.to_broker.extend(remainder)
-                                # Establishment bytes precede any broker response.
-                                if _write(tunnel.broker, tunnel.to_broker):
+                                if checked_write(tunnel.broker, tunnel.to_broker, tunnel):
                                     progressed = True
-                                if _write(tunnel.client, tunnel.to_client):
+                                if checked_write(tunnel.client, tunnel.to_client, tunnel):
                                     progressed = True
                     else:
                         # A bounded single-frame queue supplies backpressure in
                         # each direction; do not keep reading behind a stalled
                         # destination.
                         if not tunnel.client_eof and not tunnel.to_broker:
-                            incoming = _message(tunnel.client)
+                            incoming = checked_message(tunnel.client, tunnel)
                             if incoming == b'':
                                 tunnel.client_eof = True
                                 tunnel.to_broker.extend(b'\x00\x00')
@@ -420,7 +504,7 @@ def serve_proxy(config, transport):
                                 tunnel.to_broker.extend(incoming)
                                 progressed = True
                         if not tunnel.broker_eof and not tunnel.to_client:
-                            incoming = _message(tunnel.broker)
+                            incoming = checked_message(tunnel.broker, tunnel)
                             if incoming == b'':
                                 raise _TransportLost()
                             if incoming:
@@ -444,28 +528,26 @@ def serve_proxy(config, transport):
                                         used, size, config.aggregate_bytes)
                                     tunnel.to_client.extend(payload)
 
-                        if _write(tunnel.broker, tunnel.to_broker):
+                        if checked_write(tunnel.broker, tunnel.to_broker, tunnel):
                             progressed = True
                         if tunnel.client_eof and not tunnel.to_broker and not tunnel.broker_write_ended:
-                            _end_write(tunnel.broker)
+                            checked_end(tunnel.broker, tunnel)
                             tunnel.broker_write_ended = True
                             progressed = True
-                        if _write(tunnel.client, tunnel.to_client):
+                        if checked_write(tunnel.client, tunnel.to_client, tunnel):
                             progressed = True
                         if tunnel.broker_eof and not tunnel.to_client and not tunnel.client_write_ended:
-                            _end_write(tunnel.client)
+                            checked_end(tunnel.client, tunnel)
                             tunnel.client_write_ended = True
                             progressed = True
                         if (tunnel.client_eof and tunnel.broker_eof
                                 and not tunnel.to_client and not tunnel.to_broker):
+                            timeline.observe(tunnel)
                             _close_tunnel(tunnel)
                             tunnels.remove(tunnel)
                             continue
                     if progressed:
-                        tunnel.last_progress = monotonic
-                    elif monotonic - tunnel.last_progress >= config.idle_timeout_ms:
-                        failure = 'IDLE_TIMEOUT'
-                        break
+                        timeline.progressed(tunnel)
                 except ProxyError:
                     failure = 'CHANNEL_DENIED'
                     break
@@ -481,14 +563,29 @@ def serve_proxy(config, transport):
             if failure is not None:
                 outcome = failure
                 break
-            if config.sockets.stop_requested() and not tunnels:
+            timeline.observe()
+            try:
+                stopped = config.sockets.stop_requested()
+            finally:
+                timeline.observe()
+            if stopped and not tunnels:
                 outcome = 'COMPLETE'
                 break
             try:
-                config.clock.wait(1)
+                try:
+                    config.clock.wait(1)
+                finally:
+                    timeline.observe()
+            except (_ClockFailure, _RunExpired, _IdleExpired):
+                raise
             except Exception:
-                outcome = 'CLOCK'
-                break
+                raise _ClockFailure() from None
+    except _ClockFailure:
+        outcome = 'CLOCK'
+    except _RunExpired:
+        outcome = 'EXPIRED'
+    except _IdleExpired:
+        outcome = 'IDLE_TIMEOUT'
     except ProxyError:
         outcome = 'CLOCK'
     except Exception:
@@ -501,3 +598,460 @@ def serve_proxy(config, transport):
             _close(listener)
         _close(transport)
     return ProxyOutcome(outcome, used)
+
+
+# The inherited worker frame is a strict authenticated-controller handoff. It
+# contains identities and finite policy, never a pathname, descriptor choice,
+# URL, arbitrary command, or default/environment-derived authority.
+_BOOTSTRAP_DEFINITIONS = {
+    'Digest': {'type': 'string', 'pattern': '[0-9a-f]{64}', 'max': 64},
+    'Origin': {
+        'type': 'string',
+        'pattern': ('https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
+                    '(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*'
+                    '\\.[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?'),
+        'max': 253,
+    },
+    'RunId': {'type': 'string', 'pattern': '[0-9a-f]{32}', 'max': 32},
+}
+_BOOTSTRAP_RULE = {
+    'type': 'object',
+    'fields': {
+        'aggregateBytes': {'type': 'integer', 'min': 1, 'max': _AGGREGATE_LIMIT},
+        'capability': {'ref': 'Digest'},
+        'configIdentity': {'ref': 'Digest'},
+        'expiresAt': {'type': 'integer', 'min': 1, 'max': _MAX_SAFE_INTEGER},
+        'firstSequence': {'type': 'integer', 'min': 1,
+                          'max': _MAX_SAFE_INTEGER - (_MAX_TUNNELS - 1)},
+        'handoff': {
+            'type': 'object',
+            'fields': {
+                'commandFd': {'type': 'enum', 'values': [3]},
+                'confined': {'type': 'enum', 'values': [True]},
+                'resultFd': {'type': 'enum', 'values': [4]},
+                'role': {'type': 'enum', 'values': ['PROXY']},
+                'uid': {'type': 'enum', 'values': [10004]},
+                'waiting': {'type': 'enum', 'values': [True]},
+            },
+        },
+        'idleTimeoutMs': {'type': 'integer', 'min': 1, 'max': _IDLE_LIMIT_MS},
+        'kind': {'type': 'enum', 'values': ['PROXY_BOOTSTRAP']},
+        'manifestIdentity': {'ref': 'Digest'},
+        'origins': {
+            'type': 'object',
+            'fields': {
+                'BACKEND': {'ref': 'Origin'},
+                'FRONTEND': {'ref': 'Origin'},
+            },
+        },
+        'rolePolicyIdentity': {'ref': 'Digest'},
+        'runId': {'ref': 'RunId'},
+        'runTimeoutMs': {'type': 'integer', 'min': 1, 'max': _RUN_LIMIT_MS},
+        'runtimeIdentity': {'ref': 'Digest'},
+        'version': {'type': 'enum', 'values': [1]},
+    },
+}
+
+
+@dataclass(frozen=True)
+class NativeAdmission:
+    runtime_identity: str
+    role_policy_identity: str
+    role: str = 'PROXY'
+    uid: int = 10004
+    command_fd: int = 3
+    result_fd: int = 4
+
+
+def _read_exact_fd(os_module, fd, size):
+    if type(size) is not int or not 0 <= size <= _HEADER_LIMIT:
+        raise ProxyError('BOOTSTRAP_DENIED')
+    result = bytearray()
+    while len(result) < size:
+        try:
+            part = os_module.read(fd, size - len(result))
+        except Exception:
+            raise ProxyError('BOOTSTRAP_DENIED') from None
+        if type(part) is not bytes or not part:
+            raise ProxyError('BOOTSTRAP_DENIED')
+        if len(part) > size - len(result):
+            raise ProxyError('BOOTSTRAP_DENIED')
+        result.extend(part)
+    return bytes(result)
+
+
+def _read_inherited_frame(os_module):
+    size = int.from_bytes(_read_exact_fd(os_module, 3, 2), 'big')
+    if not 1 <= size <= _HEADER_LIMIT:
+        raise ProxyError('BOOTSTRAP_DENIED')
+    return _read_exact_fd(os_module, 3, size)
+
+
+def _write_all_fd(os_module, fd, data):
+    pending = memoryview(data)
+    while pending:
+        try:
+            count = os_module.write(fd, pending)
+        except Exception:
+            raise ProxyError('RESULT_DENIED') from None
+        if type(count) is not int or not 1 <= count <= len(pending):
+            raise ProxyError('RESULT_DENIED')
+        pending = pending[count:]
+
+
+def _write_inherited_result(os_module, run_id, outcome):
+    if (type(outcome) is not ProxyOutcome or _HEX32_RE.fullmatch(run_id) is None
+            or outcome.code not in _OUTCOME_CODES
+            or not _plain_integer(outcome.used_bytes, 0, _AGGREGATE_LIMIT)):
+        raise ProxyError('RESULT_DENIED')
+    value = {
+        'code': outcome.code,
+        'kind': 'PROXY_RESULT',
+        'runId': run_id,
+        'usedBytes': outcome.used_bytes,
+        'version': 1,
+    }
+    data = json.dumps(value, sort_keys=True, separators=(',', ':')).encode('ascii')
+    if not 1 <= len(data) <= 512:
+        raise ProxyError('RESULT_DENIED')
+    _write_all_fd(os_module, 4, len(data).to_bytes(2, 'big') + data)
+
+
+def _decode_bootstrap(data, clock, sockets):
+    try:
+        value = _PROTOCOL.decode_document(
+            data, rule=_BOOTSTRAP_RULE, definitions=_BOOTSTRAP_DEFINITIONS,
+            max_bytes=_HEADER_LIMIT)
+    except _PROTOCOL.InvalidFrame:
+        raise ProxyError('BOOTSTRAP_DENIED') from None
+    origins = value['origins']
+    destinations = {
+        'FRONTEND': origins['FRONTEND'][8:],
+        'BACKEND': origins['BACKEND'][8:],
+    }
+    _validated_destinations(destinations)
+    admission = NativeAdmission(value['runtimeIdentity'], value['rolePolicyIdentity'])
+    binding = RunBinding(
+        value['runId'], bytes.fromhex(value['capability']), value['expiresAt'],
+        value['firstSequence'], value['manifestIdentity'], value['configIdentity'],
+        tuple((name, origins[name]) for name in _DESTINATIONS))
+    return ProxyConfig(
+        destinations, binding, value['aggregateBytes'], value['idleTimeoutMs'],
+        value['runTimeoutMs'], clock, sockets, native_admission=admission)
+
+
+class NativeClock:
+    """Linux worker clock; milliseconds, with no environment configuration."""
+    def __init__(self, time_module):
+        self.time = time_module
+
+    def sample(self):
+        return (int(self.time.time() * 1000), int(self.time.monotonic() * 1000))
+
+    def wait(self, milliseconds):
+        if not _plain_integer(milliseconds, 1, 1000):
+            raise ProxyError('INVALID_CLOCK')
+        self.time.sleep(milliseconds / 1000)
+
+
+class NativeStream:
+    """Owned nonblocking stream retaining recvmsg ancillary evidence."""
+    def __init__(self, endpoint, socket_module):
+        self.socket = endpoint
+        self.module = socket_module
+        self.closed = False
+
+    def read(self, max_bytes):
+        if self.closed or not _plain_integer(max_bytes, 1, _CHUNK_LIMIT):
+            raise OSError('stream')
+        try:
+            data, ancillary, flags, _ = self.socket.recvmsg(
+                max_bytes, self.module.CMSG_SPACE(4))
+        except BlockingIOError:
+            return None
+        if type(data) is not bytes or type(flags) is not int:
+            raise OSError('stream')
+        if ancillary or flags != 0:
+            raise _ChannelDenied()
+        return ChannelMessage(data, tuple(ancillary), flags)
+
+    def write(self, data):
+        if self.closed or type(data) is not bytes or not 1 <= len(data) <= _CHUNK_LIMIT:
+            raise OSError('stream')
+        try:
+            return self.socket.send(data)
+        except BlockingIOError:
+            return None
+
+    def end_write(self):
+        if self.closed:
+            raise OSError('stream')
+        self.socket.shutdown(self.module.SHUT_WR)
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.socket.close()
+
+
+class NativeListener:
+    def __init__(self, endpoint, socket_module):
+        self.socket = endpoint
+        self.module = socket_module
+        self.endpoint = ('127.0.0.1', 3128)
+        self.closed = False
+
+    def accept(self):
+        if self.closed:
+            raise OSError('listener')
+        try:
+            endpoint, _ = self.socket.accept()
+        except BlockingIOError:
+            return None
+        try:
+            endpoint.setblocking(False)
+            return NativeStream(endpoint, self.module)
+        except Exception:
+            endpoint.close()
+            raise
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.socket.close()
+
+
+class NativeSockets:
+    """Exact loopback listener plus fixed inherited STOP/EOF probe."""
+    def __init__(self, socket_module, selectors_module, *, stop_fd, os_module):
+        if stop_fd != 3:
+            raise ProxyError('BOOTSTRAP_DENIED')
+        self.module = socket_module
+        self.selectors = selectors_module
+        self.stop_fd = stop_fd
+        self.os = os_module
+        self.listener = None
+        self.stop_selector = None
+        self.stop_data = bytearray()
+        self.stopped = False
+        self.closed = False
+
+    def listen(self, address, port, backlog):
+        if (address, port, backlog) != ('127.0.0.1', 3128, 16) or self.listener is not None:
+            raise ProxyError('LISTENER_DENIED')
+        kind = self.module.SOCK_STREAM | self.module.SOCK_NONBLOCK | self.module.SOCK_CLOEXEC
+        endpoint = self.module.socket(self.module.AF_INET, kind, 0)
+        try:
+            endpoint.setblocking(False)
+            endpoint.bind(('127.0.0.1', 3128))
+            endpoint.listen(16)
+            if endpoint.getsockname() != ('127.0.0.1', 3128):
+                raise ProxyError('LISTENER_DENIED')
+            self.listener = NativeListener(endpoint, self.module)
+            return self.listener
+        except Exception:
+            endpoint.close()
+            raise
+
+    def stop_requested(self):
+        if self.closed or self.stopped:
+            return True
+        if self.stop_selector is None:
+            selector = self.selectors.DefaultSelector()
+            selector.register(self.stop_fd, self.selectors.EVENT_READ)
+            self.stop_selector = selector
+        if not self.stop_selector.select(0):
+            return False
+        data = self.os.read(self.stop_fd, 4 - len(self.stop_data))
+        if type(data) is not bytes or len(data) > 4 - len(self.stop_data):
+            raise OSError('unexpected inherited command data')
+        if data == b'':
+            if self.stop_data:
+                raise OSError('truncated inherited command')
+            self.stopped = True
+            return True
+        self.stop_data.extend(data)
+        if not b'STOP'.startswith(self.stop_data):
+            raise OSError('unexpected inherited command data')
+        if self.stop_data == b'STOP':
+            self.stopped = True
+            return True
+        return False
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            if self.listener is not None:
+                self.listener.close()
+            if self.stop_selector is not None:
+                self.stop_selector.close()
+
+
+class NativeVsockTransport:
+    """One-use binding and fixed AF_VSOCK CID2/service4050 connector."""
+    def __init__(self, socket_module, selectors_module, binding, host_cid, service,
+                 connect_timeout_ms=10000):
+        if (host_cid, service) != (2, 4050):
+            raise ProxyError('TRANSPORT_DENIED')
+        if not _plain_integer(connect_timeout_ms, 1, _IDLE_LIMIT_MS):
+            raise ProxyError('TRANSPORT_DENIED')
+        self.module = socket_module
+        self.selectors = selectors_module
+        self.binding = binding
+        self.host_cid = host_cid
+        self.service = service
+        self.connect_timeout_ms = connect_timeout_ms
+        self.claimed = False
+        self.closed = False
+        self.streams = []
+
+    def authenticate(self, binding):
+        if self.closed or self.claimed or not _same_binding(self.binding, binding):
+            raise OSError('identity')
+        self.claimed = True
+        return self.binding
+
+    def check(self):
+        if self.closed or not self.claimed:
+            raise OSError('transport')
+
+    def open(self, cid, service, binding):
+        if (cid, service) != (2, 4050) or not _same_binding(self.binding, binding):
+            raise ProxyError('TRANSPORT_DENIED')
+        if self.closed or not self.claimed:
+            raise OSError('transport')
+        kind = self.module.SOCK_STREAM | self.module.SOCK_NONBLOCK | self.module.SOCK_CLOEXEC
+        endpoint = self.module.socket(self.module.AF_VSOCK, kind, 0)
+        try:
+            endpoint.setblocking(False)
+            result = endpoint.connect_ex((2, 4050))
+            pending = {errno.EINPROGRESS, errno.EALREADY, errno.EWOULDBLOCK}
+            if result != 0:
+                if result not in pending:
+                    raise OSError(result, 'vsock connect')
+                selector = self.selectors.DefaultSelector()
+                try:
+                    selector.register(endpoint, self.selectors.EVENT_WRITE)
+                    if not selector.select(self.connect_timeout_ms / 1000):
+                        raise OSError('vsock timeout')
+                    error = endpoint.getsockopt(self.module.SOL_SOCKET, self.module.SO_ERROR)
+                    if error != 0:
+                        raise OSError(error, 'vsock connect')
+                finally:
+                    selector.close()
+            stream = NativeStream(endpoint, self.module)
+            self.streams.append(stream)
+            return stream
+        except Exception:
+            endpoint.close()
+            raise
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            for stream in self.streams:
+                stream.close()
+
+
+_NATIVE_BINDINGS_SEAL = object()
+
+
+@dataclass(frozen=True)
+class NativeBindings:
+    os: object
+    socket: object
+    selectors: object
+    time: object
+    runner: object
+    _seal: object = field(repr=False)
+
+
+def qualify_native_bindings(os_module, socket_module, selectors_module, time_module,
+                            *, platform_name, machine, runner=serve_proxy):
+    """Select native effects only for the pinned Linux AArch64 worker."""
+    if platform_name != 'linux' or machine != 'aarch64':
+        raise ProxyError('NATIVE_DENIED')
+    if (not all(callable(getattr(os_module, name, None)) for name in ('read', 'write', 'close'))
+            or not callable(getattr(socket_module, 'socket', None))
+            or not callable(getattr(socket_module, 'CMSG_SPACE', None))
+            or not callable(getattr(selectors_module, 'DefaultSelector', None))
+            or not all(callable(getattr(time_module, name, None))
+                       for name in ('time', 'monotonic', 'sleep'))
+            or not callable(runner)):
+        raise ProxyError('NATIVE_DENIED')
+    for name in ('AF_INET', 'AF_VSOCK', 'SOCK_STREAM', 'SOCK_NONBLOCK',
+                 'SOCK_CLOEXEC', 'SOL_SOCKET', 'SO_ERROR', 'SHUT_WR',
+                 'MSG_CTRUNC'):
+        if type(getattr(socket_module, name, None)) is not int:
+            raise ProxyError('NATIVE_DENIED')
+    for name in ('EVENT_READ', 'EVENT_WRITE'):
+        if type(getattr(selectors_module, name, None)) is not int:
+            raise ProxyError('NATIVE_DENIED')
+    return NativeBindings(os_module, socket_module, selectors_module, time_module,
+                          runner, _NATIVE_BINDINGS_SEAL)
+
+
+def inherited_main(arguments, bindings):
+    """Fixed Task8 `proxy.py --inherited` entry; no argv/env/FD widening."""
+    if tuple(arguments) != ('--inherited',):
+        return 64
+    if type(bindings) is not NativeBindings or bindings._seal is not _NATIVE_BINDINGS_SEAL:
+        return 1
+    sockets = transport = None
+    try:
+        clock = NativeClock(bindings.time)
+        sockets = NativeSockets(bindings.socket, bindings.selectors,
+                                stop_fd=3, os_module=bindings.os)
+        frame = _read_inherited_frame(bindings.os)
+        config = _decode_bootstrap(frame, clock, sockets)
+        if (type(config.native_admission) is not NativeAdmission
+                or config.native_admission.command_fd != 3
+                or config.native_admission.result_fd != 4):
+            raise ProxyError('BOOTSTRAP_DENIED')
+        transport = NativeVsockTransport(
+            bindings.socket, bindings.selectors, config.binding, 2, 4050,
+            config.idle_timeout_ms)
+        outcome = bindings.runner(config, transport)
+        _write_inherited_result(bindings.os, config.binding.run_id, outcome)
+        return 0 if outcome.code == 'COMPLETE' else 1
+    except Exception:
+        return 1
+    finally:
+        if sockets is not None:
+            sockets.close()
+        if transport is not None:
+            transport.close()
+        for fd in (3, 4):
+            try:
+                bindings.os.close(fd)
+            except Exception:
+                pass
+
+
+def _system_bindings():
+    # Lazy imports ensure module import and all offline tests are effect-free.
+    import os
+    import platform
+    import selectors
+    import socket
+    import sys
+    import time
+    return qualify_native_bindings(
+        os, socket, selectors, time, platform_name=sys.platform,
+        machine=platform.machine(), runner=serve_proxy)
+
+
+def main(arguments=None):
+    import sys
+    args = tuple(sys.argv[1:] if arguments is None else arguments)
+    if args != ('--inherited',):
+        return 64
+    try:
+        bindings = _system_bindings()
+    except ProxyError:
+        return 1
+    return inherited_main(args, bindings)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
