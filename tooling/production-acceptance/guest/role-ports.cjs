@@ -61,15 +61,16 @@ function adoptRole(kind, handoff) {
   return privateHandle({kind, async activateOnce(grant) {
     if (consumed) fail('ACTIVATION_DENIED');
     consumed=true; // Consume synchronously before any callback or await.
-    if (arguments.length !== 1 || !object(grant) || usedGrants.has(grant)) fail('ACTIVATION_DENIED');
-    usedGrants.add(grant);
-    current('ACTIVATION_DENIED');
-    let g;
-    try { g=r.authority.inspectGrant(grant); } catch { fail('ACTIVATION_DENIED'); }
-    if (!g || g.kind !== kind || g.runId !== r.expected.runId || g.child !== r.expected.child ||
-        g.purpose !== (kind === 'BROWSER' ? 'CONFINEMENT_PROVED' : 'PRIOR_SESSION') ||
-        (kind === 'VERIFIER' ? !object(g.session) : g.session !== null)) fail('ACTIVATION_DENIED');
     try {
+      // A waiting child already exists. Every failure after consume, including
+      // pre-effect validation/inspection, uses its retained cleanup authority.
+      if (arguments.length !== 1 || !object(grant) || usedGrants.has(grant)) fail('ACTIVATION_DENIED');
+      usedGrants.add(grant);
+      current('ACTIVATION_DENIED');
+      const g=r.authority.inspectGrant(grant);
+      if (!g || g.kind !== kind || g.runId !== r.expected.runId || g.child !== r.expected.child ||
+          g.purpose !== (kind === 'BROWSER' ? 'CONFINEMENT_PROVED' : 'PRIOR_SESSION') ||
+          (kind === 'VERIFIER' ? !object(g.session) : g.session !== null)) fail('ACTIVATION_DENIED');
       await r.authority.activate(r.expected.child,grant);
       current('ACTIVATION_DENIED',false);
     } catch {

@@ -75,6 +75,60 @@ class InertBindings:
     def advance(self,seconds): self.clock+=seconds
 
 
+def helper_branch(launch,fault,cleanup='reaped'):
+    """Run real helper control flow over finite inert process/pipe effects.
+
+    Fixed original child701, foreign999. No real fork, signal, FD or wait.
+    Faults happen before the named effect. An exit sentinel ends simulation.
+    """
+    b=InertBindings(); events=[]; failed=False; signalled=False
+    pairs=iter(((20,21),(22,23),(24,25),(26,27))); forks=iter((0,701))
+    def fail_once(stage):
+        nonlocal failed
+        if fault==stage and not failed:
+            failed=True
+            if stage=='lost-child': raise ChildProcessError('inert ownership lost')
+            raise OSError('inert '+stage+' fault')
+    def syscall(nr,*args): events.append(('syscall',nr,args)); fail_once('before-inner')
+    def fork():
+        value=next(forks)
+        if value==701: fail_once('inner-fork')
+        events.append(('fork',value)); return value
+    def close(fd):
+        if fd==19: fail_once('pin-close')
+    def setup(fd,blocking): events.append(('setup',fd,blocking)); fail_once('stop-setup')
+    def select(read,write,error,timeout):
+        events.append(('select',tuple(read),timeout)); fail_once('stop-select'); return ([24],[],[])
+    def read(fd,size): events.append(('read',fd,size)); fail_once('stop-read'); return b'STOP'
+    def kill(pid,sig):
+        nonlocal signalled
+        events.append(('kill',pid,sig)); signalled=True
+        if cleanup=='kill-error': raise OSError('inert kill failure')
+        if cleanup=='kill-unexpected': raise RuntimeError('inert interrupted kill boundary')
+    def wait(pid,flags):
+        events.append(('waitpid',pid,flags))
+        if flags is not b.os.WNOHANG: raise AssertionError('helper wait must remain bounded/nonblocking')
+        fail_once('wait'); fail_once('lost-child')
+        if fault=='natural-exit': return (701,0)
+        if signalled:
+            if cleanup=='reaped': return (701,0)
+            if cleanup=='lost-child': raise ChildProcessError('inert cleanup ownership lost')
+            if cleanup=='wait-error': raise OSError('inert cleanup wait failure')
+        return (0,0)
+    def leave(code):
+        # Real _exit cannot return/throw. Record only its first semantic exit;
+        # the sentinel may traverse broad handlers while ending this simulation.
+        if not any(e[0]=='exit' for e in events): events.append(('exit',code))
+        raise ExecBoundary()
+    b.check_appliance=lambda:None; b.pin_programs=lambda pins:{c.NODE:19}
+    b.os.pipe2=lambda flags:next(pairs); b.os.fork=fork; b.os.close=close
+    b.os.set_blocking=setup; b.os.read=read; b.os.kill=kill; b.os.waitpid=wait; b.os._exit=leave
+    b.syscall=syscall; b.select=select
+    try: c.NativeKernelPort(b).spawn_waiting(launch,lambda port:None)
+    except ExecBoundary: pass
+    return b,events
+
+
 class Kernel:
     """Finite effect double, NOT a confinement implementation or a native adapter.
 
@@ -494,6 +548,45 @@ class ConfinementTests(unittest.TestCase):
         with self.assertRaises(c.RoleStartFailure) as failure: k.spawn_waiting(launch,lambda port:None)
         self.assertEqual(k._owned[failure.exception.owned]['outer'],501)
         self.assertEqual(failure.exception.owned.run_id,RUN)
+    def test_R5_handled_helper_faults_stop_and_reap_original_inner_before_exit(self):
+        # Break caught: handled post-fork helper errors discard original child
+        # authority; cleanup must precede the sole proven-family terminal exit.
+        launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
+        for fault in ('pin-close','stop-setup','stop-select','stop-read','wait'):
+            with self.subTest(fault=fault):
+                b,events=helper_branch(launch,fault)
+                self.assertEqual([e for e in events if e[0]=='kill'],[('kill',701,b.signal.SIGKILL)])
+                waited=[e for e in events if e[0]=='waitpid']
+                self.assertTrue(waited); self.assertTrue(all(e[1]==701 and e[2] is b.os.WNOHANG for e in waited))
+                self.assertEqual([e for e in events if e[0]=='exit'],[('exit',0)])
+                self.assertLess(events.index(('kill',701,b.signal.SIGKILL)),events.index(('exit',0)))
+    def test_R5_failed_helper_cleanup_is_bounded_and_never_claims_family_exit(self):
+        launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
+        for cleanup in ('timeout','kill-error','kill-unexpected','wait-error','lost-child'):
+            with self.subTest(cleanup=cleanup):
+                b,events=helper_branch(launch,'pin-close',cleanup)
+                self.assertEqual([e for e in events if e[0]=='kill'],[('kill',701,b.signal.SIGKILL)])
+                self.assertTrue(any(e[0]=='waitpid' for e in events))
+                self.assertEqual([e for e in events if e[0]=='exit'],[('exit',78)])
+                self.assertLessEqual(b.clock,2.01)
+                if cleanup=='timeout': self.assertGreaterEqual(b.clock,2)
+    def test_R5_no_inner_child_or_lost_ownership_never_signals_a_pid(self):
+        launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
+        for fault in ('before-inner','inner-fork','lost-child'):
+            with self.subTest(fault=fault):
+                b,events=helper_branch(launch,fault)
+                self.assertFalse(any(e[0]=='kill' for e in events))
+                self.assertEqual([e for e in events if e[0]=='exit'],[('exit',78)])
+                if fault!='lost-child': self.assertFalse(any(e[0]=='waitpid' for e in events))
+    def test_R5_STOP_reaps_nonblocking_and_natural_exit_never_resignals_recycled_identity(self):
+        launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
+        b,events=helper_branch(launch,'STOP')
+        self.assertEqual([e for e in events if e[0]=='kill'],[('kill',701,b.signal.SIGKILL)])
+        self.assertEqual([e for e in events if e[0]=='exit'],[('exit',0)])
+        self.assertTrue(all(e[2] is b.os.WNOHANG for e in events if e[0]=='waitpid'))
+        b,events=helper_branch(launch,'natural-exit')
+        self.assertFalse(any(e[0]=='kill' for e in events))
+        self.assertEqual([e for e in events if e[0]=='exit'],[('exit',0)])
     def test_R1_inner_pid_is_single_observed_direct_child_not_a_racy_shared_pipe_frame(self):
         k=c.NativeKernelPort(InertBindings())
         self.assertTrue(callable(getattr(k,'_child_pid',None)),'independent owned child PID observation absent')

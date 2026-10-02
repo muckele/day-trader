@@ -150,3 +150,43 @@ test('R3_uncertain_compensation_exposes_only_original_owned_cleanup_handle',asyn
   await assert.rejects(failed.cleanup.stopOwned(100,{child:{}}),/EXIT_DENIED/);
   await assert.rejects(p.activateOnce(f.grant),/ACTIVATION_DENIED/);
 });
+
+// Break caught: moving any consumed pre-effect rejection outside the retained
+// original-child compensation boundary strands a prestarted waiting worker.
+for(const failure of ['invalid-grant','inspectGrant-throw','early-drift']) {
+  test(`R3_${failure}_compensates_original_waiting_child`,async()=>{
+    const f=fixture(),p=roles.adoptRole('BROWSER',f.handoff);let stops=0;
+    f.authority.stopOwned=async(child,deadline)=>{
+      assert.equal(child,f.child);assert.equal(deadline,120000);stops++;
+      return {status:'STOPPED',runId:RUN,child};
+    };
+    if(failure==='inspectGrant-throw')f.authority.inspectGrant=()=>{throw Error('inert inspection failure');};
+    if(failure==='early-drift')f.facts.confined=false;
+    await assert.rejects(p.activateOnce(failure==='invalid-grant'?{}:f.grant),/ACTIVATION_DENIED/);
+    assert.equal(stops,1);assert.equal(f.count(),0);
+    await assert.rejects(p.activateOnce(f.grant),/ACTIVATION_DENIED/);
+    assert.equal(stops,1);assert.equal(f.count(),0);
+  });
+  test(`R3_${failure}_uncertain_cleanup_retains_only_bounded_owned_authority`,async()=>{
+    for(const outcome of ['timeout','throw','foreign-receipt']) {
+      const f=fixture(),p=roles.adoptRole('BROWSER',f.handoff);let stops=0;
+      f.authority.stopOwned=async(child,deadline)=>{
+        assert.equal(child,f.child);assert.equal(deadline,stops===0?120000:100);stops++;
+        if(stops===1&&outcome==='throw')throw Error('inert stop failure');
+        return {status:stops===1&&outcome==='timeout'?'TIMEOUT':'STOPPED',runId:RUN,
+          child:stops===1&&outcome==='foreign-receipt'?{}:child};
+      };
+      if(failure==='inspectGrant-throw')f.authority.inspectGrant=()=>{throw Error('inert inspection failure');};
+      if(failure==='early-drift')f.facts.confined=false;
+      let error;try{await p.activateOnce(failure==='invalid-grant'?{}:f.grant);}catch(e){error=e;}
+      assert.equal(error?.code,'CLEANUP_UNCERTAIN');assert.equal(stops,1);assert.equal(f.count(),0);
+      assert.deepEqual(Object.keys(error.cleanup).sort(),['stopOwned','waitExit']);
+      assert.equal(error.cleanup.privatePipe,undefined);assert.equal(error.cleanup.activateOnce,undefined);
+      for(const deadline of [0,true,Infinity,1200001])await assert.rejects(error.cleanup.stopOwned(deadline),/EXIT_DENIED/);
+      await assert.rejects(error.cleanup.stopOwned(100,{child:{}}),/EXIT_DENIED/);
+      assert.deepEqual(await error.cleanup.stopOwned(100),{status:'STOPPED',runId:RUN});
+      await assert.rejects(p.activateOnce(f.grant),/ACTIVATION_DENIED/);
+      assert.equal(stops,2);assert.equal(f.count(),0);
+    }
+  });
+}

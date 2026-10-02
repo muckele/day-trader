@@ -785,6 +785,31 @@ class NativeKernelPort:
             command,result,stop,ready=pairs
             outer=b.os.fork()
             if outer==0:
+                inner=None; reaped=False; kill_sent=False; outcome=78
+                def reap_inner():
+                    # Only the original unreaped DIRECT child captured by fork.
+                    # No supplied PID or post-reap signal; named APIs only.
+                    nonlocal inner,reaped,kill_sent
+                    if reaped: return True
+                    if inner is None or inner<=0: return False
+                    try:
+                        if not kill_sent:
+                            kill_sent=True
+                            try: b.os.kill(inner,b.signal.SIGKILL)
+                            except BaseException: pass # still attempt actual wait proof
+                        until=b.monotonic()+2
+                        while b.monotonic()<until:
+                            try: pid,status=b.os.waitpid(inner,b.os.WNOHANG)
+                            except ChildProcessError:
+                                inner=None # lost ownership: never signal again
+                                return False
+                            if pid==inner:
+                                reaped=True; return True
+                            if pid!=0:
+                                inner=None; return False
+                            b.sleep(min(0.01,max(0,until-b.monotonic())))
+                    except BaseException: return False
+                    return False
                 try:
                     # Namespace creation happens only in the private trusted
                     # helper, never changes the bootstrap parent's namespaces.
@@ -810,17 +835,27 @@ class NativeKernelPort:
                     # Helpers never accept generic RPCs, reap only their direct
                     # child, and cannot restart it. Named APIs, no guessed flags.
                     while True:
-                        pid,status=b.os.waitpid(inner,b.os.WNOHANG)
-                        if pid==inner: b.os._exit(0)
+                        try: pid,status=b.os.waitpid(inner,b.os.WNOHANG)
+                        except ChildProcessError:
+                            inner=None # cannot safely signal a possibly recycled PID
+                            raise
+                        if pid==inner:
+                            reaped=True; outcome=0; break
+                        if pid!=0:
+                            inner=None; _fail('REAP_UNCERTAIN')
                         readable,_,_=b.select([stop[0]],[],[],0.01)
                         if readable:
                             frame=b.os.read(stop[0],5)
-                            if frame!=b'STOP': b.os.kill(inner,b.signal.SIGKILL)
-                            else: b.os.kill(inner,b.signal.SIGKILL)
+                            if frame!=b'STOP': _fail('STOP_FRAME_DENIED')
                             # PID namespace init death kills its descendants;
                             # don't reap/reuse its PID before the signal.
-                            b.os.waitpid(inner,0); b.os._exit(0)
-                except BaseException: b.os._exit(78)
+                            outcome=0 if reap_inner() else 78
+                            break
+                except BaseException:
+                    # Setup/control/wait errors never deliberately abandon the
+                    # exact child while its direct-parent authority survives.
+                    outcome=0 if reap_inner() else 78
+                b.os._exit(outcome) # zero only after proven original family exit
             owned=NativeOwned(outer,launch.run_id,launch.role,command[1],result[0])
             state={'outer':outer,'stop':stop[1],'closed':False,'terminal':None,'launch':launch,
                    'ready':ready[0],'child':None,'digest':None,'links':None}
