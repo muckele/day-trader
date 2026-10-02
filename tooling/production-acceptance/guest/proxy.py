@@ -947,13 +947,17 @@ class NativeListener:
             endpoint, _ = self.socket.accept()
         except BlockingIOError:
             return None
+        stream = NativeStream(endpoint, self.module)
+        self.streams.append(stream)
         try:
             endpoint.setblocking(False)
-            stream = NativeStream(endpoint, self.module)
-            self.streams.append(stream)
             return stream
         except Exception:
-            endpoint.close()
+            try:
+                stream.close()
+                self.closed_streams.add(id(stream))
+            except Exception:
+                pass
             raise
 
     def close(self):
@@ -1006,17 +1010,21 @@ class NativeSockets:
             raise ProxyError('LISTENER_DENIED')
         kind = self.module.SOCK_STREAM | self.module.SOCK_NONBLOCK | self.module.SOCK_CLOEXEC
         endpoint = self.module.socket(self.module.AF_INET, kind, 0)
+        self.listener = NativeListener(endpoint, self.module)
+        self.listener_closed = False
         try:
             endpoint.setblocking(False)
             endpoint.bind(('127.0.0.1', 3128))
             endpoint.listen(16)
             if endpoint.getsockname() != ('127.0.0.1', 3128):
                 raise ProxyError('LISTENER_DENIED')
-            self.listener = NativeListener(endpoint, self.module)
-            self.listener_closed = False
             return self.listener
         except Exception:
-            endpoint.close()
+            try:
+                self.listener.close()
+                self.listener_closed = True
+            except Exception:
+                pass
             raise
 
     def stop_requested(self):

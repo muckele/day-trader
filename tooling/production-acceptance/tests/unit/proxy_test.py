@@ -844,5 +844,87 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual((listener.attempts,selector.attempts), (2,2))
         self.assertTrue(sockets.closed)
 
+    def test_listener_setup_retains_endpoint_when_compensating_close_fails(self):
+        class Endpoint:
+            def __init__(self, failures=1, permanent=False):
+                self.failures=failures; self.permanent=permanent; self.attempts=0
+            def setblocking(self, value): pass
+            def bind(self, address): raise OSError('bind')
+            def close(self):
+                self.attempts += 1
+                if self.permanent or self.attempts <= self.failures: raise OSError('close')
+        class SocketModule:
+            AF_INET=2; SOCK_STREAM=1; SOCK_NONBLOCK=2048; SOCK_CLOEXEC=524288
+            def __init__(self, endpoint): self.endpoint=endpoint
+            def socket(self, *args): return self.endpoint
+        class Closing:
+            def __init__(self, failures): self.failures=failures; self.attempts=0
+            def close(self):
+                self.attempts += 1
+                if self.attempts <= self.failures: raise OSError('close')
+
+        endpoint=Endpoint()
+        sockets=proxy.NativeSockets(SocketModule(endpoint), object(), stop_fd=3, os_module=object())
+        with self.assertRaises(OSError):
+            sockets.listen('127.0.0.1',3128,16)
+        self.assertEqual(endpoint.attempts, 1)
+        self.assertTrue(proxy._cleanup_resources((sockets,)))
+        self.assertEqual(endpoint.attempts, 2)
+        self.assertTrue(proxy._cleanup_resources((sockets,)))
+        self.assertEqual(endpoint.attempts, 2)
+
+        closed=Endpoint(failures=0)
+        sockets=proxy.NativeSockets(SocketModule(closed), object(), stop_fd=3, os_module=object())
+        with self.assertRaises(OSError): sockets.listen('127.0.0.1',3128,16)
+        self.assertTrue(proxy._cleanup_resources((sockets,)))
+        self.assertEqual(closed.attempts, 1)
+
+        unresolved=Endpoint(permanent=True); selector=Closing(1)
+        sockets=proxy.NativeSockets(SocketModule(unresolved), object(), stop_fd=3, os_module=object())
+        sockets.stop_selector=selector; sockets.stop_selector_closed=False
+        with self.assertRaises(OSError):
+            sockets.listen('127.0.0.1',3128,16)
+        self.assertFalse(proxy._cleanup_resources((sockets,)))
+        self.assertEqual(unresolved.attempts, 3)
+        self.assertEqual(selector.attempts, 2)
+        self.assertFalse(sockets.closed)
+
+    def test_accept_setup_retains_child_when_compensating_close_fails(self):
+        class Child:
+            def __init__(self, failures=1, permanent=False):
+                self.failures=failures; self.permanent=permanent; self.attempts=0
+            def setblocking(self, value): raise OSError('setblocking')
+            def close(self):
+                self.attempts += 1
+                if self.permanent or self.attempts <= self.failures: raise OSError('close')
+        class Parent:
+            def __init__(self, child, failures=0):
+                self.child=child; self.failures=failures; self.attempts=0
+            def accept(self): return self.child, ('127.0.0.1',40000)
+            def close(self):
+                self.attempts += 1
+                if self.attempts <= self.failures: raise OSError('close')
+
+        child=Child(); parent=Parent(child); listener=proxy.NativeListener(parent, object())
+        with self.assertRaises(OSError): listener.accept()
+        self.assertEqual(child.attempts, 1)
+        self.assertTrue(proxy._cleanup_resources((listener,)))
+        self.assertEqual((child.attempts,parent.attempts), (2,1))
+        self.assertTrue(proxy._cleanup_resources((listener,)))
+        self.assertEqual((child.attempts,parent.attempts), (2,1))
+
+        child=Child(failures=0); parent=Parent(child)
+        listener=proxy.NativeListener(parent, object())
+        with self.assertRaises(OSError): listener.accept()
+        self.assertTrue(proxy._cleanup_resources((listener,)))
+        self.assertEqual((child.attempts,parent.attempts), (1,1))
+
+        child=Child(permanent=True); parent=Parent(child, failures=1)
+        listener=proxy.NativeListener(parent, object())
+        with self.assertRaises(OSError): listener.accept()
+        self.assertFalse(proxy._cleanup_resources((listener,)))
+        self.assertEqual((child.attempts,parent.attempts), (3,2))
+        self.assertFalse(listener.closed)
+
 
 if __name__ == '__main__': unittest.main()
