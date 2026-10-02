@@ -417,10 +417,11 @@ extension VMConfigurationTests {
         }
     }
     @Test func pending_stop_deadline_cannot_be_replaced_by_late_success() async throws {
-        let h = try VMHarness(), c = VMTestClock(), gate = VMGate<Void>(), instance = VMFakeInstance(gate:gate), e = VMFakeEffects(instance:instance)
+        let h = try VMHarness(), c = VMCompletionClock(), gate = VMGate<Void>(), instance = VMFakeInstance(gate:gate), e = VMFakeEffects(instance:instance)
         let handle = try await OfflineVMHost.start(run:h.run,admission:.init(signature:.accepted,entitlement:.accepted,qualification:.accepted),effects:e,clock:c)
         let stop = Task { await handle.stop(deadline:20) }
-        await gate.entered.wait(); c.advance(wall:170,mono:20)
+        await gate.entered.wait(); await c.stopTimerWaiting.wait()
+        c.set(.success(ClockSample(wall:170,monotonic:20))); c.wakeStopTimer()
         #expect(await stop.value == .deadlineExceeded); #expect(instance.disposals.value == 1); #expect(h.counts.allSatisfy { $0.value == 1 })
         await gate.finish(()); #expect(await handle.stop(deadline:100) == .deadlineExceeded)
     }
