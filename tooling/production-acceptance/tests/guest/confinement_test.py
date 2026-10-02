@@ -1,4 +1,4 @@
-"""Separately gated future guest tests. NOT part of offline discovery commands.
+"""Separately gated native guest tests. NOT part of offline discovery commands.
 
 A reviewed Linux guest harness must inject an actual native ProbePort as
 ConfinementGuestTests.probe_port under separate VM/kernel execution approval.
@@ -6,11 +6,20 @@ Default discovery fails unavailable; no fake factory, skip, automatic syscall,
 platform-dependent adapter, or caller bool creates native qualification.
 """
 import unittest
-from confinement_probe import run_case, RuntimeGateUnavailable
+from confinement_probe import run_case, RuntimeGateUnavailable, select_native_probe
 
 
 class ConfinementGuestTests(unittest.TestCase):
     probe_port = None
+
+    @classmethod
+    def configure_native(cls,*,mode,confinement,config,runtime_identity,validate_runtime,fixture_authority):
+        """Task10 trusted embedding, only under separate VM execution approval.
+        No environment bool, automatic platform selection or fake fallback.
+        """
+        if cls.probe_port is not None: raise RuntimeGateUnavailable('NATIVE_PROBE_ALREADY_CONFIGURED')
+        cls.probe_port=select_native_probe(mode,confinement=confinement,config=config,
+            runtime_identity=runtime_identity,validate_runtime=validate_runtime,fixture_authority=fixture_authority)
 
     def setUp(self):
         if self.probe_port is None:

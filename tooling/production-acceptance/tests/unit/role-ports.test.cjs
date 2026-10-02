@@ -12,6 +12,7 @@ function fixture(kind = 'BROWSER', overrides = {}) {
   const child = Object.freeze({}), pipe = Object.freeze({});
   const handoff = Object.freeze({}), grant = Object.freeze({});
   let activations = 0;
+  let stops = 0;
   const facts = { kind, runId: RUN, uid: kind === 'BROWSER' ? 10002 : 10003,
     child, privatePipe: pipe, waiting: true, confined: true, ...overrides };
   const authority = {
@@ -20,11 +21,11 @@ function fixture(kind = 'BROWSER', overrides = {}) {
       purpose: kind === 'BROWSER' ? 'CONFINEMENT_PROVED' : 'PRIOR_SESSION', session: kind === 'VERIFIER' ? Object.freeze({}) : null } : null,
     activate: async (owned, value) => { assert.equal(owned, child); assert.equal(value, grant); activations++; facts.waiting=false; },
     waitExit: async (owned, deadline) => ({ status: 'EXITED', runId: RUN, child: owned }),
-    stopOwned: async (owned, deadline) => ({ status: 'STOPPED', runId: RUN, child: owned }),
+    stopOwned: async (owned, deadline) => { stops++; return { status: 'STOPPED', runId: RUN, child: owned }; },
   };
   const boundary = roles.bindRoleBootstrap(authority, RUN);
   boundary.audit(handoff);
-  return { child, pipe, handoff, grant, facts, authority, boundary, count: () => activations };
+  return { child, pipe, handoff, grant, facts, authority, boundary, count: () => activations, stops: () => stops };
 }
 
 // Breaks caught: accepting fabricated/cross-run handoffs, replayed grants,
@@ -116,4 +117,36 @@ test('duplicate_owned_child_or_pipe_handoff_reject', () => {
 test('activation_requires_observed_transition_out_of_waiting', async () => {
   const f=fixture(); f.authority.activate=async()=>{};
   await assert.rejects(roles.adoptRole('BROWSER',f.handoff).activateOnce(f.grant),/ACTIVATION_DENIED/);
+});
+test('R2_owned_stop_survives_drift_and_terminal_wait_removes_live_facts',async()=>{
+  const f=fixture();const h=await roles.adoptRole('BROWSER',f.handoff).activateOnce(f.grant);
+  f.facts.confined=false;
+  assert.deepEqual(await h.stopOwned(100),{status:'STOPPED',runId:RUN});
+  assert.equal(f.stops(),1);
+  const g=fixture();const q=await roles.adoptRole('BROWSER',g.handoff).activateOnce(g.grant);
+  g.authority.waitExit=async owned=>{g.authority.inspectHandoff=()=>null;return {status:'EXITED',runId:RUN,child:owned};};
+  assert.deepEqual(await q.waitExit(100),{status:'EXITED',runId:RUN});
+});
+test('R3_partial_activation_or_post_effect_drift_compensates_owned_stop',async()=>{
+  for(const failure of ['throw','drift']){
+    const f=fixture();const p=roles.adoptRole('BROWSER',f.handoff);
+    f.authority.activate=async()=>{f.facts.waiting=false;f.facts.confined=false;if(failure==='throw')throw Error('partial effect');};
+    await assert.rejects(p.activateOnce(f.grant),/ACTIVATION_DENIED/);
+    assert.equal(f.stops(),1);
+    await assert.rejects(p.activateOnce(f.grant),/ACTIVATION_DENIED/);
+    assert.equal(f.stops(),1);
+  }
+});
+test('R3_uncertain_compensation_exposes_only_original_owned_cleanup_handle',async()=>{
+  const f=fixture();const p=roles.adoptRole('BROWSER',f.handoff);
+  f.authority.activate=async()=>{throw Error('partial');};
+  let calls=0;
+  f.authority.stopOwned=async owned=>{assert.equal(owned,f.child);calls++;return {status:calls===1?'TIMEOUT':'STOPPED',runId:RUN,child:owned};};
+  let failed;
+  try{await p.activateOnce(f.grant);}catch(error){failed=error;}
+  assert.equal(failed?.code,'CLEANUP_UNCERTAIN');
+  assert.equal(typeof failed.cleanup?.stopOwned,'function');
+  assert.deepEqual(await failed.cleanup.stopOwned(100),{status:'STOPPED',runId:RUN});
+  await assert.rejects(failed.cleanup.stopOwned(100,{child:{}}),/EXIT_DENIED/);
+  await assert.rejects(p.activateOnce(f.grant),/ACTIVATION_DENIED/);
 });

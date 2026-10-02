@@ -45,6 +45,18 @@ function adoptRole(kind, handoff) {
     catch { fail(code); }
   }
   current('HANDOFF_DENIED'); r.adopted=true;
+  async function exit(operation, deadline, count) {
+    if (count !== 1 || !Number.isSafeInteger(deadline) || deadline <= 0 || deadline > 1200000) fail('EXIT_DENIED');
+    let result;
+    try { result=await r.authority[operation](r.expected.child,deadline); } catch { fail('EXIT_DENIED'); }
+    if (!result || typeof result !== 'object' || Reflect.ownKeys(result).length !== 3 ||
+        !['status','runId','child'].every(key=>Object.hasOwn(result,key)) ||
+        !['EXITED','STOPPED','TIMEOUT'].includes(result.status) || result.runId !== r.expected.runId || result.child !== r.expected.child) fail('EXIT_DENIED');
+    return Object.freeze({status:result.status,runId:r.expected.runId});
+  }
+  const cleanup=privateHandle({
+    async waitExit(deadline) { return exit('waitExit',deadline,arguments.length); },
+    async stopOwned(deadline) { return exit('stopOwned',deadline,arguments.length); }});
   let consumed=false;
   return privateHandle({kind, async activateOnce(grant) {
     if (consumed) fail('ACTIVATION_DENIED');
@@ -57,22 +69,19 @@ function adoptRole(kind, handoff) {
     if (!g || g.kind !== kind || g.runId !== r.expected.runId || g.child !== r.expected.child ||
         g.purpose !== (kind === 'BROWSER' ? 'CONFINEMENT_PROVED' : 'PRIOR_SESSION') ||
         (kind === 'VERIFIER' ? !object(g.session) : g.session !== null)) fail('ACTIVATION_DENIED');
-    try { await r.authority.activate(r.expected.child,grant); } catch { fail('ACTIVATION_DENIED'); }
-    current('ACTIVATION_DENIED',false);
-    async function exit(operation, deadline, count) {
-      if (count !== 1 || !Number.isSafeInteger(deadline) || deadline <= 0 || deadline > 1200000) fail('EXIT_DENIED');
-      current('EXIT_DENIED',false);
-      let result;
-      try { result=await r.authority[operation](r.expected.child,deadline); } catch { fail('EXIT_DENIED'); }
-      current('EXIT_DENIED',false);
-      if (!result || typeof result !== 'object' || Reflect.ownKeys(result).length !== 3 ||
-          !['status','runId','child'].every(key=>Object.hasOwn(result,key)) ||
-          !['EXITED','STOPPED','TIMEOUT'].includes(result.status) || result.runId !== r.expected.runId || result.child !== r.expected.child) fail('EXIT_DENIED');
-      return Object.freeze({status:result.status,runId:r.expected.runId});
+    try {
+      await r.authority.activate(r.expected.child,grant);
+      current('ACTIVATION_DENIED',false);
+    } catch {
+      let stopped;
+      try { stopped=await cleanup.stopOwned(120000); } catch { /* explicitly uncertain below */ }
+      if (!stopped || !['STOPPED','EXITED'].includes(stopped.status)) {
+        const e=new Error('CLEANUP_UNCERTAIN'); e.code='CLEANUP_UNCERTAIN'; e.cleanup=cleanup; throw e;
+      }
+      fail('ACTIVATION_DENIED');
     }
     return privateHandle({privatePipe:r.expected.privatePipe,
-      async waitExit(deadline) { return exit('waitExit',deadline,arguments.length); },
-      async stopOwned(deadline) { return exit('stopOwned',deadline,arguments.length); }});
+      waitExit:cleanup.waitExit, stopOwned:cleanup.stopOwned});
   }});
 }
 module.exports = Object.freeze({bindRoleBootstrap,adoptRole});
