@@ -204,6 +204,24 @@ public enum Contracts {
         guard let result = String(data: bytes, encoding: .utf8) else { throw ContractError.invalidFrame }; return result
     }
     public static func canonicalBytes(_ frame: ValidatedFrame) throws -> Data { try Data(encode(frame.value).utf8) }
+    // Bounded plumbing for the trusted appliance descriptor, not a receipt/admission API.
+    static func decodeDocument(_ data: Data, rule: [String: Any], definitions: [String: [String: Any]], maxBytes: Int) throws -> [String: Any] {
+        guard maxBytes > 0, maxBytes <= 65536, data.count <= maxBytes,
+              String(data:data,encoding:.utf8) != nil else { throw ContractError.invalidFrame }
+        try descriptorValid(rule,definitions:definitions)
+        var scanner = WireScanner(bytes:Array(data)); try scanner.scan()
+        guard let value = try JSONSerialization.jsonObject(with:data) as? [String:Any] else { throw ContractError.invalidFrame }
+        try check(value,rule:rule,definitions:definitions)
+        return value
+    }
+    static func canonicalDocument(_ value: [String: Any], rule: [String: Any], definitions: [String: [String: Any]], maxBytes: Int) throws -> Data {
+        guard maxBytes > 0, maxBytes <= 65536 else { throw ContractError.invalidFrame }
+        try descriptorValid(rule,definitions:definitions)
+        try check(value,rule:rule,definitions:definitions)
+        let bytes = try Data(encode(value).utf8)
+        _ = try decodeDocument(bytes,rule:rule,definitions:definitions,maxBytes:maxBytes)
+        return bytes
+    }
     public static func receiptSigningBytes(_ frame: ValidatedFrame) throws -> Data {
         guard [.releaseReceipt, .restartReceipt, .ledgerReceipt, .maintenanceReceipt, .dbReceipt].contains(frame.kind), var payload = frame.value["payload"] as? [String: Any] else { throw ContractError.invalidFrame }
         payload.removeValue(forKey: "signature")

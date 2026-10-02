@@ -868,3 +868,7 @@ Recommended later execution approach is **subagent-driven**, because the24 tasks
 
 Future separately approved operational milestone:
 coordinated production preflight and observational acceptance.
+
+### M3 Task 6 evidence-input amendment (M3-EV1)
+
+Before Task 6 source changes, predeclare the two test-only paths `tooling/production-acceptance/host/Tests/AcceptanceCoreTests/ReceiptTests.swift` and `tooling/production-acceptance/host/Tests/AcceptanceCoreTests/BrokerTests.swift`. Their Node fixture readers will require explicit `RECEIPT_NODE_INPUT`; `RECEIPT_EXCHANGE` is solely a fresh empty Swift producer directory. A tiny pure helper in an existing test file is tested with injected environment dictionaries: missing input fails, explicit separate input wins, and the old output-directory fallback fails. No process environment mutation or legacy fallback. Compatibility cost: old one-directory test invocations must now supply the explicit input path. Production M1/M2 contracts remain unchanged; all receipt/broker regressions rerun. The coordinator's wrapper supplies the separately hashed fresh M3 Node input, without copying it into the producer directory. Task 6 source retains the offline-only boundary and deferred entitlements/native runtime described in the M3 request and appliance README.

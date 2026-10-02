@@ -3,9 +3,27 @@ import CryptoKit
 import Testing
 @testable import AcceptanceCore
 
+enum ReceiptInputError: Error { case missing }
+func receiptNodeInput(environment: [String: String]) throws -> URL {
+    guard let input = environment["RECEIPT_NODE_INPUT"], !input.isEmpty, input.hasPrefix("/") else { throw ReceiptInputError.missing }
+    return URL(fileURLWithPath: input)
+}
+@Suite struct ReceiptInputTests {
+    @Test func explicit_input_is_independent_of_output() throws {
+        #expect(try receiptNodeInput(environment: ["RECEIPT_NODE_INPUT":"/tmp/input/node.json", "RECEIPT_EXCHANGE":"/tmp/output"]).path == "/tmp/input/node.json")
+    }
+    @Test func output_only_does_not_supply_input() {
+        #expect(throws: ReceiptInputError.self) { _ = try receiptNodeInput(environment:["RECEIPT_EXCHANGE":"/tmp/output"]) }
+    }
+    @Test func absent_or_empty_input_fails() {
+        #expect(throws: ReceiptInputError.self) { _ = try receiptNodeInput(environment:[:]) }
+        #expect(throws: ReceiptInputError.self) { _ = try receiptNodeInput(environment:["RECEIPT_NODE_INPUT":"", "RECEIPT_EXCHANGE":"/tmp/output"]) }
+    }
+}
+
 @Suite(.serialized) struct ReceiptTests {
     func directory() throws -> URL { URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["RECEIPT_EXCHANGE"])) }
-    func fixture() throws -> [String: Any] { try #require(JSONSerialization.jsonObject(with: Data(contentsOf: directory().appendingPathComponent("node.json"))) as? [String: Any]) }
+    func fixture() throws -> [String: Any] { try #require(JSONSerialization.jsonObject(with: Data(contentsOf: receiptNodeInput(environment: ProcessInfo.processInfo.environment))) as? [String: Any]) }
     func trust(_ f: [String: Any], now: Int = 160) throws -> TrustContext { try TrustContext(options: #require(f["options"] as? [String: Any]), now: { now }) }
     func positive(_ f: [String: Any], _ kind: ReceiptKind) throws -> Data { let rows = try #require(f["positive"] as? [[String: String]]); return Data(try #require(rows.first { $0["kind"] == kind.rawValue }?["json"]).utf8) }
     @Test func all_five_valid_receipts_and_nominal_expiry() throws {

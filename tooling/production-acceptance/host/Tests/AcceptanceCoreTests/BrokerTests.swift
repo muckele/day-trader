@@ -152,7 +152,7 @@ private struct Harness {
 }
 @Suite(.serialized) struct BrokerTests {
     static let runID = String(repeating:"1",count:32)
-    static func fixture() throws -> [String:Any] { let dir = try #require(ProcessInfo.processInfo.environment["RECEIPT_EXCHANGE"]); return try #require(JSONSerialization.jsonObject(with:Data(contentsOf:URL(fileURLWithPath:dir).appendingPathComponent("node.json"))) as? [String:Any]) }
+    static func fixture() throws -> [String:Any] { return try #require(JSONSerialization.jsonObject(with:Data(contentsOf:receiptNodeInput(environment:ProcessInfo.processInfo.environment))) as? [String:Any]) }
     static func candidate(_ f: [String:Any]) throws -> Data { let rows = try #require(f["positive"] as? [[String:String]]); return Data(try #require(rows.first { $0["kind"] == "RELEASE_RECEIPT" }?["json"]).utf8) }
     static func authority(_ f: [String:Any], maxAge: Int = 100, notBefore: Int = 0, deadline: Int = 300) throws -> ReleaseAuthority {
         let options = try #require(f["options"] as? [String:Any]), expected = try #require(options["expected"] as? [String:[String:Any]]), keys = try #require(options["publicKeys"] as? [String:String])
