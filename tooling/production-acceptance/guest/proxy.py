@@ -34,7 +34,7 @@ _VSOCK_SERVICE = 4050
 _OK = b'HTTP/1.1 200 Connection Established\r\n\r\n'
 _OUTCOME_CODES = frozenset({
     'BYTE_LIMIT', 'CAPACITY', 'CHANNEL_DENIED', 'CLOCK', 'COMPLETE',
-    'CONFIG_DENIED', 'EXPIRED', 'IDENTITY_MISMATCH', 'IDLE_TIMEOUT',
+    'CONFIG_DENIED', 'CLEANUP_UNCERTAIN', 'EXPIRED', 'IDENTITY_MISMATCH', 'IDLE_TIMEOUT',
     'INTERNAL_FAILURE', 'LISTENER_DENIED', 'TERMINAL', 'TRANSPORT_LOST',
 })
 
@@ -61,6 +61,11 @@ class _RunExpired(Exception):
 
 class _IdleExpired(Exception):
     pass
+
+
+class _TerminalOutcome(Exception):
+    def __init__(self, code):
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -115,6 +120,8 @@ class _Tunnel:
     broker_eof: bool = False
     broker_write_ended: bool = False
     client_write_ended: bool = False
+    client_closed: bool = False
+    broker_closed: bool = False
     closed: bool = False
 
 
@@ -300,17 +307,22 @@ def _end_write(stream):
 def _close(stream):
     try:
         stream.close()
+        return True
     except Exception:
-        pass
+        return False
 
 
 def _close_tunnel(tunnel):
     if tunnel.closed:
-        return
-    tunnel.closed = True
-    _close(tunnel.client)
-    if tunnel.broker is not None:
-        _close(tunnel.broker)
+        return True
+    if not tunnel.client_closed:
+        tunnel.client_closed = _close(tunnel.client)
+    if tunnel.broker is None:
+        tunnel.broker_closed = True
+    elif not tunnel.broker_closed:
+        tunnel.broker_closed = _close(tunnel.broker)
+    tunnel.closed = tunnel.client_closed and tunnel.broker_closed
+    return tunnel.closed
 
 
 def _consume_budget(used, amount, ceiling):
@@ -363,8 +375,8 @@ def serve_proxy(config, transport):
     except Exception:
         if type(config) is ProxyConfig:
             config._terminal = True
-        _close(transport)
-        return ProxyOutcome('CONFIG_DENIED')
+        return ProxyOutcome('CONFIG_DENIED' if _close(transport)
+                            else 'CLEANUP_UNCERTAIN')
 
     timeline = _Timeline(config, now)
 
@@ -394,19 +406,19 @@ def serve_proxy(config, transport):
             actual = transport.authenticate(config.binding)
         except Exception:
             timeline.observe()
-            return ProxyOutcome('IDENTITY_MISMATCH')
+            raise _TerminalOutcome('IDENTITY_MISMATCH') from None
         timeline.observe()
         if not _same_binding(config.binding, actual):
-            return ProxyOutcome('IDENTITY_MISMATCH')
+            raise _TerminalOutcome('IDENTITY_MISMATCH')
 
         try:
             listener = config.sockets.listen(_LISTEN_ADDRESS, _LISTEN_PORT, _MAX_TUNNELS)
         except Exception:
             timeline.observe()
-            return ProxyOutcome('LISTENER_DENIED')
+            raise _TerminalOutcome('LISTENER_DENIED') from None
         timeline.observe()
         if getattr(listener, 'endpoint', None) != (_LISTEN_ADDRESS, _LISTEN_PORT):
-            return ProxyOutcome('LISTENER_DENIED')
+            raise _TerminalOutcome('LISTENER_DENIED')
 
         sequence = config.binding.first_sequence
         while True:
@@ -433,8 +445,7 @@ def serve_proxy(config, transport):
                 raise
             if client is not None:
                 if len(tunnels) >= _MAX_TUNNELS:
-                    _close(client)
-                    outcome = 'CAPACITY'
+                    outcome = 'CAPACITY' if _close(client) else 'CLEANUP_UNCERTAIN'
                     break
                 tunnel = _Tunnel(client, timeline.mono)
                 tunnels.append(tunnel)
@@ -543,9 +554,12 @@ def serve_proxy(config, transport):
                         if (tunnel.client_eof and tunnel.broker_eof
                                 and not tunnel.to_client and not tunnel.to_broker):
                             timeline.observe(tunnel)
-                            _close_tunnel(tunnel)
-                            tunnels.remove(tunnel)
-                            continue
+                            if _close_tunnel(tunnel):
+                                tunnels.remove(tunnel)
+                                continue
+                            else:
+                                failure = 'CLEANUP_UNCERTAIN'
+                                break
                     if progressed:
                         timeline.progressed(tunnel)
                 except ProxyError:
@@ -586,17 +600,22 @@ def serve_proxy(config, transport):
         outcome = 'EXPIRED'
     except _IdleExpired:
         outcome = 'IDLE_TIMEOUT'
+    except _TerminalOutcome as terminal:
+        outcome = terminal.code
     except ProxyError:
         outcome = 'CLOCK'
     except Exception:
         outcome = 'INTERNAL_FAILURE'
     finally:
         config._terminal = True
+        cleaned = True
         for tunnel in tunnels:
-            _close_tunnel(tunnel)
+            cleaned = _close_tunnel(tunnel) and cleaned
         if listener is not None:
-            _close(listener)
-        _close(transport)
+            cleaned = _close(listener) and cleaned
+        cleaned = _close(transport) and cleaned
+        if not cleaned:
+            outcome = 'CLEANUP_UNCERTAIN'
     return ProxyOutcome(outcome, used)
 
 
@@ -661,6 +680,73 @@ class NativeAdmission:
     uid: int = 10004
     command_fd: int = 3
     result_fd: int = 4
+
+
+_NATIVE_ADMISSION_SEAL = object()
+
+
+@dataclass(frozen=True)
+class NativeAdmissionPolicy:
+    """Nominal authority supplied only by a separately attested composition."""
+    binding: RunBinding
+    destinations: tuple
+    aggregate_bytes: int
+    idle_timeout_ms: int
+    run_timeout_ms: int
+    runtime_identity: str
+    role_policy_identity: str
+    handoff_validator: object = field(repr=False)
+    _seal: object = field(repr=False)
+
+
+def qualify_native_admission(binding, destinations, aggregate_bytes,
+                             idle_timeout_ms, run_timeout_ms, *,
+                             runtime_identity, role_policy_identity,
+                             handoff_validator):
+    """Build explicit expected authority; never derives it from bootstrap data."""
+    try:
+        hosts = _validated_destinations(destinations)
+    except ProxyError:
+        raise ProxyError('ADMISSION_DENIED') from None
+    expected_origins = tuple((name, 'https://' + hosts[name]) for name in _DESTINATIONS)
+    if (type(binding) is not RunBinding
+            or _HEX32_RE.fullmatch(getattr(binding, 'run_id', '')) is None
+            or type(binding.capability) is not bytes or len(binding.capability) != 32
+            or not _plain_integer(binding.expires_at, 1, _MAX_SAFE_INTEGER)
+            or not _plain_integer(binding.first_sequence, 1,
+                                  _MAX_SAFE_INTEGER - (_MAX_TUNNELS - 1))
+            or _HEX64_RE.fullmatch(getattr(binding, 'manifest_identity', '')) is None
+            or _HEX64_RE.fullmatch(getattr(binding, 'config_identity', '')) is None
+            or binding.origins != expected_origins
+            or not _plain_integer(aggregate_bytes, 1, _AGGREGATE_LIMIT)
+            or not _plain_integer(idle_timeout_ms, 1, _IDLE_LIMIT_MS)
+            or not _plain_integer(run_timeout_ms, 1, _RUN_LIMIT_MS)
+            or type(runtime_identity) is not str
+            or _HEX64_RE.fullmatch(runtime_identity) is None
+            or type(role_policy_identity) is not str
+            or _HEX64_RE.fullmatch(role_policy_identity) is None
+            or not callable(handoff_validator)):
+        raise ProxyError('ADMISSION_DENIED')
+    return NativeAdmissionPolicy(
+        binding, tuple((name, hosts[name]) for name in _DESTINATIONS),
+        aggregate_bytes, idle_timeout_ms, run_timeout_ms,
+        runtime_identity, role_policy_identity, handoff_validator,
+        _NATIVE_ADMISSION_SEAL)
+
+
+def _admit_native_config(config, policy):
+    if (type(policy) is not NativeAdmissionPolicy
+            or policy._seal is not _NATIVE_ADMISSION_SEAL
+            or type(config.native_admission) is not NativeAdmission
+            or not _same_binding(policy.binding, config.binding)
+            or tuple((name, config.destinations.get(name))
+                     for name in _DESTINATIONS) != policy.destinations
+            or config.aggregate_bytes != policy.aggregate_bytes
+            or config.idle_timeout_ms != policy.idle_timeout_ms
+            or config.run_timeout_ms != policy.run_timeout_ms
+            or config.native_admission.runtime_identity != policy.runtime_identity
+            or config.native_admission.role_policy_identity != policy.role_policy_identity):
+        raise ProxyError('ADMISSION_DENIED')
 
 
 def _read_exact_fd(os_module, fd, size):
@@ -756,14 +842,42 @@ class NativeClock:
 
 class NativeStream:
     """Owned nonblocking stream retaining recvmsg ancillary evidence."""
-    def __init__(self, endpoint, socket_module):
+    def __init__(self, endpoint, socket_module, connector=None):
         self.socket = endpoint
         self.module = socket_module
+        self.connector = connector
+        self.connector_closed = connector is None
+        self.socket_closed = False
+        self.closing = False
         self.closed = False
 
-    def read(self, max_bytes):
-        if self.closed or not _plain_integer(max_bytes, 1, _CHUNK_LIMIT):
+    def attach_connector(self, connector):
+        if self.connector is not None or self.closing:
             raise OSError('stream')
+        self.connector = connector
+        self.connector_closed = False
+
+    def _connected(self):
+        if self.connector is None:
+            return True
+        if not self.connector.select(0):
+            return False
+        error = self.socket.getsockopt(self.module.SOL_SOCKET, self.module.SO_ERROR)
+        if error != 0:
+            raise OSError(error, 'vsock connect')
+        try:
+            self.connector.close()
+        except Exception:
+            raise OSError('connector cleanup') from None
+        self.connector_closed = True
+        self.connector = None
+        return True
+
+    def read(self, max_bytes):
+        if self.closed or self.closing or not _plain_integer(max_bytes, 1, _CHUNK_LIMIT):
+            raise OSError('stream')
+        if not self._connected():
+            return None
         try:
             data, ancillary, flags, _ = self.socket.recvmsg(
                 max_bytes, self.module.CMSG_SPACE(4))
@@ -776,22 +890,43 @@ class NativeStream:
         return ChannelMessage(data, tuple(ancillary), flags)
 
     def write(self, data):
-        if self.closed or type(data) is not bytes or not 1 <= len(data) <= _CHUNK_LIMIT:
+        if (self.closed or self.closing or type(data) is not bytes
+                or not 1 <= len(data) <= _CHUNK_LIMIT):
             raise OSError('stream')
+        if not self._connected():
+            return None
         try:
             return self.socket.send(data)
         except BlockingIOError:
             return None
 
     def end_write(self):
-        if self.closed:
+        if self.closed or self.closing or not self._connected():
             raise OSError('stream')
         self.socket.shutdown(self.module.SHUT_WR)
 
     def close(self):
-        if not self.closed:
-            self.closed = True
-            self.socket.close()
+        if self.closed:
+            return
+        self.closing = True
+        error = None
+        if not self.connector_closed and self.connector is not None:
+            try:
+                self.connector.close()
+                self.connector_closed = True
+                self.connector = None
+            except Exception as failure:
+                error = failure
+        if not self.socket_closed:
+            try:
+                self.socket.close()
+                self.socket_closed = True
+            except Exception as failure:
+                if error is None:
+                    error = failure
+        self.closed = self.connector_closed and self.socket_closed
+        if error is not None:
+            raise error
 
 
 class NativeListener:
@@ -799,10 +934,14 @@ class NativeListener:
         self.socket = endpoint
         self.module = socket_module
         self.endpoint = ('127.0.0.1', 3128)
+        self.streams = []
+        self.closed_streams = set()
+        self.socket_closed = False
+        self.closing = False
         self.closed = False
 
     def accept(self):
-        if self.closed:
+        if self.closed or self.closing:
             raise OSError('listener')
         try:
             endpoint, _ = self.socket.accept()
@@ -810,15 +949,38 @@ class NativeListener:
             return None
         try:
             endpoint.setblocking(False)
-            return NativeStream(endpoint, self.module)
+            stream = NativeStream(endpoint, self.module)
+            self.streams.append(stream)
+            return stream
         except Exception:
             endpoint.close()
             raise
 
     def close(self):
-        if not self.closed:
-            self.closed = True
-            self.socket.close()
+        if self.closed:
+            return
+        self.closing = True
+        error = None
+        for stream in self.streams:
+            key = id(stream)
+            if key in self.closed_streams:
+                continue
+            try:
+                stream.close()
+                self.closed_streams.add(key)
+            except Exception as failure:
+                if error is None:
+                    error = failure
+        if not self.socket_closed:
+            try:
+                self.socket.close()
+                self.socket_closed = True
+            except Exception as failure:
+                if error is None:
+                    error = failure
+        self.closed = self.socket_closed and len(self.closed_streams) == len(self.streams)
+        if error is not None:
+            raise error
 
 
 class NativeSockets:
@@ -831,13 +993,16 @@ class NativeSockets:
         self.stop_fd = stop_fd
         self.os = os_module
         self.listener = None
+        self.listener_closed = True
         self.stop_selector = None
+        self.stop_selector_closed = True
         self.stop_data = bytearray()
         self.stopped = False
+        self.closing = False
         self.closed = False
 
     def listen(self, address, port, backlog):
-        if (address, port, backlog) != ('127.0.0.1', 3128, 16) or self.listener is not None:
+        if (address, port, backlog) != ('127.0.0.1', 3128, 16) or self.listener is not None or self.closing:
             raise ProxyError('LISTENER_DENIED')
         kind = self.module.SOCK_STREAM | self.module.SOCK_NONBLOCK | self.module.SOCK_CLOEXEC
         endpoint = self.module.socket(self.module.AF_INET, kind, 0)
@@ -848,18 +1013,29 @@ class NativeSockets:
             if endpoint.getsockname() != ('127.0.0.1', 3128):
                 raise ProxyError('LISTENER_DENIED')
             self.listener = NativeListener(endpoint, self.module)
+            self.listener_closed = False
             return self.listener
         except Exception:
             endpoint.close()
             raise
 
     def stop_requested(self):
-        if self.closed or self.stopped:
+        if self.closed or self.closing or self.stopped:
             return True
         if self.stop_selector is None:
             selector = self.selectors.DefaultSelector()
-            selector.register(self.stop_fd, self.selectors.EVENT_READ)
             self.stop_selector = selector
+            self.stop_selector_closed = False
+            try:
+                selector.register(self.stop_fd, self.selectors.EVENT_READ)
+            except Exception:
+                try:
+                    selector.close()
+                    self.stop_selector_closed = True
+                    self.stop_selector = None
+                except Exception:
+                    pass
+                raise
         if not self.stop_selector.select(0):
             return False
         data = self.os.read(self.stop_fd, 4 - len(self.stop_data))
@@ -879,12 +1055,27 @@ class NativeSockets:
         return False
 
     def close(self):
-        if not self.closed:
-            self.closed = True
-            if self.listener is not None:
+        if self.closed:
+            return
+        self.closing = True
+        error = None
+        if self.listener is not None and not self.listener_closed:
+            try:
                 self.listener.close()
-            if self.stop_selector is not None:
+                self.listener_closed = True
+            except Exception as failure:
+                error = failure
+        if not self.stop_selector_closed and self.stop_selector is not None:
+            try:
                 self.stop_selector.close()
+                self.stop_selector_closed = True
+                self.stop_selector = None
+            except Exception as failure:
+                if error is None:
+                    error = failure
+        self.closed = self.listener_closed and self.stop_selector_closed
+        if error is not None:
+            raise error
 
 
 class NativeVsockTransport:
@@ -902,26 +1093,30 @@ class NativeVsockTransport:
         self.service = service
         self.connect_timeout_ms = connect_timeout_ms
         self.claimed = False
+        self.closing = False
         self.closed = False
         self.streams = []
+        self.closed_streams = set()
 
     def authenticate(self, binding):
-        if self.closed or self.claimed or not _same_binding(self.binding, binding):
+        if self.closed or self.closing or self.claimed or not _same_binding(self.binding, binding):
             raise OSError('identity')
         self.claimed = True
         return self.binding
 
     def check(self):
-        if self.closed or not self.claimed:
+        if self.closed or self.closing or not self.claimed:
             raise OSError('transport')
 
     def open(self, cid, service, binding):
         if (cid, service) != (2, 4050) or not _same_binding(self.binding, binding):
             raise ProxyError('TRANSPORT_DENIED')
-        if self.closed or not self.claimed:
+        if self.closed or self.closing or not self.claimed:
             raise OSError('transport')
         kind = self.module.SOCK_STREAM | self.module.SOCK_NONBLOCK | self.module.SOCK_CLOEXEC
         endpoint = self.module.socket(self.module.AF_VSOCK, kind, 0)
+        stream = NativeStream(endpoint, self.module)
+        self.streams.append(stream)
         try:
             endpoint.setblocking(False)
             result = endpoint.connect_ex((2, 4050))
@@ -930,27 +1125,38 @@ class NativeVsockTransport:
                 if result not in pending:
                     raise OSError(result, 'vsock connect')
                 selector = self.selectors.DefaultSelector()
+                stream.attach_connector(selector)
                 try:
                     selector.register(endpoint, self.selectors.EVENT_WRITE)
-                    if not selector.select(self.connect_timeout_ms / 1000):
-                        raise OSError('vsock timeout')
-                    error = endpoint.getsockopt(self.module.SOL_SOCKET, self.module.SO_ERROR)
-                    if error != 0:
-                        raise OSError(error, 'vsock connect')
-                finally:
-                    selector.close()
-            stream = NativeStream(endpoint, self.module)
-            self.streams.append(stream)
+                except Exception:
+                    stream.close()
+                    raise
             return stream
         except Exception:
-            endpoint.close()
+            try:
+                stream.close()
+            except Exception:
+                pass
             raise
 
     def close(self):
-        if not self.closed:
-            self.closed = True
-            for stream in self.streams:
+        if self.closed:
+            return
+        self.closing = True
+        error = None
+        for stream in self.streams:
+            key = id(stream)
+            if key in self.closed_streams:
+                continue
+            try:
                 stream.close()
+                self.closed_streams.add(key)
+            except Exception as failure:
+                if error is None:
+                    error = failure
+        self.closed = len(self.closed_streams) == len(self.streams)
+        if error is not None:
+            raise error
 
 
 _NATIVE_BINDINGS_SEAL = object()
@@ -991,14 +1197,43 @@ def qualify_native_bindings(os_module, socket_module, selectors_module, time_mod
                           runner, _NATIVE_BINDINGS_SEAL)
 
 
-def inherited_main(arguments, bindings):
-    """Fixed Task8 `proxy.py --inherited` entry; no argv/env/FD widening."""
+def _cleanup_resources(resources):
+    """Two finite passes retry only owners whose preceding close raised."""
+    pending = [resource for resource in resources if resource is not None]
+    for _ in range(2):
+        unresolved = []
+        for resource in pending:
+            try:
+                resource.close()
+            except Exception:
+                unresolved.append(resource)
+        pending = unresolved
+        if not pending:
+            break
+    return not pending
+
+
+def _inherited_entry(arguments, bindings, policy):
     if tuple(arguments) != ('--inherited',):
         return 64
     if type(bindings) is not NativeBindings or bindings._seal is not _NATIVE_BINDINGS_SEAL:
         return 1
     sockets = transport = None
+    config = outcome = None
+    result_ok = False
     try:
+        # Task8 does not publish FD3 until it has consumed this exact worker
+        # readiness frame from audited FD4.
+        _write_all_fd(bindings.os, 4, b'WAITING\n')
+        if (type(policy) is not NativeAdmissionPolicy
+                or policy._seal is not _NATIVE_ADMISSION_SEAL):
+            raise ProxyError('ADMISSION_DENIED')
+        try:
+            admitted = policy.handoff_validator('PROXY', 10004, 3, 4)
+        except Exception:
+            raise ProxyError('ADMISSION_DENIED') from None
+        if type(admitted) is not bool or not admitted:
+            raise ProxyError('ADMISSION_DENIED')
         clock = NativeClock(bindings.time)
         sockets = NativeSockets(bindings.socket, bindings.selectors,
                                 stop_fd=3, os_module=bindings.os)
@@ -1008,24 +1243,42 @@ def inherited_main(arguments, bindings):
                 or config.native_admission.command_fd != 3
                 or config.native_admission.result_fd != 4):
             raise ProxyError('BOOTSTRAP_DENIED')
+        _admit_native_config(config, policy)
         transport = NativeVsockTransport(
             bindings.socket, bindings.selectors, config.binding, 2, 4050,
             config.idle_timeout_ms)
         outcome = bindings.runner(config, transport)
-        _write_inherited_result(bindings.os, config.binding.run_id, outcome)
-        return 0 if outcome.code == 'COMPLETE' else 1
     except Exception:
-        return 1
-    finally:
-        if sockets is not None:
-            sockets.close()
-        if transport is not None:
-            transport.close()
-        for fd in (3, 4):
-            try:
-                bindings.os.close(fd)
-            except Exception:
-                pass
+        outcome = None
+
+    cleaned = _cleanup_resources((sockets, transport))
+    if not cleaned and config is not None:
+        used = outcome.used_bytes if type(outcome) is ProxyOutcome else 0
+        outcome = ProxyOutcome('CLEANUP_UNCERTAIN', used)
+    if config is not None and outcome is not None:
+        try:
+            _write_inherited_result(bindings.os, config.binding.run_id, outcome)
+            result_ok = True
+        except Exception:
+            result_ok = False
+    exit_code = (0 if cleaned and result_ok and type(outcome) is ProxyOutcome
+                 and outcome.code == 'COMPLETE' else 1)
+    for fd in (3, 4):
+        try:
+            bindings.os.close(fd)
+        except Exception:
+            exit_code = 1
+    return exit_code
+
+
+def inherited_main(arguments, bindings):
+    """Operational Task8 entry: ready handshake, then deny absent Task10 authority."""
+    return _inherited_entry(arguments, bindings, None)
+
+
+def admitted_inherited_main(arguments, bindings, policy):
+    """Injected future-composition entry requiring independent nominal policy."""
+    return _inherited_entry(arguments, bindings, policy)
 
 
 def _system_bindings():

@@ -1,5 +1,6 @@
 """Offline contract tests: literal wire oracles; no native socket is opened."""
 import dataclasses
+import errno
 import importlib.util
 import json
 import pathlib
@@ -542,10 +543,13 @@ class ProxyTests(unittest.TestCase):
 
     def test_inherited_entry_exact_frame_fixed_fds_and_pinned_admission(self):
         class FakeOS:
-            def __init__(self, wire): self.input = bytearray(wire); self.reads=[]; self.writes=[]; self.closes=[]
+            def __init__(self, wire):
+                self.input=bytearray(wire); self.reads=[]; self.writes=[]; self.output=bytearray(); self.closes=[]
             def read(self, fd, size):
                 self.reads.append((fd, size)); part=bytes(self.input[:min(size, 7)]); del self.input[:len(part)]; return part
-            def write(self, fd, data): self.writes.append((fd, bytes(data))); return min(5, len(data))
+            def write(self, fd, data):
+                count=min(5, len(data)); content=bytes(data[:count])
+                self.writes.append((fd, content)); self.output.extend(content); return count
             def close(self, fd): self.closes.append(fd)
         class FakeSocketModule:
             AF_INET=2; AF_VSOCK=40; SOCK_STREAM=1; SOCK_NONBLOCK=2048; SOCK_CLOEXEC=524288
@@ -567,10 +571,28 @@ class ProxyTests(unittest.TestCase):
         def runner(cfg, transport):
             captured.append((cfg, transport)); return proxy.ProxyOutcome('COMPLETE', 7)
         fake_os = FakeOS(self._bootstrap_wire())
+        self.assertTrue(hasattr(proxy, 'qualify_native_admission'))
+        self.assertTrue(hasattr(proxy, 'admitted_inherited_main'))
+        expected_binding=proxy.RunBinding(
+            '1'*32, b'\x07'*32, 190, 1, 'b'*64, 'a'*64, ORIGINS)
+        validations=[]
+        policy=proxy.qualify_native_admission(
+            expected_binding, HOSTS.copy(), 10000, 20, 50,
+            runtime_identity='d'*64, role_policy_identity='c'*64,
+            handoff_validator=lambda role,uid,command_fd,result_fd:
+                validations.append((role,uid,command_fd,result_fd)) or True)
+        for runtime, validator in [(None, lambda *_: True), ('d'*64, True)]:
+            with self.subTest(runtime=runtime, validator=validator), self.assertRaises(proxy.ProxyError):
+                proxy.qualify_native_admission(
+                    expected_binding, HOSTS.copy(), 10000, 20, 50,
+                    runtime_identity=runtime, role_policy_identity='c'*64,
+                    handoff_validator=validator)
         bindings = proxy.qualify_native_bindings(
             fake_os, FakeSocketModule(), FakeSelectorModule(), FakeTime(),
             platform_name='linux', machine='aarch64', runner=runner)
-        self.assertEqual(proxy.inherited_main(('--inherited',), bindings), 0)
+        self.assertEqual(proxy.admitted_inherited_main(('--inherited',), bindings, policy), 0)
+        self.assertEqual(validations, [('PROXY',10004,3,4)])
+        self.assertEqual(bytes(fake_os.output[:8]), b'WAITING\n')
         self.assertEqual({fd for fd, _ in fake_os.reads}, {3})
         self.assertEqual({fd for fd, _ in fake_os.writes}, {4})
         self.assertEqual(fake_os.closes, [3, 4])
@@ -579,7 +601,7 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual((cfg.aggregate_bytes, cfg.idle_timeout_ms, cfg.run_timeout_ms),
                          (10000, 20, 50))
         self.assertEqual((transport.host_cid, transport.service), (2, 4050))
-        result = b''.join(data[:5] for _, data in fake_os.writes)
+        result = bytes(fake_os.output[8:])
         size = int.from_bytes(result[:2], 'big')
         self.assertEqual(json.loads(result[2:2+size]), {
             'code':'COMPLETE','kind':'PROXY_RESULT','runId':'1'*32,
@@ -587,9 +609,11 @@ class ProxyTests(unittest.TestCase):
 
         for mutate in [
             lambda value: value.pop('runtimeIdentity'),
+            lambda value: value.__setitem__('runtimeIdentity', 'e' * 64),
             lambda value: value['handoff'].__setitem__('commandFd', 9),
             lambda value: value['handoff'].__setitem__('confined', False),
-            lambda value: value.__setitem__('rolePolicyIdentity', 'z' * 64),
+            lambda value: value.__setitem__('rolePolicyIdentity', 'e' * 64),
+            lambda value: value.__setitem__('configIdentity', 'e' * 64),
         ]:
             with self.subTest(mutate=mutate):
                 denied_os=FakeOS(self._bootstrap_wire(mutate))
@@ -597,8 +621,62 @@ class ProxyTests(unittest.TestCase):
                     denied_os, FakeSocketModule(), FakeSelectorModule(), FakeTime(),
                     platform_name='linux', machine='aarch64',
                     runner=lambda *_: self.fail('invalid admission reached runner'))
-                self.assertEqual(proxy.inherited_main(('--inherited',), denied), 1)
+                self.assertEqual(proxy.admitted_inherited_main(
+                    ('--inherited',), denied, policy), 1)
                 self.assertEqual(denied_os.closes, [3, 4])
+
+        denied_os=FakeOS(self._bootstrap_wire())
+        denied_bindings=proxy.qualify_native_bindings(
+            denied_os, FakeSocketModule(), FakeSelectorModule(), FakeTime(),
+            platform_name='linux', machine='aarch64',
+            runner=lambda *_: self.fail('unadmitted handoff reached runner'))
+        denied_policy=proxy.qualify_native_admission(
+            expected_binding, HOSTS.copy(), 10000, 20, 50,
+            runtime_identity='d'*64, role_policy_identity='c'*64,
+            handoff_validator=lambda *_: False)
+        self.assertEqual(proxy.admitted_inherited_main(
+            ('--inherited',), denied_bindings, denied_policy), 1)
+        self.assertEqual(denied_os.reads, [])
+
+    def test_task8_waiting_precedes_bootstrap_and_operational_entry_fails_closed(self):
+        class HandshakeOS:
+            def __init__(self):
+                self.input=bytearray(self_wire); self.events=[]; self.output=bytearray()
+            def read(self, fd, size):
+                self.events.append(('read', fd, size))
+                if self.output != b'WAITING\n':
+                    raise OSError('Task8 has not published FD3')
+                part=bytes(self.input[:size]); del self.input[:len(part)]; return part
+            def write(self, fd, data):
+                content=bytes(data); self.events.append(('write', fd, content))
+                if fd == 4: self.output.extend(content)
+                return len(content)
+            def close(self, fd): self.events.append(('close', fd))
+        class SocketModule:
+            AF_INET=2; AF_VSOCK=40; SOCK_STREAM=1; SOCK_NONBLOCK=2048; SOCK_CLOEXEC=524288
+            SOL_SOCKET=1; SO_ERROR=4; SHUT_WR=1; MSG_CTRUNC=8
+            @staticmethod
+            def CMSG_SPACE(size): return size + 16
+            def socket(self, *args): raise AssertionError('no native socket')
+        class Selectors:
+            EVENT_READ=1; EVENT_WRITE=2
+            class DefaultSelector: pass
+        class Time:
+            def time(self): return .1
+            def monotonic(self): return .01
+            def sleep(self, seconds): raise AssertionError('no wait')
+
+        self_wire=self._bootstrap_wire()
+        os_module=HandshakeOS(); invoked=[]
+        bindings=proxy.qualify_native_bindings(
+            os_module, SocketModule(), Selectors, Time(),
+            platform_name='linux', machine='aarch64',
+            runner=lambda *_: invoked.append(True) or proxy.ProxyOutcome('COMPLETE'))
+        self.assertEqual(proxy.inherited_main(('--inherited',), bindings), 1)
+        self.assertEqual(os_module.events[0], ('write', 4, b'WAITING\n'))
+        self.assertEqual(os_module.output, b'WAITING\n')
+        self.assertFalse(any(event[0] == 'read' for event in os_module.events))
+        self.assertEqual(invoked, [])
 
     def test_native_entry_gate_and_socket_adapters_use_only_fixed_arguments(self):
         class Endpoint:
@@ -693,6 +771,78 @@ class ProxyTests(unittest.TestCase):
                     object(), ReadySelector, stop_fd=3, os_module=StopOS(denied))
                 with self.assertRaises(OSError):
                     while not denied_sockets.stop_requested(): pass
+
+    def test_pending_native_connect_never_blocks_the_shared_serve_loop(self):
+        selected=[]
+        class Endpoint:
+            def __init__(self): self.closes=0
+            def setblocking(self, value): pass
+            def connect_ex(self, address): return errno.EINPROGRESS
+            def getsockopt(self, level, option): return 0
+            def send(self, data): return len(data)
+            def close(self): self.closes += 1
+        class SocketModule:
+            AF_VSOCK=40; SOCK_STREAM=1; SOCK_NONBLOCK=2048; SOCK_CLOEXEC=524288
+            SOL_SOCKET=1; SO_ERROR=4
+            def __init__(self): self.endpoint=Endpoint()
+            def socket(self, *args): return self.endpoint
+        class Selectors:
+            EVENT_WRITE=2
+            class DefaultSelector:
+                def register(self, *args): pass
+                def select(self, seconds): selected.append(seconds); return ((object(), 2),)
+                def close(self): pass
+        binding=config(Sockets()).binding
+        transport=proxy.NativeVsockTransport(SocketModule(), Selectors, binding, 2, 4050, 20)
+        transport.authenticate(binding)
+        stream=transport.open(2,4050,binding)
+        self.assertEqual(selected, [])
+        self.assertEqual(stream.write(b'x'), 1)
+        self.assertEqual(selected, [0])
+        self.assertFalse(stream.closed)
+        transport.close()
+
+    def test_native_cleanup_attempts_every_resource_and_retries_only_unresolved(self):
+        created=[]
+        class FailingSelectorModule:
+            EVENT_READ=1; EVENT_WRITE=2
+            class DefaultSelector:
+                def __init__(self): self.attempts=0; created.append(self)
+                def register(self, *args): raise OSError('register')
+                def close(self): self.attempts += 1
+        sockets=proxy.NativeSockets(object(), FailingSelectorModule, stop_fd=3, os_module=object())
+        with self.assertRaises(OSError): sockets.stop_requested()
+        self.assertEqual(created[0].attempts, 1)
+
+        binding=config(Sockets()).binding
+        transport=proxy.NativeVsockTransport(object(), object(), binding, 2, 4050)
+        class Closing:
+            def __init__(self, failures): self.failures=failures; self.attempts=0; self.closed=0
+            def close(self):
+                self.attempts += 1; self.closed += 1
+                if self.attempts <= self.failures: raise OSError('close')
+        first, second, third=Closing(1), Closing(0), Closing(1)
+        transport.streams=[first,second,third]
+        with self.assertRaises(OSError): transport.close()
+        self.assertEqual((first.attempts,second.attempts,third.attempts), (1,1,1))
+        self.assertFalse(transport.closed)
+        transport.close()
+        self.assertEqual((first.attempts,second.attempts,third.attempts), (2,1,2))
+        self.assertTrue(transport.closed)
+
+        class ObservableClosing(Closing):
+            def __init__(self, failures): super().__init__(failures); self.proven_closed=False
+            def close(self): super().close(); self.proven_closed=True
+        listener, selector=ObservableClosing(1), Closing(1)
+        sockets=proxy.NativeSockets(object(), object(), stop_fd=3, os_module=object())
+        sockets.listener=listener; sockets.listener_closed=False
+        sockets.stop_selector=selector; sockets.stop_selector_closed=False
+        with self.assertRaises(OSError): sockets.close()
+        self.assertEqual((listener.attempts,selector.attempts), (1,1))
+        self.assertFalse(sockets.closed)
+        sockets.close()
+        self.assertEqual((listener.attempts,selector.attempts), (2,2))
+        self.assertTrue(sockets.closed)
 
 
 if __name__ == '__main__': unittest.main()
