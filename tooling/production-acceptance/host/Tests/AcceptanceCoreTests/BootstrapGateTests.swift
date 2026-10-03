@@ -9,6 +9,7 @@ private final class BootstrapTestClock: BrokerClock, @unchecked Sendable {
         samples = values; last = values.last!
     }
     func sample() throws -> ClockSample { lock.withLock { if !samples.isEmpty { last = samples.removeFirst() }; return last } }
+    func replace(_ values:[ClockSample]) { lock.withLock { samples=values; if let value=values.last { last=value } } }
     func wait(milliseconds:Int) async throws {}
 }
 
@@ -24,22 +25,28 @@ private final class BootstrapProbeFake: BootstrapProbePort, @unchecked Sendable 
 
 private final class BootstrapLifecycleFake: BootstrapLifecyclePort, BootstrapOwnedLifecycle, @unchecked Sendable {
     private var drift:(@Sendable () -> Void)?; var starts = 0, stops = 0, driftOnBegin = false
+    var onBegin:(@Sendable () -> Void)?
     func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws -> any BootstrapOwnedLifecycle {
-        starts += 1; drift = onDrift; if driftOnBegin { onDrift() }; return self
+        starts += 1; drift = onDrift; onBegin?(); if driftOnBegin { onDrift() }; return self
     }
     func stopOwned() throws { stops += 1 }
     func triggerDrift() { drift?() }
 }
 
-private final class BootstrapRoleHandleFake: BootstrapOwnedRoleHandle, @unchecked Sendable {
+private final class BootstrapRoleHandleFake: BootstrapActivationTransaction, @unchecked Sendable {
     var stops = 0
-    func stopOwned() throws { stops += 1 }
+    var calls = 0, callback:(@Sendable () throws -> Void)?
+    var afterEffect:(@Sendable () throws -> Void)?, uncertain = false
+    func activate(authorize:@escaping @Sendable () throws -> Void) throws {
+        try callback?(); try authorize(); calls += 1; try afterEffect?()
+    }
+    func stopOwned(deadline:Int) throws -> BootstrapStopOutcome { stops += 1; return uncertain ? .uncertain:.stopped }
 }
 
 private final class BootstrapActivationFake: BootstrapActivationPort, @unchecked Sendable {
-    var calls = 0, callback:(@Sendable () throws -> Void)?; let handle = BootstrapRoleHandleFake()
-    func activateBrowser(proof:AdmissionProof,authorize:@escaping @Sendable () throws -> Void) throws -> any BootstrapOwnedRoleHandle {
-        try authorize(); calls += 1; try callback?(); return handle
+    let handle = BootstrapRoleHandleFake()
+    func prepareBrowser(proof:AdmissionProof) throws -> any BootstrapActivationTransaction {
+        handle
     }
 }
 
@@ -108,6 +115,30 @@ private let pythonProgramPins:[String:String] = Dictionary(uniqueKeysWithValues:
     "/opt/acceptance/runtime/python/bin/python3",
 ].enumerated().map { ($0.element,String(repeating:String($0.offset + 1),count:64)) })
 
+private final class MemberInspectorFake: BootstrapExecutableInspector, @unchecked Sendable {
+    let values:[BootstrapExecutableMember:String]
+    let artifacts:[String:String]
+    init(_ values:[BootstrapExecutableMember:String], artifacts:[String:String]) { self.values=values; self.artifacts=artifacts }
+    func artifactSHA256(componentID:String) throws -> String { try #require(artifacts[componentID]) }
+    func installedPath(componentID:String,memberPath:String) throws -> String {
+        try #require(values.keys.first { $0.componentID == componentID && $0.memberPath == memberPath }?.path)
+    }
+    func sha256(componentID:String,memberPath:String) throws -> String {
+        try #require(values.first(where:{ $0.key.componentID == componentID && $0.key.memberPath == memberPath })?.value)
+    }
+}
+
+private func executableAuthority(_ run:RunConfiguration) throws -> BootstrapExecutableAuthority {
+    let members = BootstrapExecutableAuthority.requiredMembers
+    let object = try JSONSerialization.jsonObject(with:run.appliance.manifest.canonicalBytes()) as! [String:Any]
+    let artifacts = Dictionary(uniqueKeysWithValues:(object["components"] as! [[String:Any]]).map { ($0["id"] as! String,$0["sha256"] as! String) })
+    let values = Dictionary(uniqueKeysWithValues:members.enumerated().map {
+        ($0.element,$0.element.memberPath.isEmpty ? artifacts[$0.element.componentID]! : String(repeating:"abcdef0".map(String.init)[$0.offset],count:64))
+    })
+    return try BootstrapExecutableAuthority.qualify(manifest:run.appliance.manifest,
+                                                     inspector:MemberInspectorFake(values,artifacts:artifacts))
+}
+
 private func pythonFixture() throws -> [String:Any] {
     let path = try #require(ProcessInfo.processInfo.environment["TASK10_TOPOLOGY_INPUT"])
     let object = try JSONSerialization.jsonObject(with:Data(contentsOf:URL(fileURLWithPath:path)))
@@ -127,7 +158,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
     proxy["configIdentity"] = run.binding.configIdentity; proxy["expiresAt"] = run.binding.expiresAt
     payload["proxy"] = proxy
     var roles = payload["roles"] as! [[String:Any]]
-    let programPins = try BootstrapHandoff.programPins(manifest:run.appliance.manifest)
+    let programPins = try executableAuthority(run).pins
     for index in roles.indices { roles[index]["runId"] = run.binding.runID
         var fds = roles[index]["fds"] as! [[String:Any]]
         for fdIndex in fds.indices { fds[fdIndex]["runId"] = run.binding.runID }
@@ -147,9 +178,24 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         let data = try Data(contentsOf:URL(fileURLWithPath:path))
         let proof = try BootstrapHandoff.verify(data:data,expectedRunID:String(repeating:"1",count:32),
             manifestIdentity:String(repeating:"a",count:64),configIdentity:String(repeating:"b",count:64),
-            expiresAt:190,capability:Data(repeating:7,count:32),programPins:pythonProgramPins)
+            expiresAt:190,capability:Data(repeating:7,count:32),
+            executables:try BootstrapExecutableAuthority.offlineLiteral(pins:pythonProgramPins))
         #expect(proof.sequence == 1); #expect(proof.roleInventoryDigest.count == 64)
         #expect(proof.deviceInventoryDigest.count == 64)
+    }
+
+    @Test func shared_python_valid_mac_nested_primitive_vectors_reject() throws {
+        let path = try #require(ProcessInfo.processInfo.environment["TASK10_TOPOLOGY_INPUT"])
+        let vectors = try JSONSerialization.jsonObject(with:Data(contentsOf:URL(fileURLWithPath:path + ".invalid.json"))) as! [String]
+        #expect(vectors.count == 6)
+        for vector in vectors {
+            #expect(throws:VMFailure.admissionUnavailable) {
+                _ = try BootstrapHandoff.verify(data:Data(vector.utf8),expectedRunID:String(repeating:"1",count:32),
+                    manifestIdentity:String(repeating:"a",count:64),configIdentity:String(repeating:"b",count:64),
+                    expiresAt:190,capability:Data(repeating:7,count:32),
+                    executables:try BootstrapExecutableAuthority.offlineLiteral(pins:pythonProgramPins))
+            }
+        }
     }
 
     @Test func native_entry_remains_fail_closed_and_composition_selection_is_bounded() throws {
@@ -164,10 +210,24 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         #expect(throws:VMFailure.admissionUnavailable) { _ = try VMHost.bootstrapCheck(invocation:invocation) }
     }
 
+    @Test func executable_member_authority_is_distinct_from_archive_and_bootstrap_identity() throws {
+        let run = try BootstrapRunFixture().run, authority = try executableAuthority(run)
+        let node = try #require(BootstrapExecutableAuthority.requiredMembers.first {
+            $0.path == "/opt/acceptance/runtime/node/bin/node" })
+        let worker = try #require(BootstrapExecutableAuthority.requiredMembers.first {
+            $0.path == "/opt/acceptance/guest/browser-worker.cjs" })
+        #expect(node.memberPath == "bin/node")
+        #expect(worker.componentID == "guestProbes")
+        #expect(worker.memberPath == "browser-worker.cjs")
+        #expect(worker.componentID != "guestBootstrap")
+        #expect(authority.pins[node.path] != nil)
+    }
+
     @Test func fixed_probe_and_full_inventory_handoff_admit() throws {
         let run = try BootstrapRunFixture().run, probe = BootstrapProbeFake([try handoff(run)])
         let lifecycle = BootstrapLifecycleFake(), clock = BootstrapTestClock()
-        let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:lifecycle,clock:clock)
+        let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:lifecycle,
+                                                              executables:try executableAuthority(run),clock:clock)
         #expect(probe.requested == [BootstrapProbeID.allCases]); #expect(lifecycle.starts == 1)
         let proof = try qualification.currentProofWithoutActivation()
         #expect(proof.runID == run.binding.runID); #expect(proof.manifestIdentity == run.appliance.manifest.digest)
@@ -187,7 +247,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         for mutation in mutations {
             let bad = try handoff(run,mutate:mutation)
             #expect(throws:VMFailure.admissionUnavailable) {
-                _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([bad]),lifecycle:BootstrapLifecycleFake(),clock:BootstrapTestClock()) }
+                _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([bad]),lifecycle:BootstrapLifecycleFake(),executables:try executableAuthority(run),clock:BootstrapTestClock()) }
         }
     }
 
@@ -196,9 +256,9 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         let probe = BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2,wall:101,monotonic:11)])
         let clock = BootstrapTestClock([.init(wall:100,monotonic:10),.init(wall:100,monotonic:10),
                                         .init(wall:100,monotonic:10),.init(wall:101,monotonic:11),.init(wall:101,monotonic:11)])
-        let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:BootstrapLifecycleFake(),clock:clock)
+        let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:BootstrapLifecycleFake(),executables:try executableAuthority(run),clock:clock)
         let activation = BootstrapActivationFake(); try qualification.activateBrowser(activation)
-        #expect(activation.calls == 1); #expect(probe.requested.count == 2)
+        #expect(activation.handle.calls == 1); #expect(probe.requested.count == 2)
         #expect(throws:VMFailure.terminal) { try qualification.activateBrowser(activation) }
     }
 
@@ -206,17 +266,40 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         let run = try BootstrapRunFixture().run
         let probe = BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2),try handoff(run,sequence:3)])
         let clock = BootstrapTestClock(Array(repeating:.init(wall:100,monotonic:10),count:20))
-        let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:BootstrapLifecycleFake(),clock:clock)
+        let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:BootstrapLifecycleFake(),executables:try executableAuthority(run),clock:clock)
         let activation = BootstrapActivationFake()
-        activation.callback = { #expect(throws:VMFailure.self) { try qualification.activateBrowser(activation) } }
+        activation.handle.callback = { #expect(throws:VMFailure.self) { try qualification.activateBrowser(activation) } }
         #expect(throws:VMFailure.self) { try qualification.activateBrowser(activation) }
-        #expect(activation.calls == 1); #expect(activation.handle.stops == 1)
+        #expect(activation.handle.calls == 0); #expect(activation.handle.stops == 1)
         #expect(throws:VMFailure.terminal) { _ = try qualification.requireBrowserAdmission() }
+    }
+
+    @Test func delayed_authorize_and_ordinary_failure_cleanup_all_owned_handles() throws {
+        let run = try BootstrapRunFixture().run
+        let lifecycle = BootstrapLifecycleFake()
+        let probe = BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)])
+        let clock = BootstrapTestClock(Array(repeating:.init(wall:100,monotonic:10),count:30))
+        let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:lifecycle,
+            executables:try executableAuthority(run),clock:clock)
+        let activation = BootstrapActivationFake()
+        activation.handle.callback = { clock.replace([.init(wall:190,monotonic:10010)]) }
+        #expect(throws:VMFailure.self) { try qualification.activateBrowser(activation) }
+        #expect(activation.handle.calls == 0)
+        #expect(activation.handle.stops == 1)
+        #expect(lifecycle.stops == 1)
+
+        let lifecycle2 = BootstrapLifecycleFake()
+        var malformed = try handoff(run,sequence:2); malformed.append(0)
+        let q2 = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),malformed]),lifecycle:lifecycle2,
+            executables:try executableAuthority(run),clock:BootstrapTestClock())
+        #expect(throws:VMFailure.self) { _ = try q2.requireBrowserAdmission() }
+        #expect(lifecycle2.stops == 1)
     }
 
     @Test func rollback_expiry_malformed_and_lifecycle_drift_latch_terminal() throws {
         let run = try BootstrapRunFixture().run, lifecycle = BootstrapLifecycleFake()
-        let q = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),lifecycle:lifecycle,clock:BootstrapTestClock())
+        let q = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),lifecycle:lifecycle,executables:try executableAuthority(run),clock:BootstrapTestClock())
         lifecycle.triggerDrift()
         #expect(lifecycle.stops == 1)
         #expect(throws:VMFailure.terminal) { _ = try q.currentProofWithoutActivation() }
@@ -224,22 +307,58 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
 
         let rollback = BootstrapTestClock([.init(wall:100,monotonic:10),.init(wall:99,monotonic:11)])
         #expect(throws:VMFailure.admissionUnavailable) {
-            _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),lifecycle:BootstrapLifecycleFake(),clock:rollback) }
+            _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),lifecycle:BootstrapLifecycleFake(),executables:try executableAuthority(run),clock:rollback) }
         var malformed = try handoff(run); malformed.append(0)
         #expect(throws:VMFailure.admissionUnavailable) {
-            _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([malformed]),lifecycle:BootstrapLifecycleFake(),clock:BootstrapTestClock()) }
+            _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([malformed]),lifecycle:BootstrapLifecycleFake(),executables:try executableAuthority(run),clock:BootstrapTestClock()) }
 
         let expiryClock = BootstrapTestClock(Array(repeating:.init(wall:100,monotonic:10),count:4)
                                               + [.init(wall:100,monotonic:10),.init(wall:190,monotonic:11)])
-        let expiring = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),lifecycle:BootstrapLifecycleFake(),clock:expiryClock)
+        let expiring = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),lifecycle:BootstrapLifecycleFake(),executables:try executableAuthority(run),clock:expiryClock)
         #expect(throws:VMFailure.expired) { _ = try expiring.requireBrowserAdmission() }
         #expect(throws:VMFailure.terminal) { _ = try expiring.requireBrowserAdmission() }
 
         let duringBegin = BootstrapLifecycleFake(); duringBegin.driftOnBegin = true
         #expect(throws:VMFailure.terminal) {
             _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),
-                lifecycle:duringBegin,clock:BootstrapTestClock())
+                lifecycle:duringBegin,executables:try executableAuthority(run),clock:BootstrapTestClock())
         }
         #expect(duringBegin.stops == 1)
+    }
+
+    @Test func initial_expiry_after_begin_and_post_success_drift_cleanup_once() throws {
+        let run = try BootstrapRunFixture().run
+        let clock = BootstrapTestClock(), lifecycle = BootstrapLifecycleFake()
+        lifecycle.onBegin = { clock.replace([.init(wall:190,monotonic:10010)]) }
+        #expect(throws:VMFailure.admissionUnavailable) {
+            _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),
+                lifecycle:lifecycle,executables:try executableAuthority(run),clock:clock)
+        }
+        #expect(lifecycle.stops == 1)
+
+        let live = BootstrapLifecycleFake()
+        let q = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+            lifecycle:live,executables:try executableAuthority(run),clock:BootstrapTestClock())
+        let activation = BootstrapActivationFake(); try q.activateBrowser(activation)
+        live.triggerDrift(); live.triggerDrift()
+        #expect(activation.handle.calls == 1); #expect(activation.handle.stops == 1)
+        #expect(live.stops == 1)
+        #expect(throws:VMFailure.terminal) { _ = try q.currentProofWithoutActivation() }
+    }
+
+    @Test func partial_activation_error_and_uncertain_cleanup_remain_terminal() throws {
+        let run = try BootstrapRunFixture().run, lifecycle = BootstrapLifecycleFake()
+        let q = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+            lifecycle:lifecycle,executables:try executableAuthority(run),clock:BootstrapTestClock())
+        let activation = BootstrapActivationFake()
+        activation.handle.uncertain = true
+        activation.handle.afterEffect = { throw VMFailure.admissionUnavailable }
+        #expect(throws:BootstrapCleanupFailure.self) { try q.activateBrowser(activation) }
+        #expect(activation.handle.calls == 1); #expect(activation.handle.stops == 1)
+        #expect(lifecycle.stops == 1); #expect(q.cleanupUncertain)
+        lifecycle.triggerDrift()
+        #expect(activation.handle.stops == 1); #expect(q.cleanupUncertain)
     }
 }

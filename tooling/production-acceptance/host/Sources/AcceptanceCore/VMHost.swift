@@ -87,9 +87,65 @@ enum BootstrapProbeID: String, CaseIterable, Sendable {
 protocol BootstrapProbePort: Sendable { func capture(ids:[BootstrapProbeID]) throws -> Data }
 protocol BootstrapOwnedLifecycle: Sendable { func stopOwned() throws }
 protocol BootstrapLifecyclePort: Sendable { func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws -> any BootstrapOwnedLifecycle }
-protocol BootstrapOwnedRoleHandle: Sendable { func stopOwned() throws }
+enum BootstrapStopOutcome: Sendable { case stopped, uncertain }
+protocol BootstrapActivationTransaction: Sendable {
+    func activate(authorize:@escaping @Sendable () throws -> Void) throws
+    func stopOwned(deadline:Int) throws -> BootstrapStopOutcome
+}
 protocol BootstrapActivationPort: Sendable {
-    func activateBrowser(proof:AdmissionProof,authorize:@escaping @Sendable () throws -> Void) throws -> any BootstrapOwnedRoleHandle
+    func prepareBrowser(proof:AdmissionProof) throws -> any BootstrapActivationTransaction
+}
+struct BootstrapExecutableMember: Hashable, Sendable {
+    let path:String, componentID:String, memberPath:String
+}
+// The trusted inspector binds a validated artifact snapshot and its fixed
+// installed member path. It never hashes a reopened, caller-chosen executable.
+protocol BootstrapExecutableInspector: Sendable {
+    func artifactSHA256(componentID:String) throws -> String
+    func sha256(componentID:String,memberPath:String) throws -> String
+    func installedPath(componentID:String,memberPath:String) throws -> String
+}
+struct BootstrapExecutableAuthority: Sendable {
+    let pins:[String:String], manifestIdentity:String?
+    static let requiredMembers:[BootstrapExecutableMember] = [
+        .init(path:"/opt/acceptance/guest/browser-worker.cjs",componentID:"guestProbes",memberPath:"browser-worker.cjs"),
+        .init(path:"/opt/acceptance/guest/controller.cjs",componentID:"controller",memberPath:""),
+        .init(path:"/opt/acceptance/guest/proxy.py",componentID:"proxy",memberPath:""),
+        .init(path:"/opt/acceptance/guest/verifier.cjs",componentID:"verifier",memberPath:""),
+        .init(path:"/opt/acceptance/runtime/chromium/chrome",componentID:"chromium",memberPath:"chrome"),
+        .init(path:"/opt/acceptance/runtime/node/bin/node",componentID:"node",memberPath:"bin/node"),
+        .init(path:"/opt/acceptance/runtime/python/bin/python3",componentID:"python",memberPath:"bin/python3"),
+    ]
+    private static func valid(_ pins:[String:String]) -> Bool {
+        Set(pins.keys) == Set(requiredMembers.map(\.path)) && pins.values.allSatisfy {
+            $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+        }
+    }
+    static func qualify(manifest:ApplianceManifest,inspector:any BootstrapExecutableInspector) throws -> Self {
+        let document = try JSONSerialization.jsonObject(with:manifest.canonicalBytes()) as? [String:Any]
+        guard let components = document?["components"] as? [[String:Any]] else { throw VMFailure.admissionUnavailable }
+        var pins:[String:String] = [:]
+        for member in requiredMembers {
+            guard let component = components.first(where: { $0["id"] as? String == member.componentID }),
+                  try inspector.artifactSHA256(componentID:member.componentID) == component["sha256"] as? String,
+                  try inspector.installedPath(componentID:member.componentID,memberPath:member.memberPath) == member.path else {
+                throw VMFailure.admissionUnavailable
+            }
+            let sha = try inspector.sha256(componentID:member.componentID,memberPath:member.memberPath)
+            if member.memberPath.isEmpty && sha != component["sha256"] as? String { throw VMFailure.admissionUnavailable }
+            pins[member.path] = sha
+        }
+        guard valid(pins) else { throw VMFailure.admissionUnavailable }
+        return Self(pins:pins,manifestIdentity:manifest.digest)
+    }
+    // Internal literal wire-vector authority cannot enter a run qualification.
+    static func offlineLiteral(pins:[String:String]) throws -> Self {
+        guard valid(pins) else { throw VMFailure.admissionUnavailable }
+        return Self(pins:pins,manifestIdentity:nil)
+    }
+}
+struct BootstrapCleanupFailure: Error, Sendable {
+    let cleanup:BootstrapQualification
 }
 public struct AdmissionProof: Sendable {
     public let runID:String, manifestIdentity:String, roleInventoryDigest:String, deviceInventoryDigest:String, topologyDigest:String, expiresAt:Int
@@ -136,32 +192,6 @@ enum BootstrapHandoff {
               try string(listener["address"]) == "127.0.0.1", integer(listener["port"],1,65535) == 3128,
               integer(listener["uid"],1,Int(UInt32.max)) == 10004 else { throw VMFailure.admissionUnavailable }
     }
-    static func programPins(manifest:ApplianceManifest) throws -> [String:String] {
-        let raw = try JSONSerialization.jsonObject(with:manifest.canonicalBytes(),options:[])
-        let document = try object(raw), components = try array(document["components"])
-        var hashes:[String:String] = [:]
-        for rawComponent in components {
-            let component = try object(rawComponent)
-            let id = try string(component["id"]), sha = try string(component["sha256"])
-            guard hex(sha,count:64), hashes[id] == nil else { throw VMFailure.admissionUnavailable }
-            hashes[id] = sha
-        }
-        let componentByPath = [
-            "/opt/acceptance/guest/browser-worker.cjs":"guestBootstrap",
-            "/opt/acceptance/guest/controller.cjs":"controller",
-            "/opt/acceptance/guest/proxy.py":"proxy",
-            "/opt/acceptance/guest/verifier.cjs":"verifier",
-            "/opt/acceptance/runtime/chromium/chrome":"chromium",
-            "/opt/acceptance/runtime/node/bin/node":"node",
-            "/opt/acceptance/runtime/python/bin/python3":"python",
-        ]
-        var result:[String:String] = [:]
-        for path in programs {
-            guard let id = componentByPath[path], let sha = hashes[id] else { throw VMFailure.admissionUnavailable }
-            result[path] = sha
-        }
-        return result
-    }
     private static func validateRoles(_ value:Any?,runID:String,programPins:[String:String]) throws {
         guard Set(programPins.keys) == Set(programs), programPins.values.allSatisfy({ hex($0,count:64) }) else { throw VMFailure.admissionUnavailable }
         let rows = try array(value); guard rows.count == roles.count else { throw VMFailure.admissionUnavailable }
@@ -203,8 +233,10 @@ enum BootstrapHandoff {
                   try string(row["outcome"]) == (positive ? "ALLOWED":"DENIED"),
                   integer(row["ownedReceiverCount"],0,1) == (positive ? 1:0) else { throw VMFailure.admissionUnavailable } }
     }
-    static func verify(data:Data,expectedRunID:String,manifestIdentity:String,configIdentity:String,expiresAt:Int,capability:Data,programPins:[String:String]) throws -> AdmissionProof {
+    static func verify(data:Data,expectedRunID:String,manifestIdentity:String,configIdentity:String,expiresAt:Int,capability:Data,executables:BootstrapExecutableAuthority) throws -> AdmissionProof {
         do {
+            guard executables.manifestIdentity == nil || executables.manifestIdentity == manifestIdentity else { throw VMFailure.admissionUnavailable }
+            let programPins = executables.pins
             guard data.count <= maxBytes, capability.count == 32 else { throw VMFailure.admissionUnavailable }
             let raw = try JSONSerialization.jsonObject(with:data,options:[]), envelope = try object(raw)
             guard Set(envelope.keys) == ["mac","payload","version"], integer(envelope["version"]) == 1,
@@ -284,13 +316,20 @@ private final class RunAuthority: @unchecked Sendable {
 public final class BootstrapQualification: @unchecked Sendable {
     private let run:RunConfiguration, authority:RunAuthority, clock:any BrokerClock
     private let probe:any BootstrapProbePort
+    private let executables:BootstrapExecutableAuthority
     private let lock = NSLock()
     private var proof:AdmissionProof, lastClock:ClockSample, failed = false, activated = false
     private var generation = 0, busy:UUID?, lifecycle:(any BootstrapOwnedLifecycle)?
+    private var role:(any BootstrapActivationTransaction)?
+    private var _cleanupUncertain = false
+    var cleanupUncertain:Bool { lock.withLock { _cleanupUncertain } }
+    private var unresolvedRoles:[any BootstrapActivationTransaction] = []
+    private var unresolvedLifecycles:[any BootstrapOwnedLifecycle] = []
     fileprivate init(run:RunConfiguration,authority:RunAuthority,clock:any BrokerClock,probe:any BootstrapProbePort,
-         proof:AdmissionProof,lastClock:ClockSample) {
+         executables:BootstrapExecutableAuthority,proof:AdmissionProof,lastClock:ClockSample) {
         self.run=run; self.authority=authority; self.clock=clock; self.probe=probe
         self.proof=proof; self.lastClock=lastClock
+        self.executables=executables
     }
     private func checkedSample() throws -> ClockSample {
         let sample = try clock.sample()
@@ -302,16 +341,30 @@ public final class BootstrapQualification: @unchecked Sendable {
         return sample
     }
     private func reserve(activation:Bool) throws -> (UUID,Int) {
-        try lock.withLock {
+        do { return try lock.withLock {
             guard !failed, busy == nil, !activation || !activated else {
                 failed = true; generation += 1; throw VMFailure.terminal
             }
             if activation { activated = true }
             let token = UUID(); busy = token
             return (token,generation)
+        } } catch { latch(); throw error }
+    }
+    fileprivate func latch() {
+        let owned = lock.withLock { () -> ((any BootstrapOwnedLifecycle)?,(any BootstrapActivationTransaction)?) in
+            failed = true; generation += 1; busy = nil
+            let values = (lifecycle,role); lifecycle=nil; role=nil; return values
+        }
+        if let owner = owned.1 {
+            var uncertain = false
+            do { if try owner.stopOwned(deadline:120000) != .stopped { uncertain=true } } catch { uncertain=true }
+            if uncertain { lock.withLock { _cleanupUncertain=true; unresolvedRoles.append(owner) } }
+        }
+        if let owner = owned.0 {
+            do { try owner.stopOwned() }
+            catch { lock.withLock { _cleanupUncertain=true; unresolvedLifecycles.append(owner) } }
         }
     }
-    private func latch() { lock.withLock { failed = true; generation += 1; busy = nil } }
     private func assertCurrent(_ token:UUID,_ admittedGeneration:Int) throws {
         try lock.withLock {
             guard !failed, busy == token, generation == admittedGeneration else { throw VMFailure.terminal }
@@ -325,7 +378,7 @@ public final class BootstrapQualification: @unchecked Sendable {
         let current = try BootstrapHandoff.verify(data:data,expectedRunID:run.binding.runID,
             manifestIdentity:run.appliance.manifest.digest,configIdentity:run.binding.configIdentity,
             expiresAt:run.binding.expiresAt,capability:run.capability,
-            programPins:try BootstrapHandoff.programPins(manifest:run.appliance.manifest))
+            executables:executables)
         guard current.sequence == proof.sequence + 1,
               current.topologyDigest == proof.topologyDigest,
               current.roleInventoryDigest == proof.roleInventoryDigest,
@@ -334,6 +387,7 @@ public final class BootstrapQualification: @unchecked Sendable {
               before.monotonic <= current.observedMonotonic, current.observedMonotonic <= after.monotonic,
               after.wall-current.observedWall <= 1, after.monotonic-current.observedMonotonic <= 1,
               final.wall >= after.wall, final.monotonic >= after.monotonic else { throw VMFailure.admissionUnavailable }
+        _ = try checkedSample()
         try lock.withLock {
             guard !failed, busy == token, generation == admittedGeneration else { throw VMFailure.terminal }
             proof=current
@@ -352,12 +406,18 @@ public final class BootstrapQualification: @unchecked Sendable {
     }
     func activateBrowser(_ activation:any BootstrapActivationPort) throws {
         let reservation = try reserve(activation:true)
-        var handle:(any BootstrapOwnedRoleHandle)?
         do {
             let current = try resample(token:reservation.0,generation:reservation.1)
             try run.appliance.recheck(); _ = try checkedSample()
-            handle = try activation.activateBrowser(proof:current,authorize:{ [weak self] in
+            let transaction = try activation.prepareBrowser(proof:current)
+            let installed = lock.withLock { () -> Bool in
+                guard !failed, busy == reservation.0, generation == reservation.1 else { return false }
+                role=transaction; return true
+            }
+            if !installed { _ = try transaction.stopOwned(deadline:120000); throw VMFailure.terminal }
+            try transaction.activate(authorize:{ [weak self] in
                 guard let self else { throw VMFailure.terminal }
+                try self.run.appliance.recheck(); _ = try self.checkedSample()
                 try self.assertCurrent(reservation.0,reservation.1)
             })
             try lock.withLock {
@@ -365,27 +425,22 @@ public final class BootstrapQualification: @unchecked Sendable {
                 busy=nil
             }
         } catch let error as VMFailure {
-            latch(); if let handle { do { try handle.stopOwned() } catch { throw VMFailure.terminal } }; throw error
+            latch(); if cleanupUncertain { throw BootstrapCleanupFailure(cleanup:self) }; throw error
         } catch {
-            latch(); if let handle { do { try handle.stopOwned() } catch { throw VMFailure.terminal } }
+            latch()
+            if cleanupUncertain { throw BootstrapCleanupFailure(cleanup:self) }
             throw VMFailure.admissionUnavailable
         }
     }
     fileprivate func installLifecycle(_ handle:any BootstrapOwnedLifecycle) throws {
         let accepted = lock.withLock { () -> Bool in
-            guard !failed, lifecycle == nil else { return false }
-            lifecycle=handle; return true
+            guard lifecycle == nil else { return false }
+            lifecycle=handle; return !failed
         }
-        if !accepted { try handle.stopOwned(); throw VMFailure.terminal }
+        if !accepted { latch(); throw VMFailure.terminal }
     }
     fileprivate func topologyDrifted() {
-        let owned = lock.withLock { () -> (any BootstrapOwnedLifecycle)? in
-            failed = true; generation += 1
-            let value = lifecycle; lifecycle=nil
-            return value
-        }
-        // The monitor callback cannot throw; failure to stop remains terminal.
-        try? owned?.stopOwned()
+        latch()
     }
 }
 
@@ -434,8 +489,10 @@ enum OfflineVMHost {
             return handle
         } catch { run.channels.close(); throw error }
     }
-    static func bootstrapCheck(run:RunConfiguration,probe:any BootstrapProbePort,lifecycle:any BootstrapLifecyclePort,clock:any BrokerClock) throws -> BootstrapQualification {
+    static func bootstrapCheck(run:RunConfiguration,probe:any BootstrapProbePort,lifecycle:any BootstrapLifecyclePort,executables:BootstrapExecutableAuthority,clock:any BrokerClock) throws -> BootstrapQualification {
+        var qualification:BootstrapQualification?
         do {
+            guard executables.manifestIdentity == run.appliance.manifest.digest else { throw VMFailure.admissionUnavailable }
             let before = try clock.sample(), authority = try RunAuthority(run:run,sample:before)
             _ = try authority.check(before)
             try run.appliance.recheck(); try run.appliance.plan.validateResources()
@@ -446,23 +503,29 @@ enum OfflineVMHost {
             let proof = try BootstrapHandoff.verify(data:handoff,expectedRunID:run.binding.runID,
                 manifestIdentity:run.appliance.manifest.digest,configIdentity:run.binding.configIdentity,
                 expiresAt:run.binding.expiresAt,capability:run.capability,
-                programPins:try BootstrapHandoff.programPins(manifest:run.appliance.manifest))
+                executables:executables)
             guard proof.sequence == 1, before.wall <= proof.observedWall, proof.observedWall <= after.wall,
                   before.monotonic <= proof.observedMonotonic, proof.observedMonotonic <= after.monotonic,
                   after.wall-proof.observedWall <= 1, after.monotonic-proof.observedMonotonic <= 1 else { throw VMFailure.admissionUnavailable }
-            let qualification = BootstrapQualification(run:run,authority:authority,clock:clock,
-                probe:probe,proof:proof,lastClock:after)
-            let lifecycleHandle = try lifecycle.begin(handoff:handoff,onDrift:{ qualification.topologyDrifted() })
+            let owner = BootstrapQualification(run:run,authority:authority,clock:clock,
+                probe:probe,executables:executables,proof:proof,lastClock:after)
+            qualification=owner
+            let lifecycleHandle = try lifecycle.begin(handoff:handoff,onDrift:{ owner.topologyDrifted() })
+            try owner.installLifecycle(lifecycleHandle)
             let final = try clock.sample(); _ = try authority.check(final); try run.appliance.recheck()
             let postRecheck = try clock.sample(); _ = try authority.check(postRecheck)
             guard final.wall >= after.wall, final.monotonic >= after.monotonic,
                   postRecheck.wall >= final.wall, postRecheck.monotonic >= final.monotonic else { throw VMFailure.clock }
-            try qualification.installLifecycle(lifecycleHandle)
-            return qualification
+            _ = try owner.currentProofWithoutActivation()
+            return owner
         } catch let error as VMFailure {
+            qualification?.latch()
+            if let qualification, qualification.cleanupUncertain { throw BootstrapCleanupFailure(cleanup:qualification) }
             if error == .terminal { throw error }
             throw VMFailure.admissionUnavailable
         } catch {
+            qualification?.latch()
+            if let qualification, qualification.cleanupUncertain { throw BootstrapCleanupFailure(cleanup:qualification) }
             throw VMFailure.admissionUnavailable
         }
     }

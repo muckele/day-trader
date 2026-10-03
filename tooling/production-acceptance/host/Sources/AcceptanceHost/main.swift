@@ -9,7 +9,10 @@ do {
         // This is the bounded production composition entry. It cannot open the
         // supplied paths or start a VM until signed/native authority constructs
         // the fixed probe, observation, owned lifecycle/Task8 activation ports,
-        // and complete appliance-pinned guest program inventory.
+        // and an independently qualified inventory of executable member bytes.
+        // Archive component digests alone cannot supply that inventory. Task8's
+        // native waiting-child activation/helper embedding remains unavailable;
+        // the Task10-only adapter does not introduce an activation protocol.
         _ = try VMHost.bootstrapCheck(invocation:invocation)
     }
     let command = try HostDispatch.parse(arguments)

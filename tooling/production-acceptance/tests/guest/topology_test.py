@@ -90,22 +90,27 @@ class GuestTopologyDriverTests(unittest.TestCase):
     def test_task8_role_and_task9_proxy_adapters_retain_owned_authority(self):
         class Handle:
             def __init__(self): self.stops = 0
-            def stopOwned(self): self.stops += 1
+            async def stopOwned(self, deadline):
+                self.stops += 1
+                return {'status':'STOPPED','runId':'1' * 32}
+            async def waitExit(self, deadline):
+                return {'status':'EXITED','runId':'1' * 32}
         class Bridge:
             def __init__(self): self.activated = 0; self.handle = Handle(); self.cleaned = []
             def collectOwned(self, launches): return ('roles', launches)
             def cleanupOwned(self, handoffs): self.cleaned.append(handoffs)
-            def activateOnce(self, grant, handoff, proof):
+            async def activateOnce(self, grant):
                 self.activated += 1
                 return self.handle
         bridge = Bridge(); source, activation = topology.select_task8_roles(bridge, object())
         expected = type('Authority', (), {'role_launches': ('launches',)})()
         self.assertEqual(source.collect(expected), ('roles', ('launches',)))
-        handoff = type('Handoff', (), {'launch': type('Launch', (), {'role':'BROWSER'})()})()
+        handoff = type('Handoff', (), {'launch': type('Launch', (), {'role':'BROWSER','run_id':'1' * 32})()})()
         authorized = []
-        handle = activation.activate(handoff, object(), lambda: authorized.append(True))
+        handle = activation.prepare(handoff, object())
+        handle.activate(lambda: authorized.append(True))
         self.assertEqual((authorized, bridge.activated), ([True], 1))
-        handle.stop_owned(); self.assertEqual(bridge.handle.stops, 1)
+        handle.stop_owned(120000); self.assertEqual(bridge.handle.stops, 1)
 
         class Observer:
             def __init__(self): self.seen = []
@@ -130,6 +135,22 @@ class GuestTopologyDriverTests(unittest.TestCase):
         self.assertIsNotNone(monitor.callback)
         with self.assertRaises(topology.TopologyError):
             topology.select_native_supervisor(monitor, 'darwin', 'arm64')
+
+    def test_concrete_service_monitor_subscribes_only_finite_events(self):
+        class Owner:
+            def stop_owned(self, deadline): return {'status':'STOPPED','run_id':'1' * 32}
+        class Events:
+            def subscribe_fixed(self, events, callback):
+                self.events, self.callback = events, callback
+                return Owner()
+        events, drift = Events(), []
+        monitor = topology.ServiceCreationMonitor(events, '1' * 32)
+        handle = monitor.beginOwned('wire', lambda: drift.append(True))
+        self.assertEqual(events.events, ('DEVICE','NIC','ROUTE','DNS','LISTENER','UNIX','ROLE'))
+        events.callback('LISTENER'); events.callback(object())
+        self.assertEqual(drift, [True,True])
+        self.assertEqual(handle.stop_owned(120000)['status'], 'STOPPED')
+        with self.assertRaises(topology.TopologyError): monitor.beginOwned('wire', lambda: None)
 
 
 if __name__ == '__main__':

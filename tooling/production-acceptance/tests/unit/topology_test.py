@@ -47,6 +47,7 @@ class Kernel:
 class Owned:
     def __init__(self, pid, run_id, role):
         self.pid, self.run_id, self.role = pid, run_id, role
+        self.identity, self.command, self.result = object(), object(), object()
 
 
 class Clock:
@@ -74,12 +75,17 @@ class Adapter:
 
 class Activation:
     def __init__(self, callback=None): self.calls, self.callback, self.cleaned = [], callback, 0
-    def activate(self, handoff, proof, authorize):
+    def prepare(self, handoff, proof):
+        self.pending = (handoff, proof)
+        return self
+    def activate(self, authorize):
         authorize()
-        self.calls.append((handoff, proof))
+        self.calls.append(self.pending)
         if self.callback: self.callback()
         return self
-    def stop_owned(self): self.cleaned += 1
+    def stop_owned(self, deadline):
+        self.cleaned += 1
+        return {'status':'STOPPED','run_id':RUN}
 
 
 def launches_and_handoffs():
@@ -150,6 +156,119 @@ def snapshot(**changes):
 
 
 class TopologyTests(unittest.TestCase):
+    def test_actual_task8_collection_retains_identity_endpoints_and_original_cleanup(self):
+        launches, handoffs = launches_and_handoffs()
+        class CollectionKernel:
+            def __init__(self): self.spawned, self.stopped = [], []
+            def spawn_waiting(self, launch, child):
+                owned = handoffs[len(self.spawned)]._owned
+                self.spawned.append(owned); return owned
+            def inspect(self, pid):
+                return next(dict(h.attestation.__dict__) for h in handoffs if h.attestation.pid == pid)
+            def wait_owned(self, owned, deadline): raise AssertionError('not needed')
+            def stop_owned(self, owned, deadline):
+                self.stopped.append((owned, deadline))
+                return {'status':'STOPPED','pid':owned.pid,'run_id':RUN}
+        kernel = CollectionKernel()
+        collection = topology.Task8Collection(confinement.BootstrapConfig(kernel, RUN, launches[0].programs))
+        original = collection.collectOwned(launches)
+        self.assertEqual(len(kernel.spawned), 4)
+        self.assertIs(collection.collectOwned(launches), original)
+        original[0]._owned.command = object()
+        with self.assertRaises(topology.TopologyError): collection.collectOwned(launches)
+        self.assertEqual(len(kernel.stopped), 4)
+        self.assertEqual({id(item[0]) for item in kernel.stopped}, {id(h._owned) for h in original})
+        collection.cleanupOwned(original)
+        self.assertEqual(len(kernel.stopped), 4)
+
+    def test_concrete_ip_attempt_source_uses_actual_task8_port_and_inert_syscall_boundary(self):
+        module = load('task10_native_probe_contract', 'tests/guest/confinement_probe.py')
+        class Context:
+            def __init__(self): self.calls, self.closed = [], []
+            def syscall(self, number, *args):
+                self.calls.append((number, args))
+                if number == 198: return 77
+                raise OSError(101, 'inert absent route')
+            def close(self, fd): self.closed.append(fd)
+            def receiver_count(self): return 0
+        class Fixtures:
+            def __init__(self): self.calls = []
+            def run_confined(self, role, operation, callback):
+                context = Context(); self.calls.append((role, operation, context))
+                return callback(context)
+        fixtures = Fixtures()
+        source = topology.Task10NativeAttempts(module, module.NativeProbePort(fixtures))
+        for identifier in ('BROWSER_IPV4_TCP','BROWSER_IPV6_TCP','BROWSER_UDP',
+                           'CONTROLLER_DNS_TCP','CONTROLLER_DNS_UDP','VERIFIER_IPV4_TCP'):
+            self.assertEqual(source.execute_native(identifier), result(identifier))
+        self.assertEqual([row[0] for row in fixtures.calls],
+                         ['BROWSER','BROWSER','BROWSER','CONTROLLER','CONTROLLER','VERIFIER'])
+        self.assertTrue(all(row[2].closed == [77] for row in fixtures.calls))
+        self.assertEqual(fixtures.calls[1][2].calls[1][1][1][8:24],
+                         bytes.fromhex('20010db8000000000000000000000001'))
+        with self.assertRaisesRegex(topology.TopologyError, '^NATIVE_HELPER_UNAVAILABLE$'):
+            source.execute_native('BROWSER_HELPER_IPV4')
+
+    def test_exact_async_roleport_contract_preserves_partial_cleanup_and_rejects_timeout(self):
+        browser = snapshot().role_handoffs[1]
+        class Cleanup:
+            def __init__(self): self.calls = []
+            async def stopOwned(self, deadline):
+                self.calls.append(deadline); return {'status':'STOPPED','runId':RUN}
+            async def waitExit(self, deadline): return {'status':'TIMEOUT','runId':RUN}
+        cleanup = Cleanup()
+        class Port:
+            async def activateOnce(self, grant):
+                self.grant = grant
+                raise topology.ActivationFailure('CLEANUP_UNCERTAIN', cleanup)
+        port, grant = Port(), object()
+        transaction = topology.Task10RoleTransaction(port, grant, browser)
+        with self.assertRaises(topology.ActivationFailure): transaction.activate(lambda: None)
+        self.assertIs(port.grant, grant)
+        self.assertEqual(transaction.stop_owned(120000)['status'], 'STOPPED')
+        self.assertEqual(cleanup.calls, [120000])
+        with self.assertRaisesRegex(topology.TopologyError, '^CLEANUP_UNCERTAIN$'):
+            transaction.owner.wait_exit(120000)
+
+    def test_concrete_task9_observer_rechecks_actual_owned_listener_and_transport(self):
+        policy = dataclasses.replace(proxy_policy(), handoff_validator=lambda *args: args == ('PROXY',10004,3,4))
+        class Endpoint:
+            def getsockname(self): return ('127.0.0.1',3128)
+        endpoint = Endpoint()
+        sockets = proxy.NativeSockets(object(), object(), stop_fd=3, os_module=object())
+        sockets.listener = proxy.NativeListener(endpoint, object())
+        sockets.listener_closed = False
+        transport = proxy.NativeVsockTransport(object(), object(), policy.binding, 2, 4050)
+        transport.authenticate(policy.binding)
+        config = proxy.ProxyConfig(dict(policy.destinations), policy.binding,
+            policy.aggregate_bytes, policy.idle_timeout_ms, policy.run_timeout_ms,
+            Clock(), sockets, native_admission=proxy.NativeAdmission(policy.runtime_identity,policy.role_policy_identity))
+        observer = topology.Task9RuntimeObserver(config, sockets, transport)
+        source = topology.select_task9_proxy_source(observer, policy)
+        self.assertEqual(source.observe(policy), snapshot().proxy_runtime)
+        module = load('task10_composition_probe_contract', 'tests/guest/confinement_probe.py')
+        class NoEffects:
+            calls = 0
+            def open_owned(self, *args): self.calls += 1; raise AssertionError('not executed')
+            def observe(self, *args): self.calls += 1; raise AssertionError('not executed')
+            def run_confined(self, *args): self.calls += 1; raise AssertionError('not executed')
+            def subscribe_fixed(self, *args): self.calls += 1; raise AssertionError('not executed')
+        boundary = NoEffects()
+        a = dataclasses.replace(authority(), proxy_policy=policy)
+        collection = topology.Task8Collection(confinement.BootstrapConfig(
+            Kernel(), RUN, a.role_launches[0].programs))
+        gate = topology.compose_task10(mode='bootstrap-check', expected=a,
+            observations=boundary, collection=collection, host_devices=boundary,
+            probe_module=module, probe_port=module.NativeProbePort(boundary),
+            proxy_runtime=observer, service_events=boundary,
+            platform_name='linux', machine='aarch64')
+        self.assertIs(gate._adapter.role_source.bridge, collection)
+        self.assertIs(gate._adapter.proxy_source.observer, observer)
+        self.assertIsNone(collection.handoffs)
+        self.assertEqual(boundary.calls, 0)
+        sockets.listener.socket = Endpoint()
+        with self.assertRaises(topology.TopologyError): source.observe(policy)
+
     def test_fixed_policy_cannot_be_relaxed(self):
         a = authority()
         self.assertEqual(a.host_devices, DEVICES)
@@ -241,6 +360,9 @@ class TopologyTests(unittest.TestCase):
             lambda w: w['payload']['probes'][0].__setitem__('outcome', 'ALLOWED'),
             lambda w: w['payload']['devices'].__setitem__('unexpected', []),
             lambda w: w['payload'].__setitem__('sequence', True),
+            lambda w: w['payload']['roles'][0]['capabilities'].__setitem__(0, False),
+            lambda w: w['payload']['roles'][0]['fds'][1].__setitem__('fd', True),
+            lambda w: w['payload']['roles'][0]['views'].__setitem__('separatePid', 1),
         )
         for mutate in mutations:
             with self.subTest(mutate=mutate), self.assertRaisesRegex(
@@ -278,7 +400,7 @@ class TopologyTests(unittest.TestCase):
 
     def test_clock_freshness_sequence_recheck_and_expiry_latch(self):
         recheck = Recheck()
-        clock = Clock(*([(100, 10)] * 8), (190, 12))
+        clock = Clock(*([(100, 10)] * 10), (190, 12))
         gate = topology.TopologyGate(authority(clock=clock, recheck=recheck), Adapter([snapshot(), snapshot()]))
         gate.admit()
         gate.require_current()
@@ -340,6 +462,31 @@ class TopologyTests(unittest.TestCase):
         gate = topology.TopologyGate(
             authority(clock=Clock((100, 10), (100, 1000000))), Adapter([snapshot()]))
         with self.assertRaisesRegex(topology.TopologyError, '^TOPOLOGY_EXPIRED$'): gate.admit()
+
+    def test_deadline_expiry_inside_validation_and_authorize_denies_without_effect(self):
+        clock = Clock(*([(100, 10)] * 20))
+        gate = topology.TopologyGate(authority(clock=clock), Adapter([snapshot(), snapshot()]))
+        gate.admit()
+        original = topology.admit_topology
+        def expiring(*args):
+            value = original(*args); clock.samples[:] = [(190, 10010)]; return value
+        topology.admit_topology = expiring
+        try:
+            with self.assertRaises(topology.TopologyError): gate.require_current()
+        finally:
+            topology.admit_topology = original
+        self.assertTrue(gate._failed)
+
+        clock = Clock(*([(100, 10)] * 20))
+        gate = topology.TopologyGate(authority(clock=clock), Adapter([snapshot(), snapshot()]))
+        gate.admit()
+        class Delayed(Activation):
+            def activate(self, authorize):
+                clock.samples[:] = [(190, 10010)]
+                return super().activate(authorize)
+        delayed = Delayed()
+        with self.assertRaises(topology.TopologyError): gate.activate_browser(delayed)
+        self.assertEqual((len(delayed.calls), delayed.cleaned), (0, 1))
         class ExpiringRecheck:
             def __init__(self, clock): self.clock, self.calls = clock, 0
             def __call__(self):
@@ -364,13 +511,68 @@ class TopologyTests(unittest.TestCase):
                 topology.admit_topology(dataclasses.replace(base, role_handoffs=roles),
                                         authority(), (100, 10), (100, 10))
 
+        shared_identity, shared_endpoint = object(), object()
+        first._owned.identity = shared_identity; second._owned.identity = shared_identity
+        with self.assertRaises(topology.TopologyError):
+            topology.admit_topology(base, authority(), (100, 10), (100, 10))
+        first._owned.identity, second._owned.identity = object(), object()
+        first._owned.command = shared_endpoint; second._owned.result = shared_endpoint
+        with self.assertRaises(topology.TopologyError):
+            topology.admit_topology(base, authority(), (100, 10), (100, 10))
+        first._owned.command, second._owned.result = object(), object()
+        first._owned.result = first._owned.command
+        with self.assertRaises(topology.TopologyError):
+            topology.admit_topology(base, authority(), (100, 10), (100, 10))
+
+    def test_supervised_final_drift_and_ordinary_failure_cleanup_before_return(self):
+        class Supervisor:
+            def __init__(self): self.stops = 0; self.callback = None
+            def begin(self, handoff, callback): self.callback = callback; return self
+            def stop_owned(self, deadline):
+                self.stops += 1; return {'status':'STOPPED','run_id':RUN}
+        supervisor = Supervisor()
+        class Recheck:
+            calls = 0
+            def __call__(self):
+                self.calls += 1
+                if self.calls == 3: supervisor.callback()
+        gate = topology.TopologyGate(authority(recheck=Recheck()), Adapter([snapshot()]), supervisor)
+        with self.assertRaises(topology.TopologyError): gate.admit()
+        self.assertEqual(supervisor.stops, 1)
+        supervisor = Supervisor()
+        gate = topology.TopologyGate(authority(), Adapter([snapshot(), RuntimeError('capture')]), supervisor)
+        gate.admit()
+        with self.assertRaises(topology.TopologyError): gate.require_current()
+        self.assertEqual(supervisor.stops, 1)
+
+    def test_partial_and_post_success_activation_cleanup_is_retained(self):
+        class Partial(Activation):
+            def activate(self, authorize):
+                authorize(); self.calls.append(self.pending)
+                raise topology.ActivationFailure('CLEANUP_UNCERTAIN', self)
+        gate = topology.TopologyGate(authority(clock=Clock(*([(100, 10)] * 30))),
+                                     Adapter([snapshot(), snapshot()]))
+        gate.admit(); partial = Partial()
+        with self.assertRaises(topology.TopologyError): gate.activate_browser(partial)
+        self.assertEqual((len(partial.calls), partial.cleaned), (1, 1))
+
+        supervisor = type('Supervisor', (), {
+            'begin': lambda self, wire, callback: setattr(self, 'callback', callback) or self,
+            'stop_owned': lambda self, deadline: {'status':'STOPPED','run_id':RUN},
+        })()
+        gate = topology.TopologyGate(authority(clock=Clock(*([(100, 10)] * 30))),
+                                     Adapter([snapshot(), snapshot()]), supervisor)
+        gate.admit(); activation = Activation(); gate.activate_browser(activation)
+        supervisor.callback()
+        self.assertEqual(activation.cleaned, 1)
+
     def test_native_adapter_is_explicit_bounded_and_closes_owned_fds(self):
-        empty_network = b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid\n'
+        empty_network = b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n'
         content = {
             '/proc/net/dev': b'Inter-| Receive\n face |bytes packets errs drop fifo frame compressed multicast\n lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n',
             '/proc/net/route': b'Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n',
             '/proc/net/ipv6_route': b'', '/etc/resolv.conf': b'  # none\n',
-            '/proc/net/tcp': empty_network + b'0: 0100007F:0C38 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10004\n',
+            '/proc/net/tcp': empty_network + b'0: 0100007F:0C38 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10004 0 123 1 0000000000000000 100 0 0 10 0\n',
             '/proc/net/tcp6': empty_network, '/proc/net/udp': empty_network,
             '/proc/net/udp6': empty_network,
             '/proc/net/unix': b'Num RefCount Protocol Flags Type St Inode Path\n',
@@ -405,16 +607,24 @@ class TopologyTests(unittest.TestCase):
                                             'darwin', 'arm64')
 
     def test_native_parser_detects_late_rows_dns_malformed_and_allows_established(self):
-        header = b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid\n'
+        header = b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n'
         late = (header +
-                b'0: 0100007F:D000 0100007F:0C38 01 0:0 0:0 0 10002\n' +
-                b'1: 0100007F:0C38 00000000:0000 0A 0:0 0:0 0 10004\n')
+                b'0: 0100007F:D000 0100007F:0C38 01 00000000:00000000 00:00000000 00000000 10002 0 123 1 0000000000000000 20 4 30 10 -1\n' +
+                b'1: 0100007F:0C38 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10004 0 124 1 0000000000000000 100 0 0 10 0\n')
         self.assertEqual(topology._network_rows(late, 'TCP', 4),
                          (topology.Listener('GUEST', 'TCP', '127.0.0.1', 3128, 10004),))
         self.assertEqual(topology._dns(b'\t nameserver\t127.0.0.53 # local\n'), ('127.0.0.53',))
         for malformed in (header + b'junk\n', header + b'0: bad\n'):
             with self.assertRaises(topology.TopologyError):
                 topology._network_rows(malformed, 'TCP', 4)
+        malformed_fields = header + b'0: 0100007F:0C38 00000000:0000 0A BAD BAD BAD 10004\n'
+        with self.assertRaises(topology.TopologyError):
+            topology._network_rows(malformed_fields, 'TCP', 4)
+        with self.assertRaises(topology.TopologyError):
+            topology._abstract(b'Num RefCount Protocol Flags Type St Inode Path\nBAD BAD BAD BAD BAD BAD BAD\n')
+        self.assertEqual(topology._abstract(
+            b'Num RefCount Protocol Flags Type St Inode Path\n000: 00000002 00000000 00010000 0001 01 123 /run/unauthorized.sock\n'),
+            ('PATH:/run/unauthorized.sock',))
 
     def test_uncertain_owned_close_is_retained_and_cleaned_by_owner_not_fd(self):
         class Owner:
@@ -442,7 +652,26 @@ class TopologyTests(unittest.TestCase):
         proof = topology.admit_topology(snapshot(), authority(), (100, 10), (100, 10))
         path = os.environ.get('TASK10_TOPOLOGY_OUTPUT')
         if path:
-            pathlib.Path(path).write_text(proof.handoff, encoding='ascii')
+            with pathlib.Path(path).open('x', encoding='ascii') as output: output.write(proof.handoff)
+        vectors = []
+        mutations = (
+            lambda p: p['roles'][0]['capabilities'].__setitem__(0, False),
+            lambda p: p['roles'][0]['fds'][1].__setitem__('fd', True),
+            lambda p: p['roles'][0]['views'].__setitem__('separatePid', 1),
+            lambda p: p['roles'][0]['views'].__setitem__('console', 0),
+            lambda p: p['roles'][0].__setitem__('noNewPrivs', True),
+            lambda p: p['proxy'].__setitem__('listenPort', True),
+        )
+        for mutate in mutations:
+            envelope = json.loads(proof.handoff); mutate(envelope['payload'])
+            envelope['mac'] = __import__('hmac').new(CAPABILITY,
+                topology._canonical(envelope['payload']), __import__('hashlib').sha256).hexdigest()
+            wire = topology._canonical(envelope).decode('ascii')
+            with self.assertRaises(topology.TopologyError): topology.verify_handoff(wire, authority())
+            vectors.append(wire)
+        if path:
+            with pathlib.Path(path + '.invalid.json').open('x', encoding='ascii') as output:
+                json.dump(vectors, output, separators=(',', ':'))
         self.assertEqual(json.loads(proof.handoff)['version'], 1)
 
 
