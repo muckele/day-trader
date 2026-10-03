@@ -22,9 +22,22 @@ def wire(value): return json.dumps(value, sort_keys=True, separators=(',', ':'))
 
 FEATURES = ['CONFIG_NAMESPACES', 'CONFIG_PID_NS', 'CONFIG_SECCOMP', 'CONFIG_SECCOMP_FILTER', 'CONFIG_TMPFS', 'CONFIG_USER_NS', 'CONFIG_VIRTIO', 'CONFIG_VIRTIO_BLK', 'CONFIG_VIRTIO_CONSOLE', 'CONFIG_VIRTIO_VSOCKETS', 'CONFIG_VSOCKETS']
 PAYLOAD = ['controller', 'guestBootstrap', 'guestProbes', 'proxy', 'rolePolicy', 'routePolicy', 'seccompPolicy', 'verifier']
+LEGACY_FEATURES = FEATURES[:]
+LEGACY_PAYLOAD = PAYLOAD[:]
+FEATURES = sorted(FEATURES + ['CONFIG_AUDIT', 'CONFIG_AUDITSYSCALL', 'CONFIG_INOTIFY_USER'])
+PAYLOAD = sorted(PAYLOAD + ['browserWorker'])
+REFERENCE_DIGEST = 'a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d'
+MEMBER_MAPPING = {
+    'browserWorker':('', '/opt/acceptance/guest/browser-worker.cjs'),
+    'controller':('', '/opt/acceptance/guest/controller.cjs'),
+    'proxy':('', '/opt/acceptance/guest/proxy.py'),
+    'verifier':('', '/opt/acceptance/guest/verifier.cjs'),
+    'node':('bin/node', '/opt/acceptance/runtime/node/bin/node'),
+    'python':('bin/python3', '/opt/acceptance/runtime/python/bin/python3'),
+    'chromium':('chrome', '/opt/acceptance/runtime/chromium/chrome')}
 BASE = ['chromium', 'contracts', 'hostBroker', 'hostLauncher', 'initramfs', 'kernel', 'kernelConfig', 'node', 'playwright', 'python', 'rootfs']
 
-def policy():
+def policy(version=2):
     return {
         'layout': {'guest': '/opt/acceptance/guest', 'contracts': '/opt/acceptance/contracts', 'nodeModules': '/opt/acceptance/node_modules', 'probes': '/opt/acceptance/tests/guest', 'bootstrap': '/opt/acceptance/guest/confinement.py', **{n+'Root': '/run/acceptance/'+n for n in ['controller','browser','verifier','proxy']}},
         'roles': {'controller':10001, 'browser':10002, 'verifier':10003, 'proxy':10004},
@@ -32,7 +45,7 @@ def policy():
         'storage': {'baseReadOnly':True, 'writableDisks':0, 'runState':'TMPFS', **{n:False for n in ['guestSwap','zramSwap','hibernation','saveRestore','persistentCrash','hostShares']}},
         'resources': {'cpuCount':2, 'memoryBytes':2147483648, 'runTmpfsBytes':268435456, 'crashTmpfsBytes':1048576, 'shmBytes':67108864, 'tmpfsInodes':4096, 'aggregateTunnelBytes':1048576, 'idleTimeoutMs':10000, 'runTimeoutMs':60000, 'maxTunnels':16},
         'runtime': {'nodePath':'/opt/acceptance/runtime/node/bin/node', 'pythonPath':'/opt/acceptance/runtime/python/bin/python3', 'browserPath':'/opt/acceptance/runtime/chromium/chrome', 'browserSandbox':True, 'headless':True, 'nativeABIOnly':True, 'guestProxyAddress':'127.0.0.1', 'guestProxyPort':3128, 'vsockRole':'proxy', 'consoleRole':'controller', 'secretInputs':'NONE', 'downloads':False},
-        'kernelFeatures':FEATURES,
+        'kernelFeatures':FEATURES if version == 2 else LEGACY_FEATURES,
         'compatibility':{'macOSMinimum':'14.0', 'sdkVersion':'27.0', 'hostArchitecture':'arm64'}}
 
 def archive(entries):
@@ -53,17 +66,29 @@ def artifact(id, data):
     return {'id':id, 'sha256':sha(data), 'sizeBytes':len(data), 'version':'synthetic-v1', 'sourceId':'synthetic-'+id}
 
 class Fixture:
-    def __init__(self, root):
+    def __init__(self, root, version=2):
         self.root=root; self.locations={}; self.bytes={}
         for id in BASE:
             data=('SYNTHETIC NONBOOTABLE '+id+'\n').encode()
             if id in ARCHIVE_PATHS:
                 data=archive([(ARCHIVE_PATHS[id],data,'file','',0o755 if id in ['node','python','chromium'] else 0o644)])
-            if id == 'kernelConfig': data=''.join(k+'=y\n' for k in FEATURES).encode()
+            if id == 'kernelConfig': data=''.join(k+'=y\n' for k in (FEATURES if version == 2 else LEGACY_FEATURES)).encode()
             self.bytes[id]=data
             path=root/(id+'.fixture'); path.write_bytes(data); self.locations[id]=path
         tool=b'SYNTHETIC NONEXECUTABLE TOOL\n'; self.tool=root/'mke2fs.fixture'; self.tool.write_bytes(tool)
-        self.manifest={'manifestVersion':1,'kind':'ASSEMBLY_INPUTS','architecture':'aarch64','distribution':'ubuntu-24.04','policy':policy(),'payloadState':'INCOMPLETE','missingPayload':PAYLOAD,'artifacts':[artifact(id,self.bytes[id]) for id in BASE],'tools':[artifact('mke2fs',tool)],'provenance':{'sourceRevision':'0'*40,'approvalId':'synthetic-review','buildEnvironmentId':'synthetic-offline','inputClass':'SYNTHETIC'}}
+        self.manifest={'manifestVersion':version,'kind':'ASSEMBLY_INPUTS','architecture':'aarch64','distribution':'ubuntu-24.04','policy':policy(version),'payloadState':'INCOMPLETE','missingPayload':PAYLOAD if version == 2 else LEGACY_PAYLOAD,'artifacts':[artifact(id,self.bytes[id]) for id in BASE],'tools':[artifact('mke2fs',tool)],'provenance':{'sourceRevision':'0'*40,'approvalId':'synthetic-review','buildEnvironmentId':'synthetic-offline','inputClass':'SYNTHETIC'}}
+        if version == 2:
+            self.manifest['policy']['layout']['browserWorker']='/opt/acceptance/guest/browser-worker.cjs'
+            self.manifest['policy']['bootstrapComposition']={'version':1,'eventSource':'LINUX_AUDIT_ROUTE_UEVENT_INOTIFY_V1','referenceDigest':REFERENCE_DIGEST,'frameBytes':16384,'cleanupMs':60000,'eventQueueCount':256,'eventQueueBytes':1048576}
+    def complete(self):
+        for id in PAYLOAD:
+            data=('SYNTHETIC '+id+'\n').encode()
+            if id == 'guestProbes': data=archive([('probe.txt',data,'file','',0o644)])
+            path=self.root/(id+'.fixture'); path.write_bytes(data)
+            self.bytes[id]=data; self.locations[id]=path
+            self.manifest['artifacts'].append(artifact(id,data))
+        self.manifest['artifacts'].sort(key=lambda x:x['id'])
+        self.manifest['payloadState']='COMPLETE'; self.manifest['missingPayload']=[]
     def replace(self,id,data):
         self.bytes[id]=data; self.locations[id].write_bytes(data)
         self.manifest['artifacts']=[artifact(id,data) if x['id']==id else x for x in self.manifest['artifacts']]
@@ -90,7 +115,10 @@ class ApplianceTests(unittest.TestCase):
         self.f.manifest['architecture']='x86_64'; self.denied('ARCHITECTURE',self.f.validate)
     def test_unknown_duplicate_and_ambiguous_wire_denied(self):
         raw=wire(self.f.manifest)
-        for changed in [raw.replace(b'"manifestVersion":1',b'"manifestVersion":1,"manifestVersion":1'),raw.replace(b'"manifestVersion":1',b'"manifestVersion":1.0'),raw.replace(b'"manifestVersion":1',b'"manifestVersion":1e0'),raw.replace(b'"manifestVersion":1',b'"manifestVersion":true'),raw.replace(b'"manifestVersion":1',b'"manifestVersion":-0'),raw[:-1]+b',"extra":0}',b' '*65537+raw]:
+        for replacement in [b'2,"manifestVersion":2',b'2.0',b'2e0',b'true',b'-0',b'3']:
+            changed=raw.replace(b'"manifestVersion":2',b'"manifestVersion":'+replacement)
+            self.denied('INVALID_MANIFEST',lambda:a.decode_inputs(changed))
+        for changed in [raw[:-1]+b',"extra":0}',b' '*65537+raw]:
             with self.subTest(wire=changed[:30]): self.denied('INVALID_MANIFEST',lambda:a.decode_inputs(changed))
     def test_missing_resources_and_integer_bounds_denied(self):
         for key,value in [('cpuCount',0),('memoryBytes',17179869185),('maxTunnels',17),('shmBytes',0),('tmpfsInodes',65537),('aggregateTunnelBytes',1073741825)]:
@@ -297,7 +325,9 @@ class ApplianceTests(unittest.TestCase):
     def test_composition_export(self):
         destination=os.environ.get('M3_APPLIANCE_OUTPUT')
         if not destination: return
-        result=a.assemble(self.f.validate(),self.root/'assembled',image_tool=FakeImageTool())
+        self.f.complete()
+        checked=self.f.validate()
+        result=a.assemble(checked,self.root/'assembled',image_tool=FakeImageTool())
         self.assertIn('outputs',result)
         out=Path(destination)
         self.assertFalse(os.path.lexists(out)); out.mkdir()
@@ -306,6 +336,152 @@ class ApplianceTests(unittest.TestCase):
             with (out/filename).open('xb') as f: f.write((self.root/'assembled'/filename).read_bytes())
         bundle={'bundleVersion':1,'manifest':result,'expectedManifestDigest':sha(wire(result)),'files':files}
         with (out/'bundle.json').open('xb') as f: f.write(wire(bundle))
-        self.assertEqual(len(list(out.iterdir())),4)
+        members=a.derive_executable_members(checked)
+        inventory=a.offline_installed_members(members, result)
+        self.assertIs(type(inventory),a.OfflineInstalledExecutableInventory)
+        with (out/'executable-members.json').open('xb') as f: f.write(inventory.canonical)
+        self.assertEqual(len(list(out.iterdir())),5)
+
+    def test_v1_browser_worker_is_direct_required_payload(self):
+        self.assertIn('browserWorker',a.PAYLOAD_IDS)
+        self.assertEqual(len(a.PAYLOAD_IDS),9)
+        self.assertEqual(a.decode_inputs(wire(self.f.manifest)),self.f.manifest)
+        self.denied('SECRET_MATERIAL',lambda:self.direct_payload_validation('browserWorker',b'SYNTHETIC PRIVATE KEY-----'))
+        self.f.complete()
+        self.assertEqual(len(self.f.manifest['artifacts']),20)
+        members=a.derive_executable_members(self.f.validate())
+        self.assertEqual({r['componentId']:(r['memberPath'],r['installedPath']) for r in members.rows},MEMBER_MAPPING)
+        for r in members.rows:
+            self.assertEqual(set(r),{'componentId','artifactSHA256','memberPath','memberSHA256','sizeBytes','installedPath'})
+
+    def test_v1_legacy_manifest_inspection_never_admits_composition(self):
+        legacy=self.root/'legacy'; legacy.mkdir(); f=Fixture(legacy,version=1)
+        raw=wire(f.manifest)
+        self.assertEqual(a.decode_inputs(raw),f.manifest)
+        self.assertEqual(a.canonical_manifest(f.manifest),raw)
+        self.denied('INVALID_MANIFEST',f.validate)
+        result={k:f.manifest[k] for k in ['manifestVersion','architecture','distribution','policy','payloadState','missingPayload']}
+        result.update(kind='APPLIANCE_MANIFEST',inputsDigest=sha(raw),components=f.manifest['artifacts'],outputs=[artifact('base',b'legacy'),*[x for x in f.manifest['artifacts'] if x['id'] in ['initramfs','kernel']]],provenance={**{k:f.manifest['provenance'][k] for k in ['sourceRevision','approvalId','buildEnvironmentId']},'assemblyMode':'SYNTHETIC','tools':f.manifest['tools']},manifestSigning='UNPERFORMED',runtimeQualification='UNPERFORMED')
+        self.assertEqual(a.decode_appliance(wire(result)),result)
+        self.assertEqual(a.canonical_manifest(result),wire(result))
+        self.denied('INVALID_MANIFEST',lambda:a.require_qualified(result))
+
+    def test_v1_member_hash_is_not_archive_hash(self):
+        self.assertTrue(callable(getattr(a,'derive_executable_members',None)),'byte-derived member producer required')
+        self.f.complete(); members=a.derive_executable_members(self.f.validate())
+        for row in members.rows:
+            if row['memberPath']:
+                data=('SYNTHETIC NONBOOTABLE '+row['componentId']+'\n').encode()
+                self.assertEqual(row['memberSHA256'],sha(data)); self.assertEqual(row['sizeBytes'],len(data))
+                self.assertNotEqual(row['memberSHA256'],row['artifactSHA256'])
+            else: self.assertEqual(row['memberSHA256'],row['artifactSHA256'])
+        changed=members.rows; changed[0]['installedPath']='/wrong'
+        self.assertEqual(members.rows[0]['installedPath'],MEMBER_MAPPING[members.rows[0]['componentId']][1])
+
+    def test_v1_member_snapshot_substitution_denied(self):
+        self.assertTrue(callable(getattr(a,'derive_executable_members',None)),'retained member snapshots required')
+        self.f.complete(); checked=self.f.validate(); members=a.derive_executable_members(checked)
+        self.f.locations['node'].write_bytes(self.f.bytes['node'])
+        self.denied('INPUT_CHANGED',members.recheck)
+        self.denied('INPUT_CHANGED',lambda:a.derive_executable_members(checked))
+
+    def test_v1_installed_inventory_requires_population_owner(self):
+        self.assertTrue(callable(getattr(a,'verify_installed_members',None)),'original population owner required')
+        self.f.complete(); checked=self.f.validate(); members=a.derive_executable_members(checked)
+        result=a.assemble(checked,self.root/'installed',image_tool=FakeImageTool())
+        offline=a.offline_installed_members(members,result)
+        self.assertIs(type(offline),a.OfflineInstalledExecutableInventory)
+        self.assertNotIsInstance(offline,a.InstalledExecutableInventory)
+        self.assertEqual(json.loads(offline.canonical)['populationState'],'UNPERFORMED')
+        for owner in [None,True,{},offline,lambda p: 'f'*64]:
+            self.denied('UNAUTHORIZED_INPUT',lambda:a.verify_installed_members(members,owner,result['outputs'][0]))
+        self.denied('UNAUTHORIZED_INPUT',lambda:a.InstalledExecutableInventory(members,None,None))
+
+    def test_v1_worker_probe_archive_alias_denied(self):
+        self.assertIn('browserWorker',a.PAYLOAD_IDS)
+        self.f.complete()
+        self.f.replace('browserWorker',self.f.bytes['guestProbes'])
+        self.denied('UNAUTHORIZED_INPUT',self.f.validate)
+        self.f.replace('browserWorker',b'SYNTHETIC worker\n')
+        self.f.locations['browserWorker'].chmod(0o666)
+        self.denied('UNAUTHORIZED_INPUT',self.f.validate)
+
+    def test_v1_bootstrap_features_and_reference_digest_required(self):
+        self.assertEqual(a._SCHEMA['schemaVersion'],2,'strict version2 descriptor required')
+        self.assertEqual(a.decode_inputs(wire(self.f.manifest)),self.f.manifest)
+        self.assertEqual(sha((ROOT/'appliance/bootstrap-event-reference.json').read_bytes()),REFERENCE_DIGEST)
+        for key in ['bootstrapComposition']:
+            m=copy.deepcopy(self.f.manifest); del m['policy'][key]
+            self.denied('INVALID_MANIFEST',lambda:a.decode_inputs(wire(m)))
+        for key,value in [('referenceDigest','f'*64),('version',True),('eventQueueCount',257)]:
+            m=copy.deepcopy(self.f.manifest); m['policy']['bootstrapComposition'][key]=value
+            self.denied('INVALID_MANIFEST' if type(value) is bool else 'POLICY',lambda:a.decode_inputs(wire(m)))
+        for feature in ['CONFIG_AUDIT','CONFIG_AUDITSYSCALL','CONFIG_INOTIFY_USER']:
+            m=copy.deepcopy(self.f.manifest); m['policy']['kernelFeatures'].remove(feature)
+            self.denied('KERNEL_FEATURE',lambda:a.decode_inputs(wire(m)))
+
+    def population_contract_fixture(self):
+        """Trusted adapter double over inert files; never a native population."""
+        self.f.complete(); self.f.manifest['provenance']['inputClass']='APPROVED_CANDIDATE'
+        checked=self.f.validate(); members=a.derive_executable_members(checked)
+        base_data=b'SYNTHETIC NATIVE CONTRACT DOUBLE\n'
+        result={k:self.f.manifest[k] for k in ['manifestVersion','architecture','distribution','policy','payloadState','missingPayload']}
+        result.update(kind='APPLIANCE_MANIFEST',inputsDigest=sha(checked.canonical),components=self.f.manifest['artifacts'],outputs=[artifact('base',base_data),*[x for x in self.f.manifest['artifacts'] if x['id'] in ['initramfs','kernel']]],provenance={**{k:self.f.manifest['provenance'][k] for k in ['sourceRevision','approvalId','buildEnvironmentId']},'assemblyMode':'NATIVE_ARM64_LINUX','tools':self.f.manifest['tools']},manifestSigning='UNPERFORMED',runtimeQualification='UNPERFORMED')
+        def retain(name,data,identity):
+            path=self.root/(name+'.inert'); path.write_bytes(data); path.chmod(0o400)
+            source,fp=a._open_checked(path,'ARTIFACT_MISMATCH'); source.close()
+            return a._RetainedSource(path,identity,fp)
+        base=retain('base',base_data,result['outputs'][0]); installed=[]
+        for row in members.rows:
+            data=self.f.bytes[row['componentId']] if not row['memberPath'] else ('SYNTHETIC NONBOOTABLE '+row['componentId']+'\n').encode()
+            installed.append((row['installedPath'],retain(row['componentId'],data,artifact(row['componentId'],data))))
+        owner=a.NativePopulationOwner(members,result,base,tuple(installed),_token=a._POPULATION_TOKEN)
+        return members,result,owner
+
+    def test_v1_population_observations_bind_original_base_members_and_paths(self):
+        members,result,owner=self.population_contract_fixture()
+        inventory=a.verify_installed_members(members,owner,result['outputs'][0])
+        self.assertIs(type(inventory),a.InstalledExecutableInventory); inventory.recheck()
+        self.denied('IDENTITY_MISMATCH',lambda:a.verify_installed_members(members,owner,{**result['outputs'][0],'sha256':'f'*64}))
+        def changed(installed,manifest=result,base=owner.base):
+            return a.NativePopulationOwner(members,manifest,base,installed,_token=a._POPULATION_TOKEN)
+        swapped=list(owner.installed); swapped[0]=('/wrong',swapped[0][1])
+        self.denied('ARTIFACT_MISMATCH',lambda:a.verify_installed_members(members,changed(swapped),result['outputs'][0]))
+        swapped=list(owner.installed); swapped[0]=(swapped[0][0],swapped[1][1])
+        self.denied('ARTIFACT_MISMATCH',lambda:a.verify_installed_members(members,changed(swapped),result['outputs'][0]))
+        synthetic=copy.deepcopy(result); synthetic['provenance']['assemblyMode']='SYNTHETIC'
+        self.denied('SYNTHETIC_ONLY',lambda:a.verify_installed_members(members,changed(owner.installed,synthetic),result['outputs'][0]))
+        self.denied('UNAUTHORIZED_INPUT',lambda:a.NativePopulationOwner(members,result,owner.base,owner.installed))
+        victim=owner.installed[0][1]; victim.path.chmod(0o600); victim.path.write_bytes(b'substitution')
+        self.denied('INPUT_CHANGED',inventory.recheck)
+
+    def test_v1_population_writable_installed_member_denied(self):
+        members,result,owner=self.population_contract_fixture()
+        old=owner.installed[0][1]; old.path.chmod(0o666)
+        source,fp=a._open_checked(old.path,'ARTIFACT_MISMATCH'); source.close()
+        replacement=a._RetainedSource(old.path,json.loads(old.identity_bytes),fp)
+        installed=((owner.installed[0][0],replacement),*owner.installed[1:])
+        changed=a.NativePopulationOwner(members,result,owner.base,installed,_token=a._POPULATION_TOKEN)
+        self.denied('ARTIFACT_MISMATCH',lambda:a.verify_installed_members(members,changed,result['outputs'][0]))
+
+    def test_v1_retained_member_bytes_and_original_inode_cannot_be_substituted(self):
+        self.f.complete(); checked=self.f.validate(); members=a.derive_executable_members(checked)
+        members.snapshots[0].file.seek(0); members.snapshots[0].file.write(b'tampered'); members.snapshots[0].file.flush()
+        self.denied('INPUT_CHANGED',members.recheck)
+        checked=self.f.validate(); path=self.f.locations['node']; replacement=self.root/'replacement'
+        replacement.write_bytes(self.f.bytes['node']); replacement.replace(path)
+        self.denied('INPUT_CHANGED',lambda:a.derive_executable_members(checked))
+
+    def test_v1_exact_payload_complement_duplicate_and_boolean_denied(self):
+        self.f.complete()
+        for mutation in ['missing','duplicate','boolean','extra']:
+            m=copy.deepcopy(self.f.manifest)
+            if mutation=='missing': m['artifacts']=[x for x in m['artifacts'] if x['id']!='browserWorker']
+            elif mutation=='duplicate': m['artifacts'][0]=copy.deepcopy(m['artifacts'][1])
+            elif mutation=='boolean': m['artifacts'][0]['sizeBytes']=True
+            else: m['policy']['bootstrapComposition']['extra']=1
+            self.denied({'missing':'PAYLOAD_INCOMPLETE','duplicate':'UNAUTHORIZED_INPUT'}.get(mutation,'INVALID_MANIFEST'),lambda:a.decode_inputs(wire(m)))
+        self.f.replace('node',archive([('bin/node',b'','sym','real',0o777),('bin/real',b'fake','file','',0o755)]))
+        self.denied('MISSING_RUNTIME',self.f.validate)
 
 if __name__=='__main__': unittest.main()

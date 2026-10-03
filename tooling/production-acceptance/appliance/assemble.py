@@ -22,17 +22,27 @@ _protocol = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_protocol)
 _SCHEMA_PATH = Path(__file__).with_name('manifest.schema.json')
 _SCHEMA = json.loads(_SCHEMA_PATH.read_bytes())
-if (set(_SCHEMA) != {'schemaVersion','maxBytes','maxDepth','definitions','inputManifest','applianceManifest'}
-        or _SCHEMA['schemaVersion'] != 1 or _SCHEMA['maxBytes'] != 65536 or _SCHEMA['maxDepth'] != 8
-        or set(_SCHEMA['definitions']) != {'identity','policy'}):
+if (set(_SCHEMA) != {'schemaVersion','maxBytes','maxDepth','definitions','inputManifest','applianceManifest','legacyInputManifest','legacyApplianceManifest'}
+        or _SCHEMA['schemaVersion'] != 2 or _SCHEMA['maxBytes'] != 65536 or _SCHEMA['maxDepth'] != 8
+        or set(_SCHEMA['definitions']) != {'identity','policy','legacyIdentity','legacyPolicy'}):
     raise ValueError('INVALID_MANIFEST')
 
 BASE_IDS = frozenset(['rootfs','kernel','initramfs','kernelConfig','node','python','playwright','chromium','hostLauncher','hostBroker','contracts'])
-PAYLOAD_IDS = frozenset(['guestBootstrap','controller','proxy','verifier','rolePolicy','seccompPolicy','routePolicy','guestProbes'])
+LEGACY_PAYLOAD_IDS = frozenset(['guestBootstrap','controller','proxy','verifier','rolePolicy','seccompPolicy','routePolicy','guestProbes'])
+PAYLOAD_IDS = LEGACY_PAYLOAD_IDS | {'browserWorker'}
 RUNTIME_IDS = frozenset(['node','python','playwright','chromium'])
 ARCHIVE_IDS = frozenset(['rootfs','node','python','playwright','chromium','contracts','guestProbes'])
 REQUIRED_FILES = {'node':'bin/node','python':'bin/python3','chromium':'chrome'}
-FEATURES = tuple(sorted(['CONFIG_NAMESPACES','CONFIG_PID_NS','CONFIG_SECCOMP','CONFIG_SECCOMP_FILTER','CONFIG_TMPFS','CONFIG_USER_NS','CONFIG_VIRTIO','CONFIG_VIRTIO_BLK','CONFIG_VIRTIO_CONSOLE','CONFIG_VIRTIO_VSOCKETS','CONFIG_VSOCKETS']))
+LEGACY_FEATURES = tuple(sorted(['CONFIG_NAMESPACES','CONFIG_PID_NS','CONFIG_SECCOMP','CONFIG_SECCOMP_FILTER','CONFIG_TMPFS','CONFIG_USER_NS','CONFIG_VIRTIO','CONFIG_VIRTIO_BLK','CONFIG_VIRTIO_CONSOLE','CONFIG_VIRTIO_VSOCKETS','CONFIG_VSOCKETS']))
+FEATURES = tuple(sorted((*LEGACY_FEATURES,'CONFIG_AUDIT','CONFIG_AUDITSYSCALL','CONFIG_INOTIFY_USER')))
+EXECUTABLE_MAPPING = (
+    ('browserWorker','','/opt/acceptance/guest/browser-worker.cjs'),
+    ('chromium','chrome','/opt/acceptance/runtime/chromium/chrome'),
+    ('controller','','/opt/acceptance/guest/controller.cjs'),
+    ('node','bin/node','/opt/acceptance/runtime/node/bin/node'),
+    ('proxy','','/opt/acceptance/guest/proxy.py'),
+    ('python','bin/python3','/opt/acceptance/runtime/python/bin/python3'),
+    ('verifier','','/opt/acceptance/guest/verifier.cjs'))
 MAX_ARCHIVE_MEMBERS = 100000
 MAX_EXPANDED_BYTES = 68719476736
 MAX_SYNTHETIC_BYTES = 16 * 1024 * 1024
@@ -49,7 +59,12 @@ def _rule(value):
     if type(value) is not dict: _fail('INVALID_MANIFEST')
     key = {'ASSEMBLY_INPUTS':'inputManifest','APPLIANCE_MANIFEST':'applianceManifest'}.get(value.get('kind'))
     if key is None: _fail('INVALID_MANIFEST')
-    return _SCHEMA[key]
+    version=value.get('manifestVersion')
+    if type(version) is not int or version not in (1,2): _fail('INVALID_MANIFEST')
+    return _SCHEMA[key if version == 2 else 'legacy'+key[0].upper()+key[1:]]
+
+def _policy_rule(value):
+    return _SCHEMA['definitions']['policy' if value['manifestVersion'] == 2 else 'legacyPolicy']
 
 
 def _policy_shape(value, rule):
@@ -61,16 +76,19 @@ def _policy_shape(value, rule):
 
 def _semantics(value):
     if value['architecture'] != 'aarch64': _fail('ARCHITECTURE')
-    _policy_shape(value['policy'], _SCHEMA['definitions']['policy'])
-    try: _protocol._check(value['policy'], _SCHEMA['definitions']['policy'], definitions=_SCHEMA['definitions'])
+    policy=_policy_rule(value)
+    _policy_shape(value['policy'], policy)
+    try: _protocol._check(value['policy'], policy, definitions=_SCHEMA['definitions'])
     except _protocol.InvalidFrame: _fail('POLICY')
-    if value['policy']['kernelFeatures'] != list(FEATURES): _fail('KERNEL_FEATURE')
+    payload=PAYLOAD_IDS if value['manifestVersion'] == 2 else LEGACY_PAYLOAD_IDS
+    features=FEATURES if value['manifestVersion'] == 2 else LEGACY_FEATURES
+    if value['policy']['kernelFeatures'] != list(features): _fail('KERNEL_FEATURE')
     identities = value['artifacts'] if value['kind'] == 'ASSEMBLY_INPUTS' else value['components']
     ids = [item['id'] for item in identities]
-    if ids != sorted(set(ids)) or set(ids) - BASE_IDS - PAYLOAD_IDS: _fail('UNAUTHORIZED_INPUT')
+    if ids != sorted(set(ids)) or set(ids) - BASE_IDS - payload: _fail('UNAUTHORIZED_INPUT')
     if not RUNTIME_IDS <= set(ids): _fail('MISSING_RUNTIME')
     if not BASE_IDS <= set(ids): _fail('UNAUTHORIZED_INPUT')
-    missing = sorted(PAYLOAD_IDS - set(ids))
+    missing = sorted(payload - set(ids))
     if value['missingPayload'] != missing or value['payloadState'] != ('INCOMPLETE' if missing else 'COMPLETE'):
         _fail('PAYLOAD_INCOMPLETE')
     tools = value['tools'] if value['kind'] == 'ASSEMBLY_INPUTS' else value['provenance']['tools']
@@ -89,7 +107,7 @@ def _validated(value):
         # descriptor is used except policy/architecture checks classified below.
         structural = {**rule, 'fields':dict(rule['fields'])}
         structural['fields']['architecture'] = {'type':'string','pattern':'[A-Za-z0-9_]+','max':32}
-        _policy_shape(value.get('policy'), _SCHEMA['definitions']['policy'])
+        _policy_shape(value.get('policy'), _policy_rule(value))
         # Validate every non-policy field exactly; policy is still validated below.
         fields = structural['fields']; fields.pop('policy')
         remaining = dict(value); remaining.pop('policy')
@@ -125,14 +143,20 @@ def _decode(data, kind):
     try:
         # Parse with M1 strict primitive using a schema-specific structural rule.
         # Classification never adds a permissive generic JSON admission path.
-        rule = _SCHEMA['inputManifest' if kind == 'ASSEMBLY_INPUTS' else 'applianceManifest']
+        # Strict bounded JSON discrimination first. Every field then traverses
+        # only one of the two frozen trusted descriptors, never a caller rule.
+        if type(data) is not bytes or not 0 < len(data) <= 65536: _fail('INVALID_MANIFEST')
+        discriminator=json.loads(data,object_pairs_hook=_protocol._pairs,parse_int=_protocol._integer,
+                                 parse_float=lambda _: _fail('INVALID_MANIFEST'),parse_constant=lambda _: _fail('INVALID_MANIFEST'))
+        rule = _rule(discriminator)
+        if discriminator.get('kind') != kind: _fail('INVALID_MANIFEST')
         wire_rule = {**rule,'fields':dict(rule['fields'])}
         wire_rule['fields']['architecture'] = {'type':'string','pattern':'[A-Za-z0-9_]+','max':32}
-        wire_rule['fields']['policy'] = _policy_wire_shape(_SCHEMA['definitions']['policy'])
+        wire_rule['fields']['policy'] = _policy_wire_shape(_policy_rule(discriminator))
         value = _protocol.decode_document(data, rule=wire_rule, definitions=_SCHEMA['definitions'], max_bytes=65536)
         return _validated(value)
     except ApplianceError: raise
-    except _protocol.InvalidFrame: _fail('INVALID_MANIFEST')
+    except (_protocol.InvalidFrame,ValueError,TypeError,RecursionError): _fail('INVALID_MANIFEST')
 
 
 def decode_inputs(data: bytes) -> dict: return _decode(data, 'ASSEMBLY_INPUTS')
@@ -282,8 +306,37 @@ class _Captured:
     path: Path
     identity_bytes: bytes
     fingerprint: tuple
+    owner: object
     @property
     def identity(self): return json.loads(self.identity_bytes)
+
+
+class _RetainedSource:
+    """Original regular-file handle, retained independently of its pathname."""
+    def __init__(self,path,identity,fingerprint):
+        self.path=path; self.identity_bytes=json.dumps(identity,sort_keys=True,separators=(',',':')).encode()
+        self.file,self.fingerprint=_open_checked(path,'INPUT_CHANGED')
+        if self.fingerprint != fingerprint: self.file.close(); _fail('INPUT_CHANGED')
+        self.recheck()
+    def chunks(self):
+        size=json.loads(self.identity_bytes)['sizeBytes']; offset=0
+        while offset < size:
+            data=os.pread(self.file.fileno(),min(1048576,size-offset),offset)
+            if not data: _fail('INPUT_CHANGED')
+            offset+=len(data); yield data
+    def __del__(self):
+        source=getattr(self,'file',None)
+        if source is not None: source.close()
+    def recheck(self):
+        try:
+            before=_fingerprint(os.fstat(self.file.fileno()))
+            if before != self.fingerprint or _fingerprint(self.path.lstat()) != before: _fail('INPUT_CHANGED')
+            digest=hashlib.sha256(); size=0
+            for data in self.chunks(): digest.update(data); size+=len(data)
+            identity=json.loads(self.identity_bytes)
+            if digest.hexdigest()!=identity['sha256'] or size!=identity['sizeBytes']: _fail('INPUT_CHANGED')
+            if _fingerprint(os.fstat(self.file.fileno()))!=before or _fingerprint(self.path.lstat())!=before: _fail('INPUT_CHANGED')
+        except (OSError,ValueError): _fail('INPUT_CHANGED')
 
 
 _INPUT_TOKEN = object()
@@ -302,7 +355,7 @@ class ApprovedInputs:
 
 def validate_inputs(manifest: dict, *, locations: Mapping[str,Path], tool_locations: Mapping[str,Path], expected_inputs_digest: str) -> ApprovedInputs:
     canonical = canonical_manifest(manifest)
-    if manifest['kind'] != 'ASSEMBLY_INPUTS': _fail('INVALID_MANIFEST')
+    if manifest['kind'] != 'ASSEMBLY_INPUTS' or manifest['manifestVersion'] != 2: _fail('INVALID_MANIFEST')
     if type(expected_inputs_digest) is not str or not re.fullmatch('[a-f0-9]{64}',expected_inputs_digest) or _sha(canonical) != expected_inputs_digest:
         _fail('IDENTITY_MISMATCH')
     if set(locations) != {x['id'] for x in manifest['artifacts']} or set(tool_locations) != {'mke2fs'}: _fail('UNAUTHORIZED_INPUT')
@@ -317,10 +370,14 @@ def validate_inputs(manifest: dict, *, locations: Mapping[str,Path], tool_locati
             if id in ARCHIVE_IDS: _archive(path,id)
             elif id in PAYLOAD_IDS:
                 source, _ = _open_checked(path,'UNAUTHORIZED_INPUT')
-                with source: _reject_known_secret(source, identity['sizeBytes'])
+                with source:
+                    if os.fstat(source.fileno()).st_mode & 0o7022: _fail('UNAUTHORIZED_INPUT')
+                    _reject_known_secret(source, identity['sizeBytes'])
+                if id == 'browserWorker' and tarfile.is_tarfile(path): _fail('UNAUTHORIZED_INPUT')
             if id=='kernelConfig': _kernel(path)
             if _hash_file(path,identity,'INPUT_CHANGED') != fingerprint: _fail('INPUT_CHANGED')
-            captured.append(_Captured(id,path,json.dumps(identity,sort_keys=True,separators=(',',':')).encode(),fingerprint))
+            owner=_RetainedSource(path,identity,fingerprint)
+            captured.append(_Captured(id,path,json.dumps(identity,sort_keys=True,separators=(',',':')).encode(),fingerprint,owner))
         groups.append(tuple(captured))
     return ApprovedInputs(canonical,*groups,_token=_INPUT_TOKEN)
 
@@ -343,7 +400,176 @@ class ImageToolRunner(Protocol):
 
 def _unchanged(inputs):
     for item in (*inputs.captured,*inputs.tools):
+        item.owner.recheck()
         if _hash_file(item.path,item.identity,'INPUT_CHANGED') != item.fingerprint: _fail('INPUT_CHANGED')
+
+
+class _MemberSnapshot:
+    """Private inert byte snapshot; no archive extraction or executable launch."""
+    def __init__(self,chunks):
+        self.file=tempfile.TemporaryFile(mode='w+b')
+        digest=hashlib.sha256(); size=0
+        try:
+            for data in chunks:
+                size+=len(data)
+                if size > MAX_EXPANDED_BYTES: _fail('ARCHIVE_UNSAFE')
+                self.file.write(data); digest.update(data)
+            if size == 0: _fail('ARTIFACT_MISMATCH')
+            self.file.flush(); self.size=size; self.digest=digest.hexdigest()
+            self.fingerprint=_fingerprint(os.fstat(self.file.fileno()))
+        except BaseException: self.file.close(); raise
+    def __del__(self):
+        source=getattr(self,'file',None)
+        if source is not None: source.close()
+    def recheck(self):
+        try:
+            before=_fingerprint(os.fstat(self.file.fileno()))
+            if before != self.fingerprint: _fail('INPUT_CHANGED')
+            offset=0; digest=hashlib.sha256()
+            while offset < self.size:
+                data=os.pread(self.file.fileno(),min(1048576,self.size-offset),offset)
+                if not data: _fail('INPUT_CHANGED')
+                offset+=len(data); digest.update(data)
+            if digest.hexdigest()!=self.digest or _fingerprint(os.fstat(self.file.fileno()))!=before: _fail('INPUT_CHANGED')
+        except (OSError,ValueError): _fail('INPUT_CHANGED')
+
+
+_MEMBER_TOKEN=object()
+@dataclass(frozen=True,init=False)
+class ValidatedExecutableMembers:
+    inputs: ApprovedInputs
+    canonical: bytes
+    snapshots: tuple
+    def __init__(self,inputs,rows,snapshots,*,_token=None):
+        if _token is not _MEMBER_TOKEN: _fail('UNAUTHORIZED_INPUT')
+        object.__setattr__(self,'inputs',inputs)
+        object.__setattr__(self,'canonical',json.dumps(rows,sort_keys=True,separators=(',',':')).encode())
+        object.__setattr__(self,'snapshots',snapshots)
+    @property
+    def rows(self): return json.loads(self.canonical)
+    def recheck(self):
+        _unchanged(self.inputs)
+        if len(self.snapshots)!=7: _fail('ARTIFACT_MISMATCH')
+        for row,(component,member,path),snapshot in zip(self.rows,EXECUTABLE_MAPPING,self.snapshots):
+            snapshot.recheck()
+            artifact=next(item for item in self.inputs.captured if item.id==component).identity
+            expected={'componentId':component,'artifactSHA256':artifact['sha256'],'memberPath':member,
+                      'memberSHA256':snapshot.digest,'sizeBytes':snapshot.size,'installedPath':path}
+            if row != expected: _fail('ARTIFACT_MISMATCH')
+        _unchanged(self.inputs)
+
+
+def derive_executable_members(inputs: ApprovedInputs) -> ValidatedExecutableMembers:
+    if type(inputs) is not ApprovedInputs: _fail('UNAUTHORIZED_INPUT')
+    manifest=decode_inputs(inputs.canonical)
+    if manifest['manifestVersion']!=2: _fail('INVALID_MANIFEST')
+    if manifest['payloadState']!='COMPLETE': _fail('PAYLOAD_INCOMPLETE')
+    _unchanged(inputs); captured={item.id:item for item in inputs.captured}; rows=[]; snapshots=[]
+    for component,member,path in EXECUTABLE_MAPPING:
+        item=captured[component]; owner=item.owner; owner.recheck()
+        if member:
+            # Borrow the original retained artifact, rather than reopening a
+            # possibly replaced path. tarfile yields inert member bytes only.
+            with os.fdopen(os.dup(owner.file.fileno()),'rb') as source:
+                source.seek(0)
+                with tarfile.open(fileobj=source,mode='r:*') as tf:
+                    candidates=[entry for entry in tf if entry.name==member]
+                    if len(candidates)!=1: _fail('ARCHIVE_UNSAFE')
+                    entry=candidates[0]
+                    if not entry.isfile() or entry.mode & 0o7022 or not entry.mode & 0o111: _fail('ARCHIVE_UNSAFE')
+                    with tf.extractfile(entry) as stream:
+                        snapshot=_MemberSnapshot(iter(lambda:stream.read(1048576),b''))
+                    if snapshot.size!=entry.size: _fail('ARTIFACT_MISMATCH')
+        else: snapshot=_MemberSnapshot(owner.chunks())
+        owner.recheck(); snapshots.append(snapshot)
+        rows.append({'componentId':component,'artifactSHA256':item.identity['sha256'],'memberPath':member,
+                     'memberSHA256':snapshot.digest,'sizeBytes':snapshot.size,'installedPath':path})
+    result=ValidatedExecutableMembers(inputs,rows,tuple(snapshots),_token=_MEMBER_TOKEN)
+    result.recheck(); return result
+
+
+_POPULATION_TOKEN=object()
+@dataclass(frozen=True,init=False)
+class NativePopulationOwner:
+    """Reserved trusted adapter result. No native adapter/factory exists here.
+
+    A future approved adapter must retain the original base and seven installed
+    regular-file owners, in exact immutable install order. A hash getter, wire
+    record or caller mode flag cannot substitute for those originals.
+    """
+    members: ValidatedExecutableMembers
+    manifest_bytes: bytes
+    base: _RetainedSource
+    installed: tuple
+    def __init__(self,members,manifest,base,installed,*,_token=None):
+        if _token is not _POPULATION_TOKEN: _fail('UNAUTHORIZED_INPUT')
+        if type(members) is not ValidatedExecutableMembers or type(base) is not _RetainedSource: _fail('UNAUTHORIZED_INPUT')
+        installed=tuple(installed)
+        if len(installed)!=7 or any(type(source) is not _RetainedSource for _,source in installed): _fail('UNAUTHORIZED_INPUT')
+        object.__setattr__(self,'members',members)
+        object.__setattr__(self,'manifest_bytes',canonical_manifest(manifest))
+        object.__setattr__(self,'base',base); object.__setattr__(self,'installed',installed)
+
+
+_INVENTORY_TOKEN=object()
+@dataclass(frozen=True,init=False)
+class InstalledExecutableInventory:
+    members: ValidatedExecutableMembers
+    population_owner: NativePopulationOwner
+    canonical: bytes
+    def __init__(self,members,population_owner,canonical,*,_token=None):
+        if _token is not _INVENTORY_TOKEN: _fail('UNAUTHORIZED_INPUT')
+        object.__setattr__(self,'members',members); object.__setattr__(self,'population_owner',population_owner)
+        object.__setattr__(self,'canonical',canonical)
+    def recheck(self):
+        manifest=decode_appliance(self.population_owner.manifest_bytes)
+        verify_installed_members(self.members,self.population_owner,manifest['outputs'][0])
+
+
+@dataclass(frozen=True,init=False)
+class OfflineInstalledExecutableInventory:
+    members: ValidatedExecutableMembers
+    canonical: bytes
+    def __init__(self,members,canonical,*,_token=None):
+        if _token is not _INVENTORY_TOKEN: _fail('UNAUTHORIZED_INPUT')
+        object.__setattr__(self,'members',members); object.__setattr__(self,'canonical',canonical)
+
+
+def _inventory_document(members,manifest,state):
+    if manifest['manifestVersion']!=2 or manifest['inputsDigest']!=_sha(members.inputs.canonical): _fail('IDENTITY_MISMATCH')
+    if manifest['components']!=decode_inputs(members.inputs.canonical)['artifacts']: _fail('ARTIFACT_MISMATCH')
+    return json.dumps({'inventoryVersion':1,'inputsDigest':manifest['inputsDigest'],
+                       'manifestDigest':manifest_digest(manifest),'baseIdentity':manifest['outputs'][0],
+                       'populationState':state,'members':members.rows},sort_keys=True,separators=(',',':')).encode()
+
+
+def offline_installed_members(members,manifest) -> OfflineInstalledExecutableInventory:
+    if type(members) is not ValidatedExecutableMembers: _fail('UNAUTHORIZED_INPUT')
+    manifest=decode_appliance(canonical_manifest(manifest)); members.recheck()
+    if manifest['provenance']['assemblyMode']!='SYNTHETIC': _fail('SYNTHETIC_ONLY')
+    canonical=_inventory_document(members,manifest,'UNPERFORMED'); members.recheck()
+    return OfflineInstalledExecutableInventory(members,canonical,_token=_INVENTORY_TOKEN)
+
+
+def verify_installed_members(members,population_owner,base_identity) -> InstalledExecutableInventory:
+    if type(members) is not ValidatedExecutableMembers or type(population_owner) is not NativePopulationOwner: _fail('UNAUTHORIZED_INPUT')
+    if population_owner.members is not members: _fail('IDENTITY_MISMATCH')
+    members.recheck(); manifest=decode_appliance(population_owner.manifest_bytes)
+    if (decode_inputs(members.inputs.canonical)['provenance']['inputClass']!='APPROVED_CANDIDATE'
+            or manifest['provenance']['assemblyMode']!='NATIVE_ARM64_LINUX'): _fail('SYNTHETIC_ONLY')
+    if base_identity != manifest['outputs'][0] or json.loads(population_owner.base.identity_bytes)!=base_identity: _fail('IDENTITY_MISMATCH')
+    population_owner.base.recheck()
+    for row,(path,source) in zip(members.rows,population_owner.installed):
+        if path!=row['installedPath']: _fail('ARTIFACT_MISMATCH')
+        if os.fstat(source.file.fileno()).st_mode & 0o7022: _fail('ARTIFACT_MISMATCH')
+        identity=json.loads(source.identity_bytes)
+        if identity['sha256']!=row['memberSHA256'] or identity['sizeBytes']!=row['sizeBytes']: _fail('ARTIFACT_MISMATCH')
+        source.recheck()
+    canonical=_inventory_document(members,manifest,'VERIFIED')
+    # No identity changes during any source/base/installed consumption.
+    members.recheck(); population_owner.base.recheck()
+    for _,source in population_owner.installed: source.recheck()
+    return InstalledExecutableInventory(members,population_owner,canonical,_token=_INVENTORY_TOKEN)
 
 
 def _cleanup_owned(path, inode):
@@ -426,6 +652,7 @@ def assemble(inputs: ApprovedInputs, output: Path, *, image_tool: ImageToolRunne
 
 def require_qualified(manifest: dict):
     _validated(manifest)
+    if manifest['manifestVersion'] != 2: _fail('INVALID_MANIFEST')
     if manifest['payloadState']=='INCOMPLETE': _fail('PAYLOAD_INCOMPLETE')
     if manifest['provenance'].get('assemblyMode')=='SYNTHETIC': _fail('SYNTHETIC_ONLY')
     _fail('SIGNING_UNAVAILABLE')
