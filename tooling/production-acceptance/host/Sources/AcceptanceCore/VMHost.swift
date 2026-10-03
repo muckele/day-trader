@@ -85,8 +85,12 @@ enum BootstrapProbeID: String, CaseIterable, Sendable {
     case verifierIPv4TCP = "VERIFIER_IPV4_TCP"
 }
 protocol BootstrapProbePort: Sendable { func capture(ids:[BootstrapProbeID]) throws -> Data }
-protocol BootstrapLifecyclePort: Sendable { func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws }
-protocol BootstrapActivationPort: Sendable { func activateBrowser(proof:AdmissionProof) throws }
+protocol BootstrapOwnedLifecycle: Sendable { func stopOwned() throws }
+protocol BootstrapLifecyclePort: Sendable { func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws -> any BootstrapOwnedLifecycle }
+protocol BootstrapOwnedRoleHandle: Sendable { func stopOwned() throws }
+protocol BootstrapActivationPort: Sendable {
+    func activateBrowser(proof:AdmissionProof,authorize:@escaping @Sendable () throws -> Void) throws -> any BootstrapOwnedRoleHandle
+}
 public struct AdmissionProof: Sendable {
     public let runID:String, manifestIdentity:String, roleInventoryDigest:String, deviceInventoryDigest:String, topologyDigest:String, expiresAt:Int
     public let sequence:Int, observedWall:Int, observedMonotonic:Int
@@ -108,6 +112,10 @@ enum BootstrapHandoff {
               number.doubleValue >= Double(lower), number.doubleValue <= Double(upper) else { return nil }
         return number.intValue
     }
+    private static func boolean(_ value:Any?,_ expected:Bool) -> Bool {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return false }
+        return number.boolValue == expected
+    }
     private static func object(_ value:Any?) throws -> [String:Any] { guard let value = value as? [String:Any] else { throw VMFailure.admissionUnavailable }; return value }
     private static func array(_ value:Any?) throws -> [Any] { guard let value = value as? [Any] else { throw VMFailure.admissionUnavailable }; return value }
     private static func string(_ value:Any?) throws -> String { guard let value = value as? String, !value.isEmpty, value.utf8.count <= 512, value.canBeConverted(to:.ascii) else { throw VMFailure.admissionUnavailable }; return value }
@@ -128,7 +136,34 @@ enum BootstrapHandoff {
               try string(listener["address"]) == "127.0.0.1", integer(listener["port"],1,65535) == 3128,
               integer(listener["uid"],1,Int(UInt32.max)) == 10004 else { throw VMFailure.admissionUnavailable }
     }
-    private static func validateRoles(_ value:Any?,runID:String) throws {
+    static func programPins(manifest:ApplianceManifest) throws -> [String:String] {
+        let raw = try JSONSerialization.jsonObject(with:manifest.canonicalBytes(),options:[])
+        let document = try object(raw), components = try array(document["components"])
+        var hashes:[String:String] = [:]
+        for rawComponent in components {
+            let component = try object(rawComponent)
+            let id = try string(component["id"]), sha = try string(component["sha256"])
+            guard hex(sha,count:64), hashes[id] == nil else { throw VMFailure.admissionUnavailable }
+            hashes[id] = sha
+        }
+        let componentByPath = [
+            "/opt/acceptance/guest/browser-worker.cjs":"guestBootstrap",
+            "/opt/acceptance/guest/controller.cjs":"controller",
+            "/opt/acceptance/guest/proxy.py":"proxy",
+            "/opt/acceptance/guest/verifier.cjs":"verifier",
+            "/opt/acceptance/runtime/chromium/chrome":"chromium",
+            "/opt/acceptance/runtime/node/bin/node":"node",
+            "/opt/acceptance/runtime/python/bin/python3":"python",
+        ]
+        var result:[String:String] = [:]
+        for path in programs {
+            guard let id = componentByPath[path], let sha = hashes[id] else { throw VMFailure.admissionUnavailable }
+            result[path] = sha
+        }
+        return result
+    }
+    private static func validateRoles(_ value:Any?,runID:String,programPins:[String:String]) throws {
+        guard Set(programPins.keys) == Set(programs), programPins.values.allSatisfy({ hex($0,count:64) }) else { throw VMFailure.admissionUnavailable }
         let rows = try array(value); guard rows.count == roles.count else { throw VMFailure.admissionUnavailable }
         var pids = Set<Int>()
         for (raw,expected) in zip(rows,roles) {
@@ -137,7 +172,7 @@ enum BootstrapHandoff {
                   try string(row["role"]) == expected.0, try string(row["runId"]) == runID,
                   let pid, pids.insert(pid).inserted, try string(row["filterDigest"]) == expected.2,
                   integer(row["noNewPrivs"]) == 1, integer(row["seccomp"]) == 2,
-                  (row["waiting"] as? Bool) == true else { throw VMFailure.admissionUnavailable }
+                  boolean(row["waiting"],true) else { throw VMFailure.admissionUnavailable }
             for key in ["uids","gids"] { let values = try array(row[key]); guard values.count == 3 && values.allSatisfy({ integer($0,1,Int(UInt32.max)) == expected.1 }) else { throw VMFailure.admissionUnavailable } }
             guard try array(row["groups"]).isEmpty else { throw VMFailure.admissionUnavailable }
             let capabilities = try array(row["capabilities"]); guard capabilities.count == 5 && capabilities.allSatisfy({ integer($0,0,Int(UInt32.max)) == 0 }) else { throw VMFailure.admissionUnavailable }
@@ -155,20 +190,20 @@ enum BootstrapHandoff {
                   try string(views["root"]) == "/run/acceptance/\(expected.0.lowercased())",
                   integer(views["privateMode"],0,4095) == 448 else { throw VMFailure.admissionUnavailable }
             try exactStrings(views["visibleRoles"],[expected.0]); try exactStrings(views["deviceNodes"],["/dev/null"])
-            for key in ["separatePid","separateMount","initialUserNamespace","readOnlyBase","privateTmpfs","noExternalIpInterface","noFdDonor"] { guard (views[key] as? Bool) == true else { throw VMFailure.admissionUnavailable } }
-            for key in ["console","controllingTty"] { guard (views[key] as? Bool) == false else { throw VMFailure.admissionUnavailable } }
+            for key in ["separatePid","separateMount","initialUserNamespace","readOnlyBase","privateTmpfs","noExternalIpInterface","noFdDonor"] { guard boolean(views[key],true) else { throw VMFailure.admissionUnavailable } }
+            for key in ["console","controllingTty"] { guard boolean(views[key],false) else { throw VMFailure.admissionUnavailable } }
             let pins = try array(row["programs"]); guard pins.count == programs.count else { throw VMFailure.admissionUnavailable }
-            for (rawPin,path) in zip(pins,programs) { let pin = try object(rawPin); guard Set(pin.keys) == ["path","sha256"], try string(pin["path"]) == path, hex(try string(pin["sha256"]),count:64) else { throw VMFailure.admissionUnavailable } }
+            for (rawPin,path) in zip(pins,programs) { let pin = try object(rawPin); guard Set(pin.keys) == ["path","sha256"], try string(pin["path"]) == path, try string(pin["sha256"]) == programPins[path] else { throw VMFailure.admissionUnavailable } }
         }
     }
     private static func validateProbes(_ value:Any?) throws {
         let rows = try array(value), expected = BootstrapProbeID.allCases; guard rows.count == expected.count else { throw VMFailure.admissionUnavailable }
         for (raw,id) in zip(rows,expected) { let row = try object(raw), positive = id == .proxyVsockControl
-            guard Set(row.keys) == ["attempted","identifier","outcome","ownedReceiverCount"], try string(row["identifier"]) == id.rawValue, (row["attempted"] as? Bool) == true,
+            guard Set(row.keys) == ["attempted","identifier","outcome","ownedReceiverCount"], try string(row["identifier"]) == id.rawValue, boolean(row["attempted"],true),
                   try string(row["outcome"]) == (positive ? "ALLOWED":"DENIED"),
                   integer(row["ownedReceiverCount"],0,1) == (positive ? 1:0) else { throw VMFailure.admissionUnavailable } }
     }
-    static func verify(data:Data,expectedRunID:String,manifestIdentity:String,configIdentity:String,expiresAt:Int,capability:Data) throws -> AdmissionProof {
+    static func verify(data:Data,expectedRunID:String,manifestIdentity:String,configIdentity:String,expiresAt:Int,capability:Data,programPins:[String:String]) throws -> AdmissionProof {
         do {
             guard data.count <= maxBytes, capability.count == 32 else { throw VMFailure.admissionUnavailable }
             let raw = try JSONSerialization.jsonObject(with:data,options:[]), envelope = try object(raw)
@@ -185,7 +220,7 @@ enum BootstrapHandoff {
                   let sequence = integer(payload["sequence"],1), let observedWall = integer(payload["observedWall"]),
                   let observedMonotonic = integer(payload["observedMonotonic"]) else { throw VMFailure.admissionUnavailable }
             let deviceObject = try object(payload["devices"]); try validateDevices(deviceObject)
-            try validateRoles(payload["roles"],runID:expectedRunID); try validateProbes(payload["probes"])
+            try validateRoles(payload["roles"],runID:expectedRunID,programPins:programPins); try validateProbes(payload["probes"])
             let proxy = try object(payload["proxy"])
             guard Set(proxy.keys) == ["configIdentity","expiresAt","hostCid","listenAddress","listenPort","manifestIdentity","runId","servicePort","uid"],
                   try string(proxy["runId"]) == expectedRunID, try string(proxy["manifestIdentity"]) == manifestIdentity,
@@ -251,6 +286,7 @@ public final class BootstrapQualification: @unchecked Sendable {
     private let probe:any BootstrapProbePort
     private let lock = NSLock()
     private var proof:AdmissionProof, lastClock:ClockSample, failed = false, activated = false
+    private var generation = 0, busy:UUID?, lifecycle:(any BootstrapOwnedLifecycle)?
     fileprivate init(run:RunConfiguration,authority:RunAuthority,clock:any BrokerClock,probe:any BootstrapProbePort,
          proof:AdmissionProof,lastClock:ClockSample) {
         self.run=run; self.authority=authority; self.clock=clock; self.probe=probe
@@ -258,43 +294,99 @@ public final class BootstrapQualification: @unchecked Sendable {
     }
     private func checkedSample() throws -> ClockSample {
         let sample = try clock.sample()
-        guard sample.wall >= lastClock.wall, sample.monotonic >= lastClock.monotonic else { throw VMFailure.clock }
-        _ = try authority.check(sample); lastClock = sample; return sample
-    }
-    private func latch<T>(_ body:() throws -> T) throws -> T {
         try lock.withLock {
-            guard !failed else { throw VMFailure.terminal }
-            do { return try body() }
-            catch let error as VMFailure { failed = true; throw error }
-            catch { failed = true; throw VMFailure.admissionUnavailable }
+            guard !failed, sample.wall >= lastClock.wall, sample.monotonic >= lastClock.monotonic else { throw VMFailure.clock }
+            lastClock = sample
+        }
+        _ = try authority.check(sample)
+        return sample
+    }
+    private func reserve(activation:Bool) throws -> (UUID,Int) {
+        try lock.withLock {
+            guard !failed, busy == nil, !activation || !activated else {
+                failed = true; generation += 1; throw VMFailure.terminal
+            }
+            if activation { activated = true }
+            let token = UUID(); busy = token
+            return (token,generation)
         }
     }
-    private func resample() throws -> AdmissionProof {
-        let before = try checkedSample(); try run.appliance.recheck()
+    private func latch() { lock.withLock { failed = true; generation += 1; busy = nil } }
+    private func assertCurrent(_ token:UUID,_ admittedGeneration:Int) throws {
+        try lock.withLock {
+            guard !failed, busy == token, generation == admittedGeneration else { throw VMFailure.terminal }
+        }
+    }
+    private func resample(token:UUID,generation admittedGeneration:Int) throws -> AdmissionProof {
+        let before = try checkedSample(); try run.appliance.recheck(); _ = try checkedSample()
         let data = try probe.capture(ids:BootstrapProbeID.allCases)
         let after = try checkedSample(); try run.appliance.recheck()
+        let final = try checkedSample()
         let current = try BootstrapHandoff.verify(data:data,expectedRunID:run.binding.runID,
             manifestIdentity:run.appliance.manifest.digest,configIdentity:run.binding.configIdentity,
-            expiresAt:run.binding.expiresAt,capability:run.capability)
+            expiresAt:run.binding.expiresAt,capability:run.capability,
+            programPins:try BootstrapHandoff.programPins(manifest:run.appliance.manifest))
         guard current.sequence == proof.sequence + 1,
               current.topologyDigest == proof.topologyDigest,
               current.roleInventoryDigest == proof.roleInventoryDigest,
               current.deviceInventoryDigest == proof.deviceInventoryDigest,
               before.wall <= current.observedWall, current.observedWall <= after.wall,
               before.monotonic <= current.observedMonotonic, current.observedMonotonic <= after.monotonic,
-              after.wall-current.observedWall <= 1, after.monotonic-current.observedMonotonic <= 1 else { throw VMFailure.admissionUnavailable }
-        proof=current; return current
+              after.wall-current.observedWall <= 1, after.monotonic-current.observedMonotonic <= 1,
+              final.wall >= after.wall, final.monotonic >= after.monotonic else { throw VMFailure.admissionUnavailable }
+        try lock.withLock {
+            guard !failed, busy == token, generation == admittedGeneration else { throw VMFailure.terminal }
+            proof=current
+        }
+        return current
     }
     func currentProofWithoutActivation() throws -> AdmissionProof { try lock.withLock { guard !failed else { throw VMFailure.terminal }; return proof } }
-    public func requireBrowserAdmission() throws -> AdmissionProof { try latch { try resample() } }
+    public func requireBrowserAdmission() throws -> AdmissionProof {
+        let reservation = try reserve(activation:false)
+        do {
+            let current = try resample(token:reservation.0,generation:reservation.1)
+            try lock.withLock { guard !failed, busy == reservation.0 else { throw VMFailure.terminal }; busy=nil }
+            return current
+        } catch let error as VMFailure { latch(); throw error }
+          catch { latch(); throw VMFailure.admissionUnavailable }
+    }
     func activateBrowser(_ activation:any BootstrapActivationPort) throws {
-        try latch {
-            guard !activated else { throw VMFailure.terminal }
-            let current = try resample()
-            try activation.activateBrowser(proof:current); proof=current; activated=true
+        let reservation = try reserve(activation:true)
+        var handle:(any BootstrapOwnedRoleHandle)?
+        do {
+            let current = try resample(token:reservation.0,generation:reservation.1)
+            try run.appliance.recheck(); _ = try checkedSample()
+            handle = try activation.activateBrowser(proof:current,authorize:{ [weak self] in
+                guard let self else { throw VMFailure.terminal }
+                try self.assertCurrent(reservation.0,reservation.1)
+            })
+            try lock.withLock {
+                guard !failed, busy == reservation.0, generation == reservation.1 else { throw VMFailure.terminal }
+                busy=nil
+            }
+        } catch let error as VMFailure {
+            latch(); if let handle { do { try handle.stopOwned() } catch { throw VMFailure.terminal } }; throw error
+        } catch {
+            latch(); if let handle { do { try handle.stopOwned() } catch { throw VMFailure.terminal } }
+            throw VMFailure.admissionUnavailable
         }
     }
-    fileprivate func topologyDrifted() { lock.withLock { failed = true } }
+    fileprivate func installLifecycle(_ handle:any BootstrapOwnedLifecycle) throws {
+        let accepted = lock.withLock { () -> Bool in
+            guard !failed, lifecycle == nil else { return false }
+            lifecycle=handle; return true
+        }
+        if !accepted { try handle.stopOwned(); throw VMFailure.terminal }
+    }
+    fileprivate func topologyDrifted() {
+        let owned = lock.withLock { () -> (any BootstrapOwnedLifecycle)? in
+            failed = true; generation += 1
+            let value = lifecycle; lifecycle=nil
+            return value
+        }
+        // The monitor callback cannot throw; failure to stop remains terminal.
+        try? owned?.stopOwned()
+    }
 }
 
 struct NativeBootstrapComposition: Sendable {
@@ -353,15 +445,19 @@ enum OfflineVMHost {
             guard after.wall >= before.wall, after.monotonic >= before.monotonic else { throw VMFailure.clock }
             let proof = try BootstrapHandoff.verify(data:handoff,expectedRunID:run.binding.runID,
                 manifestIdentity:run.appliance.manifest.digest,configIdentity:run.binding.configIdentity,
-                expiresAt:run.binding.expiresAt,capability:run.capability)
+                expiresAt:run.binding.expiresAt,capability:run.capability,
+                programPins:try BootstrapHandoff.programPins(manifest:run.appliance.manifest))
             guard proof.sequence == 1, before.wall <= proof.observedWall, proof.observedWall <= after.wall,
                   before.monotonic <= proof.observedMonotonic, proof.observedMonotonic <= after.monotonic,
                   after.wall-proof.observedWall <= 1, after.monotonic-proof.observedMonotonic <= 1 else { throw VMFailure.admissionUnavailable }
             let qualification = BootstrapQualification(run:run,authority:authority,clock:clock,
                 probe:probe,proof:proof,lastClock:after)
-            try lifecycle.begin(handoff:handoff,onDrift:{ qualification.topologyDrifted() })
+            let lifecycleHandle = try lifecycle.begin(handoff:handoff,onDrift:{ qualification.topologyDrifted() })
             let final = try clock.sample(); _ = try authority.check(final); try run.appliance.recheck()
-            guard final.wall >= after.wall, final.monotonic >= after.monotonic else { throw VMFailure.clock }
+            let postRecheck = try clock.sample(); _ = try authority.check(postRecheck)
+            guard final.wall >= after.wall, final.monotonic >= after.monotonic,
+                  postRecheck.wall >= final.wall, postRecheck.monotonic >= final.monotonic else { throw VMFailure.clock }
+            try qualification.installLifecycle(lifecycleHandle)
             return qualification
         } catch let error as VMFailure {
             if error == .terminal { throw error }

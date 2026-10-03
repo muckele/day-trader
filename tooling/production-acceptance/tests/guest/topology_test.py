@@ -5,7 +5,17 @@ the separately approved VM qualification gate. Importing this file performs no
 probe, syscall, socket operation, process launch, or filesystem inspection.
 """
 from typing import Protocol
+import importlib.util
+import pathlib
+import sys
 import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+spec = importlib.util.spec_from_file_location('task10_guest_topology', ROOT / 'guest/topology.py')
+topology = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = topology
+spec.loader.exec_module(topology)
 
 
 FIXED_PROBE_IDS = (
@@ -50,6 +60,76 @@ class GuestTopologyDriverTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '^inert failure$'):
             execute_fixed_probes(port)
         self.assertEqual(tuple(port.requested), FIXED_PROBE_IDS[:3])
+
+    def test_explicit_task8_probe_composition_runs_reviewed_prerequisites(self):
+        class Module:
+            PROBES = {name: object() for name in set(topology.TASK8_PROBE_CASES.values())}
+            class NativeProbePort: pass
+            called = []
+            @staticmethod
+            def run_case(name, port): Module.called.append((name, port))
+        class Native:
+            def __init__(self): self.ids = []
+            def execute_native(self, identifier):
+                self.ids.append(identifier)
+                positive = identifier == 'PROXY_VSOCK_CONTROL'
+                return topology.ProbeResult(identifier, True,
+                    'ALLOWED' if positive else 'DENIED', 1 if positive else 0)
+        port, native = Module.NativeProbePort(), Native()
+        source = topology.select_task8_probe_source(Module, port, native, 'linux', 'aarch64')
+        values = execute_fixed_probes(source)
+        self.assertEqual(tuple(item.identifier for item in values), FIXED_PROBE_IDS)
+        self.assertEqual(tuple(native.ids), FIXED_PROBE_IDS)
+        self.assertEqual(tuple(name for name, _ in Module.called),
+                         tuple(topology.TASK8_PROBE_CASES[item]
+                               for item in FIXED_PROBE_IDS
+                               if item in topology.TASK8_PROBE_CASES))
+        with self.assertRaises(topology.TopologyError):
+            topology.select_task8_probe_source(Module, port, native, 'darwin', 'arm64')
+
+    def test_task8_role_and_task9_proxy_adapters_retain_owned_authority(self):
+        class Handle:
+            def __init__(self): self.stops = 0
+            def stopOwned(self): self.stops += 1
+        class Bridge:
+            def __init__(self): self.activated = 0; self.handle = Handle(); self.cleaned = []
+            def collectOwned(self, launches): return ('roles', launches)
+            def cleanupOwned(self, handoffs): self.cleaned.append(handoffs)
+            def activateOnce(self, grant, handoff, proof):
+                self.activated += 1
+                return self.handle
+        bridge = Bridge(); source, activation = topology.select_task8_roles(bridge, object())
+        expected = type('Authority', (), {'role_launches': ('launches',)})()
+        self.assertEqual(source.collect(expected), ('roles', ('launches',)))
+        handoff = type('Handoff', (), {'launch': type('Launch', (), {'role':'BROWSER'})()})()
+        authorized = []
+        handle = activation.activate(handoff, object(), lambda: authorized.append(True))
+        self.assertEqual((authorized, bridge.activated), ([True], 1))
+        handle.stop_owned(); self.assertEqual(bridge.handle.stops, 1)
+
+        class Observer:
+            def __init__(self): self.seen = []
+            def observeAccepted(self, policy): self.seen.append(policy); return 'runtime'
+        # A caller cannot fabricate the accepted Task9 seal.
+        with self.assertRaises(topology.TopologyError):
+            topology.select_task9_proxy_source(Observer(), object())
+
+    def test_native_supervision_is_explicit_owned_and_drift_callback_is_retained(self):
+        class Handle:
+            def __init__(self): self.stops = 0
+            def stop_owned(self): self.stops += 1
+        class Monitor:
+            def __init__(self): self.callback = None; self.handle = Handle()
+            def beginOwned(self, handoff, callback):
+                self.callback = callback
+                return self.handle
+        monitor = Monitor()
+        supervisor = topology.select_native_supervisor(monitor, 'linux', 'aarch64')
+        handle = supervisor.begin('authenticated-handoff', lambda: None)
+        self.assertIs(handle, monitor.handle)
+        self.assertIsNotNone(monitor.callback)
+        with self.assertRaises(topology.TopologyError):
+            topology.select_native_supervisor(monitor, 'darwin', 'arm64')
 
 
 if __name__ == '__main__':

@@ -22,21 +22,43 @@ private final class BootstrapProbeFake: BootstrapProbePort, @unchecked Sendable 
     }
 }
 
-private final class BootstrapLifecycleFake: BootstrapLifecyclePort, @unchecked Sendable {
-    private var drift:(@Sendable () -> Void)?; var starts = 0
-    func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws { starts += 1; drift = onDrift }
+private final class BootstrapLifecycleFake: BootstrapLifecyclePort, BootstrapOwnedLifecycle, @unchecked Sendable {
+    private var drift:(@Sendable () -> Void)?; var starts = 0, stops = 0, driftOnBegin = false
+    func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws -> any BootstrapOwnedLifecycle {
+        starts += 1; drift = onDrift; if driftOnBegin { onDrift() }; return self
+    }
+    func stopOwned() throws { stops += 1 }
     func triggerDrift() { drift?() }
 }
 
+private final class BootstrapRoleHandleFake: BootstrapOwnedRoleHandle, @unchecked Sendable {
+    var stops = 0
+    func stopOwned() throws { stops += 1 }
+}
+
 private final class BootstrapActivationFake: BootstrapActivationPort, @unchecked Sendable {
-    var calls = 0
-    func activateBrowser(proof:AdmissionProof) throws { calls += 1 }
+    var calls = 0, callback:(@Sendable () throws -> Void)?; let handle = BootstrapRoleHandleFake()
+    func activateBrowser(proof:AdmissionProof,authorize:@escaping @Sendable () throws -> Void) throws -> any BootstrapOwnedRoleHandle {
+        try authorize(); calls += 1; try callback?(); return handle
+    }
 }
 
 private struct BootstrapRunFixture {
     let run:RunConfiguration
     init() throws {
-        let appliance = try ApplianceFixture().verified(), fixture = try BrokerTests.fixture()
+        let applianceFixture = try ApplianceFixture()
+        var applianceObject = applianceFixture.object
+        var components = applianceObject["components"] as! [[String:Any]]
+        for (index,id) in ["controller","guestBootstrap","guestProbes","proxy","rolePolicy","routePolicy","seccompPolicy","verifier"].enumerated() {
+            components.append(["id":id,"sha256":String(repeating:String(index + 1),count:64),
+                               "sizeBytes":index + 1,"sourceId":"task10-independent-" + id,"version":"task10-v1"])
+        }
+        applianceObject["components"] = components.sorted { ($0["id"] as! String) < ($1["id"] as! String) }
+        applianceObject["missingPayload"] = []; applianceObject["payloadState"] = "COMPLETE"
+        let manifest = try ApplianceManifest.decode(try applianceFixture.wire(applianceObject))
+        let appliance = try manifest.verifyArtifacts(locations:applianceFixture.locations,
+                                                      expectedManifestDigest:manifest.digest)
+        let fixture = try BrokerTests.fixture()
         let options = fixture["options"] as! [String:Any]
         let expected = options["expected"] as! [String:[String:Any]]
         let keys = options["publicKeys"] as! [String:String]
@@ -79,6 +101,13 @@ private func resign(_ payload:[String:Any], capability:Data) throws -> Data {
     return try canonical(["mac":mac,"payload":payload,"version":1])
 }
 
+private let pythonProgramPins:[String:String] = Dictionary(uniqueKeysWithValues:[
+    "/opt/acceptance/guest/browser-worker.cjs","/opt/acceptance/guest/controller.cjs",
+    "/opt/acceptance/guest/proxy.py","/opt/acceptance/guest/verifier.cjs",
+    "/opt/acceptance/runtime/chromium/chrome","/opt/acceptance/runtime/node/bin/node",
+    "/opt/acceptance/runtime/python/bin/python3",
+].enumerated().map { ($0.element,String(repeating:String($0.offset + 1),count:64)) })
+
 private func pythonFixture() throws -> [String:Any] {
     let path = try #require(ProcessInfo.processInfo.environment["TASK10_TOPOLOGY_INPUT"])
     let object = try JSONSerialization.jsonObject(with:Data(contentsOf:URL(fileURLWithPath:path)))
@@ -98,10 +127,16 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
     proxy["configIdentity"] = run.binding.configIdentity; proxy["expiresAt"] = run.binding.expiresAt
     payload["proxy"] = proxy
     var roles = payload["roles"] as! [[String:Any]]
+    let programPins = try BootstrapHandoff.programPins(manifest:run.appliance.manifest)
     for index in roles.indices { roles[index]["runId"] = run.binding.runID
         var fds = roles[index]["fds"] as! [[String:Any]]
         for fdIndex in fds.indices { fds[fdIndex]["runId"] = run.binding.runID }
-        roles[index]["fds"] = fds }
+        roles[index]["fds"] = fds
+        var programs = roles[index]["programs"] as! [[String:Any]]
+        for programIndex in programs.indices {
+            programs[programIndex]["sha256"] = programPins[programs[programIndex]["path"] as! String]!
+        }
+        roles[index]["programs"] = programs }
     payload["roles"] = roles
     return try resign(mutate?(payload) ?? payload,capability:run.capability)
 }
@@ -112,7 +147,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         let data = try Data(contentsOf:URL(fileURLWithPath:path))
         let proof = try BootstrapHandoff.verify(data:data,expectedRunID:String(repeating:"1",count:32),
             manifestIdentity:String(repeating:"a",count:64),configIdentity:String(repeating:"b",count:64),
-            expiresAt:190,capability:Data(repeating:7,count:32))
+            expiresAt:190,capability:Data(repeating:7,count:32),programPins:pythonProgramPins)
         #expect(proof.sequence == 1); #expect(proof.roleInventoryDigest.count == 64)
         #expect(proof.deviceInventoryDigest.count == 64)
     }
@@ -146,6 +181,8 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
             { value in var x=value; var d=x["devices"] as! [String:Any]; var l=d["listeners"] as! [[String:Any]]; l.append(l[0]); d["listeners"]=l; x["devices"]=d; return x },
             { value in var x=value; var r=x["roles"] as! [[String:Any]]; r[1]["filterDigest"]=String(repeating:"0",count:64); x["roles"]=r; return x },
             { value in var x=value; var r=x["roles"] as! [[String:Any]]; var f=r[1]["fds"] as! [[String:Any]]; f[3]["purpose"]="donor"; r[1]["fds"]=f; x["roles"]=r; return x },
+            { value in var x=value; var r=x["roles"] as! [[String:Any]]; var p=r[1]["programs"] as! [[String:Any]]; p[0]["sha256"]=String(repeating:"f",count:64); r[1]["programs"]=p; x["roles"]=r; return x },
+            { value in var x=value; var r=x["roles"] as! [[String:Any]]; r[1]["waiting"]=1; x["roles"]=r; return x },
         ]
         for mutation in mutations {
             let bad = try handoff(run,mutate:mutation)
@@ -165,10 +202,23 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         #expect(throws:VMFailure.terminal) { try qualification.activateBrowser(activation) }
     }
 
+    @Test func reentrant_activation_runs_once_and_compensates_owned_handle() throws {
+        let run = try BootstrapRunFixture().run
+        let probe = BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2),try handoff(run,sequence:3)])
+        let clock = BootstrapTestClock(Array(repeating:.init(wall:100,monotonic:10),count:20))
+        let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:BootstrapLifecycleFake(),clock:clock)
+        let activation = BootstrapActivationFake()
+        activation.callback = { #expect(throws:VMFailure.self) { try qualification.activateBrowser(activation) } }
+        #expect(throws:VMFailure.self) { try qualification.activateBrowser(activation) }
+        #expect(activation.calls == 1); #expect(activation.handle.stops == 1)
+        #expect(throws:VMFailure.terminal) { _ = try qualification.requireBrowserAdmission() }
+    }
+
     @Test func rollback_expiry_malformed_and_lifecycle_drift_latch_terminal() throws {
         let run = try BootstrapRunFixture().run, lifecycle = BootstrapLifecycleFake()
         let q = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),lifecycle:lifecycle,clock:BootstrapTestClock())
         lifecycle.triggerDrift()
+        #expect(lifecycle.stops == 1)
         #expect(throws:VMFailure.terminal) { _ = try q.currentProofWithoutActivation() }
         #expect(throws:VMFailure.terminal) { _ = try q.currentProofWithoutActivation() }
 
@@ -179,10 +229,17 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         #expect(throws:VMFailure.admissionUnavailable) {
             _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([malformed]),lifecycle:BootstrapLifecycleFake(),clock:BootstrapTestClock()) }
 
-        let expiryClock = BootstrapTestClock([.init(wall:100,monotonic:10),.init(wall:100,monotonic:10),
-                                               .init(wall:100,monotonic:10),.init(wall:190,monotonic:11)])
+        let expiryClock = BootstrapTestClock(Array(repeating:.init(wall:100,monotonic:10),count:4)
+                                              + [.init(wall:100,monotonic:10),.init(wall:190,monotonic:11)])
         let expiring = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),lifecycle:BootstrapLifecycleFake(),clock:expiryClock)
         #expect(throws:VMFailure.expired) { _ = try expiring.requireBrowserAdmission() }
         #expect(throws:VMFailure.terminal) { _ = try expiring.requireBrowserAdmission() }
+
+        let duringBegin = BootstrapLifecycleFake(); duringBegin.driftOnBegin = true
+        #expect(throws:VMFailure.terminal) {
+            _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),
+                lifecycle:duringBegin,clock:BootstrapTestClock())
+        }
+        #expect(duringBegin.stops == 1)
     }
 }

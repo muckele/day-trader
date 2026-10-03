@@ -12,6 +12,7 @@ import os
 import pathlib
 import re
 import sys
+import threading
 
 
 class TopologyError(ValueError):
@@ -56,6 +57,14 @@ NATIVE_OBSERVATION_PATHS = (
     '/etc/resolv.conf', '/proc/net/tcp', '/proc/net/tcp6',
     '/proc/net/udp', '/proc/net/udp6', '/proc/net/unix',
 )
+TASK8_PROBE_CASES = {
+    'BROWSER_FD_DONOR': 'SCM_RIGHTS_proc_pidfd_ptrace_process_vm_theft_denied',
+    'BROWSER_HELPER_IPV4': 'child_fork_exec_network_gpu_crash_helper_inherits',
+    'BROWSER_HELPER_IPV6': 'child_fork_exec_network_gpu_crash_helper_inherits',
+    'BROWSER_IO_URING': 'io_uring_setup_register_enter_and_inherited_ring_denied',
+    'BROWSER_VSOCK': 'vsock_browser_controller_verifier_denied',
+    'PROXY_VSOCK_CONTROL': 'proxy_fixed_vsock_positive',
+}
 
 
 def _integer(value, lower=0, upper=_MAX):
@@ -78,6 +87,45 @@ def _sample(value):
 def _canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'),
                       ensure_ascii=True).encode('ascii')
+
+
+def _keys(value, names):
+    return type(value) is dict and set(value) == set(names)
+
+
+def _wire_shape(value, depth=0):
+    if depth > 12:
+        return False
+    if type(value) is dict:
+        return (len(value) <= 128 and all(type(key) is str and _ascii(key, 64)
+                and _wire_shape(item, depth + 1) for key, item in value.items()))
+    if type(value) is list:
+        return len(value) <= 256 and all(_wire_shape(item, depth + 1) for item in value)
+    if type(value) is str:
+        return value.isascii() and len(value) <= 4096
+    if type(value) is int:
+        return -_MAX <= value <= _MAX
+    return type(value) is bool or value is None
+
+
+def _json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            _fail('HANDOFF_DENIED')
+        result[key] = value
+    return result
+
+
+def _json_integer(value):
+    parsed = int(value, 10)
+    if not -_MAX <= parsed <= _MAX:
+        _fail('HANDOFF_DENIED')
+    return parsed
+
+
+def _json_forbidden(_value):
+    _fail('HANDOFF_DENIED')
 
 
 @dataclass(frozen=True)
@@ -381,6 +429,12 @@ def _payload(snapshot, expected, before, after):
         _fail('ROLE_DENIED')
     roles = [_role(item, launch) for item, launch
              in zip(snapshot.role_handoffs, expected.role_launches)]
+    owned = [item._owned for item in snapshot.role_handoffs]
+    if (len({item['pid'] for item in roles}) != len(roles)
+            or len({id(item) for item in owned}) != len(owned)
+            or len({id(item) for item in snapshot.role_handoffs}) != len(roles)
+            or len({id(item.launch) for item in snapshot.role_handoffs}) != len(roles)):
+        _fail('ROLE_DENIED')
     if type(snapshot.probes) is not tuple or len(snapshot.probes) != len(FIXED_PROBE_IDS):
         _fail('PROBE_DENIED')
     probes = [_probe(item, identifier)
@@ -419,10 +473,89 @@ def _payload(snapshot, expected, before, after):
     }
 
 
+def _validate_payload(payload, expected):
+    """Strict common wire schema and semantic policy used by both producer/consumer."""
+    top = ('configIdentity', 'devices', 'expiresAt', 'manifestIdentity',
+           'observedMonotonic', 'observedWall', 'probes', 'proxy', 'roles',
+           'runId', 'sequence')
+    if (not _keys(payload, top) or not _wire_shape(payload)
+            or payload['runId'] != expected.run_id
+            or payload['manifestIdentity'] != expected.manifest_identity
+            or payload['configIdentity'] != expected.config_identity
+            or type(payload['expiresAt']) is not int
+            or payload['expiresAt'] != expected.expires_at
+            or not _integer(payload['observedWall'])
+            or not _integer(payload['observedMonotonic'])
+            or not _integer(payload['sequence'], 1)
+            or payload['observedWall'] >= expected.expires_at):
+        _fail('HANDOFF_DENIED')
+    devices = payload['devices']
+    if (not _keys(devices, ('abstractUnix', 'dnsServers', 'hostDevices',
+                            'interfaces', 'listeners', 'routes'))
+            or devices['hostDevices'] != list(HOST_DEVICES)
+            or devices['interfaces'] != ['lo'] or devices['routes'] != []
+            or devices['dnsServers'] != [] or devices['abstractUnix'] != []
+            or devices['listeners'] != [{
+                'namespace': 'GUEST', 'transport': 'TCP',
+                'address': '127.0.0.1', 'port': 3128, 'uid': 10004}]):
+        _fail('HANDOFF_DENIED')
+    roles = payload['roles']
+    if type(roles) is not list or len(roles) != len(expected.role_launches):
+        _fail('HANDOFF_DENIED')
+    role_keys = ('capabilities', 'fds', 'filterDigest', 'gids', 'groups',
+                 'noNewPrivs', 'pid', 'programs', 'role', 'runId', 'seccomp',
+                 'uids', 'views', 'waiting')
+    pids = []
+    for row, launch in zip(roles, expected.role_launches):
+        expected_views = _views(launch.views)
+        expected_fds = [_descriptor(item) for item in launch.fds]
+        expected_programs = [_program(item) for item in launch.programs]
+        if (not _keys(row, role_keys) or not _integer(row['pid'], 1, 2**31 - 1)
+                or row['runId'] != expected.run_id or row['role'] != launch.role
+                or row['uids'] != [launch.uid] * 3
+                or row['gids'] != [launch.uid] * 3 or row['groups'] != []
+                or row['capabilities'] != [0] * 5
+                or type(row['noNewPrivs']) is not int or row['noNewPrivs'] != 1
+                or type(row['seccomp']) is not int or row['seccomp'] != 2
+                or type(row['waiting']) is not bool or row['waiting'] is not True
+                or row['filterDigest'] != hashlib.sha256(
+                    _CONFINEMENT.filter_bytes(launch.filter)).hexdigest()
+                or row['fds'] != expected_fds or row['views'] != expected_views
+                or row['programs'] != expected_programs):
+            _fail('HANDOFF_DENIED')
+        pids.append(row['pid'])
+    if len(set(pids)) != len(pids):
+        _fail('HANDOFF_DENIED')
+    probes = payload['probes']
+    if type(probes) is not list or len(probes) != len(FIXED_PROBE_IDS):
+        _fail('HANDOFF_DENIED')
+    for row, identifier in zip(probes, FIXED_PROBE_IDS):
+        positive = identifier == 'PROXY_VSOCK_CONTROL'
+        if (not _keys(row, ('attempted', 'identifier', 'outcome',
+                            'ownedReceiverCount'))
+                or row['identifier'] != identifier
+                or type(row['attempted']) is not bool or row['attempted'] is not True
+                or row['outcome'] != ('ALLOWED' if positive else 'DENIED')
+                or type(row['ownedReceiverCount']) is not int
+                or row['ownedReceiverCount'] != (1 if positive else 0)):
+            _fail('HANDOFF_DENIED')
+    proxy = payload['proxy']
+    expected_proxy = {
+        'configIdentity': expected.config_identity, 'expiresAt': expected.expires_at,
+        'hostCid': 2, 'listenAddress': '127.0.0.1', 'listenPort': 3128,
+        'manifestIdentity': expected.manifest_identity, 'runId': expected.run_id,
+        'servicePort': 4050, 'uid': 10004,
+    }
+    if not _keys(proxy, expected_proxy) or proxy != expected_proxy:
+        _fail('HANDOFF_DENIED')
+    return payload
+
+
 def admit_topology(snapshot, expected, before, after):
     """Revalidate complete Task8/9 evidence and authenticate a canonical handoff."""
     try:
         payload = _payload(snapshot, expected, before, after)
+        _validate_payload(payload, expected)
         canonical = _canonical(payload)
         roles = _canonical(payload['roles'])
         devices = _canonical(payload['devices'])
@@ -448,9 +581,12 @@ def verify_handoff(wire, expected):
     try:
         if type(wire) is not str or len(wire) > 131072 or not wire.isascii():
             _fail('HANDOFF_DENIED')
-        envelope = json.loads(wire)
+        envelope = json.loads(wire, object_pairs_hook=_json_object,
+                              parse_int=_json_integer, parse_float=_json_forbidden,
+                              parse_constant=_json_forbidden)
         if (type(envelope) is not dict or set(envelope) != {'mac', 'payload', 'version'}
-                or envelope['version'] != 1 or type(envelope['mac']) is not str
+                or type(envelope['version']) is not int or envelope['version'] != 1
+                or type(envelope['mac']) is not str
                 or _DIGEST.fullmatch(envelope['mac']) is None
                 or type(envelope['payload']) is not dict
                 or _canonical(envelope).decode('ascii') != wire):
@@ -459,21 +595,7 @@ def verify_handoff(wire, expected):
         calculated = hmac.new(expected.capability, _canonical(payload), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(calculated, envelope['mac']):
             _fail('HANDOFF_DENIED')
-        if (payload.get('runId') != expected.run_id
-                or payload.get('manifestIdentity') != expected.manifest_identity
-                or payload.get('configIdentity') != expected.config_identity
-                or payload.get('expiresAt') != expected.expires_at
-                or payload.get('devices', {}).get('hostDevices') != list(HOST_DEVICES)
-                or payload.get('devices', {}).get('interfaces') != ['lo']
-                or payload.get('devices', {}).get('routes') != []
-                or payload.get('devices', {}).get('dnsServers') != []
-                or payload.get('devices', {}).get('abstractUnix') != []
-                or [item.get('role') for item in payload.get('roles', [])]
-                    != [item[0] for item in ROLE_UIDS]
-                or [item.get('identifier') for item in payload.get('probes', [])]
-                    != list(FIXED_PROBE_IDS)):
-            _fail('HANDOFF_DENIED')
-        return payload
+        return _validate_payload(payload, expected)
     except TopologyError:
         raise
     except Exception:
@@ -482,160 +604,586 @@ def verify_handoff(wire, expected):
 
 class TopologyGate:
     """Terminal, resampling admission gate with a Task8 one-use activation."""
-    def __init__(self, expected, adapter):
+    def __init__(self, expected, adapter, supervisor=None):
         _authority(expected)
         if not callable(getattr(adapter, 'capture', None)):
             _fail('ADAPTER_DENIED')
-        self._expected, self._adapter = expected, adapter
+        if supervisor is not None and not callable(getattr(supervisor, 'begin', None)):
+            _fail('ADAPTER_DENIED')
+        self._expected, self._adapter, self._supervisor = expected, adapter, supervisor
         self._proof, self._snapshot = None, None
         self._failed, self._activated, self._sequence = False, False, 0
-        self._last_clock = None
+        self._last_clock, self._deadline = None, None
+        self._lock = threading.RLock()
+        self._generation, self._reservation = 0, None
+        self._supervision = None
 
     def _clock(self):
         try:
             value = self._expected.clock.sample()
         except Exception:
             _fail('CLOCK_DENIED')
-        if (not _sample(value) or (self._last_clock is not None
-                and (value[0] < self._last_clock[0] or value[1] < self._last_clock[1]))):
+        with self._lock:
+            previous = self._last_clock
+        if (not _sample(value) or (previous is not None
+                and (value[0] < previous[0] or value[1] < previous[1]))):
             _fail('CLOCK_DENIED')
-        self._last_clock = value
-        if value[0] >= self._expected.expires_at:
+        with self._lock:
+            if self._last_clock is not previous:
+                _fail('CLOCK_DENIED')
+            self._last_clock = value
+            if self._deadline is None:
+                timeout = self._expected.proxy_policy.run_timeout_ms
+                if not _integer(timeout, 1):
+                    _fail('CLOCK_DENIED')
+                self._deadline = value[1] + timeout
+            deadline = self._deadline
+        if value[0] >= self._expected.expires_at or value[1] >= deadline:
             _fail('TOPOLOGY_EXPIRED')
         return value
 
-    def _attempt(self):
+    def _reserve(self, *, initial):
+        with self._lock:
+            if (self._failed or self._reservation is not None
+                    or (initial and self._proof is not None)
+                    or (not initial and self._proof is None)):
+                self._failed = True
+                self._generation += 1
+                _fail('TOPOLOGY_FAILED')
+            token = (self._generation, object())
+            self._reservation = token
+            sequence = self._sequence + 1
+            return token, sequence
+
+    def _latch(self):
+        with self._lock:
+            self._failed = True
+            self._generation += 1
+            self._reservation = None
+
+    def _attempt(self, *, initial):
+        token, sequence = self._reserve(initial=initial)
+        snapshot = None
         try:
             before = self._clock()
             self._expected.appliance_recheck()
-            sequence = self._sequence + 1
+            before = self._clock()
             snapshot = self._adapter.capture(sequence, self._expected)
             after = self._clock()
             self._expected.appliance_recheck()
+            final = self._clock()
             proof = admit_topology(snapshot, self._expected, before, after)
             if proof.sequence != sequence:
                 _fail('SEQUENCE_DENIED')
-            if self._proof is not None and (
-                    proof.topology_digest != self._proof.topology_digest
-                    or proof.role_inventory_digest != self._proof.role_inventory_digest
-                    or proof.device_inventory_digest != self._proof.device_inventory_digest):
-                _fail('TOPOLOGY_DRIFT')
-            self._sequence, self._proof, self._snapshot = sequence, proof, snapshot
+            if final[0] >= self._expected.expires_at:
+                _fail('TOPOLOGY_EXPIRED')
+            with self._lock:
+                if (self._failed or self._reservation is not token
+                        or self._generation != token[0]):
+                    _fail('TOPOLOGY_DRIFT')
+                if self._proof is not None and (
+                        proof.topology_digest != self._proof.topology_digest
+                        or proof.role_inventory_digest != self._proof.role_inventory_digest
+                        or proof.device_inventory_digest != self._proof.device_inventory_digest):
+                    _fail('TOPOLOGY_DRIFT')
+                self._sequence, self._proof, self._snapshot = sequence, proof, snapshot
+                self._reservation = None
             return proof
         except Exception as error:
-            self._failed = True
+            self._latch()
+            if snapshot is not None and callable(getattr(self._adapter, 'cleanup', None)):
+                try:
+                    self._adapter.cleanup(snapshot)
+                except Exception:
+                    _fail('CLEANUP_UNCERTAIN')
             if isinstance(error, TopologyError):
                 raise
             _fail('OBSERVATION_DENIED')
 
     def admit(self):
-        if self._failed or self._proof is not None:
-            _fail('TOPOLOGY_FAILED')
-        return self._attempt()
+        proof = self._attempt(initial=True)
+        if self._supervisor is None:
+            return proof
+        handle = None
+        try:
+            handle = self._supervisor.begin(proof.handoff, self.topology_drifted)
+            if not callable(getattr(handle, 'stop_owned', None)):
+                _fail('ADAPTER_DENIED')
+            with self._lock:
+                if self._failed or self._supervision is not None:
+                    _fail('TOPOLOGY_DRIFT')
+                self._supervision = handle
+            self._expected.appliance_recheck()
+            self._clock()
+            return proof
+        except Exception as error:
+            self._latch()
+            if handle is not None:
+                try: handle.stop_owned()
+                except Exception: _fail('CLEANUP_UNCERTAIN')
+            if isinstance(error, TopologyError): raise
+            _fail('OBSERVATION_DENIED')
 
     def require_current(self):
-        if self._failed or self._proof is None:
-            _fail('TOPOLOGY_FAILED')
-        return self._attempt()
+        return self._attempt(initial=False)
 
     def activate_browser(self, activation):
-        if self._activated:
-            _fail('ACTIVATION_DENIED')
         proof = self.require_current()
-        try:
+        with self._lock:
+            if self._failed or self._activated:
+                self._failed = True
+                self._generation += 1
+                _fail('ACTIVATION_DENIED')
+            self._activated = True
+            token = self._generation
             browser = next(item for item in self._snapshot.role_handoffs
                            if item.launch.role == 'BROWSER')
-            activation.activate(browser, proof)
-            self._activated = True
+        handle = None
+        try:
+            self._expected.appliance_recheck()
+            self._clock()
+            def authorize():
+                with self._lock:
+                    if self._failed or self._generation != token:
+                        _fail('ACTIVATION_DENIED')
+            handle = activation.activate(browser, proof, authorize)
+            with self._lock:
+                invalid = self._failed or self._generation != token
+            if invalid:
+                _fail('ACTIVATION_DENIED')
+            return handle
         except Exception:
-            self._failed = True
+            self._latch()
+            if handle is not None:
+                try:
+                    handle.stop_owned()
+                except Exception:
+                    _fail('CLEANUP_UNCERTAIN')
             _fail('ACTIVATION_DENIED')
 
     def topology_drifted(self):
-        self._failed = True
+        with self._lock:
+            handle = self._supervision
+            self._supervision = None
+        self._latch()
+        if handle is not None:
+            try: handle.stop_owned()
+            except Exception: _fail('CLEANUP_UNCERTAIN')
 
 
 _NATIVE_SEAL = object()
 
 
-@dataclass(frozen=True)
-class NativeTopologyBindings:
-    os_port: object = field(repr=False)
-    role_provider: object = field(repr=False)
-    host_device_provider: object = field(repr=False)
-    probe_port: object = field(repr=False)
-    proxy_provider: object = field(repr=False)
-    _seal: object = field(repr=False)
+def _text_lines(raw):
+    try:
+        return raw.decode('ascii').splitlines()
+    except Exception:
+        _fail('OBSERVATION_DENIED')
 
-    def _read(self, path):
-        fd = None
+
+def _interfaces(raw):
+    lines = _text_lines(raw)
+    if len(lines) < 2 or 'Inter-|' not in lines[0] or 'face' not in lines[1]:
+        _fail('OBSERVATION_DENIED')
+    result = []
+    for line in lines[2:]:
+        if not line.strip():
+            continue
+        if ':' not in line:
+            _fail('OBSERVATION_DENIED')
+        name, counters = line.split(':', 1)
+        name = name.strip()
+        fields = counters.split()
+        if not _ascii(name, 15) or len(fields) < 16 or any(
+                not field.isdecimal() for field in fields):
+            _fail('OBSERVATION_DENIED')
+        result.append(name)
+    if not result or len(set(result)) != len(result):
+        _fail('OBSERVATION_DENIED')
+    return tuple(result)
+
+
+def _routes4(raw):
+    lines = [line for line in _text_lines(raw) if line.strip()]
+    if not lines or lines[0].split()[:4] != ['Iface', 'Destination', 'Gateway', 'Flags']:
+        _fail('OBSERVATION_DENIED')
+    result = []
+    for line in lines[1:]:
+        fields = line.split()
+        if (len(fields) != 11 or not _ascii(fields[0], 15)
+                or any(re.fullmatch(r'[0-9A-Fa-f]{8}', fields[index]) is None
+                       for index in (1, 2, 7))
+                or re.fullmatch(r'[0-9A-Fa-f]{4,8}', fields[3]) is None
+                or any(not fields[index].isdecimal() for index in (4, 5, 6, 8, 9, 10))):
+            _fail('OBSERVATION_DENIED')
+        result.append('v4:' + ':'.join(fields[:4]))
+    return tuple(result)
+
+
+def _routes6(raw):
+    result = []
+    for line in _text_lines(raw):
+        if not line.strip():
+            continue
+        fields = line.split()
+        if (len(fields) != 10
+                or any(re.fullmatch(r'[0-9A-Fa-f]{32}', fields[index]) is None
+                       for index in (0, 2, 4))
+                or any(re.fullmatch(r'[0-9A-Fa-f]{2,8}', fields[index]) is None
+                       for index in (1, 3, 5, 6, 7, 8))
+                or not _ascii(fields[9], 15)):
+            _fail('OBSERVATION_DENIED')
+        result.append('v6:' + ':'.join(fields))
+    return tuple(result)
+
+
+def _dns(raw):
+    result = []
+    for line in _text_lines(raw):
+        content = re.split(r'[#;]', line, maxsplit=1)[0].strip()
+        if not content:
+            continue
+        fields = content.split()
+        if len(fields) != 2 or fields[0] != 'nameserver' or not _ascii(fields[1], 64):
+            _fail('OBSERVATION_DENIED')
+        result.append(fields[1])
+    return tuple(result)
+
+
+def _ipv4(hexadecimal):
+    if re.fullmatch(r'[0-9A-Fa-f]{8}', hexadecimal) is None:
+        _fail('OBSERVATION_DENIED')
+    octets = bytes.fromhex(hexadecimal)
+    return '.'.join(str(item) for item in reversed(octets))
+
+
+def _ipv6(hexadecimal):
+    if re.fullmatch(r'[0-9A-Fa-f]{32}', hexadecimal) is None:
+        _fail('OBSERVATION_DENIED')
+    if hexadecimal.upper() == '0000000000000000FFFF00000100007F':
+        return '127.0.0.1'
+    if hexadecimal == '0' * 31 + '1':
+        return '::1'
+    return hexadecimal.upper()
+
+
+def _network_rows(raw, transport, version):
+    lines = [line for line in _text_lines(raw) if line.strip()]
+    if not lines or lines[0].split()[:4] != ['sl', 'local_address', 'rem_address', 'st']:
+        _fail('OBSERVATION_DENIED')
+    listeners = []
+    for line in lines[1:]:
+        fields = line.split()
+        if len(fields) < 8 or re.fullmatch(r'[0-9]+:', fields[0]) is None:
+            _fail('OBSERVATION_DENIED')
         try:
-            fd = self.os_port.open(path, os.O_RDONLY | getattr(os, 'O_CLOEXEC', 0))
-            if not _integer(fd, 0, 2**31 - 1):
-                _fail('OBSERVATION_DENIED')
-            data = self.os_port.read(fd, 65537)
-            if type(data) is not bytes or len(data) > 65536:
-                _fail('OBSERVATION_DENIED')
-            return data
-        except TopologyError:
-            raise
+            local_hex, local_port = fields[1].split(':')
+            remote_hex, remote_port = fields[2].split(':')
+            state = fields[3].upper()
+            port = int(local_port, 16); remote = int(remote_port, 16)
+            uid = int(fields[7], 10)
         except Exception:
             _fail('OBSERVATION_DENIED')
+        decode = _ipv4 if version == 4 else _ipv6
+        local_address, remote_address = decode(local_hex), decode(remote_hex)
+        if not _integer(port, 0, 65535) or not _integer(remote, 0, 65535) or not _integer(uid):
+            _fail('OBSERVATION_DENIED')
+        if transport == 'TCP' and state == '0A':
+            if remote != 0:
+                _fail('OBSERVATION_DENIED')
+            listeners.append(Listener('GUEST', 'TCP', local_address, port, uid))
+        elif transport == 'TCP' and state == '01':
+            approved = (
+                (local_address == '127.0.0.1' and uid == 10002 and remote_address == '127.0.0.1' and remote == 3128),
+                (local_address == '127.0.0.1' and uid == 10004 and port == 3128 and remote_address == '127.0.0.1'),
+            )
+            if not any(approved):
+                _fail('OBSERVATION_DENIED')
+        elif transport == 'UDP':
+            _fail('OBSERVATION_DENIED')
+        else:
+            _fail('OBSERVATION_DENIED')
+    return tuple(listeners)
+
+
+def _abstract(raw):
+    lines = [line for line in _text_lines(raw) if line.strip()]
+    if not lines or lines[0].split()[:3] != ['Num', 'RefCount', 'Protocol']:
+        _fail('OBSERVATION_DENIED')
+    result = []
+    for line in lines[1:]:
+        fields = line.split()
+        if len(fields) < 7:
+            _fail('OBSERVATION_DENIED')
+        if len(fields) == 8 and fields[7].startswith('@'):
+            result.append(fields[7])
+        elif len(fields) not in (7, 8):
+            _fail('OBSERVATION_DENIED')
+    return tuple(result)
+
+
+@dataclass(frozen=True)
+class NativeTopologyBindings:
+    observation_port: object = field(repr=False)
+    role_source: object = field(repr=False)
+    host_device_source: object = field(repr=False)
+    probe_source: object = field(repr=False)
+    proxy_source: object = field(repr=False)
+    _seal: object = field(repr=False)
+    _unresolved: list = field(default_factory=list, repr=False, compare=False)
+
+    def _read(self, path):
+        owner = None
+        primary = None
+        data = None
+        try:
+            owner = self.observation_port.open_owned(
+                path, os.O_RDONLY | getattr(os, 'O_CLOEXEC', 0))
+            if (owner is None or not callable(getattr(owner, 'read', None))
+                    or not callable(getattr(owner, 'close', None))
+                    or not callable(getattr(owner, 'cleanup', None))):
+                _fail('OBSERVATION_DENIED')
+            chunks, size = [], 0
+            for _ in range(1025):
+                chunk = owner.read(min(4096, 65537 - size))
+                if type(chunk) is not bytes:
+                    _fail('OBSERVATION_DENIED')
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > 65536:
+                    _fail('OBSERVATION_DENIED')
+                chunks.append(chunk)
+            else:
+                _fail('OBSERVATION_DENIED')
+            data = b''.join(chunks)
+        except Exception as error:
+            primary = error
         finally:
-            if fd is not None:
-                try: self.os_port.close(fd)
-                except Exception: _fail('OBSERVATION_DENIED')
+            if owner is not None:
+                try:
+                    owner.close()
+                except Exception:
+                    self._unresolved.append(owner)
+                    primary = TopologyError('OBSERVATION_DENIED')
+        if isinstance(primary, TopologyError):
+            raise primary
+        if primary is not None or data is None:
+            _fail('OBSERVATION_DENIED')
+        return data
+
+    def cleanup_unresolved(self):
+        pending, self._unresolved[:] = tuple(self._unresolved), []
+        uncertain = False
+        for owner in pending:
+            try:
+                owner.cleanup()
+            except Exception:
+                uncertain = True
+                self._unresolved.append(owner)
+        if uncertain:
+            _fail('CLEANUP_UNCERTAIN')
+
+    def cleanup(self, snapshot):
+        if type(snapshot) is not TopologySnapshot:
+            _fail('CLEANUP_UNCERTAIN')
+        self.role_source.cleanup_owned(snapshot.role_handoffs)
 
     def capture(self, sequence, authority):
         if self._seal is not _NATIVE_SEAL:
             _fail('ADAPTER_DENIED')
         raw = tuple(self._read(path) for path in NATIVE_OBSERVATION_PATHS)
+        roles = None
         try:
-            def lines(value):
-                return tuple(line.strip() for line in value.decode('ascii').splitlines()
-                             if line.strip())
-            interfaces = tuple(line.split(':', 1)[0].strip()
-                               for line in lines(raw[0]) if ':' in line)
-            routes = tuple(line for block in raw[1:3] for line in lines(block)
-                           if not line.startswith('Iface'))
-            dns = tuple(line.split()[1] for line in lines(raw[3])
-                        if line.startswith('nameserver ') and len(line.split()) == 2)
-            listeners = []
-            for transport, block in zip(('TCP', 'TCP', 'UDP', 'UDP'), raw[4:8]):
-                for line in lines(block):
-                    fields = line.split()
-                    if not fields or fields[0] == 'sl' or len(fields) < 8:
-                        continue
-                    address, port = fields[1].split(':')
-                    decoded = '127.0.0.1' if address == '0100007F' else address
-                    listeners.append(Listener('GUEST', transport, decoded,
-                                              int(port, 16), int(fields[7], 10)))
-            abstract = tuple(line.split()[-1] for line in lines(raw[8])
-                             if line.split()[-1].startswith('@'))
+            interfaces = _interfaces(raw[0])
+            routes = _routes4(raw[1]) + _routes6(raw[2])
+            dns = _dns(raw[3])
+            listeners = (_network_rows(raw[4], 'TCP', 4)
+                         + _network_rows(raw[5], 'TCP', 6)
+                         + _network_rows(raw[6], 'UDP', 4)
+                         + _network_rows(raw[7], 'UDP', 6))
+            abstract = _abstract(raw[8])
+            roles = self.role_source.collect(authority)
             sample = authority.clock.sample()
             if not _sample(sample): _fail('CLOCK_DENIED')
             return TopologySnapshot(
                 sequence, sample[0], sample[1], authority.run_id,
                 authority.manifest_identity, authority.config_identity,
-                self.host_device_provider(), interfaces, routes, dns,
-                tuple(listeners),
-                abstract, self.role_provider(),
-                tuple(self.probe_port(identifier) for identifier in FIXED_PROBE_IDS),
-                self.proxy_provider())
+                self.host_device_source.observe(authority), interfaces, routes, dns,
+                tuple(listeners), abstract, roles,
+                tuple(self.probe_source.execute(identifier)
+                      for identifier in FIXED_PROBE_IDS),
+                self.proxy_source.observe(authority.proxy_policy))
         except TopologyError:
+            if roles is not None:
+                try: self.role_source.cleanup_owned(roles)
+                except Exception: _fail('CLEANUP_UNCERTAIN')
             raise
         except Exception:
+            if roles is not None:
+                try: self.role_source.cleanup_owned(roles)
+                except Exception: _fail('CLEANUP_UNCERTAIN')
             _fail('OBSERVATION_DENIED')
 
 
-def select_native_topology(os_port, role_provider, host_device_provider,
-                           probe_port, proxy_provider, platform_name, machine):
+def select_native_topology(observation_port, role_source, host_device_source,
+                           probe_source, proxy_source, platform_name, machine):
     """Explicit source selection; performs no observation or probe."""
     if (platform_name != 'linux' or machine != 'aarch64'
-            or not all(callable(getattr(os_port, name, None))
-                       for name in ('open', 'read', 'close'))
-            or not all(callable(value) for value in
-                       (role_provider, host_device_provider, probe_port, proxy_provider))):
+            or not callable(getattr(observation_port, 'open_owned', None))
+            or not callable(getattr(role_source, 'collect', None))
+            or not callable(getattr(host_device_source, 'observe', None))
+            or not callable(getattr(probe_source, 'execute', None))
+            or not callable(getattr(proxy_source, 'observe', None))):
         _fail('ADAPTER_DENIED')
-    return NativeTopologyBindings(os_port, role_provider, host_device_provider,
-                                  probe_port, proxy_provider, _NATIVE_SEAL)
+    return NativeTopologyBindings(observation_port, role_source, host_device_source,
+                                  probe_source, proxy_source, _NATIVE_SEAL)
+
+
+_COMPOSITION_SEAL = object()
+
+
+@dataclass(frozen=True)
+class Task8ProbeSource:
+    module: object = field(repr=False)
+    port: object = field(repr=False)
+    native: object = field(repr=False)
+    _seal: object = field(repr=False)
+
+    def execute(self, identifier):
+        if self._seal is not _COMPOSITION_SEAL or identifier not in FIXED_PROBE_IDS:
+            _fail('PROBE_DENIED')
+        case = TASK8_PROBE_CASES.get(identifier)
+        if case is not None:
+            try:
+                self.module.run_case(case, self.port)
+            except Exception:
+                _fail('PROBE_DENIED')
+        try:
+            result = self.native.execute_native(identifier)
+        except Exception:
+            _fail('PROBE_DENIED')
+        _probe(result, identifier)
+        return result
+
+
+def select_task8_probe_source(module, port, native, platform_name, machine):
+    """Explicitly bind accepted Task8 NativeProbePort to exact Task10 probes."""
+    required = {
+        'vsock_browser_controller_verifier_denied',
+        'child_fork_exec_network_gpu_crash_helper_inherits',
+        'proxy_fixed_vsock_positive',
+        'io_uring_setup_register_enter_and_inherited_ring_denied',
+        'SCM_RIGHTS_proc_pidfd_ptrace_process_vm_theft_denied',
+    }
+    if (platform_name != 'linux' or machine != 'aarch64'
+            or type(port) is not getattr(module, 'NativeProbePort', None)
+            or not callable(getattr(module, 'run_case', None))
+            or not required.issubset(set(getattr(module, 'PROBES', ())))
+            or not callable(getattr(native, 'execute_native', None))):
+        _fail('PROBE_DENIED')
+    return Task8ProbeSource(module, port, native, _COMPOSITION_SEAL)
+
+
+@dataclass(frozen=True)
+class Task8RoleSource:
+    bridge: object = field(repr=False)
+    _seal: object = field(repr=False)
+    def collect(self, authority):
+        if self._seal is not _COMPOSITION_SEAL:
+            _fail('ROLE_DENIED')
+        try:
+            value = self.bridge.collectOwned(authority.role_launches)
+        except Exception:
+            _fail('ROLE_DENIED')
+        if type(value) is not tuple:
+            _fail('ROLE_DENIED')
+        return value
+    def cleanup_owned(self, handoffs):
+        try:
+            self.bridge.cleanupOwned(handoffs)
+        except Exception:
+            _fail('CLEANUP_UNCERTAIN')
+
+
+@dataclass(frozen=True)
+class Task8RoleActivation:
+    bridge: object = field(repr=False)
+    grant: object = field(repr=False)
+    _seal: object = field(repr=False)
+    def activate(self, handoff, proof, authorize):
+        if self._seal is not _COMPOSITION_SEAL or handoff.launch.role != 'BROWSER':
+            _fail('ACTIVATION_DENIED')
+        authorize()
+        try:
+            handle = self.bridge.activateOnce(self.grant, handoff, proof)
+        except Exception:
+            _fail('ACTIVATION_DENIED')
+        if not callable(getattr(handle, 'stopOwned', None)):
+            _fail('ACTIVATION_DENIED')
+        return OwnedRoleHandle(handle)
+
+
+@dataclass(frozen=True)
+class OwnedRoleHandle:
+    value: object = field(repr=False)
+    def stop_owned(self):
+        return self.value.stopOwned()
+
+
+def select_task8_roles(bridge, grant):
+    """Bind the accepted RolePort bridge; no role process is started here."""
+    if (not callable(getattr(bridge, 'collectOwned', None))
+            or not callable(getattr(bridge, 'cleanupOwned', None))
+            or not callable(getattr(bridge, 'activateOnce', None))
+            or grant is None):
+        _fail('ROLE_DENIED')
+    return (Task8RoleSource(bridge, _COMPOSITION_SEAL),
+            Task8RoleActivation(bridge, grant, _COMPOSITION_SEAL))
+
+
+@dataclass(frozen=True)
+class Task9ProxySource:
+    observer: object = field(repr=False)
+    policy: object = field(repr=False)
+    _seal: object = field(repr=False)
+    def observe(self, policy):
+        if (self._seal is not _COMPOSITION_SEAL or policy is not self.policy
+                or type(policy) is not _PROXY.NativeAdmissionPolicy
+                or getattr(policy, '_seal', None) is not _PROXY._NATIVE_ADMISSION_SEAL):
+            _fail('PROXY_DENIED')
+        try:
+            return self.observer.observeAccepted(policy)
+        except Exception:
+            _fail('PROXY_DENIED')
+
+
+def select_task9_proxy_source(observer, policy):
+    if (type(policy) is not _PROXY.NativeAdmissionPolicy
+            or getattr(policy, '_seal', None) is not _PROXY._NATIVE_ADMISSION_SEAL
+            or not callable(getattr(observer, 'observeAccepted', None))):
+        _fail('PROXY_DENIED')
+    return Task9ProxySource(observer, policy, _COMPOSITION_SEAL)
+
+
+@dataclass(frozen=True)
+class NativeTopologySupervisor:
+    monitor: object = field(repr=False)
+    _seal: object = field(repr=False)
+    def begin(self, handoff, on_drift):
+        if self._seal is not _COMPOSITION_SEAL:
+            _fail('ADAPTER_DENIED')
+        try:
+            handle = self.monitor.beginOwned(handoff, on_drift)
+        except Exception:
+            _fail('OBSERVATION_DENIED')
+        if not callable(getattr(handle, 'stop_owned', None)):
+            _fail('ADAPTER_DENIED')
+        return handle
+
+
+def select_native_supervisor(monitor, platform_name, machine):
+    if (platform_name != 'linux' or machine != 'aarch64'
+            or not callable(getattr(monitor, 'beginOwned', None))):
+        _fail('ADAPTER_DENIED')
+    return NativeTopologySupervisor(monitor, _COMPOSITION_SEAL)

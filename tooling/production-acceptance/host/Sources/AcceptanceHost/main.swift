@@ -8,7 +8,8 @@ do {
     if let invocation = try HostDispatch.bootstrapInvocation(arguments) {
         // This is the bounded production composition entry. It cannot open the
         // supplied paths or start a VM until signed/native authority constructs
-        // the fixed probe, observation, lifecycle and Task8 activation ports.
+        // the fixed probe, observation, owned lifecycle/Task8 activation ports,
+        // and complete appliance-pinned guest program inventory.
         _ = try VMHost.bootstrapCheck(invocation:invocation)
     }
     let command = try HostDispatch.parse(arguments)
