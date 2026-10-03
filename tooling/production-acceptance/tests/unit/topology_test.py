@@ -156,6 +156,210 @@ def snapshot(**changes):
 
 
 class TopologyTests(unittest.TestCase):
+    def test_round4_async_roleport_is_unavailable_before_any_effect(self):
+        clock = Clock()
+        class Port:
+            effects = 0
+            async def activateOnce(self, grant):
+                clock.samples[:] = [(190, 10010)]
+                self.effects += 1
+                return object()
+        port = Port()
+        transaction = topology.Task10RoleTransaction(port, object(), snapshot().role_handoffs[1])
+        with self.assertRaises((topology.TopologyError, topology.ActivationFailure)):
+            transaction.activate(lambda: None)
+        self.assertEqual(port.effects, 0)
+
+    def test_round4_post_authorization_expiry_compensates_and_never_succeeds(self):
+        clock = Clock()
+        gate = topology.TopologyGate(authority(clock=clock), Adapter([snapshot()]))
+        gate.admit()
+        activation = Activation(callback=lambda: clock.samples.append((190, 10010)))
+        with self.assertRaises(topology.TopologyError): gate.activate_browser(activation)
+        self.assertEqual(activation.cleaned, 1)
+        self.assertTrue(gate._failed)
+
+    def test_round4_duplicate_activation_cleans_role_and_monitor(self):
+        monitor = Activation()
+        monitor.begin = lambda wire, callback: monitor
+        gate = topology.TopologyGate(authority(), Adapter([snapshot()]), monitor)
+        gate.admit(); activation = Activation(); gate.activate_browser(activation)
+        with self.assertRaises(topology.TopologyError): gate.activate_browser(activation)
+        self.assertEqual((activation.cleaned, monitor.cleaned), (1, 1))
+
+    def test_round4_prepare_throw_retains_preparation_owner(self):
+        class PrepareFailure(Activation):
+            def prepare(self, handoff, proof): raise RuntimeError('inert prepare')
+            def stop_owned(self, deadline):
+                self.cleaned += 1
+                return {'status':'TIMEOUT','run_id':RUN}
+        gate = topology.TopologyGate(authority(), Adapter([snapshot()]))
+        gate.admit(); activation = PrepareFailure()
+        with self.assertRaises(topology.TopologyError) as caught: gate.activate_browser(activation)
+        self.assertEqual(activation.cleaned, 1)
+        self.assertTrue(gate.cleanup_uncertain)
+        self.assertIs(getattr(caught.exception, 'cleanup', None), gate)
+
+    def test_round4_late_owner_is_compensated_after_pending_fallback(self):
+        gate = topology.TopologyGate(authority(), Adapter([snapshot()]))
+        gate.admit()
+        class Late(Activation):
+            late = False
+            late_stops = 0
+            def activate(self, authorize):
+                authorize()
+                try: gate.topology_drifted()
+                except topology.TopologyError: pass
+                self.late = True
+            def stop_owned(self, deadline):
+                if self.late: self.late_stops += 1
+                self.cleaned += 1
+                return {'status':'STOPPED' if self.late else 'TIMEOUT','run_id':RUN}
+        activation = Late()
+        with self.assertRaises(topology.TopologyError) as caught: gate.activate_browser(activation)
+        self.assertEqual((activation.cleaned, activation.late_stops), (2, 1))
+        self.assertIs(getattr(caught.exception, 'cleanup', None), gate)
+
+    def test_round4_collection_uncertainty_remains_truthful_and_budget_is_shared(self):
+        launches, handoffs = launches_and_handoffs()
+        clock = Clock()
+        class CollectionKernel:
+            def __init__(self): self.spawned, self.stops = [], []
+            def spawn_waiting(self, launch, child):
+                owner = handoffs[len(self.spawned)]._owned
+                self.spawned.append(owner); return owner
+            def inspect(self, pid):
+                return next(dict(h.attestation.__dict__) for h in handoffs if h.attestation.pid == pid)
+            def wait_owned(self, owned, deadline): raise AssertionError('not used')
+            def stop_owned(self, owned, deadline):
+                self.stops.append((owned, deadline))
+                clock.last = (100, clock.last[1] + 20000)
+                return {'status':'TIMEOUT','pid':owned.pid,'run_id':RUN}
+        kernel = CollectionKernel()
+        collection = topology.Task8Collection(confinement.BootstrapConfig(kernel, RUN, launches[0].programs))
+        source = topology.Task8RoleSource(collection, topology._COMPOSITION_SEAL)
+        owned = source.collect(authority(clock=clock))
+        for _ in range(2):
+            with self.assertRaisesRegex(topology.TopologyError, '^CLEANUP_UNCERTAIN$'):
+                collection.cleanupOwned(owned)
+        self.assertLessEqual(len(kernel.stops), 3)
+        self.assertTrue(all(0 < bound <= 60000 - 20000 * index
+                            for index, (_, bound) in enumerate(kernel.stops)))
+        self.assertEqual({id(h._owned) for h in owned}, {id(h._owned) for h in collection.handoffs})
+
+    def test_round4_collection_failure_keeps_uncertainty_in_gate_on_every_call(self):
+        launches, handoffs = launches_and_handoffs()
+        class CollectionKernel:
+            def __init__(self): self.spawned, self.stopped = [], []
+            def spawn_waiting(self, launch, child):
+                owner = handoffs[len(self.spawned)]._owned
+                self.spawned.append(owner); return owner
+            def inspect(self, pid):
+                return next(dict(h.attestation.__dict__) for h in handoffs if h.attestation.pid == pid)
+            def wait_owned(self, owner, deadline): raise AssertionError('not used')
+            def stop_owned(self, owner, deadline):
+                self.stopped.append(owner)
+                raise RuntimeError('inert cleanup uncertainty')
+        kernel = CollectionKernel()
+        collection = topology.Task8Collection(confinement.BootstrapConfig(kernel, RUN, launches[0].programs))
+        source = topology.Task8RoleSource(collection, topology._COMPOSITION_SEAL)
+        expected = authority()
+        owned = source.collect(expected)
+        owned[0]._owned.command = object()
+        class FailedAdapter(Adapter):
+            def capture(self, sequence, expected):
+                return dataclasses.replace(snapshot(), role_handoffs=source.collect(expected), sequence=sequence)
+        gate = topology.TopologyGate(expected, FailedAdapter([snapshot()]))
+        for _ in range(2):
+            with self.assertRaisesRegex(topology.TopologyError, '^CLEANUP_UNCERTAIN$'):
+                gate.admit()
+        self.assertTrue(gate.cleanup_uncertain)
+        self.assertIs(gate.unresolved_cleanup[0], collection)
+        self.assertEqual({id(owner) for owner in collection.unresolved_owners},
+                         {id(h._owned) for h in owned})
+        self.assertEqual(len(kernel.stopped), 4)
+
+    def test_round4_concurrent_collection_cleanup_cannot_report_pending_as_success(self):
+        entered, release = threading.Event(), threading.Event()
+        launches, handoffs = launches_and_handoffs()
+        class WaitingKernel:
+            def stop_owned(self, owner, deadline):
+                entered.set(); release.wait(1)
+                return {'status':'STOPPED','pid':owner.pid,'run_id':RUN}
+        kernel = WaitingKernel()
+        collection = topology.Task8Collection(confinement.BootstrapConfig(kernel, RUN, launches[0].programs))
+        owned = tuple(dataclasses.replace(h, _kernel=kernel) for h in handoffs)
+        collection.handoffs = owned
+        worker = threading.Thread(target=lambda: collection.cleanupOwned(owned), daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(0.2))
+            with self.assertRaisesRegex(topology.TopologyError, '^CLEANUP_UNCERTAIN$'):
+                collection.cleanupOwned(owned)
+        finally: release.set(); worker.join(1)
+        self.assertEqual(len(collection.proven_owners), 4)
+
+    def test_round4_unbound_proxy_transport_cannot_attest_a_running_instance(self):
+        policy = dataclasses.replace(proxy_policy(), handoff_validator=lambda *args: True)
+        class Endpoint:
+            def getsockname(self): return ('127.0.0.1', 3128)
+        module, selectors = object(), object()
+        sockets = proxy.NativeSockets(module, selectors, stop_fd=3, os_module=object())
+        sockets.listener = proxy.NativeListener(Endpoint(), module); sockets.listener_closed = False
+        transport = proxy.NativeVsockTransport(module, selectors, policy.binding, 2, 4050)
+        transport.authenticate(policy.binding)
+        config = proxy.ProxyConfig(dict(policy.destinations), policy.binding,
+            policy.aggregate_bytes, policy.idle_timeout_ms, policy.run_timeout_ms, Clock(), sockets,
+            native_admission=proxy.NativeAdmission(policy.runtime_identity, policy.role_policy_identity))
+        observer = topology.Task9RuntimeObserver(config, sockets, transport)
+        with self.assertRaisesRegex(topology.TopologyError, '^PROXY_RUNTIME_UNAVAILABLE$'):
+            observer.observeAccepted(policy)
+
+    def test_round4_never_finishing_cleanup_returns_at_shared_deadline(self):
+        clock, release, completed = Clock(), threading.Event(), threading.Event()
+        class Waiting(Activation):
+            def stop_owned(self, deadline):
+                self.cleaned += 1; clock.last = (100, 60010)
+                release.wait(1)
+                return {'status':'STOPPED','run_id':RUN}
+        gate = topology.TopologyGate(authority(clock=clock), Adapter([snapshot()]))
+        gate.admit(); activation = Waiting(); gate.activate_browser(activation)
+        def drift():
+            try: gate.topology_drifted()
+            except topology.TopologyError: pass
+            finally: completed.set()
+        worker = threading.Thread(target=drift, daemon=True); worker.start()
+        try: self.assertTrue(completed.wait(0.2), 'cleanup exceeded exhausted shared deadline')
+        finally: release.set(); worker.join(1)
+        self.assertTrue(gate.cleanup_uncertain)
+
+    def test_round4_proxy_owner_mismatch_and_substitution_are_denied(self):
+        policy = dataclasses.replace(proxy_policy(), handoff_validator=lambda *args: True)
+        class Endpoint:
+            def getsockname(self): return ('127.0.0.1', 3128)
+        module, selectors = object(), object()
+        sockets = proxy.NativeSockets(module, selectors, stop_fd=3, os_module=object())
+        sockets.listener = proxy.NativeListener(Endpoint(), module); sockets.listener_closed = False
+        transport = proxy.NativeVsockTransport(module, selectors, policy.binding, 2, 4050)
+        transport.authenticate(policy.binding)
+        config = proxy.ProxyConfig(dict(policy.destinations), policy.binding,
+            policy.aggregate_bytes, policy.idle_timeout_ms, policy.run_timeout_ms, Clock(), object(),
+            native_admission=proxy.NativeAdmission(policy.runtime_identity, policy.role_policy_identity))
+        with self.assertRaisesRegex(topology.TopologyError, '^PROXY_DENIED$'):
+            topology.Task9RuntimeObserver(config, sockets, transport)
+        config.sockets = sockets
+        observer = topology.Task9RuntimeObserver(config, sockets, transport)
+        with self.assertRaisesRegex(topology.TopologyError, '^PROXY_RUNTIME_UNAVAILABLE$'):
+            observer.observeAccepted(policy)
+        for target, name, value in ((config, 'sockets', object()),
+                                    (transport, 'binding', dataclasses.replace(policy.binding)),
+                                    (transport, 'module', object())):
+            old = getattr(target, name); setattr(target, name, value)
+            try:
+                with self.assertRaisesRegex(topology.TopologyError, '^PROXY_DENIED$'):
+                    observer.observeAccepted(policy)
+            finally: setattr(target, name, old)
+
     def test_actual_task8_collection_retains_identity_endpoints_and_original_cleanup(self):
         launches, handoffs = launches_and_handoffs()
         class CollectionKernel:
@@ -209,7 +413,7 @@ class TopologyTests(unittest.TestCase):
         with self.assertRaisesRegex(topology.TopologyError, '^NATIVE_HELPER_UNAVAILABLE$'):
             source.execute_native('BROWSER_HELPER_IPV4')
 
-    def test_exact_async_roleport_contract_preserves_partial_cleanup_and_rejects_timeout(self):
+    def test_async_roleport_is_never_entered_without_accepted_effect_authority(self):
         browser = snapshot().role_handoffs[1]
         class Cleanup:
             def __init__(self): self.calls = []
@@ -223,29 +427,28 @@ class TopologyTests(unittest.TestCase):
                 raise topology.ActivationFailure('CLEANUP_UNCERTAIN', cleanup)
         port, grant = Port(), object()
         transaction = topology.Task10RoleTransaction(port, grant, browser)
-        with self.assertRaises(topology.ActivationFailure): transaction.activate(lambda: None)
-        self.assertIs(port.grant, grant)
-        self.assertEqual(transaction.stop_owned(120000)['status'], 'STOPPED')
-        self.assertEqual(cleanup.calls, [120000])
-        with self.assertRaisesRegex(topology.TopologyError, '^CLEANUP_UNCERTAIN$'):
-            transaction.owner.wait_exit(120000)
+        with self.assertRaisesRegex(topology.TopologyError, '^ACTIVATION_UNAVAILABLE$'):
+            transaction.activate(lambda: None)
+        self.assertFalse(hasattr(port, 'grant'))
+        self.assertEqual(cleanup.calls, [])
 
     def test_concrete_task9_observer_rechecks_actual_owned_listener_and_transport(self):
         policy = dataclasses.replace(proxy_policy(), handoff_validator=lambda *args: args == ('PROXY',10004,3,4))
         class Endpoint:
             def getsockname(self): return ('127.0.0.1',3128)
         endpoint = Endpoint()
-        sockets = proxy.NativeSockets(object(), object(), stop_fd=3, os_module=object())
-        sockets.listener = proxy.NativeListener(endpoint, object())
+        module, selectors = object(), object()
+        sockets = proxy.NativeSockets(module, selectors, stop_fd=3, os_module=object())
+        sockets.listener = proxy.NativeListener(endpoint, module)
         sockets.listener_closed = False
-        transport = proxy.NativeVsockTransport(object(), object(), policy.binding, 2, 4050)
+        transport = proxy.NativeVsockTransport(module, selectors, policy.binding, 2, 4050)
         transport.authenticate(policy.binding)
         config = proxy.ProxyConfig(dict(policy.destinations), policy.binding,
             policy.aggregate_bytes, policy.idle_timeout_ms, policy.run_timeout_ms,
             Clock(), sockets, native_admission=proxy.NativeAdmission(policy.runtime_identity,policy.role_policy_identity))
         observer = topology.Task9RuntimeObserver(config, sockets, transport)
         source = topology.select_task9_proxy_source(observer, policy)
-        self.assertEqual(source.observe(policy), snapshot().proxy_runtime)
+        with self.assertRaises(topology.TopologyError): source.observe(policy)
         module = load('task10_composition_probe_contract', 'tests/guest/confinement_probe.py')
         class NoEffects:
             calls = 0
@@ -257,17 +460,17 @@ class TopologyTests(unittest.TestCase):
         a = dataclasses.replace(authority(), proxy_policy=policy)
         collection = topology.Task8Collection(confinement.BootstrapConfig(
             Kernel(), RUN, a.role_launches[0].programs))
-        gate = topology.compose_task10(mode='bootstrap-check', expected=a,
-            observations=boundary, collection=collection, host_devices=boundary,
-            probe_module=module, probe_port=module.NativeProbePort(boundary),
-            proxy_runtime=observer, service_events=boundary,
-            platform_name='linux', machine='aarch64')
-        self.assertIs(gate._adapter.role_source.bridge, collection)
-        self.assertIs(gate._adapter.proxy_source.observer, observer)
+        with self.assertRaisesRegex(topology.TopologyError, '^COMPOSITION_UNAVAILABLE$'):
+            topology.compose_task10(mode='bootstrap-check', expected=a,
+                observations=boundary, collection=collection, host_devices=boundary,
+                probe_module=module, probe_port=module.NativeProbePort(boundary),
+                proxy_runtime=observer, service_events=boundary,
+                platform_name='linux', machine='aarch64')
         self.assertIsNone(collection.handoffs)
         self.assertEqual(boundary.calls, 0)
         sockets.listener.socket = Endpoint()
-        with self.assertRaises(topology.TopologyError): source.observe(policy)
+        with self.assertRaisesRegex(topology.TopologyError, '^PROXY_DENIED$'):
+            observer.observeAccepted(policy)
 
     def test_fixed_policy_cannot_be_relaxed(self):
         a = authority()
@@ -456,7 +659,7 @@ class TopologyTests(unittest.TestCase):
             topology.TopologyError, gate.activate_browser, activation))
         with self.assertRaises(topology.TopologyError): gate.activate_browser(activation)
         self.assertEqual(len(activation.calls), 1)
-        self.assertEqual(activation.cleaned, 1)
+        self.assertEqual(activation.cleaned, 2)
 
     def test_monotonic_deadline_and_expiry_during_final_recheck_latch(self):
         gate = topology.TopologyGate(

@@ -85,14 +85,17 @@ enum BootstrapProbeID: String, CaseIterable, Sendable {
     case verifierIPv4TCP = "VERIFIER_IPV4_TCP"
 }
 protocol BootstrapProbePort: Sendable { func capture(ids:[BootstrapProbeID]) throws -> Data }
-protocol BootstrapOwnedLifecycle: Sendable { func stopOwned() throws }
+protocol BootstrapOwnedLifecycle: Sendable { func stopOwned(deadline:Int) throws -> BootstrapStopOutcome }
 protocol BootstrapLifecyclePort: Sendable { func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws -> any BootstrapOwnedLifecycle }
 enum BootstrapStopOutcome: Sendable { case stopped, uncertain }
-protocol BootstrapActivationTransaction: Sendable {
+protocol BootstrapActivationTransaction: AnyObject, Sendable {
     func activate(authorize:@escaping @Sendable () throws -> Void) throws
     func stopOwned(deadline:Int) throws -> BootstrapStopOutcome
 }
 protocol BootstrapActivationPort: Sendable {
+    // Exists before preparation: every preparation effect belongs to this exact
+    // transaction. Returning another transaction is a terminal protocol failure.
+    var cleanup:any BootstrapActivationTransaction { get }
     func prepareBrowser(proof:AdmissionProof) throws -> any BootstrapActivationTransaction
 }
 struct BootstrapExecutableMember: Hashable, Sendable {
@@ -107,41 +110,65 @@ protocol BootstrapExecutableInspector: Sendable {
 }
 struct BootstrapExecutableAuthority: Sendable {
     let pins:[String:String], manifestIdentity:String?
-    static let requiredMembers:[BootstrapExecutableMember] = [
-        .init(path:"/opt/acceptance/guest/browser-worker.cjs",componentID:"guestProbes",memberPath:"browser-worker.cjs"),
-        .init(path:"/opt/acceptance/guest/controller.cjs",componentID:"controller",memberPath:""),
-        .init(path:"/opt/acceptance/guest/proxy.py",componentID:"proxy",memberPath:""),
-        .init(path:"/opt/acceptance/guest/verifier.cjs",componentID:"verifier",memberPath:""),
-        .init(path:"/opt/acceptance/runtime/chromium/chrome",componentID:"chromium",memberPath:"chrome"),
-        .init(path:"/opt/acceptance/runtime/node/bin/node",componentID:"node",memberPath:"bin/node"),
-        .init(path:"/opt/acceptance/runtime/python/bin/python3",componentID:"python",memberPath:"bin/python3"),
+    static let requiredPaths = [
+        "/opt/acceptance/guest/browser-worker.cjs", "/opt/acceptance/guest/controller.cjs",
+        "/opt/acceptance/guest/proxy.py", "/opt/acceptance/guest/verifier.cjs",
+        "/opt/acceptance/runtime/chromium/chrome", "/opt/acceptance/runtime/node/bin/node",
+        "/opt/acceptance/runtime/python/bin/python3",
     ]
     private static func valid(_ pins:[String:String]) -> Bool {
-        Set(pins.keys) == Set(requiredMembers.map(\.path)) && pins.values.allSatisfy {
+        Set(pins.keys) == Set(requiredPaths) && pins.values.allSatisfy {
             $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
         }
     }
     static func qualify(manifest:ApplianceManifest,inspector:any BootstrapExecutableInspector) throws -> Self {
-        let document = try JSONSerialization.jsonObject(with:manifest.canonicalBytes()) as? [String:Any]
-        guard let components = document?["components"] as? [[String:Any]] else { throw VMFailure.admissionUnavailable }
-        var pins:[String:String] = [:]
-        for member in requiredMembers {
-            guard let component = components.first(where: { $0["id"] as? String == member.componentID }),
-                  try inspector.artifactSHA256(componentID:member.componentID) == component["sha256"] as? String,
-                  try inspector.installedPath(componentID:member.componentID,memberPath:member.memberPath) == member.path else {
-                throw VMFailure.admissionUnavailable
-            }
-            let sha = try inspector.sha256(componentID:member.componentID,memberPath:member.memberPath)
-            if member.memberPath.isEmpty && sha != component["sha256"] as? String { throw VMFailure.admissionUnavailable }
-            pins[member.path] = sha
-        }
-        guard valid(pins) else { throw VMFailure.admissionUnavailable }
-        return Self(pins:pins,manifestIdentity:manifest.digest)
+        // The accepted appliance has no approved browser-worker payload/member
+        // mapping. guestProbes installs under tests/guest, not guest. Neither a
+        // convenient component label nor an injected inspector repairs that.
+        throw VMFailure.admissionUnavailable
     }
-    // Internal literal wire-vector authority cannot enter a run qualification.
+    // Only the explicitly offline model consumes these literal vector pins.
     static func offlineLiteral(pins:[String:String]) throws -> Self {
         guard valid(pins) else { throw VMFailure.admissionUnavailable }
         return Self(pins:pins,manifestIdentity:nil)
+    }
+}
+
+private final class BootstrapCleanupBudget: @unchecked Sendable {
+    private let clock:any BrokerClock, lock = NSLock()
+    private var end:Int?, last:Int?, realEnd:UInt64?
+    init(clock:any BrokerClock) { self.clock=clock }
+    func remaining() -> Int {
+        lock.withLock {
+            let real = DispatchTime.now().uptimeNanoseconds / 1_000_000
+            guard let sample = try? clock.sample(), sample.monotonic >= 0,
+                  sample.monotonic <= 9007199254680991,
+                  last == nil || sample.monotonic >= last! else { end=0; return 0 }
+            last=sample.monotonic
+            if end == nil { end=sample.monotonic + 60000; realEnd=real + 60000 }
+            guard let realEnd, real < realEnd else { return 0 }
+            return max(0,min(end! - sample.monotonic,Int(realEnd - real)))
+        }
+    }
+    private final class ResultBox: @unchecked Sendable {
+        let done=DispatchSemaphore(value:0)
+        var outcome:BootstrapStopOutcome = .uncertain
+    }
+    func stop(_ operation:@escaping @Sendable (Int) throws -> BootstrapStopOutcome) -> BootstrapStopOutcome {
+        guard remaining() > 0 else { return .uncertain }
+        let box=ResultBox()
+        DispatchQueue.global().async { [self] in
+            let allowance=remaining()
+            if allowance > 0 { box.outcome=(try? operation(allowance)) ?? .uncertain }
+            box.done.signal()
+        }
+        while true {
+            let allowance=remaining()
+            guard allowance > 0 else { return .uncertain }
+            if box.done.wait(timeout:.now() + .milliseconds(min(allowance,10))) == .success {
+                return remaining() > 0 ? box.outcome:.uncertain
+            }
+        }
     }
 }
 struct BootstrapCleanupFailure: Error, Sendable {
@@ -320,7 +347,9 @@ public final class BootstrapQualification: @unchecked Sendable {
     private let lock = NSLock()
     private var proof:AdmissionProof, lastClock:ClockSample, failed = false, activated = false
     private var generation = 0, busy:UUID?, lifecycle:(any BootstrapOwnedLifecycle)?
-    private var role:(any BootstrapActivationTransaction)?
+    private var roles:[any BootstrapActivationTransaction] = []
+    private var retired=Set<ObjectIdentifier>(), inFlight=Set<ObjectIdentifier>(), stoppedInFlight=Set<ObjectIdentifier>()
+    private let cleanupBudget:BootstrapCleanupBudget
     private var _cleanupUncertain = false
     var cleanupUncertain:Bool { lock.withLock { _cleanupUncertain } }
     private var unresolvedRoles:[any BootstrapActivationTransaction] = []
@@ -330,6 +359,7 @@ public final class BootstrapQualification: @unchecked Sendable {
         self.run=run; self.authority=authority; self.clock=clock; self.probe=probe
         self.proof=proof; self.lastClock=lastClock
         self.executables=executables
+        cleanupBudget=BootstrapCleanupBudget(clock:clock)
     }
     private func checkedSample() throws -> ClockSample {
         let sample = try clock.sample()
@@ -351,19 +381,31 @@ public final class BootstrapQualification: @unchecked Sendable {
         } } catch { latch(); throw error }
     }
     fileprivate func latch() {
-        let owned = lock.withLock { () -> ((any BootstrapOwnedLifecycle)?,(any BootstrapActivationTransaction)?) in
+        let owned = lock.withLock { () -> ((any BootstrapOwnedLifecycle)?,[any BootstrapActivationTransaction]) in
             failed = true; generation += 1; busy = nil
-            let values = (lifecycle,role); lifecycle=nil; role=nil; return values
+            let pending=roles.filter { !retired.contains(ObjectIdentifier($0)) }
+            for owner in pending {
+                let id=ObjectIdentifier(owner); retired.insert(id)
+                if inFlight.contains(id) { stoppedInFlight.insert(id) }
+            }
+            let values = (lifecycle,pending); lifecycle=nil; return values
         }
-        if let owner = owned.1 {
-            var uncertain = false
-            do { if try owner.stopOwned(deadline:120000) != .stopped { uncertain=true } } catch { uncertain=true }
-            if uncertain { lock.withLock { _cleanupUncertain=true; unresolvedRoles.append(owner) } }
+        for owner in owned.1.reversed() {
+            if cleanupBudget.stop({ try owner.stopOwned(deadline:$0) }) != .stopped {
+                lock.withLock { _cleanupUncertain=true; unresolvedRoles.append(owner) }
+            }
         }
         if let owner = owned.0 {
-            do { try owner.stopOwned() }
-            catch { lock.withLock { _cleanupUncertain=true; unresolvedLifecycles.append(owner) } }
+            if cleanupBudget.stop({ try owner.stopOwned(deadline:$0) }) != .stopped {
+                lock.withLock { _cleanupUncertain=true; unresolvedLifecycles.append(owner) }
+            }
         }
+    }
+    private func retain(_ owner:any BootstrapActivationTransaction) {
+        lock.withLock { if !roles.contains(where:{ $0 === owner }) { roles.append(owner) } }
+    }
+    private func finishActivation() {
+        lock.withLock { retired.subtract(stoppedInFlight); stoppedInFlight.removeAll(); inFlight.removeAll() }
     }
     private func assertCurrent(_ token:UUID,_ admittedGeneration:Int) throws {
         try lock.withLock {
@@ -409,24 +451,29 @@ public final class BootstrapQualification: @unchecked Sendable {
         do {
             let current = try resample(token:reservation.0,generation:reservation.1)
             try run.appliance.recheck(); _ = try checkedSample()
+            let original=activation.cleanup
+            retain(original)
+            _ = lock.withLock { inFlight.insert(ObjectIdentifier(original)) }
             let transaction = try activation.prepareBrowser(proof:current)
-            let installed = lock.withLock { () -> Bool in
-                guard !failed, busy == reservation.0, generation == reservation.1 else { return false }
-                role=transaction; return true
-            }
-            if !installed { _ = try transaction.stopOwned(deadline:120000); throw VMFailure.terminal }
+            retain(transaction)
+            guard transaction === original else { throw VMFailure.terminal }
+            try assertCurrent(reservation.0,reservation.1)
             try transaction.activate(authorize:{ [weak self] in
                 guard let self else { throw VMFailure.terminal }
                 try self.run.appliance.recheck(); _ = try self.checkedSample()
                 try self.assertCurrent(reservation.0,reservation.1)
             })
+            try run.appliance.recheck(); _ = try checkedSample()
             try lock.withLock {
                 guard !failed, busy == reservation.0, generation == reservation.1 else { throw VMFailure.terminal }
                 busy=nil
             }
+            finishActivation()
         } catch let error as VMFailure {
+            finishActivation()
             latch(); if cleanupUncertain { throw BootstrapCleanupFailure(cleanup:self) }; throw error
         } catch {
+            finishActivation()
             latch()
             if cleanupUncertain { throw BootstrapCleanupFailure(cleanup:self) }
             throw VMFailure.admissionUnavailable
@@ -492,7 +539,9 @@ enum OfflineVMHost {
     static func bootstrapCheck(run:RunConfiguration,probe:any BootstrapProbePort,lifecycle:any BootstrapLifecyclePort,executables:BootstrapExecutableAuthority,clock:any BrokerClock) throws -> BootstrapQualification {
         var qualification:BootstrapQualification?
         do {
-            guard executables.manifestIdentity == run.appliance.manifest.digest else { throw VMFailure.admissionUnavailable }
+            // This internal model exercises lifecycle with literal wire vectors.
+            // No inspector/native provenance is implied or available.
+            guard executables.manifestIdentity == nil else { throw VMFailure.admissionUnavailable }
             let before = try clock.sample(), authority = try RunAuthority(run:run,sample:before)
             _ = try authority.check(before)
             try run.appliance.recheck(); try run.appliance.plan.validateResources()

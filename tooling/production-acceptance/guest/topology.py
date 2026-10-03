@@ -3,7 +3,7 @@
 Import is inert. Native bindings are only constructed by ``select_native_topology``
 for the pinned guest platform; this module never selects or executes them itself.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import hmac
 import importlib.util
@@ -13,9 +13,8 @@ import pathlib
 import re
 import sys
 import threading
-import asyncio
-import inspect
 import struct
+import time
 
 
 class TopologyError(ValueError):
@@ -27,6 +26,59 @@ class ActivationFailure(RuntimeError):
     def __init__(self, code, cleanup):
         super().__init__(code)
         self.cleanup = cleanup
+
+
+class CleanupFailure(TopologyError):
+    """The exact retained cleanup authority survives terminal failure."""
+    def __init__(self, cleanup):
+        super().__init__('CLEANUP_UNCERTAIN')
+        self.cleanup = cleanup
+
+
+class CleanupBudget:
+    """One monotonic deadline, also bounded against a stalled injected clock.
+
+    A timed-out call keeps running only with its retained original owner. No
+    retry or replacement owner is launched by this waiter.
+    """
+    def __init__(self, clock=None):
+        self.clock, self.deadline, self.real_deadline = clock, None, None
+        self.last = None
+        self.lock = threading.RLock()
+
+    def remaining(self):
+        with self.lock:
+            real = time.monotonic_ns() // 1000000
+            try:
+                sample = self.clock.sample() if self.clock else (0, real)
+                if not _sample(sample) or (self.last is not None and sample[1] < self.last):
+                    raise ValueError('clock')
+            except Exception:
+                self.deadline = 0
+                return 0
+            self.last = sample[1]
+            if self.deadline is None:
+                self.deadline, self.real_deadline = sample[1] + 60000, real + 60000
+            return max(0, min(self.deadline - sample[1], (self.real_deadline or 0) - real))
+
+    def call(self, operation):
+        remaining = self.remaining()
+        if not remaining: _fail('CLEANUP_UNCERTAIN')
+        done, outcome = threading.Event(), []
+        def invoke():
+            try:
+                allowance = self.remaining()
+                if not allowance: _fail('CLEANUP_UNCERTAIN')
+                outcome.append((True, operation(allowance)))
+            except BaseException as error:
+                outcome.append((False, error))
+            finally: done.set()
+        threading.Thread(target=invoke, daemon=True).start()
+        while not done.wait(min(remaining / 1000, 0.01)):
+            remaining = self.remaining()
+            if not remaining: _fail('CLEANUP_UNCERTAIN')
+        if not self.remaining() or not outcome[0][0]: _fail('CLEANUP_UNCERTAIN')
+        return outcome[0][1]
 
 
 def _fail(code):
@@ -680,6 +732,11 @@ class TopologyGate:
         self._generation, self._reservation = 0, None
         self._supervision = None
         self._owners, self._retired = [], set()
+        self.unresolved_cleanup = []
+        self._inflight, self._stopped_inflight = set(), set()
+        self._cleanup_budget = CleanupBudget(expected.clock)
+        if isinstance(adapter, NativeTopologyBindings):
+            adapter.bind_cleanup_budget(self._cleanup_budget)
         self._snapshot_cleanup = False
         self.cleanup_uncertain = False
 
@@ -729,25 +786,22 @@ class TopologyGate:
         with self._lock:
             if all(item is not owner for item in self._owners):
                 self._owners.append(owner)
-            failed = self._failed
-        if failed:
-            self._cleanup()
-            _fail('TOPOLOGY_DRIFT')
 
     def _cleanup(self):
         with self._lock:
             pending = [item for item in self._owners if id(item) not in self._retired]
             self._retired.update(id(item) for item in pending)
+            self._stopped_inflight.update(id(item) for item in pending if id(item) in self._inflight)
         for owner in reversed(pending):
             try:
-                result = owner.stop_owned(120000)
+                result = self._cleanup_budget.call(owner.stop_owned)
                 if (not hasattr(result, 'get') or result.get('status') not in ('STOPPED', 'EXITED')
                         or result.get('run_id', result.get('runId')) != self._expected.run_id):
                     raise ValueError('EXIT_DENIED')
             except Exception:
                 self.cleanup_uncertain = True
         if self.cleanup_uncertain:
-            _fail('CLEANUP_UNCERTAIN')
+            raise CleanupFailure(self)
 
     def _latch(self):
         with self._lock:
@@ -761,9 +815,9 @@ class TopologyGate:
         except TopologyError:
             self.cleanup_uncertain = True
         if snapshot is not None and callable(getattr(self._adapter, 'cleanup', None)):
-            try: self._adapter.cleanup(snapshot)
+            try: self._cleanup_budget.call(lambda remaining: self._adapter.cleanup(snapshot))
             except Exception: self.cleanup_uncertain = True
-        if self.cleanup_uncertain: _fail('CLEANUP_UNCERTAIN')
+        if self.cleanup_uncertain: raise CleanupFailure(self)
 
     def _attempt(self, *, initial):
         token, sequence = self._reserve(initial=initial)
@@ -796,12 +850,18 @@ class TopologyGate:
                     self._reservation = None
             return proof
         except Exception as error:
-            self._latch()
-            if snapshot is not None and callable(getattr(self._adapter, 'cleanup', None)):
+            if isinstance(error, CleanupFailure):
+                self.cleanup_uncertain = True
+                self.unresolved_cleanup.append(error.cleanup)
+            try: self._latch()
+            except CleanupFailure: pass
+            if snapshot is not None and snapshot is not self._snapshot and callable(getattr(self._adapter, 'cleanup', None)):
                 try:
-                    self._adapter.cleanup(snapshot)
+                    self._cleanup_budget.call(lambda remaining: self._adapter.cleanup(snapshot))
                 except Exception:
-                    _fail('CLEANUP_UNCERTAIN')
+                    self.cleanup_uncertain = True
+                    self.unresolved_cleanup.append(snapshot)
+            if self.cleanup_uncertain: raise CleanupFailure(self)
             if isinstance(error, TopologyError):
                 raise
             _fail('OBSERVATION_DENIED')
@@ -840,18 +900,21 @@ class TopologyGate:
     def activate_browser(self, activation):
         proof = self.require_current()
         with self._lock:
-            if self._failed or self._activated:
-                self._failed = True
-                self._generation += 1
-                _fail('ACTIVATION_DENIED')
+            duplicate = self._failed or self._activated
             self._activated = True
             token = self._generation
             browser = next(item for item in self._snapshot.role_handoffs
                            if item.launch.role == 'BROWSER')
+        if duplicate:
+            self._latch()
+            _fail('ACTIVATION_DENIED')
         handle = None
         try:
+            # Preparation may fail or drift; its cleanup owner must exist first.
+            self._retain(activation)
             self._expected.appliance_recheck()
             self._clock()
+            with self._lock: self._inflight.add(id(activation))
             handle = activation.prepare(browser, proof)
             self._retain(handle)
             def authorize():
@@ -860,7 +923,10 @@ class TopologyGate:
                 with self._lock:
                     if self._failed or self._generation != token:
                         _fail('ACTIVATION_DENIED')
+            authorize()
+            with self._lock: self._inflight.add(id(handle))
             handle.activate(authorize)
+            authorize()
             with self._lock:
                 invalid = self._failed or self._generation != token
             if invalid:
@@ -869,8 +935,19 @@ class TopologyGate:
         except Exception as error:
             if isinstance(error, ActivationFailure):
                 self._retain(error.cleanup)
+            self._finish_activation()
             self._latch()
             _fail('ACTIVATION_DENIED')
+        finally:
+            self._finish_activation()
+
+    def _finish_activation(self):
+        with self._lock:
+            # A stop before an in-flight operation settled cannot cover owners
+            # that operation acquired later. Compensate the retained owner again.
+            self._retired.difference_update(self._stopped_inflight)
+            self._stopped_inflight.clear()
+            self._inflight.clear()
 
     def topology_drifted(self):
         self._latch()
@@ -1071,6 +1148,12 @@ class NativeTopologyBindings:
     proxy_source: object = field(repr=False)
     _seal: object = field(repr=False)
     _unresolved: list = field(default_factory=list, repr=False, compare=False)
+    _cleanup_budget: CleanupBudget = field(default_factory=CleanupBudget, repr=False, compare=False)
+
+    def bind_cleanup_budget(self, budget):
+        object.__setattr__(self, '_cleanup_budget', budget)
+        if type(self.role_source) is Task8RoleSource and type(self.role_source.bridge) is Task8Collection:
+            self.role_source.bridge.bind_cleanup_budget(budget)
 
     def _read(self, path):
         owner = None
@@ -1117,7 +1200,7 @@ class NativeTopologyBindings:
         uncertain = False
         for owner in pending:
             try:
-                owner.cleanup()
+                self._cleanup_budget.call(lambda remaining, owner=owner: owner.cleanup())
             except Exception:
                 uncertain = True
                 self._unresolved.append(owner)
@@ -1302,7 +1385,14 @@ class Task8RoleSource:
         if self._seal is not _COMPOSITION_SEAL:
             _fail('ROLE_DENIED')
         try:
+            if type(self.bridge) is Task8Collection and self.bridge.handoffs is None:
+                self.bridge.bind_clock(authority.clock)
             value = self.bridge.collectOwned(authority.role_launches)
+        except CleanupFailure:
+            raise
+        except TopologyError as error:
+            if str(error) == 'CLEANUP_UNCERTAIN': raise CleanupFailure(self.bridge) from None
+            raise
         except Exception:
             _fail('ROLE_DENIED')
         if type(value) is not tuple:
@@ -1312,7 +1402,25 @@ class Task8RoleSource:
         try:
             self.bridge.cleanupOwned(handoffs)
         except Exception:
-            _fail('CLEANUP_UNCERTAIN')
+            raise CleanupFailure(self.bridge) from None
+
+
+class _CollectionKernel:
+    """Retain exact children even when accepted start_roles throws internally."""
+    def __init__(self, kernel, budget):
+        self.kernel, self.budget, self.owners = kernel, budget, []
+    def spawn_waiting(self, launch, child):
+        try: owner = self.kernel.spawn_waiting(launch, child)
+        except _CONFINEMENT.RoleStartFailure as error:
+            self.owners.append(error.owned)
+            raise
+        self.owners.append(owner)
+        return owner
+    def inspect(self, pid): return self.kernel.inspect(pid)
+    def wait_owned(self, owner, deadline):
+        return self.budget.call(lambda remaining: self.kernel.wait_owned(owner, min(deadline, remaining)))
+    def stop_owned(self, owner, deadline):
+        return self.budget.call(lambda remaining: self.kernel.stop_owned(owner, min(deadline, remaining)))
 
 
 class Task8Collection:
@@ -1326,11 +1434,35 @@ class Task8Collection:
             _fail('ROLE_DENIED')
         self.config, self.handoffs, self.provenance = config, None, None
         self.retired = False
+        self.cleanup_uncertain = False
+        self._cleanup_lock = threading.Lock()
+        self.proven_owners, self.unresolved_owners = [], []
+        self.budget = CleanupBudget()
+        self.kernel = _CollectionKernel(config.kernel, self.budget)
+
+    def bind_clock(self, clock):
+        if self.budget.clock is None and self.budget.deadline is None:
+            self.budget.clock = clock
+
+    def bind_cleanup_budget(self, budget):
+        if self.handoffs is not None or self.budget.deadline is not None:
+            _fail('ROLE_DENIED')
+        self.budget = self.kernel.budget = budget
 
     def collectOwned(self, launches):
+        if self.cleanup_uncertain: raise CleanupFailure(self)
         if self.retired: _fail('ROLE_DENIED')
         if self.handoffs is None:
-            values = _CONFINEMENT.start_roles(self.config)
+            try:
+                values = _CONFINEMENT.start_roles(replace(self.config, kernel=self.kernel))
+            except Exception:
+                self.retired = True
+                # Accepted start_roles has already attempted cleanup, but does
+                # not export partial owners. The wrapper retains every original.
+                self.cleanup_uncertain = bool(self.kernel.owners)
+                self.unresolved_owners.extend(self.kernel.owners)
+                if self.cleanup_uncertain: raise CleanupFailure(self) from None
+                _fail('ROLE_DENIED')
             self.handoffs = tuple(values[role] for role, _ in ROLE_UIDS)
             self.provenance = tuple((_CONFINEMENT._ownership_facts(h._owned),
                                     getattr(h._owned, 'identity', h._owned),
@@ -1350,16 +1482,25 @@ class Task8Collection:
             _fail('ROLE_DENIED')
 
     def cleanupOwned(self, handoffs):
-        if handoffs is not self.handoffs: _fail('CLEANUP_UNCERTAIN')
-        if self.retired: return
-        self.retired = True
+        with self._cleanup_lock:
+            if handoffs is not self.handoffs: raise CleanupFailure(self)
+            if self.cleanup_uncertain: raise CleanupFailure(self)
+            if self.retired: return
+            self.cleanup_uncertain = True  # Pending is not a proven stop.
+            self.retired = True
         uncertain = False
         for handoff in reversed(self.handoffs):
             try:
-                if handoff.stop_owned(120000)['status'] not in ('STOPPED', 'EXITED'):
-                    uncertain = True
-            except Exception: uncertain = True
-        if uncertain: _fail('CLEANUP_UNCERTAIN')
+                remaining = self.budget.remaining()
+                if not remaining or handoff.stop_owned(remaining)['status'] not in ('STOPPED', 'EXITED'):
+                    raise ValueError('uncertain')
+                self.proven_owners.append(handoff._owned)
+            except Exception:
+                uncertain = True
+                self.unresolved_owners.append(handoff._owned)
+        with self._cleanup_lock:
+            self.cleanup_uncertain = uncertain
+        if uncertain: raise CleanupFailure(self)
 
 
 @dataclass(frozen=True)
@@ -1368,74 +1509,27 @@ class Task8RoleActivation:
     grant: object = field(repr=False)
     _seal: object = field(repr=False)
     def prepare(self, handoff, proof):
-        if self._seal is not _COMPOSITION_SEAL or handoff.launch.role != 'BROWSER':
-            _fail('ACTIVATION_DENIED')
-        return Task10RoleTransaction(self.bridge, self.grant, handoff)
-
-
-@dataclass(frozen=True)
-class OwnedRoleHandle:
-    value: object = field(repr=False)
-    run_id: str
-    def stop_owned(self, deadline):
-        return self._exit(self.value.stopOwned, deadline)
-    def wait_exit(self, deadline):
-        return self._exit(self.value.waitExit, deadline)
-    def _exit(self, operation, deadline):
-        if not _integer(deadline, 1, 1200000):
-            _fail('CLEANUP_UNCERTAIN')
-        value = _await_role(operation(deadline))
-        if (not _keys(value, ('status', 'runId')) or value['runId'] != self.run_id
-                or value['status'] not in ('STOPPED', 'EXITED')):
-            _fail('CLEANUP_UNCERTAIN')
-        return {'status': value['status'], 'run_id': self.run_id}
-
-
-def _await_role(value):
-    if not inspect.isawaitable(value):
-        _fail('ACTIVATION_DENIED')
-    async def consume(): return await value
-    return asyncio.run(consume())
+        _fail('ACTIVATION_UNAVAILABLE')
 
 
 class Task10RoleTransaction:
-    """Task10 ownership adapter for the unchanged async Task8 RolePort API.
+    """Unavailable until accepted Task8 can enforce current authority at effect.
 
-    The embedding must supply the already-audited RolePort. There is no native
-    JS/Python construction or new activation protocol in this module.
+    Calling a Python awaitable with the JS method's name cannot establish that
+    contract. In particular, authorize-before-await permits an expired effect.
     """
     def __init__(self, port, grant, handoff):
         self.port, self.grant, self.handoff = port, grant, handoff
         self.owner, self.used = None, False
     def activate(self, authorize):
-        if self.used: _fail('ACTIVATION_DENIED')
-        self.used = True
-        authorize()
-        try:
-            value = _await_role(self.port.activateOnce(self.grant))
-            if any(not callable(getattr(value, name, None)) for name in ('stopOwned', 'waitExit')):
-                _fail('ACTIVATION_DENIED')
-            self.owner = OwnedRoleHandle(value, self.handoff.launch.run_id)
-        except Exception as error:
-            cleanup = getattr(error, 'cleanup', None)
-            if cleanup is not None:
-                self.owner = OwnedRoleHandle(cleanup, self.handoff.launch.run_id)
-            raise ActivationFailure('ACTIVATION_DENIED', self) from None
+        _fail('ACTIVATION_UNAVAILABLE')
     def stop_owned(self, deadline):
-        if self.owner is not None:
-            return self.owner.stop_owned(deadline)
         return self.handoff.stop_owned(deadline)
 
 
 def select_task8_roles(bridge, grant):
-    """Bind the accepted RolePort bridge; no role process is started here."""
-    if (not callable(getattr(bridge, 'collectOwned', None))
-            or not callable(getattr(bridge, 'cleanupOwned', None))
-            or not callable(getattr(bridge, 'activateOnce', None))
-            or grant is None):
-        _fail('ROLE_DENIED')
-    return (Task8RoleSource(bridge, _COMPOSITION_SEAL),
-            Task8RoleActivation(bridge, grant, _COMPOSITION_SEAL))
+    """No accepted combined Python collection / JS RolePort constructor exists."""
+    _fail('COMPOSITION_UNAVAILABLE')
 
 
 @dataclass(frozen=True)
@@ -1468,14 +1562,26 @@ class Task9RuntimeObserver:
         if (type(config) is not _PROXY.ProxyConfig
                 or type(sockets) is not _PROXY.NativeSockets
                 or type(transport) is not _PROXY.NativeVsockTransport
-                or type(sockets.listener) is not _PROXY.NativeListener):
+                or type(sockets.listener) is not _PROXY.NativeListener
+                or config.sockets is not sockets
+                or transport.binding is not config.binding
+                or sockets.module is not transport.module
+                or sockets.selectors is not transport.selectors
+                or sockets.listener.module is not sockets.module):
             _fail('PROXY_DENIED')
         self.config, self.sockets, self.transport = config, sockets, transport
         self.listener, self.endpoint = sockets.listener, sockets.listener.socket
+        self._owners = (config, sockets, transport, config.binding, sockets.module, sockets.selectors)
 
     def observeAccepted(self, policy):
         _PROXY._admit_native_config(self.config, policy)
-        if (self.sockets.listener is not self.listener or self.listener.socket is not self.endpoint
+        config, sockets, transport, binding, module, selectors = self._owners
+        if (self.config is not config or self.sockets is not sockets or self.transport is not transport
+                or config.sockets is not sockets or config.binding is not binding
+                or transport.binding is not binding
+                or sockets.module is not module or transport.module is not module or self.listener.module is not module
+                or sockets.selectors is not selectors or transport.selectors is not selectors
+                or self.sockets.listener is not self.listener or self.listener.socket is not self.endpoint
                 or self.sockets.closed or self.sockets.closing or self.sockets.stopped
                 or self.sockets.listener_closed or self.listener.closed
                 or self.listener.closing or self.listener.socket_closed
@@ -1486,10 +1592,11 @@ class Task9RuntimeObserver:
                 or policy.handoff_validator('PROXY', 10004, 3, 4) is not True):
             _fail('PROXY_DENIED')
         self.transport.check()
-        binding = policy.binding
-        return ProxyRuntime(binding.run_id, binding.manifest_identity,
-                            binding.config_identity, binding.expires_at,
-                            '127.0.0.1', 3128, 2, 4050, 10004)
+        # These exact-object checks reject substitutions, but accepted Task9
+        # exports no retained runtime instance connecting this transport to the
+        # invocation of serve_proxy(config, transport). Do not attest one from
+        # three independently supplied objects, even with matching identities.
+        _fail('PROXY_RUNTIME_UNAVAILABLE')
 
 
 @dataclass(frozen=True)
@@ -1542,21 +1649,9 @@ class ServiceCreationMonitor:
 def compose_task10(*, mode, expected, observations, collection, host_devices,
                    probe_module, probe_port, proxy_runtime, service_events,
                    platform_name, machine):
-    """Explicit composition from existing owned/injected boundaries only.
+    """Fail before collection/probes: their accepted fixed roots conflict.
 
-    Returns an unstarted gate. Missing native Task8 activation/IP-helper/event
-    construction remains unavailable; this API does not supply or execute it.
+    Activation, helper/receiver and event provenance are also unsupplied. A
+    compatible reviewed ownership contract is required before composing these.
     """
-    if mode != 'bootstrap-check': _fail('ADAPTER_DENIED')
-    _authority(expected)
-    if type(collection) is not Task8Collection:
-        _fail('ROLE_DENIED')
-    roles = Task8RoleSource(collection, _COMPOSITION_SEAL)
-    attempts = Task10NativeAttempts(probe_module, probe_port)
-    probes = select_task8_probe_source(probe_module, probe_port, attempts, platform_name, machine)
-    proxy = select_task9_proxy_source(proxy_runtime, expected.proxy_policy)
-    supervisor = select_native_supervisor(ServiceCreationMonitor(service_events, expected.run_id),
-                                          platform_name, machine)
-    adapter = select_native_topology(observations, roles, host_devices, probes, proxy,
-                                     platform_name, machine)
-    return TopologyGate(expected, adapter, supervisor)
+    _fail('COMPOSITION_UNAVAILABLE')

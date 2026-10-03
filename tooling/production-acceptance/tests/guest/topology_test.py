@@ -102,15 +102,10 @@ class GuestTopologyDriverTests(unittest.TestCase):
             async def activateOnce(self, grant):
                 self.activated += 1
                 return self.handle
-        bridge = Bridge(); source, activation = topology.select_task8_roles(bridge, object())
-        expected = type('Authority', (), {'role_launches': ('launches',)})()
-        self.assertEqual(source.collect(expected), ('roles', ('launches',)))
-        handoff = type('Handoff', (), {'launch': type('Launch', (), {'role':'BROWSER','run_id':'1' * 32})()})()
-        authorized = []
-        handle = activation.prepare(handoff, object())
-        handle.activate(lambda: authorized.append(True))
-        self.assertEqual((authorized, bridge.activated), ([True], 1))
-        handle.stop_owned(120000); self.assertEqual(bridge.handle.stops, 1)
+        bridge = Bridge()
+        with self.assertRaisesRegex(topology.TopologyError, '^COMPOSITION_UNAVAILABLE$'):
+            topology.select_task8_roles(bridge, object())
+        self.assertEqual((bridge.activated, bridge.handle.stops, bridge.cleaned), (0, 0, []))
 
         class Observer:
             def __init__(self): self.seen = []

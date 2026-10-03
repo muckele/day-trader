@@ -10,9 +10,10 @@ do {
         // supplied paths or start a VM until signed/native authority constructs
         // the fixed probe, observation, owned lifecycle/Task8 activation ports,
         // and an independently qualified inventory of executable member bytes.
-        // Archive component digests alone cannot supply that inventory. Task8's
-        // native waiting-child activation/helper embedding remains unavailable;
-        // the Task10-only adapter does not introduce an activation protocol.
+        // The accepted appliance has no approved browser-worker member mapping.
+        // Task8 has no compatible current-authority activation/helper contract,
+        // and Task9 exports no retained config/transport runtime owner. Task10
+        // explicitly rejects those unsupported compositions before effects.
         _ = try VMHost.bootstrapCheck(invocation:invocation)
     }
     let command = try HostDispatch.parse(arguments)

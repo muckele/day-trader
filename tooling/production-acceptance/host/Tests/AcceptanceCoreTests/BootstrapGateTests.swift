@@ -29,7 +29,10 @@ private final class BootstrapLifecycleFake: BootstrapLifecyclePort, BootstrapOwn
     func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws -> any BootstrapOwnedLifecycle {
         starts += 1; drift = onDrift; onBegin?(); if driftOnBegin { onDrift() }; return self
     }
-    func stopOwned() throws { stops += 1 }
+    var bounds:[Int] = [], onStop:(@Sendable () -> Void)?
+    func stopOwned(deadline:Int) throws -> BootstrapStopOutcome {
+        stops += 1; bounds.append(deadline); onStop?(); return .stopped
+    }
     func triggerDrift() { drift?() }
 }
 
@@ -37,16 +40,19 @@ private final class BootstrapRoleHandleFake: BootstrapActivationTransaction, @un
     var stops = 0
     var calls = 0, callback:(@Sendable () throws -> Void)?
     var afterEffect:(@Sendable () throws -> Void)?, uncertain = false
+    var bounds:[Int] = [], onStop:(@Sendable () -> Void)?
     func activate(authorize:@escaping @Sendable () throws -> Void) throws {
         try callback?(); try authorize(); calls += 1; try afterEffect?()
     }
-    func stopOwned(deadline:Int) throws -> BootstrapStopOutcome { stops += 1; return uncertain ? .uncertain:.stopped }
+    func stopOwned(deadline:Int) throws -> BootstrapStopOutcome { stops += 1; bounds.append(deadline); onStop?(); return uncertain ? .uncertain:.stopped }
 }
 
 private final class BootstrapActivationFake: BootstrapActivationPort, @unchecked Sendable {
     let handle = BootstrapRoleHandleFake()
+    var cleanup:any BootstrapActivationTransaction { handle }
+    var onPrepare:(@Sendable () throws -> Void)?
     func prepareBrowser(proof:AdmissionProof) throws -> any BootstrapActivationTransaction {
-        handle
+        try onPrepare?(); return handle
     }
 }
 
@@ -129,7 +135,21 @@ private final class MemberInspectorFake: BootstrapExecutableInspector, @unchecke
 }
 
 private func executableAuthority(_ run:RunConfiguration) throws -> BootstrapExecutableAuthority {
-    let members = BootstrapExecutableAuthority.requiredMembers
+    try BootstrapExecutableAuthority.offlineLiteral(pins:pythonProgramPins)
+}
+
+// Deliberately unsupported literal mapping, independent of production tables.
+// Even an inspector willing to assert it must not create qualified authority.
+private func unapprovedExecutableAuthority(_ run:RunConfiguration) throws -> BootstrapExecutableAuthority {
+    let members:[BootstrapExecutableMember] = [
+        .init(path:"/opt/acceptance/guest/browser-worker.cjs",componentID:"guestProbes",memberPath:"browser-worker.cjs"),
+        .init(path:"/opt/acceptance/guest/controller.cjs",componentID:"controller",memberPath:""),
+        .init(path:"/opt/acceptance/guest/proxy.py",componentID:"proxy",memberPath:""),
+        .init(path:"/opt/acceptance/guest/verifier.cjs",componentID:"verifier",memberPath:""),
+        .init(path:"/opt/acceptance/runtime/chromium/chrome",componentID:"chromium",memberPath:"chrome"),
+        .init(path:"/opt/acceptance/runtime/node/bin/node",componentID:"node",memberPath:"bin/node"),
+        .init(path:"/opt/acceptance/runtime/python/bin/python3",componentID:"python",memberPath:"bin/python3"),
+    ]
     let object = try JSONSerialization.jsonObject(with:run.appliance.manifest.canonicalBytes()) as! [String:Any]
     let artifacts = Dictionary(uniqueKeysWithValues:(object["components"] as! [[String:Any]]).map { ($0["id"] as! String,$0["sha256"] as! String) })
     let values = Dictionary(uniqueKeysWithValues:members.enumerated().map {
@@ -173,6 +193,106 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
 }
 
 @Suite(.serialized) struct BootstrapGateTests {
+    @Test func round4_expiry_after_authorize_cannot_publish_success() throws {
+        let run = try BootstrapRunFixture().run, clock = BootstrapTestClock()
+        let q = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+            lifecycle:BootstrapLifecycleFake(),executables:try executableAuthority(run),clock:clock)
+        let activation = BootstrapActivationFake()
+        activation.handle.afterEffect = { clock.replace([.init(wall:190,monotonic:10010)]) }
+        #expect(throws:VMFailure.self) { try q.activateBrowser(activation) }
+        #expect(activation.handle.stops == 1)
+    }
+
+    @Test func round4_drift_during_prepare_retains_uncertain_owner() throws {
+        let run = try BootstrapRunFixture().run, lifecycle = BootstrapLifecycleFake()
+        let q = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+            lifecycle:lifecycle,executables:try executableAuthority(run),clock:BootstrapTestClock())
+        let activation = BootstrapActivationFake(); activation.handle.uncertain = true
+        activation.onPrepare = { lifecycle.triggerDrift() }
+        #expect(throws:BootstrapCleanupFailure.self) { try q.activateBrowser(activation) }
+        #expect(q.cleanupUncertain); #expect(activation.handle.stops >= 1)
+    }
+
+    @Test func round4_prepare_throw_retains_original_cleanup_authority() throws {
+        let run = try BootstrapRunFixture().run
+        let q = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+            lifecycle:BootstrapLifecycleFake(),executables:try executableAuthority(run),clock:BootstrapTestClock())
+        let activation = BootstrapActivationFake(); activation.handle.uncertain = true
+        activation.onPrepare = { throw VMFailure.admissionUnavailable }
+        #expect(throws:BootstrapCleanupFailure.self) { try q.activateBrowser(activation) }
+        #expect(q.cleanupUncertain); #expect(activation.handle.stops == 1)
+    }
+
+    @Test func round4_cleanup_duration_is_at_most_sixty_seconds() throws {
+        let run = try BootstrapRunFixture().run, clock = BootstrapTestClock(), lifecycle = BootstrapLifecycleFake()
+        let q = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+            lifecycle:lifecycle,executables:try executableAuthority(run),clock:clock)
+        let activation = BootstrapActivationFake(); try q.activateBrowser(activation)
+        activation.handle.onStop = { clock.replace([.init(wall:100,monotonic:60010)]) }
+        lifecycle.triggerDrift()
+        #expect(activation.handle.bounds.allSatisfy { $0 > 0 && $0 <= 60000 })
+        #expect(q.cleanupUncertain)
+    }
+
+    @Test func round4_late_activation_compensates_after_uncertain_early_stop() throws {
+        let run = try BootstrapRunFixture().run, lifecycle = BootstrapLifecycleFake()
+        let q = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+            lifecycle:lifecycle,executables:try executableAuthority(run),clock:BootstrapTestClock())
+        let activation = BootstrapActivationFake(); activation.handle.uncertain = true
+        activation.handle.afterEffect = {
+            lifecycle.triggerDrift()
+            activation.handle.uncertain = false
+        }
+        #expect(throws:BootstrapCleanupFailure.self) { try q.activateBrowser(activation) }
+        #expect(activation.handle.stops == 2); #expect(q.cleanupUncertain)
+        lifecycle.triggerDrift()
+        #expect(activation.handle.stops == 2)
+    }
+
+    @Test func round4_all_owners_share_remaining_cleanup_budget() throws {
+        let run = try BootstrapRunFixture().run, clock = BootstrapTestClock(), lifecycle = BootstrapLifecycleFake()
+        let q = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+            lifecycle:lifecycle,executables:try executableAuthority(run),clock:clock)
+        let activation = BootstrapActivationFake(); try q.activateBrowser(activation)
+        activation.handle.onStop = { clock.replace([.init(wall:100,monotonic:20010)]) }
+        lifecycle.onStop = { clock.replace([.init(wall:100,monotonic:60010)]) }
+        lifecycle.triggerDrift()
+        #expect(activation.handle.bounds.count == 1)
+        #expect(lifecycle.bounds.count == 1)
+        #expect(lifecycle.bounds.allSatisfy { $0 > 0 && $0 <= 40000 })
+        #expect(q.cleanupUncertain)
+        lifecycle.triggerDrift(); #expect(lifecycle.bounds.count == 1)
+    }
+
+    @Test func round4_never_completing_stop_has_bounded_wait_and_retained_owner() throws {
+        let run = try BootstrapRunFixture().run, clock = BootstrapTestClock(), lifecycle = BootstrapLifecycleFake()
+        let q = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+            lifecycle:lifecycle,executables:try executableAuthority(run),clock:clock)
+        let activation = BootstrapActivationFake(); try q.activateBrowser(activation)
+        let release=DispatchSemaphore(value:0), completed=DispatchSemaphore(value:0), stopped=DispatchSemaphore(value:0)
+        activation.handle.onStop = {
+            clock.replace([.init(wall:100,monotonic:60010)])
+            _ = release.wait(timeout:.now() + .seconds(1)); stopped.signal()
+        }
+        DispatchQueue.global().async { lifecycle.triggerDrift(); completed.signal() }
+        let outcome=completed.wait(timeout:.now() + .milliseconds(200))
+        release.signal(); _ = stopped.wait(timeout:.now() + .seconds(1))
+        #expect(outcome == .success); #expect(q.cleanupUncertain)
+        #expect(activation.handle.stops == 1)
+    }
+
+    @Test func round4_unapproved_browser_worker_mapping_never_qualifies() throws {
+        let run = try BootstrapRunFixture().run
+        #expect(throws:VMFailure.admissionUnavailable) { _ = try unapprovedExecutableAuthority(run) }
+    }
+
     @Test func python_producer_handoff_is_authenticated_and_fully_consumed() throws {
         let path = try #require(ProcessInfo.processInfo.environment["TASK10_TOPOLOGY_INPUT"])
         let data = try Data(contentsOf:URL(fileURLWithPath:path))
@@ -210,17 +330,10 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         #expect(throws:VMFailure.admissionUnavailable) { _ = try VMHost.bootstrapCheck(invocation:invocation) }
     }
 
-    @Test func executable_member_authority_is_distinct_from_archive_and_bootstrap_identity() throws {
+    @Test func literal_wire_authority_does_not_claim_executable_provenance() throws {
         let run = try BootstrapRunFixture().run, authority = try executableAuthority(run)
-        let node = try #require(BootstrapExecutableAuthority.requiredMembers.first {
-            $0.path == "/opt/acceptance/runtime/node/bin/node" })
-        let worker = try #require(BootstrapExecutableAuthority.requiredMembers.first {
-            $0.path == "/opt/acceptance/guest/browser-worker.cjs" })
-        #expect(node.memberPath == "bin/node")
-        #expect(worker.componentID == "guestProbes")
-        #expect(worker.memberPath == "browser-worker.cjs")
-        #expect(worker.componentID != "guestBootstrap")
-        #expect(authority.pins[node.path] != nil)
+        #expect(authority.manifestIdentity == nil)
+        #expect(throws:VMFailure.admissionUnavailable) { _ = try VMHost.bootstrapCheck(run:run) }
     }
 
     @Test func fixed_probe_and_full_inventory_handoff_admit() throws {
@@ -270,7 +383,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         let activation = BootstrapActivationFake()
         activation.handle.callback = { #expect(throws:VMFailure.self) { try qualification.activateBrowser(activation) } }
         #expect(throws:VMFailure.self) { try qualification.activateBrowser(activation) }
-        #expect(activation.handle.calls == 0); #expect(activation.handle.stops == 1)
+        #expect(activation.handle.calls == 0); #expect(activation.handle.stops == 2)
         #expect(throws:VMFailure.terminal) { _ = try qualification.requireBrowserAdmission() }
     }
 
