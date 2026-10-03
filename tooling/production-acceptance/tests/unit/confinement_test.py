@@ -207,6 +207,20 @@ class ChildKernel:
 
 
 class ConfinementTests(unittest.TestCase):
+    def test_v1_ipv4_ipv6_descendant_catalogue_and_pinned_paths(self):
+        s=importlib.util.spec_from_file_location('task5_descendant_probe',ROOT/'tests/guest/confinement_probe.py')
+        probe=importlib.util.module_from_spec(s); s.loader.exec_module(probe)
+        for family in ('IPV4','IPV6'):
+            name='child_fork_exec_network_gpu_crash_helper_'+family.lower()
+            expected=tuple('BROWSER.'+position+'.socket-'+family+'-TCP' for position in
+                ('parent','fork','exec','network','gpu','crash'))+tuple(
+                role+'.helper.socket-'+family+'-TCP' for role in ('CONTROLLER','VERIFIER'))
+            self.assertEqual(getattr(probe.PROBES.get(name),'operations',()),expected)
+            for position,sample in (('exec','exec'),('helper','exec'),('network','chromium-network'),
+                                    ('gpu','chromium-gpu'),('crash','chromium-crash')):
+                helper=position+'.socket-'+family+'-TCP'
+                self.assertEqual(probe.HELPER_SAMPLES[helper],sample+'-'+family.lower())
+
     def api(self):
         self.assertIsNotNone(c, 'Task 8 confinement behavior is absent')
         return c
@@ -720,7 +734,9 @@ class ConfinementTests(unittest.TestCase):
                   'proxy_fixed_vsock_positive','io_uring_setup_register_enter_and_inherited_ring_denied',
                   'alternate_ABI_denied','SCM_RIGHTS_proc_pidfd_ptrace_process_vm_theft_denied',
                   'privilege_gain_denied','no_console_or_bridge_fd','bootstrap_arbitrary_argv_denied',
-                  'TSYNC_failure_abort','exact_fd_inventory')
+                  'TSYNC_failure_abort','exact_fd_inventory',
+                  'child_fork_exec_network_gpu_crash_helper_ipv4',
+                  'child_fork_exec_network_gpu_crash_helper_ipv6','fixed_ip_denied')
         self.assertEqual(tuple(probe.PROBES),expected)
         # Fake probe observations exercise only result validation, never native qualification.
         port=types.SimpleNamespace(attempt=lambda case:tuple({'operation':op,'attempted':True,'denied':True,'receiver_count':0} for op in case.operations))

@@ -38,6 +38,35 @@ def _deadline(value):
     if type(value) is not int or not 0 < value <= 1200000: _fail('EXIT_DENIED')
 
 
+@dataclass(frozen=True, slots=True)
+class CompositionBinding:
+    """Shared immutable wire identity; possession alone grants no authority."""
+    version: int
+    runId: str
+    manifestDigest: str
+    configIdentity: str
+    rolePolicyDigest: str
+    epoch: str
+    expiresAtMs: int
+
+    def __post_init__(self):
+        if (type(self.version) is not int or self.version != 1
+                or not _run(self.runId) or not _run(self.epoch)
+                or any(type(v) is not str or re.fullmatch('[0-9a-f]{64}', v) is None
+                       for v in (self.manifestDigest, self.configIdentity, self.rolePolicyDigest))
+                or type(self.expiresAtMs) is not int or not 0 < self.expiresAtMs <= 9007199254740991):
+            _fail('COMPOSITION_BINDING_DENIED')
+
+    @classmethod
+    def from_record(cls, value):
+        if type(value) is not dict or set(value) != set(cls.__dataclass_fields__):
+            _fail('COMPOSITION_BINDING_DENIED')
+        return cls(**value)
+
+    def to_record(self):
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+
 @dataclass(frozen=True)
 class ProgramPin:
     path: str

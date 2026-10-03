@@ -6,11 +6,22 @@ Default discovery fails unavailable; no fake factory, skip, automatic syscall,
 platform-dependent adapter, or caller bool creates native qualification.
 """
 import unittest
-from confinement_probe import run_case, RuntimeGateUnavailable, select_native_probe
+from confinement_probe import run_case, RuntimeGateUnavailable, select_native_probe, qualify_probe_epoch
 
 
 class ConfinementGuestTests(unittest.TestCase):
     probe_port = None
+    completed_epoch = None
+
+    @classmethod
+    def configure_composition(cls, binding, fixtures, cleanup_budget):
+        """Original trusted bootstrap calls once, before any persistent role."""
+        if cls.completed_epoch is not None: raise RuntimeGateUnavailable('NATIVE_PROBE_ALREADY_CONFIGURED')
+        cls.completed_epoch = qualify_probe_epoch(binding, fixtures, cleanup_budget)
+
+    def completed_case(self, name):
+        if self.completed_epoch is None: raise RuntimeGateUnavailable('COMPLETED_PROBE_EPOCH_UNAVAILABLE')
+        self.assertIn(name, dict(self.completed_epoch.cases))
 
     @classmethod
     def configure_native(cls,*,mode,confinement,config,runtime_identity,validate_runtime,fixture_authority):
@@ -30,6 +41,15 @@ class ConfinementGuestTests(unittest.TestCase):
 
     def test_child_fork_exec_network_gpu_crash_helper_inherits(self):
         run_case('child_fork_exec_network_gpu_crash_helper_inherits',self.probe_port)
+
+    def test_child_fork_exec_network_gpu_crash_helper_ipv4(self):
+        self.completed_case('child_fork_exec_network_gpu_crash_helper_ipv4')
+
+    def test_child_fork_exec_network_gpu_crash_helper_ipv6(self):
+        self.completed_case('child_fork_exec_network_gpu_crash_helper_ipv6')
+
+    def test_fixed_ip_denied(self):
+        self.completed_case('fixed_ip_denied')
 
     def test_proxy_fixed_vsock_positive(self):
         run_case('proxy_fixed_vsock_positive',self.probe_port)
