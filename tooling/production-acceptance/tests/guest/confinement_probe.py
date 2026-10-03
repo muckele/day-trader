@@ -228,13 +228,16 @@ def qualify_probe_epoch(binding, fixtures, cleanup_budget):
             if (getattr(pin,'path',None) != '/opt/acceptance/tests/fixtures/'+HELPER_SAMPLES[name]
                     or getattr(pin,'sha256',None) != receiver.sampleDigest):
                 raise ProbeFailure('HELPER_PIN_MISMATCH')
-    last = None
+    last, monotonic_end = None, None
     def current():
-        nonlocal last
+        nonlocal last, monotonic_end
         sample = fixtures.clock.sample()
-        if (type(sample) is not tuple or len(sample) != 2 or any(type(v) is not int or v < 0 for v in sample)
+        if (type(sample) is not tuple or len(sample) != 2 or any(type(v) is not int or not 0 <= v <= 9007199254740991 for v in sample)
                 or sample[0] >= binding.expiresAtMs or (last is not None and (sample[0] < last[0] or sample[1] < last[1]))):
             raise ProbeFailure('PROBE_EPOCH_EXPIRED')
+        if monotonic_end is None:
+            monotonic_end=sample[1]+binding.expiresAtMs-sample[0]
+        if sample[1] >= monotonic_end: raise ProbeFailure('PROBE_EPOCH_EXPIRED')
         if getattr(cleanup_budget,'deadline',None) is not None and not cleanup_budget.remaining():
             raise ProbeFailure('PROBE_CLEANUP_DEADLINE')
         last = sample
@@ -248,6 +251,9 @@ def qualify_probe_epoch(binding, fixtures, cleanup_budget):
             nonce = secrets.token_hex(16)
             before = receivers.observe(receiver, nonce, 'BEFORE')
             if before != 0: raise ProbeFailure('RECEIVER_BASELINE_DENIED')
+            # Independent observation may consume time or revoke authority.
+            # No family setup/acquisition may use the pre-callback sample.
+            current()
             role,_,operation_name = operation.partition('.')
             def attempt(context):
                 context.receiver_binding, context.nonce = receiver,nonce
@@ -295,6 +301,39 @@ class ProbeCleanupFailure(ProbeFailure):
 
 class RuntimeGateUnavailable(RuntimeError):
     pass
+
+
+class _HelperBoundaryDenied(PermissionError):
+    """Raised only after the original helper's marker and exit/audit proof."""
+
+
+def _decode_child_result(data, operation, *, composition):
+    """Bounded strict decoding before any result field has semantic effect."""
+    def pairs(items):
+        result={}
+        for key,value in items:
+            if key in result: raise ProbeFailure('PROBE_RESULT_DUPLICATE')
+            result[key]=value
+        return result
+    def constant(value): raise ProbeFailure('PROBE_RESULT_INVALID')
+    if type(data) is not bytes or not 0 < len(data) <= 512: raise ProbeFailure('PROBE_RESULT_LIMIT')
+    try:
+        result=json.loads(data.decode('ascii'),object_pairs_hook=pairs,parse_constant=constant)
+    except (ValueError,UnicodeError,RecursionError):
+        raise ProbeFailure('PROBE_RESULT_INVALID') from None
+    if type(result) is not dict: raise ProbeFailure('PROBE_RESULT_INVALID')
+    if result == {'unavailable':'HELPER_SAMPLE_UNAVAILABLE'}:
+        raise RuntimeGateUnavailable('HELPER_SAMPLE_UNAVAILABLE')
+    if result == {'failed':'PROBE_OPERATION_FAILED'}:
+        raise ProbeFailure('PROBE_OPERATION_FAILED')
+    fields={'attempted','denied','receiver_count'}
+    if composition or 'operation' in result: fields.add('operation')
+    if (set(result) != fields
+            or ('operation' in fields and (type(result['operation']) is not str or result['operation'] != operation))
+            or result['attempted'] is not True or type(result['denied']) is not bool
+            or type(result['receiver_count']) is not int or not 0 <= result['receiver_count'] <= 1):
+        raise ProbeFailure('PROBE_RESULT_INVALID')
+    return result
 
 
 def run_case(name, port):
@@ -468,9 +507,22 @@ class NativeProbeContext:
                 if self.syscall(64,fd,payload,len(payload)) != len(payload): raise ProbeFailure('PROBE_DELIVERY_INCOMPLETE')
             elif self.syscall(206,fd,payload,len(payload),0,address,len(address)) != len(payload):
                 raise ProbeFailure('PROBE_DELIVERY_INCOMPLETE')
-        finally: self.close(fd)
+        finally:
+            try: self.close(fd)
+            except OSError: raise ProbeFailure('PROBE_CLOSE_FAILED') from None
 
     def helper(self,name):
+        try:
+            return self._helper(name)
+        except OSError as error:
+            # Parent positions directly attempt the syscall. Descendants prove
+            # denial only via the marker/exit path below, never setup errno.
+            if type(error) is _HelperBoundaryDenied or name in (
+                    'parent.socket-AF_VSOCK','parent.socket-IPV4-TCP','parent.socket-IPV6-TCP'):
+                raise
+            raise ProbeFailure('HELPER_EFFECT_FAILED') from None
+
+    def _helper(self,name):
         b=self.port.b
         samples=HELPER_SAMPLES
         network = name.endswith(('socket-IPV4-TCP','socket-IPV6-TCP'))
@@ -543,10 +595,10 @@ class NativeProbeContext:
                         proof.extend(part)
                     code=b.os.waitstatus_to_exitcode(status)
                     if proof!=b'ATTEMPTED\n': raise ProbeFailure('HELPER_ATTEMPT_UNPROVED')
-                    if code==23: raise PermissionError(1,'HELPER_BOUNDARY_DENIED')
+                    if code==23: raise _HelperBoundaryDenied(1,'HELPER_BOUNDARY_DENIED')
                     if code<0 and name in ('AArch32-audit','x86_64-audit','unknown-audit','alternate-syscall-entry'):
                         if self.authority.audit_abi_termination(name,pid,status) is not self.authority: raise ProbeFailure('ABI_ATTEMPT_UNPROVED')
-                        raise PermissionError(1,'ABI_BOUNDARY_DENIED')
+                        raise _HelperBoundaryDenied(1,'ABI_BOUNDARY_DENIED')
                     if code!=0: raise ProbeFailure('HELPER_OPERATION_FAILED')
                     return
                 b.sleep(0.01)
@@ -566,9 +618,7 @@ class NativeProbeContext:
             if fd is not None: b.os.close(fd)
             if marker is not None:
                 for endpoint in marker:
-                    if endpoint is not None:
-                        try: b.os.close(endpoint)
-                        except OSError: pass
+                    if endpoint is not None: b.os.close(endpoint)
             if target is not None:
                 for endpoint in target:
                     if endpoint is not None: b.os.close(endpoint)
@@ -700,6 +750,10 @@ class NativeProbeFixtures:
                 data=b'{"unavailable":"HELPER_SAMPLE_UNAVAILABLE"}'
                 port.b.os.write(4,struct.pack('<I',len(data))+data)
                 port.b.os._exit(78)
+            except ProbeFailure:
+                data=b'{"failed":"PROBE_OPERATION_FAILED"}'
+                port.b.os.write(4,struct.pack('<I',len(data))+data)
+                port.b.os._exit(78)
             except BaseException: port.b.os._exit(78)
         owned=None
         try:
@@ -709,9 +763,8 @@ class NativeProbeFixtures:
                 raise
             length=struct.unpack('<I',self.kernel._read_exact(owned.result,4,2000))[0]
             if not 0<length<=512: raise ProbeFailure('PROBE_RESULT_LIMIT')
-            result=json.loads(self.kernel._read_exact(owned.result,length,2000))
-            if result == {'unavailable':'HELPER_SAMPLE_UNAVAILABLE'}:
-                raise RuntimeGateUnavailable('HELPER_SAMPLE_UNAVAILABLE')
+            result=_decode_child_result(self.kernel._read_exact(owned.result,length,2000),operation,
+                                        composition=self._epoch_started)
             self.kernel.b.os.write(owned.command,b'EXIT')
             family.receipt(self.kernel.wait_owned(owned,2000),('EXITED',))
             family.exited=True

@@ -46,12 +46,13 @@ class CompositionBinding:
     manifestDigest: str
     configIdentity: str
     rolePolicyDigest: str
-    epoch: str
+    epoch: int
     expiresAtMs: int
 
     def __post_init__(self):
         if (type(self.version) is not int or self.version != 1
-                or not _run(self.runId) or not _run(self.epoch)
+                or not _run(self.runId)
+                or type(self.epoch) is not int or not 0 < self.epoch <= 9007199254740991
                 or any(type(v) is not str or re.fullmatch('[0-9a-f]{64}', v) is None
                        for v in (self.manifestDigest, self.configIdentity, self.rolePolicyDigest))
                 or type(self.expiresAtMs) is not int or not 0 < self.expiresAtMs <= 9007199254740991):

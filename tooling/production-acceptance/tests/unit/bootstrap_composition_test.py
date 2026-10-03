@@ -120,9 +120,152 @@ class InertFamily:
 
 
 class BootstrapProbeCompositionTests(unittest.TestCase):
+    def test_t5_r1_helper_setup_errno_cannot_prove_an_attempt(self):
+        # Reviewer witnesses, extended across setup/transport/wait boundaries.
+        # The real qualifier, child callback and helper execute over inert OS.
+        for fault in ('pin-eperm','pin-eacces','pipe','target-write','fork','marker-read','wait','audit'):
+            with self.subTest(fault=fault):
+                setup=self.setup_epoch(); family=setup[4]; hits=[]
+                def denied(*args): hits.append(fault); raise PermissionError(13 if fault=='pin-eacces' else 1,'inert setup failure')
+                if fault.startswith('pin-'):
+                    original=family.b.pin_sample
+                    family.b.pin_sample=lambda path,digest: denied() if path.endswith('/exec-ipv4') else original(path,digest)
+                elif fault=='pipe': family.b.os.pipe2=denied
+                elif fault=='target-write':
+                    original=family.b.os.write
+                    family.b.os.write=lambda fd,data: denied() if fd==32 else original(fd,data)
+                elif fault=='fork': family.b.os.fork=denied
+                elif fault=='marker-read':
+                    original=family.b.os.read
+                    family.b.os.read=lambda fd,size: denied() if fd==31 else original(fd,size)
+                elif fault=='wait': family.b.os.waitpid=denied
+                else:
+                    original=family.authority.helper_pin; helper=[None]
+                    def pin(name): helper[0]=name; return original(name)
+                    family.authority.helper_pin=pin
+                    family.b.os.waitstatus_to_exitcode=lambda status: -9 if helper[0]=='AArch32-audit' else 23
+                    family.authority.audit_abi_termination=denied
+                try: p.qualify_probe_epoch(setup[0],family.fixtures,setup[3])
+                except (p.ProbeFailure,p.RuntimeGateUnavailable): pass
+                else: self.fail('helper '+fault+' was sealed as an attempted denial')
+                self.assertTrue(hits)
+                self.assertIs(family.fixtures.cleanup_budget,setup[3])
+                for owner in family.fixtures.family_owners:
+                    self.assertTrue(any(row[:2]==('stop',owner.owned) for row in family.events))
+                self.assertLess(len(family.fixtures.family_owners),91)
+
+    def test_t5_r2_epoch_is_a_positive_safe_integer_on_the_wire(self):
+        for epoch in (1,2,9007199254740991):
+            with self.subTest(epoch=epoch):
+                try: binding=c.CompositionBinding(1,'a'*32,'b'*64,'c'*64,'d'*64,epoch,100000)
+                except c.ConfinementError as error: self.fail('approved integer epoch rejected: '+str(error))
+                self.assertIs(type(binding.epoch),int)
+                self.assertEqual(c.CompositionBinding.from_record(binding.to_record()),binding)
+                self.assertEqual(json.loads(json.dumps(binding.to_record()))['epoch'],epoch)
+        for epoch in (True,False,0,-1,1.0,'1','e'*32,9007199254740992,None):
+            with self.subTest(invalid=epoch), self.assertRaises(c.ConfinementError):
+                c.CompositionBinding(1,'a'*32,'b'*64,'c'*64,'d'*64,epoch,100000)
+
+    def test_t5_r1_fork_network_cleanup_errno_is_not_operation_denial(self):
+        setup=self.setup_epoch(); b=setup[4].b
+        operation='BROWSER.fork.socket-IPV4-TCP'
+        receiver=next(row for row in setup[4].fixtures.receivers._inventory if row.operationId==operation)
+        b.os.fork=lambda: 0
+        b.os.dup2=lambda *args: None
+        b.os.set_inheritable=lambda *args: None
+        b.os.close=lambda fd: (_ for _ in ()).throw(PermissionError(1,'inert close failure')) if fd==19 else None
+        b.syscall=lambda nr,*args: 19 if nr==198 else len(args[1]) if nr==64 else 0
+        context=p.NativeProbeContext(types.SimpleNamespace(b=b),setup[4].authority,operation,c)
+        context.receiver_binding,context.nonce=receiver,'1'*32
+        with self.assertRaises(Exit) as caught: context.helper('fork.socket-IPV4-TCP')
+        self.assertEqual(caught.exception.args,(78,),'cleanup errno was encoded as proved denial exit23')
+
+    def test_t5_r3_all_framed_child_results_reject_duplicate_and_unknown_fields(self):
+        operations=tuple(op for case in p.PROBES.values() for op in case.operations)
+        self.assertEqual(len(operations),91)
+        for target in range(91):
+            for prefix in (b'{"operation":"UNTRUSTED_DUPLICATE",',b'{"attempted":false,',b'{"unknown":0,'):
+                with self.subTest(operation=operations[target],prefix=prefix):
+                    setup=self.setup_epoch(); family=setup[4]
+                    original=family.fixtures.kernel._read_exact; pending=[]; position=[0]; altered=[]
+                    def read(endpoint,count,deadline):
+                        if pending:
+                            value=pending.pop(); self.assertEqual(count,len(value)); return value
+                        header=original(endpoint,count,deadline); self.assertEqual(count,4)
+                        value=original(endpoint,struct.unpack('<I',header)[0],deadline)
+                        if position[0]==target:
+                            value=prefix+value[1:]; altered.append(True)
+                        position[0]+=1; pending.append(value)
+                        return struct.pack('<I',len(value))
+                    family.fixtures.kernel._read_exact=read
+                    with self.assertRaises(p.ProbeFailure): p.qualify_probe_epoch(setup[0],family.fixtures,setup[3])
+                    self.assertEqual(altered,[True])
+                    self.assertEqual(len(family.fixtures.family_owners),target+1)
+                    self.assertEqual(len(setup[1].requests),2*target+1,
+                        'malformed result reached receiver AFTER interpretation')
+
+    def test_t5_r4_receiver_before_expiry_has_zero_family_effects(self):
+        for kind in ('wall','budget','monotonic'):
+            with self.subTest(kind=kind):
+                setup=self.setup_epoch(); binding,channel,clock,budget,family=setup
+                if kind=='budget': budget.remaining()
+                original_end=budget.deadline
+                def expire(row):
+                    if row['phase']=='BEFORE':
+                        if kind=='wall': clock.wall=binding.expiresAtMs
+                        elif kind=='budget': clock.mono+=60001
+                        else: clock.mono+=binding.expiresAtMs
+                    return row
+                channel.mutate=expire
+                with self.assertRaises(p.ProbeFailure): p.qualify_probe_epoch(binding,family.fixtures,budget)
+                self.assertFalse(any(row[0]=='spawn' for row in family.events),'expired BEFORE observation acquired a family')
+                self.assertEqual(family.fixtures.family_owners,[])
+                self.assertIs(family.fixtures.cleanup_budget,budget)
+                self.assertEqual(budget.deadline,original_end)
+                with self.assertRaises(p.ProbeFailure): p.qualify_probe_epoch(binding,family.fixtures,budget)
+
+    def test_t5_r3_result_bytes_reject_invalid_encoding_and_primitives(self):
+        valid=b'{"operation":"BROWSER.socket-AF_VSOCK","attempted":true,"denied":true,"receiver_count":0}'
+        invalid=(b'\xff'+valid,valid.decode('ascii').encode('utf-16'),b'[]',
+                 valid.replace(b'"attempted":true',b'"attempted":1'),
+                 valid.replace(b'"denied":true',b'"denied":1'),
+                 *(valid.replace(b'"receiver_count":0',b'"receiver_count":'+value)
+                   for value in (b'true',b'0.0',b'NaN',b'Infinity',b'9007199254740992')))
+        for raw in invalid:
+            with self.subTest(raw=raw):
+                setup=self.setup_epoch(); original=setup[4].fixtures.kernel._read_exact; pending=[]
+                def read(endpoint,count,deadline):
+                    if pending: return pending.pop()
+                    header=original(endpoint,count,deadline)
+                    original(endpoint,struct.unpack('<I',header)[0],deadline)
+                    pending.append(raw); return struct.pack('<I',len(raw))
+                setup[4].fixtures.kernel._read_exact=read
+                with self.assertRaises(p.ProbeFailure): p.qualify_probe_epoch(setup[0],setup[4].fixtures,setup[3])
+                self.assertEqual(len(setup[1].requests),1)
+
+    def test_t5_r3_legacy_task10_shape_stays_legacy_only(self):
+        setup=self.setup_epoch(); family=setup[4]
+        family.authority.receiver_count=lambda operation: 0
+        native=t.Task10NativeAttempts(p,p.NativeProbePort(family.fixtures))
+        try: result=native.execute_native('BROWSER_IPV4_TCP')
+        except Exception as error: self.fail('accepted legacy Task10 attempt failed: '+str(error))
+        self.assertEqual(result,t.ProbeResult('BROWSER_IPV4_TCP',True,'DENIED',0))
+        self.assertFalse(family.fixtures._epoch_started)
+        # A v1 result with the same missing operation must still be rejected.
+        setup=self.setup_epoch(); original=setup[4].fixtures.kernel._read_exact; pending=[]
+        def read(endpoint,count,deadline):
+            if pending: return pending.pop()
+            header=original(endpoint,count,deadline)
+            row=json.loads(original(endpoint,struct.unpack('<I',header)[0],deadline)); row.pop('operation')
+            data=json.dumps(row).encode('ascii'); pending.append(data)
+            return struct.pack('<I',len(data))
+        setup[4].fixtures.kernel._read_exact=read
+        with self.assertRaises(p.ProbeFailure): p.qualify_probe_epoch(setup[0],setup[4].fixtures,setup[3])
+        self.assertEqual(len(setup[1].requests),1)
+
     def setup_epoch(self):
         self.assertTrue(callable(getattr(p, 'qualify_probe_epoch', None)), 'epoch qualification must reject incomplete families and bind independent receivers')
-        binding = c.CompositionBinding(1, 'a'*32, 'b'*64, 'c'*64, 'd'*64, 'e'*32, 100000)
+        binding = c.CompositionBinding(1, 'a'*32, 'b'*64, 'c'*64, 'd'*64, 1, 100000)
         channel, clock = Channel(), Clock()
         inventory = []
         for name, case in p.PROBES.items():
@@ -154,7 +297,7 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
             setup[1].mutate = lambda row, k=key, v=value: dict(row, receiver=dict(row['receiver'], **{k:v}))
             with self.subTest(key=key), self.assertRaises(p.ProbeFailure):
                 p.qualify_probe_epoch(setup[0], setup[4].fixtures, setup[3])
-        for key, value in [('runId','0'*32), ('epoch','0'*32), ('manifestDigest','0'*64)]:
+        for key, value in [('runId','0'*32), ('epoch',2), ('manifestDigest','0'*64)]:
             setup = self.setup_epoch()
             setup[1].mutate = lambda row, k=key, v=value: dict(row, receiver=dict(row['receiver'], binding=dict(row['receiver']['binding'], **{k:v})))
             with self.subTest(key=key), self.assertRaises(p.ProbeFailure):
@@ -216,6 +359,8 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
         self.assertIs(proof.require_current(setup[0], proof.fixture_inventory_digest, 1001), proof)
         with self.assertRaises(p.ProbeFailure): proof.require_current(setup[0], '0'*64, 1001)
         with self.assertRaises(p.ProbeFailure): proof.require_current(setup[0], proof.fixture_inventory_digest, 100000)
+        changed=c.CompositionBinding.from_record(dict(setup[0].to_record(),epoch=2))
+        with self.assertRaises(p.ProbeFailure): proof.require_current(changed,proof.fixture_inventory_digest,1001)
         self.assertFalse(hasattr(p.CompletedProbeEpoch,'_make'),'tuple factories must not bypass the epoch seal')
 
     def test_v1_fixed_targets_and_descendant_fork_attempt_the_bound_family(self):
