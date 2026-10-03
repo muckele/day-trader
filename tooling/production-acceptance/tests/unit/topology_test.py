@@ -156,6 +156,201 @@ def snapshot(**changes):
 
 
 class TopologyTests(unittest.TestCase):
+    def test_v1_observation_cleanup_remains_reserved_until_receipt_settles(self):
+        errors = []
+        class Owner:
+            cleanups = 0
+            def read(self, limit): return b''
+            def close(self): raise OSError('inert uncertain close')
+            def cleanup(self): self.cleanups += 1
+        owner = Owner()
+        class CleanupClock(Clock):
+            reentered = False
+            def sample(self):
+                if owner.cleanups and not self.reentered:
+                    self.reentered = True
+                    try: adapter.cleanup_unresolved()
+                    except Exception as error: errors.append(error)
+                return super().sample()
+        class Source:
+            def open_owned(self, path, flags): return owner
+            def collect(self, expected): raise AssertionError('not reached')
+            def observe(self, expected): raise AssertionError('not reached')
+            def execute(self, identifier): raise AssertionError('not reached')
+        source, clock = Source(), CleanupClock()
+        adapter = topology.select_native_topology(source, source, source, source, source, 'linux', 'aarch64')
+        gate = topology.TopologyGate(authority(clock=clock), adapter)
+        with self.assertRaises(topology.CleanupFailure): gate.admit()
+        adapter.cleanup_unresolved()
+        self.assertEqual(owner.cleanups, 1)
+        self.assertEqual(len(errors), 1)
+        self.assertIs(errors[0].cleanup, owner)
+        self.assertEqual(adapter._unresolved, [])
+        self.assertFalse(adapter._pending_observation_cleanup)
+
+    def test_v1_capture_owner_precedes_first_observation_acquisition(self):
+        test = self
+        observed = []
+        class Owner:
+            closes = 0
+            def read(self, limit): return b''
+            def close(self): self.closes += 1
+            def cleanup(self): raise AssertionError('already closed')
+        owner = Owner()
+        class Source:
+            def open_owned(self, path, flags):
+                observed.append((adapter.capture_owner in gate._owners, gate.cleanup_uncertain))
+                with test.assertRaises(topology.CleanupFailure) as caught: gate.topology_drifted()
+                test.assertIs(caught.exception.cleanup, gate)
+                return owner
+            def collect(self, expected): raise AssertionError('not reached')
+            def observe(self, expected): raise AssertionError('not reached')
+            def execute(self, identifier): raise AssertionError('not reached')
+        source = Source()
+        adapter = topology.select_native_topology(source, source, source, source, source, 'linux', 'aarch64')
+        gate = topology.TopologyGate(authority(), adapter)
+        with self.assertRaises(topology.TopologyError): gate.admit()
+        self.assertEqual(observed, [(True, True)] * len(topology.NATIVE_OBSERVATION_PATHS))
+        self.assertEqual(owner.closes, len(topology.NATIVE_OBSERVATION_PATHS))
+        self.assertFalse(gate.cleanup_uncertain)
+
+    def test_v1_capture_pending_cleanup_is_visible_before_snapshot(self):
+        for disposition in ('TIMEOUT', 'STOPPED'):
+            with self.subTest(disposition=disposition):
+                entered, release = threading.Event(), threading.Event()
+                launches, handoffs = launches_and_handoffs()
+                class CollectionKernel:
+                    def __init__(self): self.spawned, self.stops, self.allowances = [], [], []
+                    def spawn_waiting(self, launch, child):
+                        owner = handoffs[len(self.spawned)]._owned
+                        self.spawned.append(owner)
+                        return owner
+                    def inspect(self, pid):
+                        return next(dict(h.attestation.__dict__) for h in handoffs if h.attestation.pid == pid)
+                    def wait_owned(self, owner, deadline): raise AssertionError('not reached')
+                    def stop_owned(self, owner, deadline):
+                        self.stops.append(owner); self.allowances.append(deadline)
+                        entered.set()
+                        if not release.wait(2): raise AssertionError('stop not released')
+                        return {'status': disposition, 'pid': owner.pid, 'run_id': RUN}
+                kernel = CollectionKernel()
+                collection = topology.Task8Collection(confinement.BootstrapConfig(kernel, RUN, launches[0].programs))
+                roles = topology.Task8RoleSource(collection, topology._COMPOSITION_SEAL)
+                header = b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n'
+                content = {
+                    '/proc/net/dev': b'Inter-| Receive\n face |bytes packets errs drop fifo frame compressed multicast\n lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n',
+                    '/proc/net/route': b'Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n',
+                    '/proc/net/ipv6_route': b'', '/etc/resolv.conf': b'',
+                    '/proc/net/tcp': header, '/proc/net/tcp6': header,
+                    '/proc/net/udp': header, '/proc/net/udp6': header,
+                    '/proc/net/unix': b'Num RefCount Protocol Flags Type St Inode Path\n',
+                }
+                class Observation:
+                    def open_owned(self, path, flags):
+                        class Owner:
+                            def __init__(self): self.chunks = [content[path], b'']
+                            def read(self, limit): return self.chunks.pop(0)
+                            def close(self): pass
+                            def cleanup(self): raise AssertionError('already closed')
+                        return Owner()
+                class Devices:
+                    def observe(self, expected): return DEVICES
+                class Probes:
+                    def execute(self, identifier): raise topology.TopologyError('PROBE_DENIED')
+                class Proxy:
+                    def observe(self, policy): raise AssertionError('not reached')
+                adapter = topology.select_native_topology(Observation(), roles, Devices(), Probes(), Proxy(), 'linux', 'aarch64')
+                gate = topology.TopologyGate(authority(), adapter)
+                errors = []
+                def admit():
+                    try: gate.admit()
+                    except Exception as error: errors.append(error)
+                worker = threading.Thread(target=admit, daemon=True)
+                worker.start()
+                try:
+                    self.assertTrue(entered.wait(1))
+                    self.assertTrue(collection.cleanup_uncertain)
+                    self.assertEqual(len(kernel.stops), 1)
+                    for operation in (gate.topology_drifted, gate.admit, gate.require_current):
+                        with self.assertRaises(topology.CleanupFailure) as caught: operation()
+                        self.assertIs(caught.exception.cleanup, gate)
+                        self.assertTrue(gate.cleanup_uncertain)
+                        self.assertIn(collection, gate.unresolved_cleanup)
+                    self.assertIs(collection.budget, gate._cleanup_budget)
+                    self.assertIs(adapter._cleanup_budget, gate._cleanup_budget)
+                    self.assertIn(adapter.capture_owner, gate._owners)
+                    deadline = gate._cleanup_budget.deadline
+                    self.assertEqual(len(kernel.stops), 1)
+                finally:
+                    release.set(); worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(kernel.stops, list(reversed(kernel.spawned)))
+                self.assertTrue(all(0 < allowance <= 60000 for allowance in kernel.allowances))
+                self.assertEqual(gate._cleanup_budget.deadline, deadline)
+                self.assertEqual(len(errors), 1)
+                self.assertEqual(gate.cleanup_uncertain, disposition == 'TIMEOUT')
+                if disposition == 'TIMEOUT':
+                    self.assertIs(errors[0].cleanup, gate)
+                    with self.assertRaises(topology.CleanupFailure): gate.admit()
+                    self.assertIn(collection, gate.unresolved_cleanup)
+
+    def test_v1_ordinary_observation_close_failure_exports_original_owner(self):
+        for primary_typed in (False, True):
+            with self.subTest(primary_typed=primary_typed):
+                entered, release = threading.Event(), threading.Event()
+                primary_owner = object()
+                primary = topology.CleanupFailure(primary_owner)
+                class Owner:
+                    def __init__(self): self.closes, self.cleanups = 0, 0
+                    def read(self, limit):
+                        if primary_typed: raise primary
+                        return b''
+                    def close(self):
+                        self.closes += 1
+                        raise OSError('inert uncertain close')
+                    def cleanup(self):
+                        self.cleanups += 1; entered.set()
+                        if not release.wait(2): raise AssertionError('cleanup not released')
+                        raise OSError('inert unresolved cleanup')
+                owner = Owner()
+                class Source:
+                    def open_owned(self, path, flags): return owner
+                    def collect(self, expected): raise AssertionError('not reached')
+                    def observe(self, expected): raise AssertionError('not reached')
+                    def execute(self, identifier): raise AssertionError('not reached')
+                source = Source()
+                adapter = topology.select_native_topology(source, source, source, source, source, 'linux', 'aarch64')
+                gate = topology.TopologyGate(authority(), adapter)
+                with self.assertRaises(topology.TopologyError) as caught: gate.admit()
+                self.assertIsInstance(caught.exception, topology.CleanupFailure)
+                self.assertIs(caught.exception.cleanup, gate)
+                self.assertIn(owner, gate.unresolved_cleanup)
+                if primary_typed: self.assertIn(primary_owner, gate.unresolved_cleanup)
+                self.assertEqual(adapter._unresolved, [owner])
+                errors = []
+                def cleanup():
+                    try: adapter.cleanup_unresolved()
+                    except Exception as error: errors.append(error)
+                worker = threading.Thread(target=cleanup, daemon=True)
+                worker.start()
+                try:
+                    self.assertTrue(entered.wait(1))
+                    self.assertEqual(adapter._unresolved, [owner])
+                    for operation in (gate.admit, gate.topology_drifted, adapter.cleanup_unresolved):
+                        with self.assertRaises(topology.CleanupFailure): operation()
+                    self.assertTrue(gate.cleanup_uncertain)
+                    self.assertIn(owner, gate.unresolved_cleanup)
+                    self.assertEqual((owner.closes, owner.cleanups), (1, 1))
+                finally:
+                    release.set(); worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(len(errors), 1)
+                self.assertIs(errors[0].cleanup, owner)
+                self.assertFalse(adapter._pending_observation_cleanup)
+                with self.assertRaises(topology.CleanupFailure): gate.admit()
+                self.assertTrue(gate.cleanup_uncertain)
+                self.assertEqual((owner.closes, owner.cleanups), (1, 1))
+
     def test_local_n5_typed_cleanup_survives_native_source_boundaries(self):
         cleanup = object()
         failure = topology.CleanupFailure(cleanup)

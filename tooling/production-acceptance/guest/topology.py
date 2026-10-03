@@ -733,7 +733,7 @@ class TopologyGate:
         self._generation, self._reservation = 0, None
         self._supervision = None
         self._owners, self._retired = [], set()
-        self.unresolved_cleanup = []
+        self._unresolved_cleanup = []
         self._inflight, self._stopped_inflight = set(), set()
         self._cleanup_budget = CleanupBudget(expected.clock)
         if isinstance(adapter, NativeTopologyBindings):
@@ -742,20 +742,34 @@ class TopologyGate:
         self._pending_stops = set()
         self._pending_snapshots = set()
         self._cleanup_failed = False
+        self._pending_captures = set()
+        if isinstance(adapter, NativeTopologyBindings):
+            self._retain(adapter.capture_owner)
+            adapter.capture_owner.run_id = expected.run_id
+
+    @property
+    def unresolved_cleanup(self):
+        with self._lock:
+            owners = list(self._unresolved_cleanup)
+            if self._failed and isinstance(self._adapter, NativeTopologyBindings):
+                for owner in self._adapter.capture_owner.unresolved_cleanup:
+                    if all(item is not owner for item in owners): owners.append(owner)
+            return owners
 
     @property
     def cleanup_uncertain(self):
         with self._lock:
             return bool(self._cleanup_failed or self._pending_stops
-                        or self._pending_snapshots or (self._failed and (
-                            self._inflight or any(id(item) not in self._retired for item in self._owners))))
+                        or self._pending_snapshots or self._pending_captures or (self._failed and (
+                            self._inflight
+                            or any(id(item) not in self._retired for item in self._owners))))
 
     def _remember_cleanup(self, owner):
         with self._lock:
             if owner is self: return  # Our pending state is not a failed stop.
             self._cleanup_failed = True
-            if all(item is not owner for item in self.unresolved_cleanup):
-                self.unresolved_cleanup.append(owner)
+            if all(item is not owner for item in self._unresolved_cleanup):
+                self._unresolved_cleanup.append(owner)
 
     def _remember_cleanup_failure(self, error):
         # Capture can fail first, then fail while compensating. Preserve both
@@ -821,7 +835,8 @@ class TopologyGate:
         while True:
             with self._lock:
                 pending = [item for item in self._owners
-                           if id(item) not in self._retired and id(item) not in self._pending_stops]
+                           if id(item) not in self._retired and id(item) not in self._pending_stops
+                           and id(item) not in self._pending_captures]
                 self._retired.update(id(item) for item in pending)
                 self._pending_stops.update(id(item) for item in pending)
                 self._stopped_inflight.update(id(item) for item in pending if id(item) in self._inflight)
@@ -866,7 +881,14 @@ class TopologyGate:
     def _attempt(self, *, initial):
         token, sequence = self._reserve(initial=initial)
         snapshot = None
+        capture_owner = None
         try:
+            if isinstance(self._adapter, NativeTopologyBindings):
+                with self._lock:
+                    if self._failed or self._reservation is not token:
+                        _fail('TOPOLOGY_DRIFT')
+                    capture_owner = self._adapter.capture_owner
+                    self._pending_captures.add(id(capture_owner))
             before = self._clock()
             self._expected.appliance_recheck()
             before = self._clock()
@@ -894,6 +916,8 @@ class TopologyGate:
                     self._reservation = None
             return proof
         except Exception as error:
+            if capture_owner is not None:
+                with self._lock: self._pending_captures.discard(id(capture_owner))
             self._remember_cleanup_failure(error)
             extra_snapshot = (snapshot is not None and snapshot is not self._snapshot
                               and callable(getattr(self._adapter, 'cleanup', None)))
@@ -906,6 +930,9 @@ class TopologyGate:
             if isinstance(error, TopologyError):
                 raise
             _fail('OBSERVATION_DENIED')
+        finally:
+            if capture_owner is not None:
+                with self._lock: self._pending_captures.discard(id(capture_owner))
 
     def admit(self):
         proof = self._attempt(initial=True)
@@ -1192,6 +1219,50 @@ def _abstract(raw):
     return tuple(result)
 
 
+class _NativeCaptureOwner:
+    """Original capture authority, including acquisition before any snapshot.
+
+    The gate defers stop until capture and its compensation settle. Uncertain
+    observation closes remain with their nominal owners for explicit cleanup;
+    they never trigger a second raw close or an automatic retry.
+    """
+    def __init__(self, bindings):
+        self.bindings, self.roles, self.run_id = bindings, None, None
+        self._active, self._stopping = False, False
+        self._lock = threading.Lock()
+
+    @property
+    def unresolved_cleanup(self):
+        with self.bindings._observation_cleanup_lock:
+            owners = list(self.bindings._unresolved)
+        source = self.bindings.role_source
+        if (type(source) is Task8RoleSource and type(source.bridge) is Task8Collection
+                and source.bridge.cleanup_uncertain):
+            owners.append(source.bridge)
+        return owners
+
+    def begin(self, authority):
+        with self._lock:
+            if self._active or self._stopping: raise CleanupFailure(self)
+            self.run_id, self._active = authority.run_id, True
+
+    def settle(self):
+        with self._lock: self._active = False
+
+    def stop_owned(self, remaining_ms):
+        with self._lock:
+            if self._active or self._stopping: raise CleanupFailure(self)
+            self._stopping = True
+        try:
+            owners = self.unresolved_cleanup
+            if owners: raise CleanupFailure(owners[0])
+            if self.roles is not None:
+                self.bindings.role_source.cleanup_owned(self.roles)
+            return {'status': 'STOPPED', 'run_id': self.run_id}
+        finally:
+            with self._lock: self._stopping = False
+
+
 @dataclass(frozen=True)
 class NativeTopologyBindings:
     observation_port: object = field(repr=False)
@@ -1202,6 +1273,12 @@ class NativeTopologyBindings:
     _seal: object = field(repr=False)
     _unresolved: list = field(default_factory=list, repr=False, compare=False)
     _cleanup_budget: CleanupBudget = field(default_factory=CleanupBudget, repr=False, compare=False)
+    capture_owner: object = field(init=False, repr=False, compare=False)
+    _observation_cleanup_lock: object = field(default_factory=threading.Lock, repr=False, compare=False)
+    _pending_observation_cleanup: set = field(default_factory=set, repr=False, compare=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, 'capture_owner', _NativeCaptureOwner(self))
 
     def bind_cleanup_budget(self, budget):
         object.__setattr__(self, '_cleanup_budget', budget)
@@ -1240,12 +1317,11 @@ class NativeTopologyBindings:
                 try:
                     owner.close()
                 except CleanupFailure as error:
-                    self._unresolved.append(owner)
+                    with self._observation_cleanup_lock: self._unresolved.append(owner)
                     raise error from primary
                 except Exception:
-                    self._unresolved.append(owner)
-                    if not isinstance(primary, CleanupFailure):
-                        primary = TopologyError('OBSERVATION_DENIED')
+                    with self._observation_cleanup_lock: self._unresolved.append(owner)
+                    raise CleanupFailure(owner) from primary
         if isinstance(primary, TopologyError):
             raise primary
         if primary is not None or data is None:
@@ -1253,16 +1329,37 @@ class NativeTopologyBindings:
         return data
 
     def cleanup_unresolved(self):
-        pending, self._unresolved[:] = tuple(self._unresolved), []
-        uncertain = False
+        with self._observation_cleanup_lock:
+            pending = tuple(self._unresolved)
+            if self._pending_observation_cleanup:
+                raise CleanupFailure(next(owner for owner in pending
+                                          if id(owner) in self._pending_observation_cleanup))
+            self._pending_observation_cleanup.update(id(owner) for owner in pending)
+        failure = None
         for owner in pending:
+            settled, abandoned = threading.Event(), threading.Event()
+            def cleanup(remaining, owner=owner, settled=settled, abandoned=abandoned):
+                try:
+                    return owner.cleanup()
+                finally:
+                    with self._observation_cleanup_lock:
+                        settled.set()
+                        # A timed-out waiter cannot release a running callback.
+                        if abandoned.is_set():
+                            self._pending_observation_cleanup.discard(id(owner))
             try:
-                self._cleanup_budget.call(lambda remaining, owner=owner: owner.cleanup())
-            except Exception:
-                uncertain = True
-                self._unresolved.append(owner)
-        if uncertain:
-            _fail('CLEANUP_UNCERTAIN')
+                self._cleanup_budget.call(cleanup)
+            except Exception as error:
+                failure = CleanupFailure(owner)
+                failure.__cause__ = error
+                with self._observation_cleanup_lock:
+                    abandoned.set()
+                    if settled.is_set(): self._pending_observation_cleanup.discard(id(owner))
+            else:
+                with self._observation_cleanup_lock:
+                    self._unresolved[:] = [item for item in self._unresolved if item is not owner]
+                    self._pending_observation_cleanup.discard(id(owner))
+        if failure is not None: raise failure
 
     def cleanup(self, snapshot):
         if type(snapshot) is not TopologySnapshot:
@@ -1270,6 +1367,13 @@ class NativeTopologyBindings:
         self.role_source.cleanup_owned(snapshot.role_handoffs)
 
     def capture(self, sequence, authority):
+        self.capture_owner.begin(authority)
+        try:
+            return self._capture(sequence, authority)
+        finally:
+            self.capture_owner.settle()
+
+    def _capture(self, sequence, authority):
         if self._seal is not _NATIVE_SEAL:
             _fail('ADAPTER_DENIED')
         raw = tuple(self._read(path) for path in NATIVE_OBSERVATION_PATHS)
@@ -1284,6 +1388,7 @@ class NativeTopologyBindings:
                          + _network_rows(raw[7], 'UDP', 6))
             abstract = _abstract(raw[8])
             roles = self.role_source.collect(authority)
+            self.capture_owner.roles = roles
             sample = authority.clock.sample()
             if not _sample(sample): _fail('CLOCK_DENIED')
             return TopologySnapshot(
