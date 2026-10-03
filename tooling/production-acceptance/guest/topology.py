@@ -742,7 +742,7 @@ class TopologyGate:
         self._pending_stops = set()
         self._pending_snapshots = set()
         self._cleanup_failed = False
-        self._pending_captures = set()
+        self._pending_captures = {}
         if isinstance(adapter, NativeTopologyBindings):
             self._retain(adapter.capture_owner)
             adapter.capture_owner.run_id = expected.run_id
@@ -836,7 +836,7 @@ class TopologyGate:
             with self._lock:
                 pending = [item for item in self._owners
                            if id(item) not in self._retired and id(item) not in self._pending_stops
-                           and id(item) not in self._pending_captures]
+                           and all(item is not owner for owner in self._pending_captures.values())]
                 self._retired.update(id(item) for item in pending)
                 self._pending_stops.update(id(item) for item in pending)
                 self._stopped_inflight.update(id(item) for item in pending if id(item) in self._inflight)
@@ -874,6 +874,9 @@ class TopologyGate:
             if snapshot is not None and callable(getattr(self._adapter, 'cleanup', None)):
                 self._pending_snapshots.add(id(snapshot))
             else: snapshot = None
+        # Freeze the shared end at terminal cleanup even if every owner is
+        # still acquiring. Clock callbacks run outside the gate lock.
+        self._cleanup_budget.remaining()
         self._cleanup()
         if snapshot is not None: self._cleanup_snapshot(snapshot)
         if self.cleanup_uncertain: raise CleanupFailure(self)
@@ -888,7 +891,7 @@ class TopologyGate:
                     if self._failed or self._reservation is not token:
                         _fail('TOPOLOGY_DRIFT')
                     capture_owner = self._adapter.capture_owner
-                    self._pending_captures.add(id(capture_owner))
+                    self._pending_captures[token] = capture_owner
             before = self._clock()
             self._expected.appliance_recheck()
             before = self._clock()
@@ -917,7 +920,7 @@ class TopologyGate:
             return proof
         except Exception as error:
             if capture_owner is not None:
-                with self._lock: self._pending_captures.discard(id(capture_owner))
+                with self._lock: self._pending_captures.pop(token, None)
             self._remember_cleanup_failure(error)
             extra_snapshot = (snapshot is not None and snapshot is not self._snapshot
                               and callable(getattr(self._adapter, 'cleanup', None)))
@@ -932,7 +935,7 @@ class TopologyGate:
             _fail('OBSERVATION_DENIED')
         finally:
             if capture_owner is not None:
-                with self._lock: self._pending_captures.discard(id(capture_owner))
+                with self._lock: self._pending_captures.pop(token, None)
 
     def admit(self):
         proof = self._attempt(initial=True)

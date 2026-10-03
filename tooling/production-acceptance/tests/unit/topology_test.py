@@ -1,12 +1,14 @@
 """Task 10 topology composition tests. All effects are inert injected fakes."""
 import dataclasses
 import importlib.util
+import inspect
 import json
 import os
 import pathlib
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 
@@ -155,7 +157,158 @@ def snapshot(**changes):
     return topology.TopologySnapshot(**values)
 
 
+def native_capture_fixture(clock, before_open, fail_probe=False):
+    """Real native/Task8 ownership with inert observation and kernel effects."""
+    launches, handoffs = launches_and_handoffs()
+    class CollectionKernel:
+        def __init__(self): self.spawned, self.stops, self.allowances = [], [], []
+        def spawn_waiting(self, launch, child):
+            owner = handoffs[len(self.spawned)]._owned
+            self.spawned.append(owner)
+            return owner
+        def inspect(self, pid):
+            return next(dict(h.attestation.__dict__) for h in handoffs if h.attestation.pid == pid)
+        def wait_owned(self, owner, deadline): raise AssertionError('not used')
+        def stop_owned(self, owner, deadline):
+            self.stops.append(owner); self.allowances.append(deadline)
+            return {'status': 'STOPPED', 'pid': owner.pid, 'run_id': RUN}
+    kernel = CollectionKernel()
+    collection = topology.Task8Collection(confinement.BootstrapConfig(kernel, RUN, launches[0].programs))
+    roles = topology.Task8RoleSource(collection, topology._COMPOSITION_SEAL)
+    header = b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n'
+    content = {
+        '/proc/net/dev': b'Inter-| Receive\n face |bytes packets errs drop fifo frame compressed multicast\n lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n',
+        '/proc/net/route': b'Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n',
+        '/proc/net/ipv6_route': b'', '/etc/resolv.conf': b'',
+        '/proc/net/tcp': header + b'0: 0100007F:0C38 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10004 0 123 1 0000000000000000 100 0 0 10 0\n',
+        '/proc/net/tcp6': header, '/proc/net/udp': header, '/proc/net/udp6': header,
+        '/proc/net/unix': b'Num RefCount Protocol Flags Type St Inode Path\n',
+    }
+    class Observation:
+        def open_owned(self, path, flags):
+            before_open(path)
+            class Owner:
+                def __init__(self): self.chunks = [content[path], b'']
+                def read(self, limit): return self.chunks.pop(0)
+                def close(self): pass
+                def cleanup(self): raise AssertionError('already closed')
+            return Owner()
+    class Devices:
+        def observe(self, expected): return DEVICES
+    class Probes:
+        def execute(self, identifier):
+            if fail_probe: raise topology.TopologyError('PROBE_DENIED')
+            return result(identifier)
+    class Proxy:
+        def observe(self, policy): return snapshot().proxy_runtime
+    bindings = topology.select_native_topology(Observation(), roles, Devices(), Probes(), Proxy(), 'linux', 'aarch64')
+    gate = topology.TopologyGate(authority(clock=clock), bindings)
+    return gate, bindings, collection, kernel
+
+
 class TopologyTests(unittest.TestCase):
+    def test_v1_first_terminal_latch_freezes_budget_before_capture_settles(self):
+        for settlement in (30010, 70010):
+            with self.subTest(settlement=settlement):
+                entered, release = threading.Event(), threading.Event()
+                clock = Clock()
+                def before_open(path):
+                    if not entered.is_set():
+                        entered.set()
+                        if not release.wait(2): raise AssertionError('observation not released')
+                gate, bindings, collection, kernel = native_capture_fixture(clock, before_open, fail_probe=True)
+                errors = []
+                def admit():
+                    try: gate.admit()
+                    except Exception as error: errors.append(error)
+                worker = threading.Thread(target=admit, daemon=True)
+                worker.start()
+                try:
+                    self.assertTrue(entered.wait(1))
+                    before = time.monotonic_ns() // 1000000
+                    with self.assertRaises(topology.CleanupFailure): gate.topology_drifted()
+                    after = time.monotonic_ns() // 1000000
+                    first_deadline = gate._cleanup_budget.deadline
+                    first_real_deadline = gate._cleanup_budget.real_deadline
+                    self.assertTrue(gate.cleanup_uncertain)
+                    self.assertIs(collection.budget, gate._cleanup_budget)
+                    self.assertIs(bindings._cleanup_budget, gate._cleanup_budget)
+                    clock.last = (100, settlement)
+                finally:
+                    release.set(); worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(len(errors), 1)
+                self.assertEqual(first_deadline, 60010)
+                self.assertTrue(before + 60000 <= first_real_deadline <= after + 60000)
+                self.assertEqual(gate._cleanup_budget.deadline, first_deadline)
+                self.assertEqual(gate._cleanup_budget.real_deadline, first_real_deadline)
+                if settlement < first_deadline:
+                    self.assertEqual(kernel.stops, list(reversed(kernel.spawned)))
+                    self.assertTrue(all(0 < allowance <= first_deadline - settlement for allowance in kernel.allowances))
+                    self.assertFalse(gate.cleanup_uncertain)
+                else:
+                    self.assertEqual(kernel.allowances, [])
+                    self.assertTrue(gate.cleanup_uncertain)
+                    self.assertIn(collection, gate.unresolved_cleanup)
+                    with self.assertRaises(topology.CleanupFailure): gate.admit()
+
+    def test_v1_prior_current_settlement_cannot_clear_later_capture(self):
+        prior_finally, release_prior, later_entered, release_later = (threading.Event() for _ in range(4))
+        captures = 0
+        def before_open(path):
+            nonlocal captures
+            if path == topology.NATIVE_OBSERVATION_PATHS[0]:
+                captures += 1
+                if captures == 3:
+                    later_entered.set()
+                    if not release_later.wait(2): raise AssertionError('later capture not released')
+        gate, bindings, collection, kernel = native_capture_fixture(Clock(), before_open)
+        gate.admit()
+        lines, start = inspect.getsourcelines(topology.TopologyGate._attempt)
+        settle_line = max(start + offset for offset, line in enumerate(lines)
+                          if line.lstrip().startswith('with self._lock: self._pending_captures.'))
+        errors = []
+        def schedule(frame, event, arg):
+            if (event == 'line' and frame.f_code is topology.TopologyGate._attempt.__code__
+                    and frame.f_lineno == settle_line):
+                prior_finally.set()
+                if not release_prior.wait(2): raise AssertionError('prior completion not released')
+            return schedule
+        def prior():
+            sys.settrace(schedule)
+            try: gate.require_current()
+            except Exception as error: errors.append(error)
+            finally: sys.settrace(None)
+        def later():
+            try: gate.require_current()
+            except Exception as error: errors.append(error)
+        first = threading.Thread(target=prior, daemon=True)
+        second = threading.Thread(target=later, daemon=True)
+        first.start()
+        try:
+            self.assertTrue(prior_finally.wait(1))
+            second.start()
+            self.assertTrue(later_entered.wait(1))
+            self.assertTrue(gate.cleanup_uncertain)
+            release_prior.set(); first.join(1)
+            self.assertFalse(first.is_alive())
+            active_after_prior = bindings.capture_owner._active
+            pending_after_prior = gate.cleanup_uncertain
+            reservation_after_prior = gate._reservation
+            pending_count = len(gate._pending_captures)
+        finally:
+            release_prior.set(); release_later.set(); first.join(2)
+            if second.ident is not None: second.join(2)
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue(active_after_prior)
+        self.assertIsNotNone(reservation_after_prior)
+        self.assertEqual(pending_count, 1)
+        self.assertTrue(pending_after_prior)
+        self.assertFalse(gate.cleanup_uncertain)
+        self.assertEqual(len(kernel.spawned), 4)
+        self.assertEqual(kernel.stops, [])
+
     def test_v1_observation_cleanup_remains_reserved_until_receipt_settles(self):
         errors = []
         class Owner:
