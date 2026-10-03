@@ -101,13 +101,6 @@ protocol BootstrapActivationPort: Sendable {
 struct BootstrapExecutableMember: Hashable, Sendable {
     let path:String, componentID:String, memberPath:String
 }
-// The trusted inspector binds a validated artifact snapshot and its fixed
-// installed member path. It never hashes a reopened, caller-chosen executable.
-protocol BootstrapExecutableInspector: Sendable {
-    func artifactSHA256(componentID:String) throws -> String
-    func sha256(componentID:String,memberPath:String) throws -> String
-    func installedPath(componentID:String,memberPath:String) throws -> String
-}
 struct BootstrapExecutableAuthority: Sendable {
     let pins:[String:String], manifestIdentity:String?
     static let requiredPaths = [
@@ -121,11 +114,12 @@ struct BootstrapExecutableAuthority: Sendable {
             $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
         }
     }
-    static func qualify(manifest:ApplianceManifest,inspector:any BootstrapExecutableInspector) throws -> Self {
-        // The accepted appliance has no approved browser-worker payload/member
-        // mapping. guestProbes installs under tests/guest, not guest. Neither a
-        // convenient component label nor an injected inspector repairs that.
-        throw VMFailure.admissionUnavailable
+    static func qualify(manifest:ApplianceManifest,inventory:InstalledExecutableInventory) throws -> Self {
+        do {
+            let pins=try inventory.pins(manifest:manifest)
+            guard valid(pins) else { throw VMFailure.admissionUnavailable }
+            return Self(pins:pins,manifestIdentity:manifest.digest)
+        } catch { throw VMFailure.admissionUnavailable }
     }
     // Only the explicitly offline model consumes these literal vector pins.
     static func offlineLiteral(pins:[String:String]) throws -> Self {
@@ -181,6 +175,69 @@ public struct AdmissionProof: Sendable {
 }
 
 enum BootstrapHandoff {
+    static func validateRolesV2(_ value:Any,runID:String,programPins:[String:String],runtime:Any,originals:[[String:Any]],generation:Int) throws {
+        try validateRoleRuntimeV1(runtime,originals:originals,generation:generation)
+        try validateRoles(value,runID:runID,programPins:programPins,serviceRoles:["CONTROLLER","PROXY"])
+    }
+    // Pure v2 evidence comparison, not an authority constructor. `originals` must
+    // come from the composition's retained original observer/serving owners. The
+    // native composition constructor remains unavailable; literal test rows do
+    // not acquire child, pipe, runtime or launch authority by passing this check.
+    static func validateRoleRuntimeV1(_ value:Any, originals:[[String:Any]], generation:Int) throws {
+        guard generation > 0, generation <= 9007199254740991 else { throw VMFailure.admissionUnavailable }
+        let rows = try array(value)
+        guard rows.count == roles.count, originals.count == roles.count else { throw VMFailure.admissionUnavailable }
+        var childIDs = Set<String>(), pipeIDs = Set<String>()
+        let limits = ["PROXY_LISTENER":1,"PROXY_STOP_SELECTOR":1,"PROXY_ACCEPTED_STREAM":16,
+                      "PROXY_VSOCK_STREAM":16,"PROXY_CONNECT_SELECTOR":16]
+        func exactInteger(_ value:Any?,_ lower:Int = 0,_ upper:Int = 9007199254740991) -> Int? {
+            guard let number=value as? NSNumber,
+                  !["d","f"].contains(String(cString:number.objCType)) else { return nil }
+            return integer(value,lower,upper)
+        }
+        func decimal(_ value:Any?) -> Bool {
+            guard let text = value as? String, !text.isEmpty, text.utf8.count <= 20,
+                  text == "0" || text.first != "0", text.utf8.allSatisfy({ (48...57).contains($0) }) else { return false }
+            return UInt64(text) != nil
+        }
+        for (index,raw) in rows.enumerated() {
+            let row = try object(raw), role = roles[index].0
+            let child = try string(row["childId"]), pipe = try string(row["pipeId"])
+            guard Set(row.keys) == ["role","childId","pipeId","lifecycle","inheritedFDs","currentFDs"],
+                  try string(row["role"]) == role, hex(child,count:32), hex(pipe,count:32),
+                  childIDs.insert(child).inserted, pipeIDs.insert(pipe).inserted,
+                  try string(row["lifecycle"]) == (role == "CONTROLLER" || role == "PROXY" ? "SERVICE":"WAITING"),
+                  try canonical(row) == canonical(originals[index]) else { throw VMFailure.admissionUnavailable }
+            let inherited = try array(row["inheritedFDs"])
+            guard inherited.count == 5, inherited.enumerated().allSatisfy({ exactInteger($0.element) == $0.offset }) else { throw VMFailure.admissionUnavailable }
+            let current = try array(row["currentFDs"])
+            guard current.count >= 5, current.count <= 55 else { throw VMFailure.admissionUnavailable }
+            var previous = -1, owners = Set<String>(), counts:[String:Int] = [:], runtimeIdentities = Set<String>()
+            for (offset,rawFD) in current.enumerated() {
+                let fd = try object(rawFD), kind = try string(fd["kind"]), owner = try string(fd["ownerId"])
+                guard Set(fd.keys) == ["fd","kind","device","inode","flags","ownerId","acquiredGeneration"],
+                      let number = exactInteger(fd["fd"],0,4095), number > previous,
+                      exactInteger(fd["flags"]) != nil, exactInteger(fd["acquiredGeneration"],1,generation) != nil,
+                      decimal(fd["device"]), decimal(fd["inode"]), hex(owner,count:32), owners.insert(owner).inserted else { throw VMFailure.admissionUnavailable }
+                previous = number
+                if offset < 5 {
+                    guard number == offset, kind == (offset < 3 ? "NULL":offset == 3 ? "COMMAND":"RESULT") else { throw VMFailure.admissionUnavailable }
+                    if offset >= 3 {
+                        guard exactInteger(fd["flags"])! & 3 == offset - 3,
+                              runtimeIdentities.insert("\(fd["device"]!):\(fd["inode"]!)").inserted else { throw VMFailure.admissionUnavailable }
+                    }
+                } else {
+                    guard role == "PROXY", let limit = limits[kind],
+                          runtimeIdentities.insert("\(fd["device"]!):\(fd["inode"]!)").inserted else { throw VMFailure.admissionUnavailable }
+                    counts[kind,default:0] += 1
+                    guard counts[kind]! <= limit else { throw VMFailure.admissionUnavailable }
+                }
+            }
+            guard role != "PROXY" || counts["PROXY_LISTENER"] == 1,
+                  counts["PROXY_VSOCK_STREAM",default:0] <= counts["PROXY_ACCEPTED_STREAM",default:0],
+                  counts["PROXY_CONNECT_SELECTOR",default:0] <= counts["PROXY_ACCEPTED_STREAM",default:0] else { throw VMFailure.admissionUnavailable }
+        }
+    }
     private static let maxBytes = 131072
     private static let devices = ["LINUX_BOOT","VIRTIO_BLOCK_READ_ONLY","VIRTIO_ENTROPY","VIRTIO_SERIAL_PRIVATE_PIPE","VIRTIO_VSOCK_CID2_PORT4050"]
     private static let roles:[(String,Int,String)] = [
@@ -220,7 +277,7 @@ enum BootstrapHandoff {
               try string(listener["address"]) == "127.0.0.1", integer(listener["port"],1,65535) == 3128,
               integer(listener["uid"],1,Int(UInt32.max)) == 10004 else { throw VMFailure.admissionUnavailable }
     }
-    private static func validateRoles(_ value:Any?,runID:String,programPins:[String:String]) throws {
+    private static func validateRoles(_ value:Any?,runID:String,programPins:[String:String],serviceRoles:Set<String> = []) throws {
         guard Set(programPins.keys) == Set(programs), programPins.values.allSatisfy({ hex($0,count:64) }) else { throw VMFailure.admissionUnavailable }
         let rows = try array(value); guard rows.count == roles.count else { throw VMFailure.admissionUnavailable }
         var pids = Set<Int>()
@@ -230,7 +287,7 @@ enum BootstrapHandoff {
                   try string(row["role"]) == expected.0, try string(row["runId"]) == runID,
                   let pid, pids.insert(pid).inserted, try string(row["filterDigest"]) == expected.2,
                   integer(row["noNewPrivs"]) == 1, integer(row["seccomp"]) == 2,
-                  boolean(row["waiting"],true) else { throw VMFailure.admissionUnavailable }
+                  boolean(row["waiting"],!serviceRoles.contains(expected.0)) else { throw VMFailure.admissionUnavailable }
             for key in ["uids","gids"] { let values = try array(row[key]); guard values.count == 3 && values.allSatisfy({ integer($0,1,Int(UInt32.max)) == expected.1 }) else { throw VMFailure.admissionUnavailable } }
             guard try array(row["groups"]).isEmpty else { throw VMFailure.admissionUnavailable }
             let capabilities = try array(row["capabilities"]); guard capabilities.count == 5 && capabilities.allSatisfy({ integer($0,0,Int(UInt32.max)) == 0 }) else { throw VMFailure.admissionUnavailable }

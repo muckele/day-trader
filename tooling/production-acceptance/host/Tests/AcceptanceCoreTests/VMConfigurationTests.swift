@@ -18,18 +18,144 @@ struct ApplianceFixture {
     }
     func wire(_ value:[String:Any]? = nil) throws -> Data { try JSONSerialization.data(withJSONObject:value ?? object,options:[.sortedKeys,.withoutEscapingSlashes]) }
     func manifest() throws -> ApplianceManifest { try ApplianceManifest.decode(wire()) }
+    func legacyObject() -> [String:Any] {
+        var x = object, policy = x["policy"] as! [String:Any], layout = policy["layout"] as! [String:Any]
+        layout.removeValue(forKey:"browserWorker"); policy["layout"] = layout; policy.removeValue(forKey:"bootstrapComposition")
+        policy["kernelFeatures"] = (policy["kernelFeatures"] as! [String]).filter { !["CONFIG_AUDIT","CONFIG_AUDITSYSCALL","CONFIG_INOTIFY_USER"].contains($0) }
+        x["policy"] = policy; x["manifestVersion"] = 1
+        x["components"] = (x["components"] as! [[String:Any]]).filter { $0["id"] as? String != "browserWorker" }
+        return x
+    }
     func verified() throws -> ArtifactVerifiedAppliance { try manifest().verifyArtifacts(locations:locations,expectedManifestDigest:expected) }
+    func inventoryBytes() throws -> Data {
+        let path = try #require(ProcessInfo.processInfo.environment["M3_APPLIANCE_INPUT"])
+        return try Data(contentsOf:URL(fileURLWithPath:path).deletingLastPathComponent().appendingPathComponent("executable-members.json"))
+    }
+    func memberBytes() -> [String:Data] {
+        let literals = [("browserWorker","/opt/acceptance/guest/browser-worker.cjs"),("controller","/opt/acceptance/guest/controller.cjs"),
+                        ("proxy","/opt/acceptance/guest/proxy.py"),("verifier","/opt/acceptance/guest/verifier.cjs"),
+                        ("node","/opt/acceptance/runtime/node/bin/node"),("python","/opt/acceptance/runtime/python/bin/python3"),
+                        ("chromium","/opt/acceptance/runtime/chromium/chrome")]
+        return Dictionary(uniqueKeysWithValues:literals.map { id,path in
+            (path,Data(((["node","python","chromium"].contains(id) ? "SYNTHETIC NONBOOTABLE ":"SYNTHETIC ")+id+"\n").utf8))
+        })
+    }
     func policy(_ section:String,_ key:String,_ value:Any) -> [String:Any] {
         var result = object, p = result["policy"] as! [String:Any], row = p[section] as! [String:Any]
         row[key] = value; p[section] = row; result["policy"] = p; return result
     }
 }
 @Suite(.serialized) struct VMConfigurationTests {
+    @Test func v1_manifest_payload_and_reference_match_python() throws {
+        let f = try ApplianceFixture()
+        #expect((try? ApplianceManifest.decode(f.wire()).digest) == f.expected)
+        let m = try f.manifest(); #expect(try m.canonicalBytes() == f.wire())
+        let p = f.object["policy"] as! [String:Any], composition = p["bootstrapComposition"] as! [String:Any]
+        #expect(composition["referenceDigest"] as? String == "a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d")
+        var x = f.object, policy = p, changed = composition
+        changed["referenceDigest"] = String(repeating:"0",count:64); policy["bootstrapComposition"] = changed; x["policy"] = policy
+        #expect(throws:ApplianceFailure.policy) { _ = try ApplianceManifest.decode(f.wire(x)) }
+    }
+    @Test func v1_legacy_manifest_cannot_admit_bootstrap() throws {
+        let f = try ApplianceFixture(), raw = try f.wire(f.legacyObject()), legacy = try ApplianceManifest.decode(raw)
+        #expect(try legacy.canonicalBytes() == raw)
+        #expect(throws:ApplianceFailure.qualificationUnavailable) { try legacy.requireComposition() }
+        var missing = f.object
+        missing["components"] = (missing["components"] as! [[String:Any]]).filter { $0["id"] as? String != "browserWorker" }
+        missing["missingPayload"] = ["browserWorker"]; missing["payloadState"] = "INCOMPLETE"
+        let incomplete = try ApplianceManifest.decode(f.wire(missing))
+        #expect(throws:ApplianceFailure.payloadIncomplete) { try incomplete.requireComposition() }
+    }
+    @Test func v1_worker_direct_mapping_and_member_bytes_required() throws {
+        let f = try ApplianceFixture(), appliance = try f.verified()
+        #expect(throws:Never.self) {
+            let inventory = try OfflineInstalledExecutableInventory.decode(f.inventoryBytes(),appliance:appliance)
+            _ = try inventory.validateMemberBytes(f.memberBytes())
+            for row in inventory.records where !row.memberPath.isEmpty { #expect(row.memberSHA256 != row.artifactSHA256) }
+        }
+        let original = try JSONSerialization.jsonObject(with:f.inventoryBytes()) as! [String:Any]
+        for key in ["componentId","memberPath","installedPath","memberSHA256","artifactSHA256","sizeBytes"] {
+            var document = original, rows = document["members"] as! [[String:Any]]
+            rows[0][key] = key == "sizeBytes" ? 123 as Any : key.contains("SHA256") ? String(repeating:"0",count:64) : "guestProbes"
+            document["members"] = rows
+            #expect(throws:ApplianceFailure.artifactMismatch) { _ = try OfflineInstalledExecutableInventory.decode(f.wire(document),appliance:appliance) }
+        }
+        let inventory = try OfflineInstalledExecutableInventory.decode(f.inventoryBytes(),appliance:appliance)
+        for row in inventory.records {
+            var bytes = f.memberBytes(); bytes[row.installedPath] = Data("archive hash is not member bytes".utf8)
+            #expect(throws:ApplianceFailure.artifactMismatch) { _ = try inventory.validateMemberBytes(bytes) }
+        }
+    }
+    @Test func v1_population_and_original_base_owner_required() throws {
+        let f = try ApplianceFixture(), appliance = try f.verified()
+        #expect(throws:Never.self) {
+            let inventory = try OfflineInstalledExecutableInventory.decode(f.inventoryBytes(),appliance:appliance)
+            let bytes = f.memberBytes(), members = try inventory.validateMemberBytes(bytes)
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:false)
+            defer { try? FileManager.default.removeItem(at:dir) }
+            var paths:[String:URL] = [:]
+            for (index,path) in bytes.keys.sorted().enumerated() {
+                let url = dir.appendingPathComponent(String(index)); try bytes[path]!.write(to:url)
+                try FileManager.default.setAttributes([.posixPermissions:0o400],ofItemAtPath:url.path); paths[path] = url
+            }
+            let observed = try inventory.observeOfflinePopulation(members:members,originalBase:appliance,installedLocations:paths)
+            try observed.recheck()
+            #expect(throws:ApplianceFailure.qualificationUnavailable) { _ = try InstalledExecutableInventory.requireNative(observed) }
+            #expect(throws:ApplianceFailure.identityMismatch) { _ = try inventory.observeOfflinePopulation(members:members,originalBase:f.verified(),installedLocations:paths) }
+            #expect(throws:ApplianceFailure.artifactMismatch) { _ = try inventory.observeOfflinePopulation(members:members,originalBase:appliance,installedLocations:[:]) }
+            let path = paths.keys.sorted()[0], url = paths[path]!
+            try FileManager.default.setAttributes([.posixPermissions:0o666],ofItemAtPath:url.path)
+            #expect(throws:ApplianceFailure.artifactMismatch) { _ = try inventory.observeOfflinePopulation(members:members,originalBase:appliance,installedLocations:paths) }
+            #expect(throws:ApplianceFailure.inputChanged) { try observed.recheck() }
+        }
+    }
+    @Test func v1_offline_inventory_cannot_mint_native_authority() throws {
+        let f = try ApplianceFixture(), appliance = try f.verified()
+        #expect(throws:Never.self) {
+            let offline = try OfflineInstalledExecutableInventory.decode(f.inventoryBytes(),appliance:appliance)
+            #expect(throws:ApplianceFailure.qualificationUnavailable) { _ = try InstalledExecutableInventory.requireNative(offline) }
+            #expect(throws:ApplianceFailure.qualificationUnavailable) { _ = try InstalledExecutableInventory.requireNative(offline.records) }
+        }
+        var document = try JSONSerialization.jsonObject(with:f.inventoryBytes()) as! [String:Any]
+        document["populationState"] = "VERIFIED"
+        #expect(throws:ApplianceFailure.invalidManifest) { _ = try OfflineInstalledExecutableInventory.decode(f.wire(document),appliance:appliance) }
+        document = try JSONSerialization.jsonObject(with:f.inventoryBytes()) as! [String:Any]
+        for key in ["inputsDigest","manifestDigest"] {
+            var changed = document; changed[key] = String(repeating:"0",count:64)
+            #expect(throws:ApplianceFailure.identityMismatch) { _ = try OfflineInstalledExecutableInventory.decode(f.wire(changed),appliance:appliance) }
+        }
+        var base = document["baseIdentity"] as! [String:Any]; base["sha256"] = String(repeating:"0",count:64); document["baseIdentity"] = base
+        #expect(throws:ApplianceFailure.identityMismatch) { _ = try OfflineInstalledExecutableInventory.decode(f.wire(document),appliance:appliance) }
+    }
+    @Test func v1_strict_manifest_and_inventory_wire_rejects_ambiguous_values() throws {
+        let f = try ApplianceFixture(), raw = String(decoding:try f.wire(),as:UTF8.self), appliance = try f.verified()
+        for value in ["true","2.0","2e0","-0","3","2,\"manifestVersion\":2"] {
+            #expect(throws:ApplianceFailure.invalidManifest) { _ = try ApplianceManifest.decode(Data(raw.replacingOccurrences(of:"\"manifestVersion\":2",with:"\"manifestVersion\":"+value).utf8)) }
+        }
+        let inventory = String(decoding:try f.inventoryBytes(),as:UTF8.self)
+        for value in ["true","1.0","1e0","1,\"inventoryVersion\":1"] {
+            #expect(throws:ApplianceFailure.invalidManifest) { _ = try OfflineInstalledExecutableInventory.decode(Data(inventory.replacingOccurrences(of:"\"inventoryVersion\":1",with:"\"inventoryVersion\":"+value).utf8),appliance:appliance) }
+        }
+        let original = try JSONSerialization.jsonObject(with:f.inventoryBytes()) as! [String:Any]
+        for variant in 0...4 {
+            var document = original, rows = document["members"] as! [[String:Any]]
+            switch variant {
+            case 0: rows.removeLast()
+            case 1: rows.append(rows[0])
+            case 2: rows[0]["extra"] = 0
+            case 3: rows[0]["sizeBytes"] = true
+            default: document["extra"] = 0
+            }
+            document["members"] = rows
+            #expect(throws:ApplianceFailure.invalidManifest) { _ = try OfflineInstalledExecutableInventory.decode(f.wire(document),appliance:appliance) }
+        }
+    }
     @Test func python_composition_identity_and_artifact_bytes() throws {
         let f = try ApplianceFixture(), m = try f.manifest(), a = try f.verified()
         #expect(m.digest == f.expected)
         for id in ["base","kernel","initramfs"] { #expect(try a.artifactBytes(id) == Data(contentsOf:f.locations[id]!)) }
-        #expect(m.runtimeBlockers.contains(.payloadIncomplete)); #expect(m.runtimeBlockers.contains(.syntheticOnly))
+        #expect(!m.runtimeBlockers.contains(.payloadIncomplete)); #expect(m.runtimeBlockers.contains(.syntheticOnly))
         #expect(m.runtimeBlockers.contains(.signingUnavailable)); #expect(m.runtimeBlockers.contains(.qualificationUnavailable))
     }
     @Test func zero_network_and_no_forbidden_objects() throws {
@@ -59,7 +185,7 @@ struct ApplianceFixture {
         #expect(throws:ApplianceFailure.architecture) { _ = try ApplianceManifest.decode(f.wire(x)) }
         x = f.object; x["components"] = (x["components"] as! [[String:Any]]).filter { $0["id"] as? String != "chromium" }
         #expect(throws:ApplianceFailure.missingRuntime) { _ = try ApplianceManifest.decode(f.wire(x)) }
-        x = f.object; x["missingPayload"] = []
+        x = f.object; x["missingPayload"] = ["browserWorker"]
         #expect(throws:ApplianceFailure.payloadIncomplete) { _ = try ApplianceManifest.decode(f.wire(x)) }
         x = f.object; var outputs = x["outputs"] as! [[String:Any]]; outputs[1]["sha256"] = String(repeating:"0",count:64); x["outputs"] = outputs
         #expect(throws:ApplianceFailure.artifactMismatch) { _ = try ApplianceManifest.decode(f.wire(x)) }
@@ -71,7 +197,7 @@ struct ApplianceFixture {
         }
     }
     @Test func strict_unknown_duplicate_numeric_and_oversize_wire_denied() throws {
-        let f = try ApplianceFixture(), raw = String(decoding:try f.wire(),as:UTF8.self)
+        let f = try ApplianceFixture(), raw = String(decoding:try f.wire(f.legacyObject()),as:UTF8.self)
         for changed in [raw.replacingOccurrences(of:"\"manifestVersion\":1",with:"\"manifestVersion\":1,\"manifestVersion\":1"),raw.replacingOccurrences(of:"\"manifestVersion\":1",with:"\"manifestVersion\":1e0"),raw.replacingOccurrences(of:"\"manifestVersion\":1",with:"\"manifestVersion\":true"),raw.replacingOccurrences(of:"\"network\":0",with:"\"network\":-0"),raw.dropLast()+",\"extra\":1}",String(repeating:" ",count:65537)+raw] {
             #expect(throws:ApplianceFailure.invalidManifest) { _ = try ApplianceManifest.decode(Data(changed.utf8)) }
         }

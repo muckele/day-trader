@@ -66,6 +66,7 @@ private struct BootstrapRunFixture {
         var applianceObject = applianceFixture.object
         var components = applianceObject["components"] as! [[String:Any]]
         for (index,id) in ["controller","guestBootstrap","guestProbes","proxy","rolePolicy","routePolicy","seccompPolicy","verifier"].enumerated() {
+            if components.contains(where:{ $0["id"] as? String == id }) { continue }
             components.append(["id":id,"sha256":String(repeating:String(index + 1),count:64),
                                "sizeBytes":index + 1,"sourceId":"task10-independent-" + id,"version":"task10-v1"])
         }
@@ -124,7 +125,7 @@ private let pythonProgramPins:[String:String] = Dictionary(uniqueKeysWithValues:
     "/opt/acceptance/runtime/python/bin/python3",
 ].enumerated().map { ($0.element,String(repeating:String($0.offset + 1),count:64)) })
 
-private final class MemberInspectorFake: BootstrapExecutableInspector, @unchecked Sendable {
+private final class MemberInspectorFake: @unchecked Sendable {
     let values:[BootstrapExecutableMember:String]
     let artifacts:[String:String]
     init(_ values:[BootstrapExecutableMember:String], artifacts:[String:String]) { self.values=values; self.artifacts=artifacts }
@@ -158,8 +159,10 @@ private func unapprovedExecutableAuthority(_ run:RunConfiguration) throws -> Boo
     let values = Dictionary(uniqueKeysWithValues:members.enumerated().map {
         ($0.element,$0.element.memberPath.isEmpty ? artifacts[$0.element.componentID]! : String(repeating:"abcdef0".map(String.init)[$0.offset],count:64))
     })
-    return try BootstrapExecutableAuthority.qualify(manifest:run.appliance.manifest,
-                                                     inspector:MemberInspectorFake(values,artifacts:artifacts))
+    do {
+        let inventory=try InstalledExecutableInventory.requireNative(MemberInspectorFake(values,artifacts:artifacts))
+        return try BootstrapExecutableAuthority.qualify(manifest:run.appliance.manifest,inventory:inventory)
+    } catch { throw VMFailure.admissionUnavailable }
 }
 
 private func pythonFixture() throws -> [String:Any] {
@@ -196,6 +199,107 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
 }
 
 @Suite(.serialized) struct BootstrapGateTests {
+    private func runtimeRows() -> [[String:Any]] {
+        ["CONTROLLER","BROWSER","VERIFIER","PROXY"].enumerated().map { index,role in
+            var fds:[[String:Any]] = []
+            for fd in 0...4 {
+                let identity = index * 100 + fd + 1
+                let kind = fd < 3 ? "NULL" : (fd == 3 ? "COMMAND" : "RESULT")
+                let row:[String:Any] = ["fd":fd,"kind":kind,"device":"1","inode":String(identity),
+                    "flags":fd == 3 || fd == 0 ? 0:1,"ownerId":String(format:"%032x",identity),"acquiredGeneration":1]
+                fds.append(row)
+            }
+            if role == "PROXY" { fds.append(["fd":8,"kind":"PROXY_LISTENER","device":"9","inode":"900",
+                "flags":2,"ownerId":String(repeating:"f",count:32),"acquiredGeneration":1]) }
+            return ["role":role,"childId":String(format:"%032x",index + 50),"pipeId":String(format:"%032x",index + 60),
+                "lifecycle":index == 0 || index == 3 ? "SERVICE":"WAITING","inheritedFDs":[0,1,2,3,4],"currentFDs":fds]
+        }
+    }
+    @Test func v1_current_role_inventory_is_not_inherited_fd_list() throws {
+        let rows = runtimeRows()
+        #expect(throws:Never.self) { try BootstrapHandoff.validateRoleRuntimeV1(rows,originals:rows,generation:1) }
+        var missing = rows; var proxy = missing[3]["currentFDs"] as! [[String:Any]]
+        proxy.removeLast(); missing[3]["currentFDs"] = proxy
+        #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(missing,originals:rows,generation:1) }
+    }
+    @Test func v1_service_lifecycle_unknown_runtime_fd_denied() throws {
+        let rows = runtimeRows()
+        var waiting = rows; waiting[3]["lifecycle"] = "WAITING"
+        #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(waiting,originals:rows,generation:1) }
+        var unknown = rows; var fds = unknown[3]["currentFDs"] as! [[String:Any]]
+        fds.append(["fd":9,"kind":"RUNTIME_INTERNAL","device":"9","inode":"901","flags":0,
+                    "ownerId":String(repeating:"e",count:32),"acquiredGeneration":1]); unknown[3]["currentFDs"] = fds
+        #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(unknown,originals:unknown,generation:1) }
+    }
+    @Test func v1_runtime_original_identity_primitive_and_completeness_required() throws {
+        let rows = runtimeRows()
+        for key in ["childId","pipeId","lifecycle","extra"] {
+            var changed = rows; changed[3][key] = "WAITING"
+            #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(changed,originals:rows,generation:1) }
+        }
+        let mutations:[(String,Any)] = [("fd",true),("fd",4096),("fd",4),("kind","PROXY_LISTENER"),("device","01"),
+            ("inode","18446744073709551616"),("flags",true),("flags",-1),("flags",NSNumber(value:1.5)),("ownerId",String(repeating:"0",count:32)),
+            ("acquiredGeneration",0),("acquiredGeneration",2),("extra",0)]
+        for (key,value) in mutations {
+            var changed = rows, fds = rows[3]["currentFDs"] as! [[String:Any]]
+            fds[0][key] = value; changed[3]["currentFDs"] = fds
+            #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(changed,originals:rows,generation:1) }
+            if key != "ownerId" {
+                #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(changed,originals:changed,generation:1) }
+            }
+        }
+        for variant in 0...3 {
+            var changed = rows, fds = rows[3]["currentFDs"] as! [[String:Any]]
+            switch variant {
+            case 0: fds.append(fds.last!)
+            case 1: fds.reverse()
+            case 2: fds.remove(at:3)
+            default: var listener = fds.last!; listener["fd"] = 9; listener["inode"] = "901"; listener["ownerId"] = String(repeating:"e",count:32); fds.append(listener)
+            }
+            changed[3]["currentFDs"] = fds
+            #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(changed,originals:changed,generation:1) }
+        }
+        var inherited = rows; inherited[3]["inheritedFDs"] = [0,1,2,3,true]
+        #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(inherited,originals:inherited,generation:1) }
+    }
+    @Test func v1_service_role_facts_preserve_legacy_waiting_and_confinement_checks() throws {
+        let payload = try pythonFixture(), originals = runtimeRows(), runID = payload["runId"] as! String
+        var roles = payload["roles"] as! [[String:Any]]
+        roles[0]["waiting"] = false; roles[3]["waiting"] = false
+        #expect(throws:Never.self) { try BootstrapHandoff.validateRolesV2(roles,runID:runID,programPins:pythonProgramPins,runtime:originals,originals:originals,generation:1) }
+        for (key,value) in [("waiting",true as Any),("noNewPrivs",0),("seccomp",0),("uids",[0,0,0])] {
+            var changed = roles; changed[3][key] = value
+            #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRolesV2(changed,runID:runID,programPins:pythonProgramPins,runtime:originals,originals:originals,generation:1) }
+        }
+        let run = try BootstrapRunFixture().run
+        let data = try handoff(run) { payload in
+            var changed = payload, rows = payload["roles"] as! [[String:Any]]
+            rows[0]["waiting"] = false; rows[3]["waiting"] = false; changed["roles"] = rows; return changed
+        }
+        #expect(throws:VMFailure.admissionUnavailable) {
+            _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([data]),lifecycle:BootstrapLifecycleFake(),executables:executableAuthority(run),clock:BootstrapTestClock())
+        }
+    }
+    @Test func v1_runtime_proxy_caps_and_original_pipe_directions() throws {
+        var rows = runtimeRows(), fds = Array((rows[3]["currentFDs"] as! [[String:Any]]).prefix(5))
+        let kinds = ["PROXY_LISTENER","PROXY_STOP_SELECTOR"] + Array(repeating:"PROXY_ACCEPTED_STREAM",count:16)
+            + Array(repeating:"PROXY_VSOCK_STREAM",count:16) + Array(repeating:"PROXY_CONNECT_SELECTOR",count:16)
+        for (index,kind) in kinds.enumerated() {
+            fds.append(["fd":index+5,"kind":kind,"device":"9","inode":String(1000+index),"flags":2,
+                        "ownerId":String(format:"%032x",1000+index),"acquiredGeneration":1])
+        }
+        rows[3]["currentFDs"] = fds
+        #expect(throws:Never.self) { try BootstrapHandoff.validateRoleRuntimeV1(rows,originals:rows,generation:1) }
+        var extra = fds.last!; extra["fd"] = 55; extra["inode"] = "9999"; extra["ownerId"] = String(repeating:"a",count:32)
+        var excess = rows; excess[3]["currentFDs"] = fds + [extra]
+        #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(excess,originals:excess,generation:1) }
+        for index in [3,4] {
+            var changed = rows, modified = fds; modified[index]["flags"] = index == 3 ? 1:0; changed[3]["currentFDs"] = modified
+            #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(changed,originals:changed,generation:1) }
+        }
+        var changed = rows, modified = fds; modified[4]["inode"] = modified[3]["inode"]; changed[3]["currentFDs"] = modified
+        #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(changed,originals:changed,generation:1) }
+    }
     @Test func local_n5_typed_capture_failure_remains_sticky_at_every_gate_entry() throws {
         let run = try BootstrapRunFixture().run
         let original = try OfflineVMHost.bootstrapCheck(run:run,
