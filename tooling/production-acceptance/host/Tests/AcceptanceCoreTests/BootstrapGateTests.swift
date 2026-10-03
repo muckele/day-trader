@@ -300,6 +300,52 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         var changed = rows, modified = fds; modified[4]["inode"] = modified[3]["inode"]; changed[3]["currentFDs"] = modified
         #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(changed,originals:changed,generation:1) }
     }
+    private func selectorRuntimeRows(sharedInode:Bool = true) -> [[String:Any]] {
+        var rows = runtimeRows(), fds = Array((rows[3]["currentFDs"] as! [[String:Any]]).prefix(5))
+        // Pinned Linux6.8 fs/eventpoll.c:2055–2056 calls anon_inode_getfile;
+        // fs/anon_inodes.c:96–106,137–147 uses one inode for distinct file owners.
+        // Member SHA256s: eventpoll.c c8b2fed972bcb1621c8efec4b299ee5011f398d1ca2d95be9bb20f08ce8c6d96;
+        // anon_inodes.c 77dda97cc9a37fa66adad6b22abbef629962b9a64cab95ebfe80353f6753bd58.
+        // These literal observations create no native selector or provenance.
+        let extras:[(String,String,String)] = [
+            ("PROXY_LISTENER","9","900"), ("PROXY_STOP_SELECTOR","16","1066"),
+            ("PROXY_ACCEPTED_STREAM","9","901"), ("PROXY_VSOCK_STREAM","9","902"),
+            ("PROXY_CONNECT_SELECTOR","16",sharedInode ? "1066":"1067")]
+        for (index,extra) in extras.enumerated() {
+            fds.append(["fd":index+5,"kind":extra.0,"device":extra.1,"inode":extra.2,"flags":2,
+                        "ownerId":String(format:"%032x",500+index),"acquiredGeneration":1])
+        }
+        rows[3]["currentFDs"] = fds; return rows
+    }
+    @Test func t4_r1_distinct_original_selectors_can_share_anonymous_inode() throws {
+        for shared in [false,true] {
+            let original = selectorRuntimeRows(sharedInode:shared)
+            #expect(throws:Never.self) { try BootstrapHandoff.validateRoleRuntimeV1(original,originals:original,generation:1) }
+        }
+    }
+    @Test func t4_r1_shared_selector_inode_does_not_replace_original_provenance() throws {
+        let original = selectorRuntimeRows()
+        for (key,value) in [("ownerId",String(repeating:"e",count:32) as Any),("fd",10),
+                            ("kind","PROXY_STOP_SELECTOR"),("flags",0),("device","17"),("inode","1067"),("acquiredGeneration",2)] {
+            var changed = original, fds = original[3]["currentFDs"] as! [[String:Any]]
+            fds[9][key] = value; changed[3]["currentFDs"] = fds
+            #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(changed,originals:original,generation:2) }
+        }
+        for variant in 0...6 {
+            var changed = original, fds = original[3]["currentFDs"] as! [[String:Any]]
+            switch variant {
+            case 0: fds[9]["ownerId"] = fds[6]["ownerId"] // Reuse a stop owner for a connect selector.
+            case 1: fds[9]["fd"] = fds[6]["fd"]
+            case 2: fds[9]["kind"] = "RUNTIME_INTERNAL"
+            case 3: fds[8]["inode"] = fds[7]["inode"] // Socket/socket collision remains forbidden.
+            case 4: fds[9]["device"] = fds[5]["device"]; fds[9]["inode"] = fds[5]["inode"] // Earlier socket.
+            case 5: fds[8]["device"] = fds[6]["device"]; fds[8]["inode"] = fds[6]["inode"] // Earlier selector.
+            default: fds[9]["device"] = fds[3]["device"]; fds[9]["inode"] = fds[3]["inode"] // Inherited pipe.
+            }
+            changed[3]["currentFDs"] = fds
+            #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRoleRuntimeV1(changed,originals:changed,generation:1) }
+        }
+    }
     @Test func local_n5_typed_capture_failure_remains_sticky_at_every_gate_entry() throws {
         let run = try BootstrapRunFixture().run
         let original = try OfflineVMHost.bootstrapCheck(run:run,

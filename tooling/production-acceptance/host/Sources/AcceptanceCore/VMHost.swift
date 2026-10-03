@@ -213,6 +213,7 @@ enum BootstrapHandoff {
             let current = try array(row["currentFDs"])
             guard current.count >= 5, current.count <= 55 else { throw VMFailure.admissionUnavailable }
             var previous = -1, owners = Set<String>(), counts:[String:Int] = [:], runtimeIdentities = Set<String>()
+            var selectorIdentities = Set<String>()
             for (offset,rawFD) in current.enumerated() {
                 let fd = try object(rawFD), kind = try string(fd["kind"]), owner = try string(fd["ownerId"])
                 guard Set(fd.keys) == ["fd","kind","device","inode","flags","ownerId","acquiredGeneration"],
@@ -227,8 +228,18 @@ enum BootstrapHandoff {
                               runtimeIdentities.insert("\(fd["device"]!):\(fd["inode"]!)").inserted else { throw VMFailure.admissionUnavailable }
                     }
                 } else {
-                    guard role == "PROXY", let limit = limits[kind],
-                          runtimeIdentities.insert("\(fd["device"]!):\(fd["inode"]!)").inserted else { throw VMFailure.admissionUnavailable }
+                    guard role == "PROXY", let limit = limits[kind] else { throw VMFailure.admissionUnavailable }
+                    let identity = "\(fd["device"]!):\(fd["inode"]!)"
+                    if kind == "PROXY_STOP_SELECTOR" || kind == "PROXY_CONNECT_SELECTOR" {
+                        // Linux epoll files share an anonymous inode. Their original
+                        // acquisitions remain distinct through ownerId, FD and the
+                        // exact current-to-original comparison above. This exception
+                        // cannot alias an inherited pipe or an ordinary socket.
+                        guard !runtimeIdentities.contains(identity) else { throw VMFailure.admissionUnavailable }
+                        selectorIdentities.insert(identity)
+                    } else {
+                        guard !selectorIdentities.contains(identity), runtimeIdentities.insert(identity).inserted else { throw VMFailure.admissionUnavailable }
+                    }
                     counts[kind,default:0] += 1
                     guard counts[kind]! <= limit else { throw VMFailure.admissionUnavailable }
                 }
