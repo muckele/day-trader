@@ -69,6 +69,48 @@ public struct RunConfiguration: Sendable {
     let appliance:ArtifactVerifiedAppliance, bootstrap:BootstrapConfiguration, channels:VMChannelSet, capability:Data
     var binding:RunBinding { bootstrap.binding }
 }
+enum BootstrapProbeID: String, CaseIterable, Sendable {
+    case browserFdDonor = "BROWSER_FD_DONOR"
+    case browserHelperIPv4 = "BROWSER_HELPER_IPV4"
+    case browserHelperIPv6 = "BROWSER_HELPER_IPV6"
+    case browserIOUring = "BROWSER_IO_URING"
+    case browserIPv4TCP = "BROWSER_IPV4_TCP"
+    case browserIPv6TCP = "BROWSER_IPV6_TCP"
+    case browserUDP = "BROWSER_UDP"
+    case browserVsock = "BROWSER_VSOCK"
+    case controllerDNSTCP = "CONTROLLER_DNS_TCP"
+    case controllerDNSUDP = "CONTROLLER_DNS_UDP"
+    case proxyVsockControl = "PROXY_VSOCK_CONTROL"
+    case verifierIPv4TCP = "VERIFIER_IPV4_TCP"
+}
+enum BootstrapHostDevice: String, Sendable { case linuxBoot, readOnlyBlock, entropy, privateSerial, vsock }
+enum BootstrapNetworkNamespace: String, Sendable { case guest, host }
+enum BootstrapTransport: String, Sendable { case tcp, udp }
+enum BootstrapProbeOutcome: String, Sendable { case denied, allowed, failed }
+struct BootstrapEndpoint: Sendable, Equatable {
+    let namespace:BootstrapNetworkNamespace, transport:BootstrapTransport, address:String, port:Int, uid:Int
+}
+struct BootstrapProbeResult: Sendable, Equatable {
+    let id:BootstrapProbeID, attempted:Bool, outcome:BootstrapProbeOutcome, ownedReceiverCount:Int
+}
+struct BootstrapSnapshot: Sendable {
+    let runID:String, manifestIdentity:String, roleInventoryDigest:String, deviceInventoryDigest:String, topologyDigest:String
+    let observedAt:Int, expiresAt:Int, hostDevices:[BootstrapHostDevice], proxy:BootstrapEndpoint, probes:[BootstrapProbeResult]
+}
+protocol BootstrapProbePort: Sendable { func capture(ids:[BootstrapProbeID]) throws -> BootstrapSnapshot }
+protocol BootstrapLifecyclePort: Sendable { func begin(snapshot:BootstrapSnapshot,onDrift:@escaping @Sendable () -> Void) throws }
+public struct AdmissionProof: Sendable {
+    public let runID:String, manifestIdentity:String, roleInventoryDigest:String, deviceInventoryDigest:String, topologyDigest:String, expiresAt:Int
+}
+public final class BootstrapQualification: @unchecked Sendable {
+    private let proof:AdmissionProof, lock = NSLock()
+    private var failed = false
+    init(_ proof:AdmissionProof) { self.proof = proof }
+    public func requireBrowserAdmission() throws -> AdmissionProof {
+        try lock.withLock { guard !failed else { throw VMFailure.terminal }; return proof }
+    }
+    fileprivate func topologyDrifted() { lock.withLock { failed = true } }
+}
 private final class RunAuthority: @unchecked Sendable {
     let run:RunConfiguration, release:VerifiedRelease, authority:ReleaseAuthority, runEnd:Int
     private let lock = NSLock(); private var last:ClockSample
@@ -118,6 +160,11 @@ public enum VMHost {
         try run.channels.claim()
         run.channels.close(); throw VMFailure.signatureUnavailable
     }
+    // No native probe/lifecycle construction exists in M4. A nominal success
+    // value, caller boolean, or unsigned document can never enter this path.
+    public static func bootstrapCheck(run:RunConfiguration) throws -> BootstrapQualification {
+        throw VMFailure.admissionUnavailable
+    }
 }
 enum OfflineVMHost {
     static func start(run:RunConfiguration,admission:OfflineAdmission,effects:any OfflineVMEffects,clock:any BrokerClock) async throws -> VMHandle {
@@ -130,6 +177,42 @@ enum OfflineVMHost {
             try await handle.begin(effects:effects)
             return handle
         } catch { run.channels.close(); throw error }
+    }
+    static func bootstrapCheck(run:RunConfiguration,probe:any BootstrapProbePort,lifecycle:any BootstrapLifecyclePort,clock:any BrokerClock) throws -> BootstrapQualification {
+        do {
+            let sample = try clock.sample(), authority = try RunAuthority(run:run,sample:sample)
+            _ = try authority.check(sample)
+            try run.appliance.recheck(); try run.appliance.plan.validateResources()
+            let ids = BootstrapProbeID.allCases
+            let snapshot = try probe.capture(ids:ids)
+            let digest = { (value:String) in value.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } }
+            guard sample.wall >= 0, snapshot.observedAt == sample.wall,
+                  snapshot.runID == run.binding.runID,
+                  snapshot.manifestIdentity == run.appliance.manifest.digest,
+                  snapshot.expiresAt == run.binding.expiresAt,
+                  snapshot.observedAt < snapshot.expiresAt,
+                  digest(snapshot.roleInventoryDigest), digest(snapshot.deviceInventoryDigest), digest(snapshot.topologyDigest),
+                  snapshot.hostDevices == [.linuxBoot,.readOnlyBlock,.entropy,.privateSerial,.vsock],
+                  snapshot.proxy == BootstrapEndpoint(namespace:.guest,transport:.tcp,address:"127.0.0.1",port:3128,uid:10004),
+                  snapshot.probes.map(\.id) == ids else { throw VMFailure.admissionUnavailable }
+            for result in snapshot.probes {
+                let positive = result.id == .proxyVsockControl
+                guard result.attempted,
+                      result.outcome == (positive ? .allowed:.denied),
+                      result.ownedReceiverCount == (positive ? 1:0) else { throw VMFailure.admissionUnavailable }
+            }
+            let proof = AdmissionProof(runID:snapshot.runID,manifestIdentity:snapshot.manifestIdentity,
+                roleInventoryDigest:snapshot.roleInventoryDigest,deviceInventoryDigest:snapshot.deviceInventoryDigest,
+                topologyDigest:snapshot.topologyDigest,expiresAt:snapshot.expiresAt)
+            let qualification = BootstrapQualification(proof)
+            try lifecycle.begin(snapshot:snapshot,onDrift:{ qualification.topologyDrifted() })
+            return qualification
+        } catch let error as VMFailure {
+            if error == .terminal { throw error }
+            throw VMFailure.admissionUnavailable
+        } catch {
+            throw VMFailure.admissionUnavailable
+        }
     }
 }
 private final class OwnedVMInstance: @unchecked Sendable {

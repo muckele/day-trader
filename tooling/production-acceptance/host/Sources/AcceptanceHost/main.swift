@@ -5,6 +5,9 @@ import Darwin
 // Compiled in M3, never executed by its tests. No operational mode has a default.
 do {
     let command = try HostDispatch.parse(Array(CommandLine.arguments.dropFirst()))
+    // bootstrap-check is intentionally present in the finite CLI but has no
+    // operational native probe/run constructor in M4. HostDispatch therefore
+    // fails closed before opening a manifest, release, VM, listener, or probe.
     let blockers = try HostDispatch.execute(command) { path,expected,base,kernel,initramfs in
         let url = URL(fileURLWithPath:path)
         let handle = try FileHandle(forReadingFrom:url); defer { try? handle.close() }
