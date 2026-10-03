@@ -4,7 +4,14 @@ import Darwin
 
 // Compiled in M3, never executed by its tests. No operational mode has a default.
 do {
-    let command = try HostDispatch.parse(Array(CommandLine.arguments.dropFirst()))
+    let arguments = Array(CommandLine.arguments.dropFirst())
+    if let invocation = try HostDispatch.bootstrapInvocation(arguments) {
+        // This is the bounded production composition entry. It cannot open the
+        // supplied paths or start a VM until signed/native authority constructs
+        // the fixed probe, observation, lifecycle and Task8 activation ports.
+        _ = try VMHost.bootstrapCheck(invocation:invocation)
+    }
+    let command = try HostDispatch.parse(arguments)
     // bootstrap-check is intentionally present in the finite CLI but has no
     // operational native probe/run constructor in M4. HostDispatch therefore
     // fails closed before opening a manifest, release, VM, listener, or probe.

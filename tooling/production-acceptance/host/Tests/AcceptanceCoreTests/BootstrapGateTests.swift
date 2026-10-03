@@ -1,30 +1,36 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import AcceptanceCore
 
 private final class BootstrapTestClock: BrokerClock, @unchecked Sendable {
-    func sample() throws -> ClockSample { ClockSample(wall:100,monotonic:10) }
+    private let lock = NSLock(); private var samples:[ClockSample]; private var last:ClockSample
+    init(_ values:[ClockSample] = [ClockSample(wall:100,monotonic:10)]) {
+        samples = values; last = values.last!
+    }
+    func sample() throws -> ClockSample { lock.withLock { if !samples.isEmpty { last = samples.removeFirst() }; return last } }
     func wait(milliseconds:Int) async throws {}
 }
 
 private final class BootstrapProbeFake: BootstrapProbePort, @unchecked Sendable {
-    var requested = [BootstrapProbeID]()
-    var snapshot:BootstrapSnapshot
-    init(_ snapshot:BootstrapSnapshot) { self.snapshot = snapshot }
-    func capture(ids:[BootstrapProbeID]) throws -> BootstrapSnapshot {
-        requested = ids
-        return snapshot
+    private var values:[Data]; var requested = [[BootstrapProbeID]]()
+    init(_ values:[Data]) { self.values = values }
+    func capture(ids:[BootstrapProbeID]) throws -> Data {
+        requested.append(ids)
+        guard !values.isEmpty else { throw VMFailure.admissionUnavailable }
+        return values.count == 1 ? values[0]:values.removeFirst()
     }
 }
 
 private final class BootstrapLifecycleFake: BootstrapLifecyclePort, @unchecked Sendable {
-    private var drift:(@Sendable () -> Void)?
-    var starts = 0
-    func begin(snapshot:BootstrapSnapshot,onDrift:@escaping @Sendable () -> Void) throws {
-        starts += 1
-        drift = onDrift
-    }
+    private var drift:(@Sendable () -> Void)?; var starts = 0
+    func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws { starts += 1; drift = onDrift }
     func triggerDrift() { drift?() }
+}
+
+private final class BootstrapActivationFake: BootstrapActivationPort, @unchecked Sendable {
+    var calls = 0
+    func activateBrowser(proof:AdmissionProof) throws { calls += 1 }
 }
 
 private struct BootstrapRunFixture {
@@ -37,138 +43,146 @@ private struct BootstrapRunFixture {
         var template = expected["RELEASE_RECEIPT"]!, payload = template["payload"] as! [String:Any]
         payload["issuedAt"] = 0; payload["expiresAt"] = 1
         payload["keyId"] = String(repeating:"0",count:64)
-        payload["signature"] = String(repeating:"0",count:128)
-        template["payload"] = payload
+        payload["signature"] = String(repeating:"0",count:128); template["payload"] = payload
         func record(_ data:Data) -> Data { Data([UInt8(data.count >> 8),UInt8(data.count & 255)]) + data }
         var bytes = Data("ABR1".utf8)
         bytes += record(try JSONSerialization.data(withJSONObject:template))
-        bytes += record(try BrokerTests.candidate(fixture))
-        bytes += BrokerTests.hex(keys["RELEASE_RECEIPT"]!)
+        bytes += record(try BrokerTests.candidate(fixture)); bytes += BrokerTests.hex(keys["RELEASE_RECEIPT"]!)
         bytes += Data(repeating:0x11,count:16) + Data(repeating:7,count:32)
         bytes += BrokerTests.hex(appliance.manifest.digest) + Data(repeating:0xaa,count:32)
-        for value in [100,0,300,190,10000,20,30,1] {
-            var number = UInt64(value).bigEndian
-            bytes.append(withUnsafeBytes(of:&number) { Data($0) })
-        }
+        for value in [100,0,300,190,10000,20,30,1] { var number = UInt64(value).bigEndian; bytes.append(withUnsafeBytes(of:&number) { Data($0) }) }
         var facts = [DescriptorFacts]()
         for descriptor in 0...35 {
-            let kind:DescriptorFacts.Kind = descriptor < 3 ? .null:.pipe
-            let direction:Int32 = descriptor == 3 || descriptor % 2 == 0 ? 0:1
-            facts.append(DescriptorFacts(fd:Int32(descriptor),kind:kind,direction:direction,
+            facts.append(DescriptorFacts(fd:Int32(descriptor),kind:descriptor < 3 ? .null:.pipe,
+                direction:descriptor == 3 || descriptor % 2 == 0 ? 0:1,
                 uid:501,device:1,inode:UInt64(descriptor),tty:false))
         }
-        let broker = (3...35).map { descriptor in
-            OwnedVMChannel(purpose:descriptor == 3 ? .bootstrap:.relay((descriptor-4)/2,descriptor % 2 == 0),
-                           facts:facts[descriptor],dispose:{})
-        }
+        let broker = (3...35).map { descriptor in OwnedVMChannel(
+            purpose:descriptor == 3 ? .bootstrap:.relay((descriptor-4)/2,descriptor % 2 == 0),
+            facts:facts[descriptor],dispose:{}) }
         let console = [OwnedVMChannel.Purpose.serialInput,.serialOutput,.terminal].enumerated().map { index,purpose in
-            OwnedVMChannel(purpose:purpose,
-                           facts:DescriptorFacts(fd:Int32(100+index),kind:.pipe,
-                               direction:index == 1 ? 1:0,uid:501,device:1,
-                               inode:UInt64(100+index),tty:false),dispose:{})
-        }
+            OwnedVMChannel(purpose:purpose,facts:DescriptorFacts(fd:Int32(100+index),kind:.pipe,
+                direction:index == 1 ? 1:0,uid:501,device:1,inode:UInt64(100+index),tty:false),dispose:{}) }
         run = RunConfiguration(appliance:appliance,bootstrap:try BootstrapConfiguration.decode(bytes),
-            channels:VMChannelSet(brokerFacts:facts,broker:broker,console:console,uid:501),
-            capability:Data(repeating:7,count:32))
+            channels:VMChannelSet(brokerFacts:facts,broker:broker,console:console,uid:501),capability:Data(repeating:7,count:32))
     }
 }
 
-private func bootstrapSnapshot(_ run:RunConfiguration,
-                               namespace:BootstrapNetworkNamespace = .guest,
-                               results:[BootstrapProbeResult]? = nil,
-                               runID:String? = nil,
-                               manifest:String? = nil,
-                               expiresAt:Int = 190) -> BootstrapSnapshot {
-    let probeResults = results ?? BootstrapProbeID.allCases.map {
-        BootstrapProbeResult(id:$0,attempted:true,
-            outcome:$0 == .proxyVsockControl ? .allowed:.denied,
-            ownedReceiverCount:$0 == .proxyVsockControl ? 1:0)
-    }
-    return BootstrapSnapshot(
-        runID:runID ?? run.binding.runID,
-        manifestIdentity:manifest ?? run.appliance.manifest.digest,
-        roleInventoryDigest:String(repeating:"c",count:64),
-        deviceInventoryDigest:String(repeating:"d",count:64),
-        topologyDigest:String(repeating:"e",count:64),
-        observedAt:100,expiresAt:expiresAt,
-        hostDevices:[.linuxBoot,.readOnlyBlock,.entropy,.privateSerial,.vsock],
-        proxy:BootstrapEndpoint(namespace:namespace,transport:.tcp,address:"127.0.0.1",port:3128,uid:10004),
-        probes:probeResults)
+private func canonical(_ object:Any) throws -> Data {
+    try JSONSerialization.data(withJSONObject:object,options:[.sortedKeys,.withoutEscapingSlashes])
+}
+
+private func resign(_ payload:[String:Any], capability:Data) throws -> Data {
+    let bytes = try canonical(payload)
+    let mac = HMAC<SHA256>.authenticationCode(for:bytes,using:SymmetricKey(data:capability))
+        .map { String(format:"%02x",$0) }.joined()
+    return try canonical(["mac":mac,"payload":payload,"version":1])
+}
+
+private func pythonFixture() throws -> [String:Any] {
+    let path = try #require(ProcessInfo.processInfo.environment["TASK10_TOPOLOGY_INPUT"])
+    let object = try JSONSerialization.jsonObject(with:Data(contentsOf:URL(fileURLWithPath:path)))
+    let envelope = try #require(object as? [String:Any])
+    return try #require(envelope["payload"] as? [String:Any])
+}
+
+private func handoff(_ run:RunConfiguration, sequence:Int = 1,
+                     wall:Int = 100, monotonic:Int = 10,
+                     mutate:(([String:Any]) -> [String:Any])? = nil) throws -> Data {
+    var payload = try pythonFixture()
+    payload["runId"] = run.binding.runID; payload["manifestIdentity"] = run.appliance.manifest.digest
+    payload["configIdentity"] = run.binding.configIdentity; payload["expiresAt"] = run.binding.expiresAt
+    payload["sequence"] = sequence; payload["observedWall"] = wall; payload["observedMonotonic"] = monotonic
+    var proxy = payload["proxy"] as! [String:Any]
+    proxy["runId"] = run.binding.runID; proxy["manifestIdentity"] = run.appliance.manifest.digest
+    proxy["configIdentity"] = run.binding.configIdentity; proxy["expiresAt"] = run.binding.expiresAt
+    payload["proxy"] = proxy
+    var roles = payload["roles"] as! [[String:Any]]
+    for index in roles.indices { roles[index]["runId"] = run.binding.runID
+        var fds = roles[index]["fds"] as! [[String:Any]]
+        for fdIndex in fds.indices { fds[fdIndex]["runId"] = run.binding.runID }
+        roles[index]["fds"] = fds }
+    payload["roles"] = roles
+    return try resign(mutate?(payload) ?? payload,capability:run.capability)
 }
 
 @Suite(.serialized) struct BootstrapGateTests {
-    // Break: a fake success value reaches the native operational entry.
-    @Test func native_bootstrap_check_fails_closed_without_signed_native_ports() throws {
+    @Test func python_producer_handoff_is_authenticated_and_fully_consumed() throws {
+        let path = try #require(ProcessInfo.processInfo.environment["TASK10_TOPOLOGY_INPUT"])
+        let data = try Data(contentsOf:URL(fileURLWithPath:path))
+        let proof = try BootstrapHandoff.verify(data:data,expectedRunID:String(repeating:"1",count:32),
+            manifestIdentity:String(repeating:"a",count:64),configIdentity:String(repeating:"b",count:64),
+            expiresAt:190,capability:Data(repeating:7,count:32))
+        #expect(proof.sequence == 1); #expect(proof.roleInventoryDigest.count == 64)
+        #expect(proof.deviceInventoryDigest.count == 64)
+    }
+
+    @Test func native_entry_remains_fail_closed_and_composition_selection_is_bounded() throws {
         let run = try BootstrapRunFixture().run
         #expect(throws:VMFailure.admissionUnavailable) { _ = try VMHost.bootstrapCheck(run:run) }
+        _ = try NativeBootstrapComposition.select(manifestPath:"/signed/manifest.json",releasePath:"/signed/release.json",platform:"linux",machine:"arm64")
+        #expect(throws:VMFailure.admissionUnavailable) { _ = try NativeBootstrapComposition.select(manifestPath:"",releasePath:"x",platform:"linux",machine:"arm64") }
+        let arguments = ["bootstrap-check","--manifest","/signed/m","--release","/signed/r"]
+        #expect(try HostDispatch.parse(arguments) == .bootstrapCheck)
+        let invocation = try #require(try HostDispatch.bootstrapInvocation(arguments))
+        #expect(invocation == BootstrapInvocation(manifest:"/signed/m",release:"/signed/r"))
+        #expect(throws:VMFailure.admissionUnavailable) { _ = try VMHost.bootstrapCheck(invocation:invocation) }
     }
 
-    // Break: bootstrap asks for caller-selected probes or drops proof bindings.
-    @Test func fixed_probe_ids_and_independent_bindings_admit_injected_path() throws {
-        let run = try BootstrapRunFixture().run, probe = BootstrapProbeFake(bootstrapSnapshot(run))
-        let lifecycle = BootstrapLifecycleFake()
-        let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:lifecycle,clock:BootstrapTestClock())
-        #expect(probe.requested == BootstrapProbeID.allCases)
-        #expect(lifecycle.starts == 1)
-        let proof = try qualification.requireBrowserAdmission()
-        #expect(proof.runID == run.binding.runID)
-        #expect(proof.manifestIdentity == run.appliance.manifest.digest)
-        #expect(proof.roleInventoryDigest == String(repeating:"c",count:64))
-        #expect(proof.deviceInventoryDigest == String(repeating:"d",count:64))
-        #expect(proof.expiresAt == 190)
+    @Test func fixed_probe_and_full_inventory_handoff_admit() throws {
+        let run = try BootstrapRunFixture().run, probe = BootstrapProbeFake([try handoff(run)])
+        let lifecycle = BootstrapLifecycleFake(), clock = BootstrapTestClock()
+        let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:lifecycle,clock:clock)
+        #expect(probe.requested == [BootstrapProbeID.allCases]); #expect(lifecycle.starts == 1)
+        let proof = try qualification.currentProofWithoutActivation()
+        #expect(proof.runID == run.binding.runID); #expect(proof.manifestIdentity == run.appliance.manifest.digest)
     }
 
-    // Break: host loopback is accepted as evidence for the guest-loopback proxy.
-    @Test func host_listener_not_guest_loopback() throws {
+    @Test func valid_mac_inventory_filter_fd_route_dns_listener_substitutions_reject() throws {
         let run = try BootstrapRunFixture().run
-        let probe = BootstrapProbeFake(bootstrapSnapshot(run,namespace:.host))
-        #expect(throws:VMFailure.admissionUnavailable) {
-            _ = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:BootstrapLifecycleFake(),clock:BootstrapTestClock())
-        }
-    }
-
-    // Break: skipped/failed/duplicate evidence or a forbidden delivery qualifies.
-    @Test func failed_skipped_duplicate_or_received_probe_result_rejects() throws {
-        let run = try BootstrapRunFixture().run, base = bootstrapSnapshot(run).probes
-        let first = base[0]
-        let mutations = [
-            [BootstrapProbeResult(id:first.id,attempted:false,outcome:.denied,ownedReceiverCount:0)] + Array(base.dropFirst()),
-            [BootstrapProbeResult(id:first.id,attempted:true,outcome:.failed,ownedReceiverCount:0)] + Array(base.dropFirst()),
-            [BootstrapProbeResult(id:first.id,attempted:true,outcome:.denied,ownedReceiverCount:1)] + Array(base.dropFirst()),
-            Array(base.dropLast()), base + [first],
+        let mutations:[([String:Any]) -> [String:Any]] = [
+            { value in var x=value; var d=x["devices"] as! [String:Any]; d["routes"]=["default-v4"]; x["devices"]=d; return x },
+            { value in var x=value; var d=x["devices"] as! [String:Any]; d["dnsServers"]=["127.0.0.53"]; x["devices"]=d; return x },
+            { value in var x=value; var d=x["devices"] as! [String:Any]; var l=d["listeners"] as! [[String:Any]]; l.append(l[0]); d["listeners"]=l; x["devices"]=d; return x },
+            { value in var x=value; var r=x["roles"] as! [[String:Any]]; r[1]["filterDigest"]=String(repeating:"0",count:64); x["roles"]=r; return x },
+            { value in var x=value; var r=x["roles"] as! [[String:Any]]; var f=r[1]["fds"] as! [[String:Any]]; f[3]["purpose"]="donor"; r[1]["fds"]=f; x["roles"]=r; return x },
         ]
-        for results in mutations {
+        for mutation in mutations {
+            let bad = try handoff(run,mutate:mutation)
             #expect(throws:VMFailure.admissionUnavailable) {
-                _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake(bootstrapSnapshot(run,results:results)),lifecycle:BootstrapLifecycleFake(),clock:BootstrapTestClock())
-            }
+                _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([bad]),lifecycle:BootstrapLifecycleFake(),clock:BootstrapTestClock()) }
         }
     }
 
-    // Break: run, manifest, expiry, or inventory digest substitutions qualify.
-    @Test func run_manifest_inventory_and_expiry_binding_rejects() throws {
+    @Test func current_use_resamples_clock_observation_and_one_use_activation() throws {
         let run = try BootstrapRunFixture().run
-        var snapshots = [bootstrapSnapshot(run,runID:String(repeating:"2",count:32)),
-                         bootstrapSnapshot(run,manifest:String(repeating:"a",count:64)),
-                         bootstrapSnapshot(run,expiresAt:191), bootstrapSnapshot(run,expiresAt:100)]
-        let base = bootstrapSnapshot(run)
-        snapshots.append(BootstrapSnapshot(runID:base.runID,manifestIdentity:base.manifestIdentity,
-            roleInventoryDigest:"",deviceInventoryDigest:base.deviceInventoryDigest,
-            topologyDigest:base.topologyDigest,observedAt:base.observedAt,expiresAt:base.expiresAt,
-            hostDevices:base.hostDevices,proxy:base.proxy,probes:base.probes))
-        for value in snapshots {
-            #expect(throws:VMFailure.admissionUnavailable) {
-                _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake(value),lifecycle:BootstrapLifecycleFake(),clock:BootstrapTestClock())
-            }
-        }
+        let probe = BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2,wall:101,monotonic:11)])
+        let clock = BootstrapTestClock([.init(wall:100,monotonic:10),.init(wall:100,monotonic:10),
+                                        .init(wall:100,monotonic:10),.init(wall:101,monotonic:11),.init(wall:101,monotonic:11)])
+        let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:BootstrapLifecycleFake(),clock:clock)
+        let activation = BootstrapActivationFake(); try qualification.activateBrowser(activation)
+        #expect(activation.calls == 1); #expect(probe.requested.count == 2)
+        #expect(throws:VMFailure.terminal) { try qualification.activateBrowser(activation) }
     }
 
-    // Break: a drifted run can later regain authority from a healthy observation.
-    @Test func topology_drift_latches_failure() throws {
+    @Test func rollback_expiry_malformed_and_lifecycle_drift_latch_terminal() throws {
         let run = try BootstrapRunFixture().run, lifecycle = BootstrapLifecycleFake()
-        let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake(bootstrapSnapshot(run)),lifecycle:lifecycle,clock:BootstrapTestClock())
-        _ = try qualification.requireBrowserAdmission()
+        let q = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),lifecycle:lifecycle,clock:BootstrapTestClock())
         lifecycle.triggerDrift()
-        #expect(throws:VMFailure.terminal) { _ = try qualification.requireBrowserAdmission() }
-        #expect(throws:VMFailure.terminal) { _ = try qualification.requireBrowserAdmission() }
+        #expect(throws:VMFailure.terminal) { _ = try q.currentProofWithoutActivation() }
+        #expect(throws:VMFailure.terminal) { _ = try q.currentProofWithoutActivation() }
+
+        let rollback = BootstrapTestClock([.init(wall:100,monotonic:10),.init(wall:99,monotonic:11)])
+        #expect(throws:VMFailure.admissionUnavailable) {
+            _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),lifecycle:BootstrapLifecycleFake(),clock:rollback) }
+        var malformed = try handoff(run); malformed.append(0)
+        #expect(throws:VMFailure.admissionUnavailable) {
+            _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([malformed]),lifecycle:BootstrapLifecycleFake(),clock:BootstrapTestClock()) }
+
+        let expiryClock = BootstrapTestClock([.init(wall:100,monotonic:10),.init(wall:100,monotonic:10),
+                                               .init(wall:100,monotonic:10),.init(wall:190,monotonic:11)])
+        let expiring = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),lifecycle:BootstrapLifecycleFake(),clock:expiryClock)
+        #expect(throws:VMFailure.expired) { _ = try expiring.requireBrowserAdmission() }
+        #expect(throws:VMFailure.terminal) { _ = try expiring.requireBrowserAdmission() }
     }
 }

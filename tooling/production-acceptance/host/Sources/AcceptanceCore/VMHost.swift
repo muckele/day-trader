@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 public enum VMFailure: String, Error, Sendable { case signatureUnavailable, invalidSignature, entitlementMissing, invalidEntitlement, admissionUnavailable, binding, descriptor, expired, cancelled, terminal, clock, start, stop, unavailable, usage }
 public enum StopOutcome: Sendable, Equatable { case stopped, deadlineExceeded, failed }
@@ -83,33 +84,128 @@ enum BootstrapProbeID: String, CaseIterable, Sendable {
     case proxyVsockControl = "PROXY_VSOCK_CONTROL"
     case verifierIPv4TCP = "VERIFIER_IPV4_TCP"
 }
-enum BootstrapHostDevice: String, Sendable { case linuxBoot, readOnlyBlock, entropy, privateSerial, vsock }
-enum BootstrapNetworkNamespace: String, Sendable { case guest, host }
-enum BootstrapTransport: String, Sendable { case tcp, udp }
-enum BootstrapProbeOutcome: String, Sendable { case denied, allowed, failed }
-struct BootstrapEndpoint: Sendable, Equatable {
-    let namespace:BootstrapNetworkNamespace, transport:BootstrapTransport, address:String, port:Int, uid:Int
-}
-struct BootstrapProbeResult: Sendable, Equatable {
-    let id:BootstrapProbeID, attempted:Bool, outcome:BootstrapProbeOutcome, ownedReceiverCount:Int
-}
-struct BootstrapSnapshot: Sendable {
-    let runID:String, manifestIdentity:String, roleInventoryDigest:String, deviceInventoryDigest:String, topologyDigest:String
-    let observedAt:Int, expiresAt:Int, hostDevices:[BootstrapHostDevice], proxy:BootstrapEndpoint, probes:[BootstrapProbeResult]
-}
-protocol BootstrapProbePort: Sendable { func capture(ids:[BootstrapProbeID]) throws -> BootstrapSnapshot }
-protocol BootstrapLifecyclePort: Sendable { func begin(snapshot:BootstrapSnapshot,onDrift:@escaping @Sendable () -> Void) throws }
+protocol BootstrapProbePort: Sendable { func capture(ids:[BootstrapProbeID]) throws -> Data }
+protocol BootstrapLifecyclePort: Sendable { func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws }
+protocol BootstrapActivationPort: Sendable { func activateBrowser(proof:AdmissionProof) throws }
 public struct AdmissionProof: Sendable {
     public let runID:String, manifestIdentity:String, roleInventoryDigest:String, deviceInventoryDigest:String, topologyDigest:String, expiresAt:Int
+    public let sequence:Int, observedWall:Int, observedMonotonic:Int
 }
-public final class BootstrapQualification: @unchecked Sendable {
-    private let proof:AdmissionProof, lock = NSLock()
-    private var failed = false
-    init(_ proof:AdmissionProof) { self.proof = proof }
-    public func requireBrowserAdmission() throws -> AdmissionProof {
-        try lock.withLock { guard !failed else { throw VMFailure.terminal }; return proof }
+
+enum BootstrapHandoff {
+    private static let maxBytes = 131072
+    private static let devices = ["LINUX_BOOT","VIRTIO_BLOCK_READ_ONLY","VIRTIO_ENTROPY","VIRTIO_SERIAL_PRIVATE_PIPE","VIRTIO_VSOCK_CID2_PORT4050"]
+    private static let roles:[(String,Int,String)] = [
+        ("CONTROLLER",10001,"294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3"),
+        ("BROWSER",10002,"294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3"),
+        ("VERIFIER",10003,"294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3"),
+        ("PROXY",10004,"01e3ec748fdbadb0a0ac195855506cc19680fcc5aa3c6289d2c15e15ec981d7d"),
+    ]
+    private static let programs = ["/opt/acceptance/guest/browser-worker.cjs","/opt/acceptance/guest/controller.cjs","/opt/acceptance/guest/proxy.py","/opt/acceptance/guest/verifier.cjs","/opt/acceptance/runtime/chromium/chrome","/opt/acceptance/runtime/node/bin/node","/opt/acceptance/runtime/python/bin/python3"]
+    private static func hex(_ value:String,count:Int) -> Bool { value.utf8.count == count && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } }
+    private static func integer(_ value:Any?,_ lower:Int = 0,_ upper:Int = 9007199254740991) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.rounded() == number.doubleValue,
+              number.doubleValue >= Double(lower), number.doubleValue <= Double(upper) else { return nil }
+        return number.intValue
     }
-    fileprivate func topologyDrifted() { lock.withLock { failed = true } }
+    private static func object(_ value:Any?) throws -> [String:Any] { guard let value = value as? [String:Any] else { throw VMFailure.admissionUnavailable }; return value }
+    private static func array(_ value:Any?) throws -> [Any] { guard let value = value as? [Any] else { throw VMFailure.admissionUnavailable }; return value }
+    private static func string(_ value:Any?) throws -> String { guard let value = value as? String, !value.isEmpty, value.utf8.count <= 512, value.canBeConverted(to:.ascii) else { throw VMFailure.admissionUnavailable }; return value }
+    private static func canonical(_ value:Any) throws -> Data { try JSONSerialization.data(withJSONObject:value,options:[.sortedKeys,.withoutEscapingSlashes]) }
+    private static func digest(_ value:Any) throws -> String { SHA256.hash(data:try canonical(value)).map { String(format:"%02x",$0) }.joined() }
+    private static func equalMAC(_ lhs:Data,_ rhs:Data) -> Bool { lhs.count == rhs.count && zip(lhs,rhs).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0 }
+    private static func exactStrings(_ value:Any?,_ expected:[String]) throws {
+        let rows = try array(value); guard rows.count == expected.count else { throw VMFailure.admissionUnavailable }
+        for (row,wanted) in zip(rows,expected) { guard try string(row) == wanted else { throw VMFailure.admissionUnavailable } }
+    }
+    private static func validateDevices(_ value:[String:Any]) throws {
+        guard Set(value.keys) == ["abstractUnix","dnsServers","hostDevices","interfaces","listeners","routes"] else { throw VMFailure.admissionUnavailable }
+        try exactStrings(value["hostDevices"],devices); try exactStrings(value["interfaces"],["lo"])
+        for key in ["routes","dnsServers","abstractUnix"] { guard try array(value[key]).isEmpty else { throw VMFailure.admissionUnavailable } }
+        let listeners = try array(value["listeners"]); guard listeners.count == 1 else { throw VMFailure.admissionUnavailable }
+        let listener = try object(listeners[0]); guard Set(listener.keys) == ["namespace","transport","address","port","uid"],
+              try string(listener["namespace"]) == "GUEST", try string(listener["transport"]) == "TCP",
+              try string(listener["address"]) == "127.0.0.1", integer(listener["port"],1,65535) == 3128,
+              integer(listener["uid"],1,Int(UInt32.max)) == 10004 else { throw VMFailure.admissionUnavailable }
+    }
+    private static func validateRoles(_ value:Any?,runID:String) throws {
+        let rows = try array(value); guard rows.count == roles.count else { throw VMFailure.admissionUnavailable }
+        var pids = Set<Int>()
+        for (raw,expected) in zip(rows,roles) {
+            let row = try object(raw), pid = integer(row["pid"],1,Int(Int32.max))
+            guard Set(row.keys) == ["pid","runId","role","uids","gids","groups","capabilities","noNewPrivs","seccomp","filterDigest","fds","views","waiting","programs"],
+                  try string(row["role"]) == expected.0, try string(row["runId"]) == runID,
+                  let pid, pids.insert(pid).inserted, try string(row["filterDigest"]) == expected.2,
+                  integer(row["noNewPrivs"]) == 1, integer(row["seccomp"]) == 2,
+                  (row["waiting"] as? Bool) == true else { throw VMFailure.admissionUnavailable }
+            for key in ["uids","gids"] { let values = try array(row[key]); guard values.count == 3 && values.allSatisfy({ integer($0,1,Int(UInt32.max)) == expected.1 }) else { throw VMFailure.admissionUnavailable } }
+            guard try array(row["groups"]).isEmpty else { throw VMFailure.admissionUnavailable }
+            let capabilities = try array(row["capabilities"]); guard capabilities.count == 5 && capabilities.allSatisfy({ integer($0,0,Int(UInt32.max)) == 0 }) else { throw VMFailure.admissionUnavailable }
+            let fds = try array(row["fds"]), peer = expected.0 == "CONTROLLER" ? "BOOTSTRAP":"CONTROLLER"
+            guard fds.count == 5 else { throw VMFailure.admissionUnavailable }
+            for (index,rawFD) in fds.enumerated() {
+                let fd = try object(rawFD), purpose = ["stdin","stdout","stderr","command","result"][index]
+                guard Set(fd.keys) == ["fd","kind","purpose","peer","runId"], integer(fd["fd"],0,1024) == index, try string(fd["kind"]) == (index < 3 ? "null":"pipe"),
+                      try string(fd["purpose"]) == purpose, try string(fd["peer"]) == peer,
+                      try string(fd["runId"]) == runID else { throw VMFailure.admissionUnavailable }
+            }
+            let views = try object(row["views"])
+            guard Set(views.keys) == ["role","root","visibleRoles","privateMode","console","separatePid","separateMount","initialUserNamespace","controllingTty","readOnlyBase","deviceNodes","privateTmpfs","noExternalIpInterface","noFdDonor"],
+                  try string(views["role"]) == expected.0,
+                  try string(views["root"]) == "/run/acceptance/\(expected.0.lowercased())",
+                  integer(views["privateMode"],0,4095) == 448 else { throw VMFailure.admissionUnavailable }
+            try exactStrings(views["visibleRoles"],[expected.0]); try exactStrings(views["deviceNodes"],["/dev/null"])
+            for key in ["separatePid","separateMount","initialUserNamespace","readOnlyBase","privateTmpfs","noExternalIpInterface","noFdDonor"] { guard (views[key] as? Bool) == true else { throw VMFailure.admissionUnavailable } }
+            for key in ["console","controllingTty"] { guard (views[key] as? Bool) == false else { throw VMFailure.admissionUnavailable } }
+            let pins = try array(row["programs"]); guard pins.count == programs.count else { throw VMFailure.admissionUnavailable }
+            for (rawPin,path) in zip(pins,programs) { let pin = try object(rawPin); guard Set(pin.keys) == ["path","sha256"], try string(pin["path"]) == path, hex(try string(pin["sha256"]),count:64) else { throw VMFailure.admissionUnavailable } }
+        }
+    }
+    private static func validateProbes(_ value:Any?) throws {
+        let rows = try array(value), expected = BootstrapProbeID.allCases; guard rows.count == expected.count else { throw VMFailure.admissionUnavailable }
+        for (raw,id) in zip(rows,expected) { let row = try object(raw), positive = id == .proxyVsockControl
+            guard Set(row.keys) == ["attempted","identifier","outcome","ownedReceiverCount"], try string(row["identifier"]) == id.rawValue, (row["attempted"] as? Bool) == true,
+                  try string(row["outcome"]) == (positive ? "ALLOWED":"DENIED"),
+                  integer(row["ownedReceiverCount"],0,1) == (positive ? 1:0) else { throw VMFailure.admissionUnavailable } }
+    }
+    static func verify(data:Data,expectedRunID:String,manifestIdentity:String,configIdentity:String,expiresAt:Int,capability:Data) throws -> AdmissionProof {
+        do {
+            guard data.count <= maxBytes, capability.count == 32 else { throw VMFailure.admissionUnavailable }
+            let raw = try JSONSerialization.jsonObject(with:data,options:[]), envelope = try object(raw)
+            guard Set(envelope.keys) == ["mac","payload","version"], integer(envelope["version"]) == 1,
+                  try canonical(envelope) == data else { throw VMFailure.admissionUnavailable }
+            let payload = try object(envelope["payload"]), supplied = try string(envelope["mac"])
+            guard Set(payload.keys) == ["configIdentity","devices","expiresAt","manifestIdentity","observedMonotonic","observedWall","probes","proxy","roles","runId","sequence"] else { throw VMFailure.admissionUnavailable }
+            guard hex(supplied,count:64), let suppliedData = Data(hexString:supplied) else { throw VMFailure.admissionUnavailable }
+            let bytes = try canonical(payload), calculated = Data(HMAC<SHA256>.authenticationCode(for:bytes,using:SymmetricKey(data:capability)))
+            guard equalMAC(suppliedData,calculated), try string(payload["runId"]) == expectedRunID,
+                  try string(payload["manifestIdentity"]) == manifestIdentity,
+                  try string(payload["configIdentity"]) == configIdentity,
+                  integer(payload["expiresAt"],1) == expiresAt,
+                  let sequence = integer(payload["sequence"],1), let observedWall = integer(payload["observedWall"]),
+                  let observedMonotonic = integer(payload["observedMonotonic"]) else { throw VMFailure.admissionUnavailable }
+            let deviceObject = try object(payload["devices"]); try validateDevices(deviceObject)
+            try validateRoles(payload["roles"],runID:expectedRunID); try validateProbes(payload["probes"])
+            let proxy = try object(payload["proxy"])
+            guard Set(proxy.keys) == ["configIdentity","expiresAt","hostCid","listenAddress","listenPort","manifestIdentity","runId","servicePort","uid"],
+                  try string(proxy["runId"]) == expectedRunID, try string(proxy["manifestIdentity"]) == manifestIdentity,
+                  try string(proxy["configIdentity"]) == configIdentity, integer(proxy["expiresAt"],1) == expiresAt,
+                  try string(proxy["listenAddress"]) == "127.0.0.1", integer(proxy["listenPort"],1,65535) == 3128,
+                  integer(proxy["hostCid"],1,Int(UInt32.max)) == 2,
+                  integer(proxy["servicePort"],1,65535) == 4050, integer(proxy["uid"],1,Int(UInt32.max)) == 10004 else { throw VMFailure.admissionUnavailable }
+            var stable = payload; stable.removeValue(forKey:"sequence"); stable.removeValue(forKey:"observedWall"); stable.removeValue(forKey:"observedMonotonic")
+            return AdmissionProof(runID:expectedRunID,manifestIdentity:manifestIdentity,
+                roleInventoryDigest:try digest(payload["roles"]!),deviceInventoryDigest:try digest(deviceObject),
+                topologyDigest:try digest(stable),expiresAt:expiresAt,sequence:sequence,
+                observedWall:observedWall,observedMonotonic:observedMonotonic)
+        } catch { throw VMFailure.admissionUnavailable }
+    }
+}
+
+private extension Data {
+    init?(hexString:String) { var bytes = [UInt8](), index = hexString.startIndex
+        while index < hexString.endIndex { let next = hexString.index(index,offsetBy:2); guard let byte = UInt8(hexString[index..<next],radix:16) else { return nil }; bytes.append(byte); index = next }
+        self.init(bytes) }
 }
 private final class RunAuthority: @unchecked Sendable {
     let run:RunConfiguration, release:VerifiedRelease, authority:ReleaseAuthority, runEnd:Int
@@ -149,6 +245,67 @@ private final class RunAuthority: @unchecked Sendable {
         }
     }
 }
+
+public final class BootstrapQualification: @unchecked Sendable {
+    private let run:RunConfiguration, authority:RunAuthority, clock:any BrokerClock
+    private let probe:any BootstrapProbePort
+    private let lock = NSLock()
+    private var proof:AdmissionProof, lastClock:ClockSample, failed = false, activated = false
+    fileprivate init(run:RunConfiguration,authority:RunAuthority,clock:any BrokerClock,probe:any BootstrapProbePort,
+         proof:AdmissionProof,lastClock:ClockSample) {
+        self.run=run; self.authority=authority; self.clock=clock; self.probe=probe
+        self.proof=proof; self.lastClock=lastClock
+    }
+    private func checkedSample() throws -> ClockSample {
+        let sample = try clock.sample()
+        guard sample.wall >= lastClock.wall, sample.monotonic >= lastClock.monotonic else { throw VMFailure.clock }
+        _ = try authority.check(sample); lastClock = sample; return sample
+    }
+    private func latch<T>(_ body:() throws -> T) throws -> T {
+        try lock.withLock {
+            guard !failed else { throw VMFailure.terminal }
+            do { return try body() }
+            catch let error as VMFailure { failed = true; throw error }
+            catch { failed = true; throw VMFailure.admissionUnavailable }
+        }
+    }
+    private func resample() throws -> AdmissionProof {
+        let before = try checkedSample(); try run.appliance.recheck()
+        let data = try probe.capture(ids:BootstrapProbeID.allCases)
+        let after = try checkedSample(); try run.appliance.recheck()
+        let current = try BootstrapHandoff.verify(data:data,expectedRunID:run.binding.runID,
+            manifestIdentity:run.appliance.manifest.digest,configIdentity:run.binding.configIdentity,
+            expiresAt:run.binding.expiresAt,capability:run.capability)
+        guard current.sequence == proof.sequence + 1,
+              current.topologyDigest == proof.topologyDigest,
+              current.roleInventoryDigest == proof.roleInventoryDigest,
+              current.deviceInventoryDigest == proof.deviceInventoryDigest,
+              before.wall <= current.observedWall, current.observedWall <= after.wall,
+              before.monotonic <= current.observedMonotonic, current.observedMonotonic <= after.monotonic,
+              after.wall-current.observedWall <= 1, after.monotonic-current.observedMonotonic <= 1 else { throw VMFailure.admissionUnavailable }
+        proof=current; return current
+    }
+    func currentProofWithoutActivation() throws -> AdmissionProof { try lock.withLock { guard !failed else { throw VMFailure.terminal }; return proof } }
+    public func requireBrowserAdmission() throws -> AdmissionProof { try latch { try resample() } }
+    func activateBrowser(_ activation:any BootstrapActivationPort) throws {
+        try latch {
+            guard !activated else { throw VMFailure.terminal }
+            let current = try resample()
+            try activation.activateBrowser(proof:current); proof=current; activated=true
+        }
+    }
+    fileprivate func topologyDrifted() { lock.withLock { failed = true } }
+}
+
+struct NativeBootstrapComposition: Sendable {
+    let manifestPath:String, releasePath:String
+    static func select(manifestPath:String,releasePath:String,platform:String,machine:String) throws -> Self {
+        guard platform == "linux", machine == "arm64", !manifestPath.isEmpty, !releasePath.isEmpty,
+              manifestPath.utf8.count <= 4096, releasePath.utf8.count <= 4096,
+              manifestPath.first == "/", releasePath.first == "/" else { throw VMFailure.admissionUnavailable }
+        return Self(manifestPath:manifestPath,releasePath:releasePath)
+    }
+}
 // dispose invalidates owned channel resources independently of stop acknowledgement;
 // it must not prevent an already-issued/retired owner's stop request. Fake-only seam.
 protocol OfflineVMInstance: Sendable { func stop() async throws; func dispose() }
@@ -163,6 +320,13 @@ public enum VMHost {
     // No native probe/lifecycle construction exists in M4. A nominal success
     // value, caller boolean, or unsigned document can never enter this path.
     public static func bootstrapCheck(run:RunConfiguration) throws -> BootstrapQualification {
+        throw VMFailure.admissionUnavailable
+    }
+    // The CLI may parse only these two explicit signed-input locations. Until a
+    // future signed/native constructor produces RunConfiguration plus the fixed
+    // probe/lifecycle ports above, even a well-formed invocation remains closed.
+    public static func bootstrapCheck(invocation:BootstrapInvocation) throws -> BootstrapQualification {
+        guard invocation.manifest.first == "/", invocation.release.first == "/" else { throw VMFailure.usage }
         throw VMFailure.admissionUnavailable
     }
 }
@@ -180,32 +344,24 @@ enum OfflineVMHost {
     }
     static func bootstrapCheck(run:RunConfiguration,probe:any BootstrapProbePort,lifecycle:any BootstrapLifecyclePort,clock:any BrokerClock) throws -> BootstrapQualification {
         do {
-            let sample = try clock.sample(), authority = try RunAuthority(run:run,sample:sample)
-            _ = try authority.check(sample)
+            let before = try clock.sample(), authority = try RunAuthority(run:run,sample:before)
+            _ = try authority.check(before)
             try run.appliance.recheck(); try run.appliance.plan.validateResources()
             let ids = BootstrapProbeID.allCases
-            let snapshot = try probe.capture(ids:ids)
-            let digest = { (value:String) in value.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } }
-            guard sample.wall >= 0, snapshot.observedAt == sample.wall,
-                  snapshot.runID == run.binding.runID,
-                  snapshot.manifestIdentity == run.appliance.manifest.digest,
-                  snapshot.expiresAt == run.binding.expiresAt,
-                  snapshot.observedAt < snapshot.expiresAt,
-                  digest(snapshot.roleInventoryDigest), digest(snapshot.deviceInventoryDigest), digest(snapshot.topologyDigest),
-                  snapshot.hostDevices == [.linuxBoot,.readOnlyBlock,.entropy,.privateSerial,.vsock],
-                  snapshot.proxy == BootstrapEndpoint(namespace:.guest,transport:.tcp,address:"127.0.0.1",port:3128,uid:10004),
-                  snapshot.probes.map(\.id) == ids else { throw VMFailure.admissionUnavailable }
-            for result in snapshot.probes {
-                let positive = result.id == .proxyVsockControl
-                guard result.attempted,
-                      result.outcome == (positive ? .allowed:.denied),
-                      result.ownedReceiverCount == (positive ? 1:0) else { throw VMFailure.admissionUnavailable }
-            }
-            let proof = AdmissionProof(runID:snapshot.runID,manifestIdentity:snapshot.manifestIdentity,
-                roleInventoryDigest:snapshot.roleInventoryDigest,deviceInventoryDigest:snapshot.deviceInventoryDigest,
-                topologyDigest:snapshot.topologyDigest,expiresAt:snapshot.expiresAt)
-            let qualification = BootstrapQualification(proof)
-            try lifecycle.begin(snapshot:snapshot,onDrift:{ qualification.topologyDrifted() })
+            let handoff = try probe.capture(ids:ids)
+            let after = try clock.sample(); _ = try authority.check(after); try run.appliance.recheck()
+            guard after.wall >= before.wall, after.monotonic >= before.monotonic else { throw VMFailure.clock }
+            let proof = try BootstrapHandoff.verify(data:handoff,expectedRunID:run.binding.runID,
+                manifestIdentity:run.appliance.manifest.digest,configIdentity:run.binding.configIdentity,
+                expiresAt:run.binding.expiresAt,capability:run.capability)
+            guard proof.sequence == 1, before.wall <= proof.observedWall, proof.observedWall <= after.wall,
+                  before.monotonic <= proof.observedMonotonic, proof.observedMonotonic <= after.monotonic,
+                  after.wall-proof.observedWall <= 1, after.monotonic-proof.observedMonotonic <= 1 else { throw VMFailure.admissionUnavailable }
+            let qualification = BootstrapQualification(run:run,authority:authority,clock:clock,
+                probe:probe,proof:proof,lastClock:after)
+            try lifecycle.begin(handoff:handoff,onDrift:{ qualification.topologyDrifted() })
+            let final = try clock.sample(); _ = try authority.check(final); try run.appliance.recheck()
+            guard final.wall >= after.wall, final.monotonic >= after.monotonic else { throw VMFailure.clock }
             return qualification
         } catch let error as VMFailure {
             if error == .terminal { throw error }
@@ -369,10 +525,23 @@ public final class VMHandle: @unchecked Sendable {
     public func channelLost() async { abort(.terminal); _ = await stop(deadline:cleanupDeadline()) }
 }
 
+public struct BootstrapInvocation: Equatable, Sendable { public let manifest:String, release:String }
 public enum HostCommand: Equatable, Sendable { case validateAppliance(manifest:String, expected:String, base:String, kernel:String, initramfs:String), bootstrapCheck, qualify, runSynthetic }
 public enum HostDispatch {
+    public static func bootstrapInvocation(_ args:[String]) throws -> BootstrapInvocation? {
+        guard args.first == "bootstrap-check" else { return nil }
+        guard args.count == 5, [args[1],args[3]] == ["--manifest","--release"],
+              !args[2].isEmpty, !args[4].isEmpty else {
+            if args == ["bootstrap-check"] { return nil }
+            throw VMFailure.usage
+        }
+        return BootstrapInvocation(manifest:args[2],release:args[4])
+    }
     public static func parse(_ args:[String]) throws -> HostCommand {
         if args == ["bootstrap-check"] { return .bootstrapCheck }
+        if args.count == 5, args[0] == "bootstrap-check",
+           [args[1],args[3]] == ["--manifest","--release"],
+           !args[2].isEmpty, !args[4].isEmpty { return .bootstrapCheck }
         if args == ["qualify"] { return .qualify }
         if args == ["run-synthetic"] { return .runSynthetic }
         guard args.count == 11, args[0] == "validate-appliance", [args[1],args[3],args[5],args[7],args[9]] == ["--manifest","--expected-digest","--base","--kernel","--initramfs"], [2,4,6,8,10].allSatisfy({ !args[$0].isEmpty }) else { throw VMFailure.usage }
