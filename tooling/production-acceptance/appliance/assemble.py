@@ -180,7 +180,7 @@ def _safe_path(path, code='UNAUTHORIZED_INPUT'):
     return path
 
 
-def _fingerprint(s): return (s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_mode,s.st_nlink)
+def _fingerprint(s): return (s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_mode,s.st_nlink,s.st_uid,s.st_gid)
 
 
 def _open_checked(path, code):
@@ -337,6 +337,9 @@ class _RetainedSource:
             if digest.hexdigest()!=identity['sha256'] or size!=identity['sizeBytes']: _fail('INPUT_CHANGED')
             if _fingerprint(os.fstat(self.file.fileno()))!=before or _fingerprint(self.path.lstat())!=before: _fail('INPUT_CHANGED')
         except (OSError,ValueError): _fail('INPUT_CHANGED')
+    def recheck_safe(self):
+        self.recheck()
+        if os.fstat(self.file.fileno()).st_mode & 0o7022: _fail('ARTIFACT_MISMATCH')
 
 
 _INPUT_TOKEN = object()
@@ -536,8 +539,21 @@ class OfflineInstalledExecutableInventory:
 
 
 def _inventory_document(members,manifest,state):
+    inputs=decode_inputs(members.inputs.canonical)
     if manifest['manifestVersion']!=2 or manifest['inputsDigest']!=_sha(members.inputs.canonical): _fail('IDENTITY_MISMATCH')
-    if manifest['components']!=decode_inputs(members.inputs.canonical)['artifacts']: _fail('ARTIFACT_MISMATCH')
+    if manifest['components']!=inputs['artifacts']: _fail('ARTIFACT_MISMATCH')
+    # Duplicated output facts must agree with the retained input owner; an
+    # output digest cannot independently certify its own altered policy.
+    for key in ['manifestVersion','architecture','distribution','policy','payloadState','missingPayload']:
+        if manifest[key]!=inputs[key]: _fail('POLICY' if key=='policy' else 'IDENTITY_MISMATCH')
+    for key in ['sourceRevision','approvalId','buildEnvironmentId']:
+        if manifest['provenance'][key]!=inputs['provenance'][key]: _fail('IDENTITY_MISMATCH')
+    if manifest['provenance']['tools']!=inputs['tools']: _fail('ARTIFACT_MISMATCH')
+    # inputClass and assemblyMode intentionally belong to different stages.
+    if state=='VERIFIED':
+        if (inputs['provenance']['inputClass']!='APPROVED_CANDIDATE'
+                or manifest['provenance']['assemblyMode']!='NATIVE_ARM64_LINUX'): _fail('SYNTHETIC_ONLY')
+    elif manifest['provenance']['assemblyMode']!='SYNTHETIC': _fail('SYNTHETIC_ONLY')
     return json.dumps({'inventoryVersion':1,'inputsDigest':manifest['inputsDigest'],
                        'manifestDigest':manifest_digest(manifest),'baseIdentity':manifest['outputs'][0],
                        'populationState':state,'members':members.rows},sort_keys=True,separators=(',',':')).encode()
@@ -546,7 +562,6 @@ def _inventory_document(members,manifest,state):
 def offline_installed_members(members,manifest) -> OfflineInstalledExecutableInventory:
     if type(members) is not ValidatedExecutableMembers: _fail('UNAUTHORIZED_INPUT')
     manifest=decode_appliance(canonical_manifest(manifest)); members.recheck()
-    if manifest['provenance']['assemblyMode']!='SYNTHETIC': _fail('SYNTHETIC_ONLY')
     canonical=_inventory_document(members,manifest,'UNPERFORMED'); members.recheck()
     return OfflineInstalledExecutableInventory(members,canonical,_token=_INVENTORY_TOKEN)
 
@@ -555,20 +570,17 @@ def verify_installed_members(members,population_owner,base_identity) -> Installe
     if type(members) is not ValidatedExecutableMembers or type(population_owner) is not NativePopulationOwner: _fail('UNAUTHORIZED_INPUT')
     if population_owner.members is not members: _fail('IDENTITY_MISMATCH')
     members.recheck(); manifest=decode_appliance(population_owner.manifest_bytes)
-    if (decode_inputs(members.inputs.canonical)['provenance']['inputClass']!='APPROVED_CANDIDATE'
-            or manifest['provenance']['assemblyMode']!='NATIVE_ARM64_LINUX'): _fail('SYNTHETIC_ONLY')
+    canonical=_inventory_document(members,manifest,'VERIFIED')
     if base_identity != manifest['outputs'][0] or json.loads(population_owner.base.identity_bytes)!=base_identity: _fail('IDENTITY_MISMATCH')
-    population_owner.base.recheck()
+    population_owner.base.recheck_safe()
     for row,(path,source) in zip(members.rows,population_owner.installed):
         if path!=row['installedPath']: _fail('ARTIFACT_MISMATCH')
-        if os.fstat(source.file.fileno()).st_mode & 0o7022: _fail('ARTIFACT_MISMATCH')
         identity=json.loads(source.identity_bytes)
         if identity['sha256']!=row['memberSHA256'] or identity['sizeBytes']!=row['sizeBytes']: _fail('ARTIFACT_MISMATCH')
-        source.recheck()
-    canonical=_inventory_document(members,manifest,'VERIFIED')
+        source.recheck_safe()
     # No identity changes during any source/base/installed consumption.
-    members.recheck(); population_owner.base.recheck()
-    for _,source in population_owner.installed: source.recheck()
+    members.recheck(); population_owner.base.recheck_safe()
+    for _,source in population_owner.installed: source.recheck_safe()
     return InstalledExecutableInventory(members,population_owner,canonical,_token=_INVENTORY_TOKEN)
 
 

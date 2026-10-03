@@ -6,9 +6,11 @@ import io
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('appliance_assembly', ROOT / 'appliance/assemble.py')
@@ -463,6 +465,83 @@ class ApplianceTests(unittest.TestCase):
         installed=((owner.installed[0][0],replacement),*owner.installed[1:])
         changed=a.NativePopulationOwner(members,result,owner.base,installed,_token=a._POPULATION_TOKEN)
         self.denied('ARTIFACT_MISMATCH',lambda:a.verify_installed_members(members,changed,result['outputs'][0]))
+
+    def output_copy_drift_cases(self,result):
+        cases=[]
+        for group,key,value,code in [
+            ('policy','resources',{'cpuCount':8},'POLICY'),
+            ('policy','compatibility',{'sdkVersion':'different-sdk'},'POLICY'),
+            ('provenance','sourceRevision','1'*40,'IDENTITY_MISMATCH'),
+            ('provenance','approvalId','different-review','IDENTITY_MISMATCH'),
+            ('provenance','buildEnvironmentId','different-venue','IDENTITY_MISMATCH')]:
+            changed=copy.deepcopy(result)
+            if group=='policy': changed[group][key].update(value)
+            else: changed[group][key]=value
+            cases.append((group+'.'+key,changed,code))
+        for key,value in [('sha256','f'*64),('sizeBytes',1),('version','different-version'),('sourceId','different-source')]:
+            changed=copy.deepcopy(result); changed['provenance']['tools'][0][key]=value
+            cases.append(('tool.'+key,changed,'ARTIFACT_MISMATCH'))
+        return cases
+
+    def test_v1_offline_inventory_rejects_retained_input_policy_and_provenance_drift(self):
+        self.f.complete(); members=a.derive_executable_members(self.f.validate())
+        result=a.assemble(members.inputs,self.root/'copy-binding',image_tool=FakeImageTool())
+        self.assertIs(type(a.offline_installed_members(members,result)),a.OfflineInstalledExecutableInventory)
+        for name,changed,code in self.output_copy_drift_cases(result):
+            with self.subTest(field=name):
+                self.assertEqual(changed['inputsDigest'],result['inputsDigest'])
+                self.assertEqual(changed['components'],result['components'])
+                self.denied(code,lambda:a.offline_installed_members(members,changed))
+
+    def test_v1_native_inventory_rejects_retained_input_policy_and_provenance_drift(self):
+        members,result,owner=self.population_contract_fixture()
+        self.assertIs(type(a.verify_installed_members(members,owner,result['outputs'][0])),a.InstalledExecutableInventory)
+        for name,changed,code in self.output_copy_drift_cases(result):
+            with self.subTest(field=name):
+                altered=a.NativePopulationOwner(members,changed,owner.base,owner.installed,_token=a._POPULATION_TOKEN)
+                self.assertEqual(changed['inputsDigest'],result['inputsDigest'])
+                self.assertEqual(changed['components'],result['components'])
+                self.denied(code,lambda:a.verify_installed_members(members,altered,result['outputs'][0]))
+
+    def test_v1_native_population_base_rejects_unsafe_modes_and_retains_safe_original(self):
+        members,result,owner=self.population_contract_fixture()
+        inventory=a.verify_installed_members(members,owner,result['outputs'][0]); inventory.recheck()
+        for mode in [0o666,0o620,0o602,0o1400]:
+            with self.subTest(mode=oct(mode)):
+                path=self.root/('base-mode-'+str(mode))
+                path.write_bytes(owner.base.path.read_bytes()); path.chmod(mode)
+                source,fp=a._open_checked(path,'ARTIFACT_MISMATCH'); source.close()
+                base=a._RetainedSource(path,result['outputs'][0],fp)
+                altered=a.NativePopulationOwner(members,result,base,owner.installed,_token=a._POPULATION_TOKEN)
+                self.denied('ARTIFACT_MISMATCH',lambda:a.verify_installed_members(members,altered,result['outputs'][0]))
+        # macOS strips setuid/setgid from these inert files. Model only those
+        # original stat observations; bytes and retained descriptors stay real.
+        path=self.root/'base-privileged-stat'; path.write_bytes(owner.base.path.read_bytes()); path.chmod(0o400)
+        original=path.lstat(); real_fstat=os.fstat; real_lstat=Path.lstat
+        for mode in [0o4400,0o2400]:
+            with self.subTest(privileged_mode=oct(mode)):
+                observed=SimpleNamespace(**{key:getattr(original,key) for key in ['st_dev','st_ino','st_size','st_mtime_ns','st_ctime_ns','st_mode','st_nlink','st_uid','st_gid']})
+                observed.st_mode=(original.st_mode & ~0o7777) | mode
+                def fstat(fd):
+                    actual=real_fstat(fd)
+                    return observed if (actual.st_dev,actual.st_ino)==(original.st_dev,original.st_ino) else actual
+                def lstat(p): return observed if p==path else real_lstat(p)
+                with patch.object(os,'fstat',side_effect=fstat), patch.object(Path,'lstat',lstat):
+                    source,fp=a._open_checked(path,'ARTIFACT_MISMATCH'); source.close()
+                    base=a._RetainedSource(path,result['outputs'][0],fp)
+                    altered=a.NativePopulationOwner(members,result,base,owner.installed,_token=a._POPULATION_TOKEN)
+                    self.denied('ARTIFACT_MISMATCH',lambda:a.verify_installed_members(members,altered,result['outputs'][0]))
+        original=owner.base.path.lstat()
+        for key in ['st_uid','st_gid']:
+            with self.subTest(changed_original_owner=key):
+                observed=SimpleNamespace(**{name:getattr(original,name) for name in ['st_dev','st_ino','st_size','st_mtime_ns','st_ctime_ns','st_mode','st_nlink','st_uid','st_gid']})
+                setattr(observed,key,getattr(observed,key)+1)
+                def fstat(fd): return observed if fd==owner.base.file.fileno() else real_fstat(fd)
+                with patch.object(os,'fstat',side_effect=fstat):
+                    self.denied('INPUT_CHANGED',inventory.recheck)
+        inventory.recheck()
+        owner.base.path.chmod(0o600)
+        self.denied('INPUT_CHANGED',inventory.recheck)
 
     def test_v1_retained_member_bytes_and_original_inode_cannot_be_substituted(self):
         self.f.complete(); checked=self.f.validate(); members=a.derive_executable_members(checked)
