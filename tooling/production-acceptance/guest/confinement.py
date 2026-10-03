@@ -15,8 +15,12 @@ trusted contracts. Additional native compatibility and qualification are gated.
 """
 from dataclasses import dataclass, field
 import hashlib
+import hmac
+import json
 import re
+import secrets
 import struct
+import time
 from types import MappingProxyType
 from typing import NoReturn, Protocol
 
@@ -395,7 +399,7 @@ def _ownership_facts(owned):
             _endpoint_key(owned.command),_endpoint_key(owned.result))
 
 
-def start_roles(config):
+def start_roles(config, *, cleanup_budget=None, acquisition_owner=None):
     if type(config) is not BootstrapConfig or config.kernel is None: _fail('KERNEL_PORT_REQUIRED')
     k = config.kernel
     if any(not callable(getattr(k,n,None)) for n in ('spawn_waiting','inspect','wait_owned','stop_owned')): _fail('KERNEL_PORT_REQUIRED')
@@ -409,8 +413,10 @@ def start_roles(config):
                 owned = k.spawn_waiting(launch, lambda port, launch=launch: exec_role(launch,kernel=port))
             except RoleStartFailure as error:
                 owned_children.append(error.owned)
+                if acquisition_owner is not None: acquisition_owner._originals.append(error.owned)
                 raise
             owned_children.append(owned)
+            if acquisition_owner is not None: acquisition_owner._originals.append(owned)
             identity = getattr(owned, 'identity', owned)
             if (type(owned.pid) is not int or owned.pid <= 0 or owned.pid in pids or
                 id(identity) in identities or owned.command is None or owned.result is None or
@@ -447,11 +453,311 @@ def start_roles(config):
             distinct.append(owned)
         for owned in reversed(distinct):
             try:
-                result = k.stop_owned(owned,120000)
-                if type(result) is not dict or result.get('status') not in ('STOPPED','EXITED') or result.get('pid') != owned.pid or result.get('run_id') != config.run_id: cleanup_failed = True
+                if acquisition_owner is not None:
+                    result=acquisition_owner._stop_one(owned,cleanup_budget.remaining())
+                    if result['status'] not in ('STOPPED','EXITED'):cleanup_failed=True
+                else:
+                    result = (cleanup_budget.call(lambda ms,original=owned: k.stop_owned(original,ms))
+                              if cleanup_budget is not None else k.stop_owned(owned,120000))
+                    if type(result) is not dict or result.get('status') not in ('STOPPED','EXITED') or result.get('pid') != owned.pid or result.get('run_id') != config.run_id: cleanup_failed = True
             except Exception: cleanup_failed = True
-        _fail('REAP_UNCERTAIN' if cleanup_failed else 'BOOTSTRAP_FAILED')
+        error=ConfinementError('REAP_UNCERTAIN' if cleanup_failed else 'BOOTSTRAP_FAILED')
+        if acquisition_owner is not None: error.cleanup=acquisition_owner
+        raise error
     return MappingProxyType(handoffs)
+
+
+_COMPOSITION_SEAL=object()
+_BOUND_ROLE_CONFIGS={}
+_FRAME_DOMAIN=b'acceptance:bootstrap-composition:v1\0'
+_PREPARE_FIELDS={'grantId','proofDigest','generation','expiresAtMs','monotonicDeadlineMs'}
+
+
+def _v1_exact(value,fields):
+    if type(value) is not dict or set(value)!=set(fields): _fail('FRAME_DENIED')
+
+
+def _v1_int(value,minimum=1):
+    if type(value) is not int or not minimum<=value<=9007199254740991: _fail('FRAME_DENIED')
+    return value
+
+
+def _v1_canonical(value):
+    return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=True,allow_nan=False).encode('ascii')
+
+
+def _v1_encode(value):
+    body=_v1_canonical(value)
+    if not 0<len(body)<=16384: _fail('FRAME_DENIED')
+    return struct.pack('>I',len(body))+body
+
+
+def _v1_decode(data,ancillary=(),flags=0):
+    if type(data) is not bytes or not 4<len(data)<=16388 or type(ancillary) is not tuple or ancillary or type(flags) is not int or flags!=0 or struct.unpack('>I',data[:4])[0]!=len(data)-4: _fail('FRAME_DENIED')
+    try:
+        text=data[4:].decode('ascii');depth=0;quoted=False;escaped=False
+        for char in text:
+            if quoted:
+                if escaped: escaped=False
+                elif char=='\\': escaped=True
+                elif char=='"': quoted=False
+            elif char=='"': quoted=True
+            elif char in '[{':
+                depth+=1
+                if depth>8: _fail('FRAME_DENIED')
+            elif char in ']}': depth-=1
+        value=json.loads(text)
+        if _v1_canonical(value)!=data[4:]: _fail('FRAME_DENIED')
+        return value
+    except (ValueError,UnicodeError,OverflowError,RecursionError): _fail('FRAME_DENIED')
+
+
+def _v1_proof(value):
+    _v1_exact(value,('proofDigest','generation','expiresAtMs','monotonicDeadlineMs'))
+    if type(value['proofDigest']) is not str or re.fullmatch('[0-9a-f]{64}',value['proofDigest']) is None: _fail('FRAME_DENIED')
+    for key in ('generation','expiresAtMs','monotonicDeadlineMs'): _v1_int(value[key])
+    return dict(value)
+
+
+class BootstrapBrowserPreparation:
+    """Bootstrap-local obligation. Its five-field projection is only data."""
+    __slots__=('_roles','_child','_pipe','_proof','_grant','_reservation','_used','_prepared','_committed')
+    def __init__(self,roles,proof,seal=None):
+        if seal is not _COMPOSITION_SEAL: _fail('AUTHORITY_LOST')
+        self._roles,self._proof=roles,dict(proof)
+        self._child=roles._handoffs['BROWSER'];self._pipe=(self._child._owned.command,self._child._owned.result)
+        self._grant=secrets.token_hex(16);self._reservation=None;self._used=False;self._prepared=False;self._committed=False
+
+    def to_prepare_result(self):
+        self._roles._check(self._proof)
+        if not self._prepared or self._roles._preparation is not self: _fail('AUTHORITY_LOST')
+        return MappingProxyType(dict(grantId=self._grant,**self._proof))
+
+    def stop_owned(self,remaining_ms): return self._roles.stop_owned(remaining_ms)
+
+
+class OriginalRoleSet:
+    """Exact Task8 children and finite physical forwarding, never PID/FD RPC."""
+    def __init__(self,config,binding,budget,seal=None):
+        if seal is not _COMPOSITION_SEAL: _fail('AUTHORITY_LOST')
+        self.binding,self._config,self._budget=binding,config,budget
+        self._originals=[];self._handoffs={};self._map={};self._facts={};self._keys={}
+        self._send={'CONTROLLER':0,'BROWSER':0};self._receive={'CONTROLLER':0,'BROWSER':0}
+        self._terminal=False;self._preparation=None;self._source=None;self._last=None;self._busy=set();self._stopped=set();self._event=None
+
+    @property
+    def originals(self): return tuple(self._originals)
+
+    def _sample(self):
+        clock=getattr(self._budget,'clock',None)
+        value=clock.sample() if clock is not None else (time.time_ns()//1000000,time.monotonic_ns()//1000000)
+        if type(value) not in (tuple,list) or len(value)!=2: _fail('CLOCK')
+        for v in value: _v1_int(v,0)
+        if self._last is not None and any(a<b for a,b in zip(value,self._last)): _fail('CLOCK')
+        self._last=tuple(value);return self._last
+
+    def _check(self,proof=None):
+        if self._terminal: _fail('CANCELLED')
+        wall,mono=self._sample()
+        if wall>=self.binding.expiresAtMs or (proof and (wall>=proof['expiresAtMs'] or mono>=proof['monotonicDeadlineMs'])): _fail('EXPIRED')
+        if proof and (proof['generation']!=1 or proof['expiresAtMs']>self.binding.expiresAtMs): _fail('AUTHORITY_LOST')
+        for role,h in self._handoffs.items():
+            if _ownership_facts(h._owned)!=self._facts[role]: _fail('AUTHORITY_LOST')
+
+    def bind_current_source(self,source):
+        # Only trusted composition embedding supplies this original owner. It
+        # is never selected/constructed by a decoded controller request.
+        if self._source is not None or not callable(getattr(source,'require_current',None)): _fail('AUTHORITY_LOST')
+        self._source=source
+
+    def _current(self,proof):
+        self._check(proof)
+        if self._source is None: _fail('NATIVE_EFFECT_FENCE_UNAVAILABLE')
+        value=self._source.require_current();self._check(proof)
+        _v1_exact(value,(*proof,'eventCheckpoint'))
+        if any(value[k]!=proof[k] for k in proof): _fail('AUTHORITY_LOST')
+        event=value['eventCheckpoint'];_v1_exact(event,('binding','generation','sequence','sourceIdentity','lostCount'))
+        if CompositionBinding.from_record(event['binding'])!=self.binding or event['generation']!=1 or not _run(event['sourceIdentity']) or type(event['lostCount']) is not int or event['lostCount']!=0: _fail('AUTHORITY_LOST')
+        _v1_int(event['generation']);_v1_int(event['sequence'])
+        if self._event is not None and (event['sourceIdentity']!=self._event['sourceIdentity'] or event['sequence']<self._event['sequence']): _fail('AUTHORITY_LOST')
+        self._event=dict(event)
+        return event
+
+    def _frame(self,channel,role,action,payload):
+        self._send[channel]=_v1_int(self._send[channel]+1)
+        value=dict(version=1,binding=self.binding.to_record(),sequence=self._send[channel],**self._map[role],action=action,payload=payload)
+        value['mac']=hmac.new(self._keys[channel],_FRAME_DOMAIN+channel.encode()+b':FROM_BOOTSTRAP\0'+_v1_canonical(value),hashlib.sha256).hexdigest()
+        return _v1_encode(value)
+
+    def _decode(self,channel,data,ancillary=(),flags=0):
+        value=_v1_decode(data,ancillary,flags)
+        _v1_exact(value,('version','binding','sequence','role','childId','pipeId','action','payload','mac'))
+        row=self._map.get(value['role'])
+        if not row or (channel=='BROWSER' and value['role']!='BROWSER') or type(value['version']) is not int or value['version']!=1 or CompositionBinding.from_record(value['binding'])!=self.binding or any(value[k]!=row[k] for k in row) or type(value['mac']) is not str: _fail('FRAME_DENIED')
+        if _v1_int(value['sequence'])!=self._receive[channel]+1: _fail('FRAME_DENIED')
+        unsigned=dict(value);unsigned.pop('mac')
+        expected=hmac.new(self._keys[channel],_FRAME_DOMAIN+channel.encode()+b':TO_BOOTSTRAP\0'+_v1_canonical(unsigned),hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected,value['mac']): _fail('FRAME_DENIED')
+        self._receive[channel]+=1;return value
+
+    def _write(self,channel,role,action,payload,cleaning=False):
+        if not cleaning:self._check(self._preparation._proof if self._preparation else None)
+        data=self._frame(channel,role,action,payload)
+        self._config.kernel.write_role(self._handoffs[channel]._owned,data)
+        if not cleaning:self._check(self._preparation._proof if self._preparation else None)
+        return self._send[channel]
+
+    def _worker(self):
+        self._check(self._preparation._proof)
+        wall,mono=self._sample();p=self._preparation._proof
+        try:data=self._config.kernel.read_role(self._handoffs['BROWSER']._owned,min(p['expiresAtMs']-wall,p['monotonicDeadlineMs']-mono))
+        except ConfinementError as error:
+            if str(error)=='CHANNEL_EOF':self._clamp(self._sample()[1])
+            raise
+        if data==b'':self._clamp(self._sample()[1]);_fail('CHANNEL_EOF')
+        self._check(p);value=self._decode('BROWSER',data)
+        if value['action']=='FAILED':
+            f=value['payload'];_v1_exact(f,('requestSequence','generation','code','failedAtMonotonicMs'))
+            _v1_int(f['requestSequence']);_v1_int(f['failedAtMonotonicMs'],0)
+            if f['generation']!=1 or f['code'] not in ('CANCELLED','EXPIRED','AUTHORITY_LOST','LAUNCH_FAILED','CLEANUP_UNCERTAIN'): _fail('FRAME_DENIED')
+            self._clamp(f['failedAtMonotonicMs']+60000);_fail(f['code'])
+        return value
+
+    def audit(self,role,child_id=None,pipe_id=None):
+        self._check()
+        if role not in ('BROWSER','VERIFIER'): _fail('HANDOFF_DENIED')
+        row=self._map[role]
+        if (child_id is not None and child_id!=row['childId']) or (pipe_id is not None and pipe_id!=row['pipeId']): _fail('HANDOFF_DENIED')
+        h=self._handoffs[role];_check(inspect_role(h.attestation.pid,kernel=self._config.kernel),h.launch,waiting=True)
+        return dict(kind=role,runId=self.binding.runId,uid=UIDS[role],childId=row['childId'],pipeId=row['pipeId'],waiting=True,confined=True,attestationDigest=h.attestation.filter_digest)
+
+    def prepare_browser(self,proof):
+        proof=_v1_proof(proof);self._check(proof)
+        if self._preparation is not None: _fail('AUTHORITY_LOST')
+        self._preparation=BootstrapBrowserPreparation(self,proof,_COMPOSITION_SEAL)
+        owner=self._preparation
+        try:
+            self._current(proof);self.audit('BROWSER')
+            seq=self._write('BROWSER','BROWSER','PREPARE',dict(grantId=owner._grant,**proof))
+            response=self._worker();p=response['payload'];_v1_exact(p,('requestSequence','grantId','reservationId','generation'))
+            _v1_int(p['requestSequence']);_v1_int(p['generation'])
+            if response['action']!='PREPARED' or p['requestSequence']!=seq or p['grantId']!=owner._grant or not _run(p['reservationId']) or type(p['generation']) is not int or p['generation']!=1: _fail('AUTHORITY_LOST')
+            self._current(proof);owner._reservation=p['reservationId'];owner._prepared=True;return owner
+        except Exception as error:
+            self._terminal=True;self._budget.remaining();error.cleanup=owner;raise
+
+    def commit_browser(self,owner):
+        if type(owner) is not BootstrapBrowserPreparation or owner is not self._preparation or owner._used or not owner._prepared: _fail('AUTHORITY_LOST')
+        owner._used=True
+        try:
+            self._current(owner._proof)
+            p=dict(grantId=owner._grant,reservationId=owner._reservation,commitId=secrets.token_hex(16),generation=1)
+            seq=self._write('BROWSER','BROWSER','COMMIT',p);response=self._worker();v=response['payload']
+            _v1_exact(v,('requestSequence',*p))
+            _v1_int(v['requestSequence']);_v1_int(v['generation'])
+            if response['action']!='REFRESH' or v!=dict(requestSequence=seq,**p): _fail('AUTHORITY_LOST')
+            event=self._current(owner._proof)
+            seq=self._write('BROWSER','BROWSER','CURRENT',dict(requestSequence=response['sequence'],**p,proofDigest=owner._proof['proofDigest'],eventCheckpoint=event,expiresAtMs=owner._proof['expiresAtMs'],monotonicDeadlineMs=owner._proof['monotonicDeadlineMs']))
+            response=self._worker()
+            _v1_exact(response['payload'],('requestSequence',*p));_v1_int(response['payload']['requestSequence']);_v1_int(response['payload']['generation'])
+            if response['action']!='STARTED' or response['payload']!=dict(requestSequence=seq,**p): _fail('AUTHORITY_LOST')
+            self._check(owner._proof);owner._committed=True
+            if isinstance(self._config.kernel,NativeKernelPort):self._config.kernel._commit_browser_runtime(owner)
+            return {'status':'ACTIVE','generation':1}
+        except Exception as error:
+            self._terminal=True;self._budget.remaining();error.cleanup=owner;raise
+
+    def _clamp(self,end):
+        _v1_int(end,0);self._budget.remaining()
+        self._budget.deadline=min(self._budget.deadline,end)
+
+    def cancel(self,cleanup_ends_at=None):
+        self._terminal=True
+        if cleanup_ends_at is not None:self._clamp(cleanup_ends_at)
+        self._budget.remaining()
+        self._write('BROWSER','BROWSER','CANCEL',dict(generation=1,cleanupEndsAtMonotonicMs=self._budget.deadline),True)
+        data=self._config.kernel.read_role(self._handoffs['BROWSER']._owned,self._budget.remaining())
+        value=self._decode('BROWSER',data)
+        if value['action']!='CANCELLED' or value['payload']!=dict(requestSequence=self._send['BROWSER'],generation=1): _fail('FRAME_DENIED')
+        return {'status':'CANCELLED','generation':1}
+
+    def _stop_one(self,owned,remaining_ms,wait=False):
+        if id(owned) in self._busy: _fail('CLEANUP_UNCERTAIN')
+        if id(owned) in self._stopped:return {'status':'STOPPED','runId':self.binding.runId}
+        self._busy.add(id(owned))
+        def stop(allowance):
+            try:
+                op=self._config.kernel.wait_owned if wait else self._config.kernel.stop_owned
+                r=op(owned,min(remaining_ms,allowance))
+                if type(r) is not dict or set(r)!={'status','pid','run_id'} or r['pid']!=owned.pid or type(r['pid']) is not int or r['run_id']!=self.binding.runId or r['status'] not in ('STOPPED','EXITED','TIMEOUT'): _fail('CLEANUP_UNCERTAIN')
+                if r['status']!='TIMEOUT':self._stopped.add(id(owned))
+                return {'status':r['status'],'runId':self.binding.runId}
+            finally:self._busy.discard(id(owned))
+        return self._budget.call(stop) if self._budget.remaining() else stop(0)
+
+    def wait_exit(self,role,remaining_ms):
+        _v1_int(remaining_ms,0)
+        if role not in self._handoffs: _fail('EXIT_DENIED')
+        return self._stop_one(self._handoffs[role]._owned,remaining_ms,True)
+
+    def stop_owned(self,remaining_ms):
+        _v1_int(remaining_ms,0);self._terminal=True;uncertain=False
+        for owned in reversed(self._originals):
+            try:
+                if self._stop_one(owned,remaining_ms)['status']=='TIMEOUT':uncertain=True
+            except Exception:uncertain=True
+        return {'status':'TIMEOUT' if uncertain else 'STOPPED','runId':self.binding.runId}
+
+    def handle_controller(self,data,ancillary=(),flags=0):
+        try:
+            f=self._decode('CONTROLLER',data,ancillary,flags);role,action,p=f['role'],f['action'],f['payload']
+            if action=='ADOPT':_v1_exact(p,());result=self.audit(role)
+            elif action=='PREPARE_BROWSER' and role=='BROWSER':result=dict(self.prepare_browser(p).to_prepare_result())
+            elif action=='COMMIT_BROWSER' and role=='BROWSER':
+                _v1_exact(p,('grantId','generation'))
+                _v1_int(p['generation'])
+                if self._preparation is None or p!=dict(grantId=self._preparation._grant,generation=1):_fail('AUTHORITY_LOST')
+                result=self.commit_browser(self._preparation)
+            elif action=='CANCEL' and role=='BROWSER':
+                _v1_exact(p,('generation','cleanupEndsAtMonotonicMs'))
+                if type(p['generation']) is not int or p['generation']!=1:_fail('FRAME_DENIED')
+                result=self.cancel(p['cleanupEndsAtMonotonicMs'])
+            elif action in ('STOP_OWNED','WAIT_EXIT'):
+                _v1_exact(p,('remainingMs','cleanupEndsAtMonotonicMs'));_v1_int(p['remainingMs'],0);self._clamp(p['cleanupEndsAtMonotonicMs'])
+                if action=='STOP_OWNED':self._terminal=True
+                result=self._stop_one(self._handoffs[role]._owned,p['remainingMs'],action=='WAIT_EXIT')
+            elif action=='TOPOLOGY_CURRENT' and role=='CONTROLLER':
+                _v1_exact(p,('generation',))
+                _v1_int(p['generation'])
+                if p['generation']!=1 or self._preparation is None:_fail('AUTHORITY_LOST')
+                result=dict(proofDigest=self._preparation._proof['proofDigest'],eventCheckpoint=self._current(self._preparation._proof))
+            elif action=='PROXY_CURRENT' and role=='PROXY':_fail('NATIVE_PROXY_RUNTIME_UNAVAILABLE')
+            else:_fail('FRAME_DENIED')
+            return self._frame('CONTROLLER',role,'RESULT',dict(requestSequence=f['sequence'],result=result))
+        except Exception as error:
+            self._terminal=True;self._budget.remaining();error.cleanup=self;raise
+
+
+def bind_original_roles(config,binding,cleanup_budget):
+    if type(binding) is not CompositionBinding or type(config) is not BootstrapConfig or config.run_id!=binding.runId or not callable(getattr(cleanup_budget,'remaining',None)) or not callable(getattr(cleanup_budget,'call',None)): _fail('COMPOSITION_BINDING_DENIED')
+    if id(config) in _BOUND_ROLE_CONFIGS:_fail('AUTHORITY_LOST')
+    # Retain the exact configuration through the whole run, including failure;
+    # a second call cannot respawn its four original children or recycle IDs.
+    _BOUND_ROLE_CONFIGS[id(config)]=config
+    owner=OriginalRoleSet(config,binding,cleanup_budget,_COMPOSITION_SEAL)
+    try:
+        owner._check();owner._handoffs=start_roles(config,cleanup_budget=cleanup_budget,acquisition_owner=owner)
+        for role,handoff in owner._handoffs.items():
+            owner._map[role]=dict(role=role,childId=secrets.token_hex(16),pipeId=secrets.token_hex(16))
+            owner._facts[role]=_ownership_facts(handoff._owned)
+        owner._keys={role:secrets.token_bytes(32) for role in ('CONTROLLER','BROWSER','PROXY')}
+        owner._check()
+        config.kernel.write_role(owner._handoffs['CONTROLLER']._owned,_v1_encode(dict(version=1,kind='BOOTSTRAP_INIT',binding=binding.to_record(),channelKeyHex=owner._keys['CONTROLLER'].hex(),roles=list(owner._map.values()))))
+        owner._check()
+        config.kernel.write_role(owner._handoffs['BROWSER']._owned,_v1_encode(dict(version=1,kind='BROWSER_WORKER_INIT',binding=binding.to_record(),channelKeyHex=owner._keys['BROWSER'].hex(),**owner._map['BROWSER'])))
+        owner._check();return owner
+    except Exception as error:
+        owner._terminal=True;cleanup_budget.remaining();error.cleanup=owner;raise
 
 
 @dataclass
@@ -734,7 +1040,7 @@ class NativeChildPort:
         _fail('EXEC_RETURNED')
 
 
-def _native_observe(b,pid,launch,digest,pins,waiting,local=False):
+def _native_observe(b,pid,launch,digest,pins,waiting,local=False,current_fds=None):
     """Read kernel facts, never a self-authored `confined: true` receipt."""
     base='/proc/'+str(pid)
     fields={}
@@ -749,6 +1055,16 @@ def _native_observe(b,pid,launch,digest,pins,waiting,local=False):
         # Reading /proc/fd transiently opens an observer FD; listdir closes it.
         listed={fd for fd in listed if _native_fd_exists(b,base,fd)}
         if not expected<=listed or len(listed-expected)>1: _fail('FD_DENIED')
+    elif current_fds is not None:
+        rows={str(row['fd']):row for row in current_fds}
+        if len(rows)!=len(current_fds) or not expected<=set(rows) or len(rows)>55: _fail('FD_DENIED')
+        if listed-set(rows): _fail('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')
+        if listed!=set(rows): _fail('FD_DENIED')
+        for fd,row in rows.items():
+            metadata=b.os.stat(base+'/fd/'+fd)
+            info=b.read_file(base+'/fdinfo/'+fd).decode('ascii')
+            flags=int(next(x.split()[1] for x in info.splitlines() if x.startswith('flags:')),8)
+            if (str(metadata.st_dev),str(metadata.st_ino),flags)!=(row['device'],row['inode'],row['flags']): _fail('FD_DENIED')
     elif listed!=expected: _fail('FD_DENIED')
     for fd in (0,1,2):
         if b.os.readlink(base+'/fd/'+str(fd))!='/dev/null': _fail('FD_DENIED')
@@ -802,7 +1118,94 @@ class NativeKernelPort:
     waits only its original unreaped helper; terminal receipts are cached. Lost
     helper/control channel is cleanup uncertainty, never arbitrary kill fallback.
     """
-    def __init__(self,bindings): self.b,self._owned=bindings,{}
+    def __init__(self,bindings): self.b,self._owned,self._runtime_owners=bindings,{},{}
+
+    def bind_runtime_owner(self,handoff,lifecycle,runtime_owner,child_id,pipe_id,generation):
+        """Trusted acquisition handoff; never populated from a runtime report.
+
+        Capture inherited identities while the original child is still waiting.
+        The serving owner then registers each endpoint at acquisition and keeps
+        it until proven close. Unknown Node/Chromium internals remain unavailable.
+        """
+        if type(handoff) is not RoleHandoff or handoff._kernel is not self or handoff._owned not in self._owned or id(handoff) in self._runtime_owners or runtime_owner is None or not _run(child_id) or not _run(pipe_id): _fail('AUTHORITY_LOST')
+        expected='SERVICE' if handoff.launch.role in ('CONTROLLER','PROXY') else 'WAITING'
+        if lifecycle!=expected or _v1_int(generation)!=1: _fail('AUTHORITY_LOST')
+        _check(_attestation(self.inspect(handoff.attestation.pid)),handoff.launch,waiting=True)
+        rows=[]
+        for fd in range(5):
+            path='/proc/'+str(handoff.attestation.pid)+'/fd/'+str(fd);metadata=self.b.os.stat(path)
+            info=self.b.read_file('/proc/'+str(handoff.attestation.pid)+'/fdinfo/'+str(fd)).decode('ascii')
+            flags=int(next(x.split()[1] for x in info.splitlines() if x.startswith('flags:')),8)
+            rows.append(dict(fd=fd,kind='NULL' if fd<3 else 'COMMAND' if fd==3 else 'RESULT',device=str(metadata.st_dev),inode=str(metadata.st_ino),flags=flags,ownerId=secrets.token_hex(16),acquiredGeneration=1))
+        self._runtime_owners[id(handoff)]=dict(handoff=handoff,owner=runtime_owner,lifecycle=lifecycle,childId=child_id,pipeId=pipe_id,rows=rows,endpoints={},facts=_ownership_facts(handoff._owned))
+
+    def register_runtime_descriptor(self,handoff,runtime_owner,endpoint,kind,generation):
+        state=self._runtime_owners.get(id(handoff))
+        limits={'PROXY_LISTENER':1,'PROXY_STOP_SELECTOR':1,'PROXY_ACCEPTED_STREAM':16,'PROXY_VSOCK_STREAM':16,'PROXY_CONNECT_SELECTOR':16}
+        if not state or state['handoff'] is not handoff or state['owner'] is not runtime_owner or handoff.launch.role!='PROXY' or kind not in limits or _v1_int(generation)!=1: _fail('AUTHORITY_LOST')
+        fd=endpoint.fileno();_v1_int(fd,5)
+        if fd>4095 or any(row['fd']==fd for row in state['rows']) or sum(row['kind']==kind for row in state['rows'])>=limits[kind]: _fail('FD_DENIED')
+        metadata=self.b.os.fstat(fd)
+        # Capture original acquisition kernel identity before configuration.
+        # Current flags are sampled at observation and must match this capture.
+        info=self.b.read_file('/proc/'+str(handoff.attestation.pid)+'/fdinfo/'+str(fd)).decode('ascii')
+        flags=int(next(x.split()[1] for x in info.splitlines() if x.startswith('flags:')),8)
+        row=dict(fd=fd,kind=kind,device=str(metadata.st_dev),inode=str(metadata.st_ino),flags=flags,ownerId=secrets.token_hex(16),acquiredGeneration=generation)
+        state['rows'].append(row);state['endpoints'][fd]=endpoint
+
+    def retire_runtime_descriptor(self,handoff,runtime_owner,endpoint):
+        state=self._runtime_owners.get(id(handoff))
+        if not state or state['owner'] is not runtime_owner: _fail('AUTHORITY_LOST')
+        matches=[fd for fd,original in state['endpoints'].items() if original is endpoint]
+        if len(matches)!=1 or endpoint.fileno()!=-1: _fail('CLEANUP_UNCERTAIN')
+        fd=matches[0]
+        if _native_fd_exists(self.b,'/proc/'+str(handoff.attestation.pid),str(fd)): _fail('CLEANUP_UNCERTAIN')
+        del state['endpoints'][fd];state['rows'][:]=[row for row in state['rows'] if row['fd']!=fd]
+
+    def inspect_runtime(self,original_handoff,lifecycle,runtime_owner):
+        state=self._runtime_owners.get(id(original_handoff))
+        if not state or state['handoff'] is not original_handoff or state['owner'] is not runtime_owner or state['lifecycle']!=lifecycle or _ownership_facts(original_handoff._owned)!=state['facts']: _fail('AUTHORITY_LOST')
+        h=original_handoff;s=self._owned.get(h._owned)
+        if not s or s['terminal'] is not None or s['child']!=h.attestation.pid: _fail('AUTHORITY_LOST')
+        for fd,endpoint in state['endpoints'].items():
+            if endpoint.fileno()!=fd: _fail('CLEANUP_UNCERTAIN')
+            actual=self.b.os.fstat(fd);row=next(r for r in state['rows'] if r['fd']==fd)
+            if (str(actual.st_dev),str(actual.st_ino))!=(row['device'],row['inode']): _fail('FD_DENIED')
+        rows=tuple(sorted(state['rows'],key=lambda row:row['fd']))
+        facts=_native_observe(self.b,h.attestation.pid,s['launch'],s['digest'],{},lifecycle=='WAITING',current_fds=rows)
+        _check(_attestation(facts),h.launch,waiting=lifecycle=='WAITING')
+        executable=self.b.os.stat('/proc/'+str(h.attestation.pid)+'/exe')
+        if (executable.st_dev,executable.st_ino)!=s['exec_identity']: _fail('PROGRAM_DENIED')
+        return dict(role=h.launch.role,childId=state['childId'],pipeId=state['pipeId'],lifecycle=lifecycle,inheritedFDs=[0,1,2,3,4],currentFDs=[dict(row) for row in rows])
+
+    def _commit_browser_runtime(self,preparation):
+        if type(preparation) is not BootstrapBrowserPreparation or not preparation._committed or preparation._roles._preparation is not preparation: _fail('AUTHORITY_LOST')
+        handoff=preparation._child;state=self._runtime_owners.get(id(handoff))
+        if not state or state['handoff'] is not handoff or handoff._kernel is not self or state['lifecycle']!='WAITING': _fail('AUTHORITY_LOST')
+        state['lifecycle']='BROWSER_ACTIVE'
+
+    def write_role(self,owned,data):
+        state=self._owned.get(owned)
+        if state is None or state['terminal'] is not None or type(data) is not bytes or not 0<len(data)<=16388: _fail('CHANNEL_DENIED')
+        # No caller FD/PID; only the retained original physical command end.
+        offset=0;end=self.b.monotonic()+1
+        while offset<len(data) and self.b.monotonic()<end:
+            _,ready,_=self.b.select([],[owned.command],[],0.01)
+            if ready:
+                count=self.b.os.write(owned.command,data[offset:])
+                if type(count) is not int or count<=0: _fail('CHANNEL_DENIED')
+                offset+=count
+        if offset!=len(data): _fail('CHANNEL_DENIED')
+
+    def read_role(self,owned,remaining_ms):
+        state=self._owned.get(owned)
+        if state is None or state['terminal'] is not None: _fail('CHANNEL_DENIED')
+        remaining_ms=min(_v1_int(remaining_ms,0),1000)
+        end=self.b.monotonic()+remaining_ms/1000
+        header=self._read_exact(owned.result,4,remaining_ms,eof_code='CHANNEL_EOF')
+        count=struct.unpack('>I',header)[0]
+        if not 0<count<=16384: _fail('FRAME_DENIED')
+        return header+self._read_exact(owned.result,count,max(0,int((end-self.b.monotonic())*1000)),eof_code='CHANNEL_EOF')
 
     def spawn_waiting(self,launch,entry):
         if type(launch) is not RoleLaunch or launch._seal is not _SEAL: _fail('ROLE_DENIED')
@@ -930,13 +1333,13 @@ class NativeKernelPort:
         if len(words)!=1 or not re.fullmatch(b'[1-9][0-9]{0,9}',words[0]): _fail('ROLE_START_FAILED')
         return int(words[0])
 
-    def _read_exact(self,fd,count,deadline):
+    def _read_exact(self,fd,count,deadline,*,eof_code='ROLE_START_FAILED'):
         until=self.b.monotonic()+deadline/1000; data=bytearray()
         while len(data)<count and self.b.monotonic()<until:
             ready,_,_=self.b.select([fd],[],[],min(0.01,max(0,until-self.b.monotonic())))
             if ready:
                 part=self.b.os.read(fd,count-len(data))
-                if not part: _fail('ROLE_START_FAILED')
+                if not part: _fail(eof_code)
                 data.extend(part)
         if len(data)!=count: _fail('ROLE_START_FAILED')
         return bytes(data)
@@ -944,7 +1347,14 @@ class NativeKernelPort:
     def inspect(self,pid):
         states=[s for owned,s in self._owned.items() if owned.pid==pid and s['terminal'] is None]
         if len(states)!=1 or states[0].get('child')!=pid: _fail('ATTESTATION_FAILED')
-        s=states[0]; a=_native_observe(self.b,pid,s['launch'],s['digest'],{},True)
+        s=states[0]
+        runtimes=[r for r in self._runtime_owners.values() if r['handoff'].attestation.pid==pid]
+        if runtimes:
+            if len(runtimes)!=1:_fail('AUTHORITY_LOST')
+            runtime=runtimes[0]
+            observed=self.inspect_runtime(runtime['handoff'],runtime['lifecycle'],runtime['owner'])
+            a=_native_observe(self.b,pid,s['launch'],s['digest'],{},runtime['lifecycle']=='WAITING',current_fds=observed['currentFDs'])
+        else:a=_native_observe(self.b,pid,s['launch'],s['digest'],{},True)
         executable=self.b.os.stat('/proc/'+str(pid)+'/exe')
         if (executable.st_dev,executable.st_ino)!=s.get('exec_identity'): _fail('PROGRAM_DENIED')
         links=tuple(self.b.os.readlink('/proc/'+str(pid)+'/fd/'+str(fd)) for fd in (3,4))
@@ -952,7 +1362,7 @@ class NativeKernelPort:
         return a
 
     def _exit(self,owned,deadline,stop):
-        _deadline(deadline)
+        if type(deadline) is not int or not 0<=deadline<=1200000:_fail('EXIT_DENIED')
         if owned not in self._owned: _fail('EXIT_DENIED')
         s=self._owned[owned]
         if s['terminal'] is not None: return dict(s['terminal'])
@@ -965,7 +1375,9 @@ class NativeKernelPort:
                 # mean it has already exited. Never signal a supplied PID.
                 pass
         until=self.b.monotonic()+deadline/1000
-        while self.b.monotonic()<until:
+        first=True
+        while first or self.b.monotonic()<until:
+            first=False
             try: pid,status=self.b.os.waitpid(s['outer'],self.b.os.WNOHANG)
             except ChildProcessError: _fail('REAP_UNCERTAIN')
             if pid==s['outer']:
@@ -982,7 +1394,7 @@ class NativeKernelPort:
                         try: self.b.os.close(endpoint)
                         except OSError: pass
                 return dict(outcome)
-            self.b.sleep(min(0.01,max(0,until-self.b.monotonic())))
+            if self.b.monotonic()<until:self.b.sleep(min(0.01,max(0,until-self.b.monotonic())))
         return {'status':'TIMEOUT','pid':owned.pid,'run_id':owned.run_id}
 
     def wait_owned(self,owned,deadline): return self._exit(owned,deadline,False)

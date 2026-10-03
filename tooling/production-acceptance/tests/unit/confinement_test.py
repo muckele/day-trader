@@ -7,12 +7,259 @@ glibc 2.39 / AAPCS64 evidence, coverage SHA256 7c8714c95a67d8a2e6c1b4c8b8481525a
 """
 import dataclasses
 import hashlib
+import hmac
+import json
 import importlib.util
 from pathlib import Path
 import struct
 import sys
 import types
 import unittest
+
+
+def v1_bytes(value):
+    body=json.dumps(value,sort_keys=True,separators=(',',':')).encode('ascii')
+    return struct.pack('>I',len(body))+body
+
+
+class V1Clock:
+    def __init__(self): self.wall,self.mono=100,100
+    def sample(self): return self.wall,self.mono
+
+
+class V1Budget:
+    def __init__(self): self.clock=V1Clock(); self.deadline=None
+    def remaining(self):
+        if self.deadline is None: self.deadline=self.clock.mono+60000
+        return max(0,self.deadline-self.clock.mono)
+    def call(self,op): return op(self.remaining())
+
+
+class V1RoleTests(unittest.TestCase):
+    # A removed original map/sequence check, fresh cleanup window, old waiting
+    # observer, or transported nominal owner makes these assertions fail.
+    def setup_roles(self):
+        self.assertTrue(hasattr(c,'bind_original_roles'),'original role composition binding is absent')
+        k=Kernel(); budget=V1Budget(); writes=[]; queue=[]; seq=0; init={}; current=None
+        binding=c.CompositionBinding(1,RUN,'b'*64,'c'*64,'d'*64,1,10000)
+        def write(owned,data):
+            nonlocal seq,current
+            self.assertIs(owned,k.children[owned.pid].owned)
+            v=json.loads(data[4:]);writes.append((owned,v))
+            if 'kind' in v: init[owned.role]=v;return
+            unsigned=dict(v); supplied=unsigned.pop('mac')
+            expected=hmac.new(bytes.fromhex(init[owned.role]['channelKeyHex']),b'acceptance:bootstrap-composition:v1\0'+owned.role.encode()+b':FROM_BOOTSTRAP\0'+v1_bytes(unsigned)[4:],hashlib.sha256).hexdigest()
+            self.assertEqual(supplied,expected)
+            if v['action']=='PREPARE':
+                current=v['payload']; action='PREPARED'; payload=dict(requestSequence=v['sequence'],grantId=current['grantId'],reservationId='6'*32,generation=1)
+            elif v['action']=='COMMIT':
+                current=dict(current,**v['payload']); action='REFRESH'; payload=dict(requestSequence=v['sequence'],**v['payload'])
+            elif v['action']=='CURRENT':
+                action='STARTED';payload={key:current[key] for key in ('grantId','reservationId','commitId','generation')};payload['requestSequence']=v['sequence']
+            elif v['action']=='CANCEL': action='CANCELLED';payload=dict(requestSequence=v['sequence'],generation=1)
+            else: return
+            seq+=1
+            response=dict(version=1,binding=binding.to_record(),sequence=seq,role='BROWSER',childId=v['childId'],pipeId=v['pipeId'],action=action,payload=payload)
+            response['mac']=hmac.new(bytes.fromhex(init['BROWSER']['channelKeyHex']),b'acceptance:bootstrap-composition:v1\0BROWSER:TO_BOOTSTRAP\0'+v1_bytes(response)[4:],hashlib.sha256).hexdigest()
+            queue.append(v1_bytes(response))
+        k.write_role=write;k.read_role=lambda owned,limit:queue.pop(0)
+        original=c.bind_original_roles(ConfinementTests().config(k),binding,budget)
+        proof=dict(proofDigest='e'*64,generation=1,expiresAtMs=9000,monotonicDeadlineMs=9000)
+        checkpoint=dict(binding=binding.to_record(),generation=1,sequence=1,sourceIdentity='f'*32,lostCount=0)
+        original.bind_current_source(types.SimpleNamespace(require_current=lambda:dict(**proof,eventCheckpoint=checkpoint)))
+        return original,k,budget,proof,writes,init
+
+    def test_v1_original_role_ids_never_select_foreign_pid_or_fd(self):
+        roles,k,budget,proof,writes,init=self.setup_roles()
+        originals=tuple(child.owned for child in k.children.values())
+        self.assertEqual(tuple(x['role'] for x in init['CONTROLLER']['roles']),('CONTROLLER','BROWSER','VERIFIER','PROXY'))
+        with self.assertRaises(c.ConfinementError): roles.audit('BROWSER','0'*32,'0'*32)
+        self.assertTrue(all(any(owned is original for original in originals) for owned,_ in writes))
+        self.assertEqual(roles.stop_owned(100)['status'],'STOPPED')
+        self.assertEqual(set(k.stopped),{201,202,203,204})
+
+    def test_v1_fixed_frames_reject_unknown_and_ancillary_data(self):
+        for mutate in ('unknown','ancillary','gap','mac','depth','duplicate'):
+            roles,k,budget,proof,writes,init=self.setup_roles()
+            row=init['CONTROLLER']['roles'][1]
+            value=dict(version=1,binding=roles.binding.to_record(),sequence=1,**row,action='ADOPT',payload={})
+            if mutate=='unknown':value['payload']={'pid':999}
+            if mutate=='gap':value['sequence']=2
+            if mutate=='depth':value['payload']={'x':[[[[[[[[[1]]]]]]]]]}
+            value['mac']=hmac.new(bytes.fromhex(init['CONTROLLER']['channelKeyHex']),b'acceptance:bootstrap-composition:v1\0CONTROLLER:TO_BOOTSTRAP\0'+v1_bytes(value)[4:],hashlib.sha256).hexdigest()
+            if mutate=='mac':value['mac']='0'*64
+            data=v1_bytes(value)
+            if mutate=='duplicate':
+                body=data[4:].replace(b'"sequence":1',b'"sequence":1,"sequence":1');data=struct.pack('>I',len(body))+body
+            with self.subTest(mutate=mutate),self.assertRaises(c.ConfinementError):roles.handle_controller(data,ancillary=(object(),) if mutate=='ancillary' else ())
+
+    def test_v1_partial_start_retains_all_original_owners(self):
+        k=Kernel(fail_spawn='PROXY');budget=V1Budget();seen=[]
+        def stop(owned,ms):seen.append((owned,ms));budget.clock.mono+=11;return {'status':'TIMEOUT','pid':owned.pid,'run_id':RUN}
+        k.stop_owned=stop
+        self.assertTrue(hasattr(c,'bind_original_roles'),'partial role set ownership is absent')
+        with self.assertRaises(c.ConfinementError) as raised:c.bind_original_roles(ConfinementTests().config(k),c.CompositionBinding(1,RUN,'b'*64,'c'*64,'d'*64,1,10000),budget)
+        self.assertEqual(len(raised.exception.cleanup.originals),3)
+        self.assertEqual([ms for _,ms in seen],[60000,59989,59978])
+
+    def test_v1_python_preparation_owner_projects_only_fixed_result(self):
+        roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof)
+        self.assertIsInstance(owner,c.BootstrapBrowserPreparation)
+        self.assertEqual(set(owner.to_prepare_result()),{'grantId','proofDigest','generation','expiresAtMs','monotonicDeadlineMs'})
+        self.assertEqual(dict(owner.to_prepare_result(),grantId='x'),dict(proof,grantId='x'))
+        with self.assertRaises(TypeError):json.dumps(owner)
+        with self.assertRaises(c.ConfinementError):roles.commit_browser(dict(owner.to_prepare_result()))
+        self.assertEqual(roles.commit_browser(owner),{'status':'ACTIVE','generation':1})
+        self.assertEqual([v['action'] for _,v in writes if 'action' in v],['PREPARE','COMMIT','CURRENT'])
+        with self.assertRaises(c.ConfinementError):roles.commit_browser(owner)
+
+    def runtime(self,extra=True):
+        legacy=ConfinementTests();k=legacy.observed_native();owned,s=next(iter(k._owned.items()));b=k.b
+        launch=c.prepare_role('PROXY',c.RoleConfig(legacy.config(),c.role_fds('PROXY',RUN)))
+        s.update(launch=launch,exec_identity=(1,999),digest=hashlib.sha256(c.filter_bytes(launch.filter)).hexdigest())
+        old_read=b.read_file;old_list=b.os.listdir;old_link=b.os.readlink;old_stat=b.os.stat
+        def read(path,*args):
+            if '/fdinfo/' in path:return ('flags:\t0'+('1' if path.endswith('/4') else '2' if path.endswith('/5') else '0')+'\n').encode()
+            if path.endswith('/cmdline'):return b'\0'.join(x.encode() for x in launch.argv)+b'\0'
+            return old_read(path,*args).replace(b'10002',b'10004').replace(b'browser',b'proxy')
+        b.read_file=read
+        b.os.listdir=lambda p:['0','1','2','3','4']+(['5'] if extra else []) if p.endswith('/fd') else ['proxy'] if p.endswith('/run/acceptance') else old_list(p)
+        b.os.readlink=lambda p:'socket:[50]' if p.endswith('/fd/5') else old_link(p)
+        def stat(p):
+            if '/fd/' in p:return types.SimpleNamespace(st_dev=2,st_ino=50 if p.endswith('/5') else 30 if p.endswith('/3') else 40 if p.endswith('/4') else 10)
+            x=old_stat(p);x.st_uid=x.st_gid=10004;return x
+        b.os.stat=stat;b.os.fstat=lambda fd:types.SimpleNamespace(st_dev=2,st_ino=50)
+        proxy=c.NativeOwned(300,RUN,'PROXY',owned.command,owned.result,owned.identity)
+        del k._owned[owned];k._owned[proxy]=s
+        handoff=c.RoleHandoff(launch,c.RoleAttestation(**dict(pid=300,run_id=RUN,role='PROXY',uids=(10004,)*3,gids=(10004,)*3,groups=(),capabilities=(0,)*5,no_new_privs=1,seccomp=2,filter_digest=s['digest'],fds=launch.fds,views=launch.views,waiting=True,programs=launch.programs)),k,proxy)
+        return k,handoff,b
+
+    def test_v1_literal_proc_proxy_listener_is_current_not_inherited(self):
+        k,h,b=self.runtime()
+        # Exercise the existing raw observer before any new nominal API: this
+        # used to reject the legitimate live listener as an inherited FD leak.
+        rows=tuple(dict(fd=fd,kind=('NULL' if fd<3 else 'COMMAND' if fd==3 else 'RESULT' if fd==4 else 'PROXY_LISTENER'),device='2',inode=str(10 if fd<3 else 30 if fd==3 else 40 if fd==4 else 50),flags=1 if fd==4 else 2 if fd==5 else 0,ownerId='1'*32,acquiredGeneration=1) for fd in range(6))
+        try:
+            import inspect
+            args={'current_fds':rows} if 'current_fds' in inspect.signature(c._native_observe).parameters else {}
+            facts=c._native_observe(b,300,h.launch,hashlib.sha256(c.filter_bytes(h.launch.filter)).hexdigest(),{},False,**args)
+        except (TypeError,c.ConfinementError) as error:self.fail('current listener observer rejected original runtime inventory: '+str(error))
+        self.assertFalse(facts['waiting']);self.assertEqual(tuple(d.fd for d in facts['fds']),(0,1,2,3,4))
+
+    def inspect_runtime(self,drift=None):
+        k,h,b=self.runtime(extra=False)
+        self.assertTrue(hasattr(k,'bind_runtime_owner'),'runtime acquisition binding is absent')
+        owner=object();k.bind_runtime_owner(h,'SERVICE',owner,'1'*32,'2'*32,1)
+        endpoint=types.SimpleNamespace(fileno=lambda:5)
+        k.register_runtime_descriptor(h,owner,endpoint,'PROXY_LISTENER',1)
+        old_list=b.os.listdir;b.os.listdir=lambda p:['0','1','2','3','4','5'] if p.endswith('/fd') else old_list(p)
+        if drift=='inode':b.os.stat=lambda p:types.SimpleNamespace(st_dev=2,st_ino=99)
+        if drift=='unknown':b.os.listdir=lambda p:['0','1','2','3','4','5','6'] if p.endswith('/fd') else old_list(p)
+        if drift=='owner':owner=object()
+        return k.inspect_runtime(h,'SERVICE',owner)
+
+    def test_v1_literal_proc_donated_recycled_or_unknown_fd_denied(self):
+        for drift in ('inode','owner'):
+            with self.subTest(drift=drift),self.assertRaises(c.ConfinementError):self.inspect_runtime(drift)
+
+    def test_v1_runtime_inspect_does_not_force_waiting(self):
+        if not hasattr(c.NativeKernelPort,'inspect_runtime'):
+            k,h,b=self.runtime(extra=False)
+            self.assertFalse(k.inspect(300)['waiting'],'live service inspection must not force WAITING')
+        value=self.inspect_runtime();self.assertEqual(value['lifecycle'],'SERVICE');self.assertEqual(len(value['currentFDs']),6)
+
+    def test_v1_unknown_runtime_internal_profile_is_unavailable(self):
+        with self.assertRaisesRegex(c.ConfinementError,'NATIVE_CURRENT_INVENTORY_UNAVAILABLE'):self.inspect_runtime('unknown')
+
+    def test_v1_current_event_source_cannot_be_replaced(self):
+        roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof)
+        roles._source.require_current=lambda:dict(**proof,eventCheckpoint=dict(binding=roles.binding.to_record(),generation=1,sequence=2,sourceIdentity='0'*32,lostCount=0))
+        with self.assertRaises(c.ConfinementError):roles.commit_browser(owner)
+        self.assertEqual([v['action'] for _,v in writes if 'action' in v],['PREPARE'])
+
+    def test_v1_inspect_uses_registered_current_lifecycle(self):
+        k,h,b=self.runtime(extra=False);owner=object()
+        k.bind_runtime_owner(h,'SERVICE',owner,'1'*32,'2'*32,1)
+        self.assertFalse(k.inspect(300)['waiting'])
+
+    def test_v1_controller_boolean_sequence_cannot_prepare(self):
+        roles,k,budget,proof,writes,init=self.setup_roles()
+        original=k.read_role
+        def boolean_sequence(owned,limit):
+            value=json.loads(original(owned,limit)[4:]);value['payload']['requestSequence']=True;value.pop('mac')
+            value['mac']=hmac.new(bytes.fromhex(init['BROWSER']['channelKeyHex']),b'acceptance:bootstrap-composition:v1\0BROWSER:TO_BOOTSTRAP\0'+v1_bytes(value)[4:],hashlib.sha256).hexdigest()
+            return v1_bytes(value)
+        k.read_role=boolean_sequence
+        with self.assertRaises(c.ConfinementError):roles.prepare_browser(proof)
+
+    def test_v1_read_eof_clamps_original_cleanup_budget(self):
+        roles,k,budget,proof,writes,init=self.setup_roles();k.read_role=lambda owned,limit:b''
+        with self.assertRaises(c.ConfinementError):roles.prepare_browser(proof)
+        self.assertEqual(budget.remaining(),0)
+
+    def test_v1_cancel_at_each_forwarding_boundary_denies_commit(self):
+        for action in ('PREPARE','COMMIT','CURRENT'):
+            roles,k,budget,proof,writes,init=self.setup_roles();write=k.write_role
+            def cancel_after_write(owned,data):
+                write(owned,data)
+                if json.loads(data[4:]).get('action')==action:roles._terminal=True
+            k.write_role=cancel_after_write
+            with self.subTest(action=action),self.assertRaises(c.ConfinementError):roles.commit_browser(roles.prepare_browser(proof))
+            self.assertEqual(roles.stop_owned(25)['status'],'STOPPED')
+
+    def test_v1_bound_role_set_cannot_start_original_config_twice(self):
+        roles,k,budget,proof,writes,init=self.setup_roles()
+        with self.assertRaises(c.ConfinementError):c.bind_original_roles(roles._config,roles.binding,budget)
+        self.assertEqual(len(k.children),4)
+
+    def test_v1_partial_start_pending_stop_is_never_overlapped(self):
+        import threading
+        k=Kernel(fail_spawn='BROWSER');budget=V1Budget();entered=threading.Event();release=threading.Event();calls=[];threads=[]
+        def stop(owned,ms):
+            calls.append(owned);entered.set();release.wait(1)
+            return {'status':'STOPPED','pid':owned.pid,'run_id':RUN}
+        def timed_call(op):
+            thread=threading.Thread(target=lambda:op(1));threads.append(thread);thread.start();entered.wait(1)
+            raise TimeoutError('inert waiter expires; callback remains alive')
+        k.stop_owned=stop;budget.call=timed_call
+        try:
+            with self.assertRaises(c.ConfinementError) as failed:c.bind_original_roles(ConfinementTests().config(k),c.CompositionBinding(1,RUN,'b'*64,'c'*64,'d'*64,1,10000),budget)
+            self.assertEqual(failed.exception.cleanup.stop_owned(1)['status'],'TIMEOUT')
+            self.assertEqual(len(calls),1,'the original stop callback is still pending')
+        finally:
+            release.set()
+            for thread in threads:thread.join(1)
+
+    def test_v1_browser_runtime_transition_requires_original_completed_commit(self):
+        roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof)
+        self.assertFalse(getattr(owner,'_committed',False))
+        roles.commit_browser(owner)
+        self.assertTrue(getattr(owner,'_committed',False),'STARTED must retain the sole authorized browser lifecycle transition')
+
+    def test_v1_native_zero_budget_only_polls_original_owner(self):
+        b=InertBindings();k=c.NativeKernelPort(b);owned=c.NativeOwned(201,RUN,'BROWSER',20,21)
+        k._owned[owned]={'outer':100,'terminal':None,'stop':22,'ready':23}
+        b.os.write=lambda fd,data:len(data)
+        b.os.waitpid=lambda pid,flags:(0,0)
+        try:result=k.stop_owned(owned,0)
+        except c.ConfinementError as error:self.fail('nonblocking original cleanup unavailable: '+str(error))
+        self.assertEqual(result['status'],'TIMEOUT');self.assertEqual(b.clock,0)
+
+    def test_v1_native_eof_is_not_a_fresh_cleanup_window(self):
+        roles,k,budget,proof,writes,init=self.setup_roles()
+        def eof(owned,limit):raise c.ConfinementError('CHANNEL_EOF')
+        k.read_role=eof
+        with self.assertRaises(c.ConfinementError):roles.prepare_browser(proof)
+        self.assertEqual(budget.remaining(),0)
+
+    def test_v1_failed_preparation_starts_shared_budget_before_late_cleanup(self):
+        roles,k,budget,proof,writes,init=self.setup_roles()
+        def fail(owned,limit):raise c.ConfinementError('AUTHORITY_LOST')
+        k.read_role=fail
+        with self.assertRaises(c.ConfinementError):roles.prepare_browser(proof)
+        self.assertEqual(budget.deadline,60100)
+        budget.clock.mono=70000
+        self.assertEqual(budget.remaining(),0)
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('acceptance_confinement', ROOT / 'guest/confinement.py')

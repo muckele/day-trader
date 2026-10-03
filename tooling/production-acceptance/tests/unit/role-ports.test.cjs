@@ -6,6 +6,13 @@ const path = require('node:path');
 const modulePath = path.join(__dirname, '../../guest/role-ports.cjs');
 const roles = fs.existsSync(modulePath) ? require(modulePath) : null;
 const RUN = 'a'.repeat(32);
+test('v1_shared_budget_clamps_existing_activate_once_compensation',async()=>{
+  const f=fixture();let allowance;
+  f.authority.cleanupBudget={remaining:()=>37};
+  f.authority.stopOwned=async(child,ms)=>{allowance=ms;return {status:'STOPPED',runId:RUN,child};};
+  await assert.rejects(roles.adoptRole('BROWSER',f.handoff).activateOnce({}));
+  assert.equal(allowance,37,'composed activation must retain the shared cleanup end');
+});
 // Every double is an injected bootstrap/pipe boundary, never a role-port policy.
 function fixture(kind = 'BROWSER', overrides = {}) {
   assert.ok(roles, 'Task 8 inherited role-port behavior is absent');
