@@ -77,7 +77,8 @@ class CleanupBudget:
         while not done.wait(min(remaining / 1000, 0.01)):
             remaining = self.remaining()
             if not remaining: _fail('CLEANUP_UNCERTAIN')
-        if not self.remaining() or not outcome[0][0]: _fail('CLEANUP_UNCERTAIN')
+        if not outcome[0][0]: raise outcome[0][1]
+        if not self.remaining(): _fail('CLEANUP_UNCERTAIN')
         return outcome[0][1]
 
 
@@ -738,11 +739,40 @@ class TopologyGate:
         if isinstance(adapter, NativeTopologyBindings):
             adapter.bind_cleanup_budget(self._cleanup_budget)
         self._snapshot_cleanup = False
-        self.cleanup_uncertain = False
+        self._pending_stops = set()
+        self._pending_snapshots = set()
+        self._cleanup_failed = False
+
+    @property
+    def cleanup_uncertain(self):
+        with self._lock:
+            return bool(self._cleanup_failed or self._pending_stops
+                        or self._pending_snapshots or (self._failed and (
+                            self._inflight or any(id(item) not in self._retired for item in self._owners))))
+
+    def _remember_cleanup(self, owner):
+        with self._lock:
+            if owner is self: return  # Our pending state is not a failed stop.
+            self._cleanup_failed = True
+            if all(item is not owner for item in self.unresolved_cleanup):
+                self.unresolved_cleanup.append(owner)
+
+    def _remember_cleanup_failure(self, error):
+        # Capture can fail first, then fail while compensating. Preserve both
+        # original authorities from the exception chain, not only the last one.
+        pending, seen = [error], set()
+        while pending:
+            current = pending.pop()
+            if current is None or id(current) in seen: continue
+            seen.add(id(current))
+            if isinstance(current, CleanupFailure): self._remember_cleanup(current.cleanup)
+            pending.extend((current.__cause__, current.__context__))
 
     def _clock(self):
         try:
             value = self._expected.clock.sample()
+        except CleanupFailure:
+            raise
         except Exception:
             _fail('CLOCK_DENIED')
         with self._lock:
@@ -788,20 +818,36 @@ class TopologyGate:
                 self._owners.append(owner)
 
     def _cleanup(self):
-        with self._lock:
-            pending = [item for item in self._owners if id(item) not in self._retired]
-            self._retired.update(id(item) for item in pending)
-            self._stopped_inflight.update(id(item) for item in pending if id(item) in self._inflight)
-        for owner in reversed(pending):
-            try:
-                result = self._cleanup_budget.call(owner.stop_owned)
-                if (not hasattr(result, 'get') or result.get('status') not in ('STOPPED', 'EXITED')
-                        or result.get('run_id', result.get('runId')) != self._expected.run_id):
-                    raise ValueError('EXIT_DENIED')
-            except Exception:
-                self.cleanup_uncertain = True
-        if self.cleanup_uncertain:
-            raise CleanupFailure(self)
+        while True:
+            with self._lock:
+                pending = [item for item in self._owners
+                           if id(item) not in self._retired and id(item) not in self._pending_stops]
+                self._retired.update(id(item) for item in pending)
+                self._pending_stops.update(id(item) for item in pending)
+                self._stopped_inflight.update(id(item) for item in pending if id(item) in self._inflight)
+            if not pending: return
+            for owner in reversed(pending):
+                try:
+                    result = self._cleanup_budget.call(owner.stop_owned)
+                    if (not hasattr(result, 'get') or result.get('status') not in ('STOPPED', 'EXITED')
+                            or result.get('run_id', result.get('runId')) != self._expected.run_id):
+                        raise ValueError('EXIT_DENIED')
+                except Exception as error:
+                    self._remember_cleanup(owner)
+                    self._remember_cleanup_failure(error)
+                finally:
+                    with self._lock: self._pending_stops.remove(id(owner))
+            # Settlement can invalidate a stop selected before the last effect.
+            # This caller compensates again after that stop, without overlap.
+
+    def _cleanup_snapshot(self, snapshot):
+        try:
+            self._cleanup_budget.call(lambda remaining: self._adapter.cleanup(snapshot))
+        except Exception as error:
+            self._remember_cleanup(snapshot)
+            self._remember_cleanup_failure(error)
+        finally:
+            with self._lock: self._pending_snapshots.remove(id(snapshot))
 
     def _latch(self):
         with self._lock:
@@ -810,13 +856,11 @@ class TopologyGate:
             self._reservation = None
             snapshot = self._snapshot if not self._snapshot_cleanup else None
             self._snapshot_cleanup = True
-        try:
-            self._cleanup()
-        except TopologyError:
-            self.cleanup_uncertain = True
-        if snapshot is not None and callable(getattr(self._adapter, 'cleanup', None)):
-            try: self._cleanup_budget.call(lambda remaining: self._adapter.cleanup(snapshot))
-            except Exception: self.cleanup_uncertain = True
+            if snapshot is not None and callable(getattr(self._adapter, 'cleanup', None)):
+                self._pending_snapshots.add(id(snapshot))
+            else: snapshot = None
+        self._cleanup()
+        if snapshot is not None: self._cleanup_snapshot(snapshot)
         if self.cleanup_uncertain: raise CleanupFailure(self)
 
     def _attempt(self, *, initial):
@@ -850,17 +894,14 @@ class TopologyGate:
                     self._reservation = None
             return proof
         except Exception as error:
-            if isinstance(error, CleanupFailure):
-                self.cleanup_uncertain = True
-                self.unresolved_cleanup.append(error.cleanup)
+            self._remember_cleanup_failure(error)
+            extra_snapshot = (snapshot is not None and snapshot is not self._snapshot
+                              and callable(getattr(self._adapter, 'cleanup', None)))
+            if extra_snapshot:
+                with self._lock: self._pending_snapshots.add(id(snapshot))
             try: self._latch()
             except CleanupFailure: pass
-            if snapshot is not None and snapshot is not self._snapshot and callable(getattr(self._adapter, 'cleanup', None)):
-                try:
-                    self._cleanup_budget.call(lambda remaining: self._adapter.cleanup(snapshot))
-                except Exception:
-                    self.cleanup_uncertain = True
-                    self.unresolved_cleanup.append(snapshot)
+            if extra_snapshot: self._cleanup_snapshot(snapshot)
             if self.cleanup_uncertain: raise CleanupFailure(self)
             if isinstance(error, TopologyError):
                 raise
@@ -890,6 +931,7 @@ class TopologyGate:
                 self._reservation = None
             return proof
         except Exception as error:
+            self._remember_cleanup_failure(error)
             self._latch()
             if isinstance(error, TopologyError): raise
             _fail('OBSERVATION_DENIED')
@@ -911,10 +953,10 @@ class TopologyGate:
         handle = None
         try:
             # Preparation may fail or drift; its cleanup owner must exist first.
-            self._retain(activation)
+            self._begin_activation(activation, token)
             self._expected.appliance_recheck()
             self._clock()
-            with self._lock: self._inflight.add(id(activation))
+            self._begin_activation(activation, token)
             handle = activation.prepare(browser, proof)
             self._retain(handle)
             def authorize():
@@ -924,15 +966,16 @@ class TopologyGate:
                     if self._failed or self._generation != token:
                         _fail('ACTIVATION_DENIED')
             authorize()
-            with self._lock: self._inflight.add(id(handle))
+            self._begin_activation(handle, token)
             handle.activate(authorize)
             authorize()
             with self._lock:
                 invalid = self._failed or self._generation != token
-            if invalid:
-                _fail('ACTIVATION_DENIED')
+                if invalid: _fail('ACTIVATION_DENIED')
+                self._finish_activation()
             return handle
         except Exception as error:
+            self._remember_cleanup_failure(error)
             if isinstance(error, ActivationFailure):
                 self._retain(error.cleanup)
             self._finish_activation()
@@ -940,6 +983,16 @@ class TopologyGate:
             _fail('ACTIVATION_DENIED')
         finally:
             self._finish_activation()
+
+    def _begin_activation(self, owner, token):
+        if not callable(getattr(owner, 'stop_owned', None)):
+            _fail('ADAPTER_DENIED')
+        with self._lock:
+            if all(item is not owner for item in self._owners):
+                self._owners.append(owner)
+            if self._failed or self._generation != token or self._reservation is not None:
+                _fail('ACTIVATION_DENIED')
+            self._inflight.add(id(owner))
 
     def _finish_activation(self):
         with self._lock:
@@ -1186,9 +1239,13 @@ class NativeTopologyBindings:
             if owner is not None:
                 try:
                     owner.close()
+                except CleanupFailure as error:
+                    self._unresolved.append(owner)
+                    raise error from primary
                 except Exception:
                     self._unresolved.append(owner)
-                    primary = TopologyError('OBSERVATION_DENIED')
+                    if not isinstance(primary, CleanupFailure):
+                        primary = TopologyError('OBSERVATION_DENIED')
         if isinstance(primary, TopologyError):
             raise primary
         if primary is not None or data is None:
@@ -1237,15 +1294,14 @@ class NativeTopologyBindings:
                 tuple(self.probe_source.execute(identifier)
                       for identifier in FIXED_PROBE_IDS),
                 self.proxy_source.observe(authority.proxy_policy))
-        except TopologyError:
+        except Exception as error:
             if roles is not None:
                 try: self.role_source.cleanup_owned(roles)
-                except Exception: _fail('CLEANUP_UNCERTAIN')
-            raise
-        except Exception:
-            if roles is not None:
-                try: self.role_source.cleanup_owned(roles)
-                except Exception: _fail('CLEANUP_UNCERTAIN')
+                except CleanupFailure:
+                    raise
+                except Exception:
+                    raise CleanupFailure(self.role_source) from None
+            if isinstance(error, TopologyError): raise
             _fail('OBSERVATION_DENIED')
 
 
@@ -1280,10 +1336,14 @@ class Task8ProbeSource:
         if case is not None and type(self.native) is not Task10NativeAttempts:
             try:
                 self.module.run_case(case, self.port)
+            except CleanupFailure:
+                raise
             except Exception:
                 _fail('PROBE_DENIED')
         try:
             result = self.native.execute_native(identifier)
+        except CleanupFailure:
+            raise
         except Exception:
             _fail('PROBE_DENIED')
         _probe(result, identifier)
@@ -1401,6 +1461,8 @@ class Task8RoleSource:
     def cleanup_owned(self, handoffs):
         try:
             self.bridge.cleanupOwned(handoffs)
+        except CleanupFailure:
+            raise
         except Exception:
             raise CleanupFailure(self.bridge) from None
 
@@ -1544,6 +1606,8 @@ class Task9ProxySource:
             _fail('PROXY_DENIED')
         try:
             return self.observer.observeAccepted(policy)
+        except CleanupFailure:
+            raise
         except Exception:
             _fail('PROXY_DENIED')
 
@@ -1608,6 +1672,8 @@ class NativeTopologySupervisor:
             _fail('ADAPTER_DENIED')
         try:
             handle = self.monitor.beginOwned(handoff, on_drift)
+        except CleanupFailure:
+            raise
         except Exception:
             _fail('OBSERVATION_DENIED')
         if not callable(getattr(handle, 'stop_owned', None)):

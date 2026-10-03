@@ -152,21 +152,22 @@ private final class BootstrapCleanupBudget: @unchecked Sendable {
     }
     private final class ResultBox: @unchecked Sendable {
         let done=DispatchSemaphore(value:0)
-        var outcome:BootstrapStopOutcome = .uncertain
+        var outcome:Result<BootstrapStopOutcome,Error> = .success(.uncertain)
     }
-    func stop(_ operation:@escaping @Sendable (Int) throws -> BootstrapStopOutcome) -> BootstrapStopOutcome {
+    func stop(_ operation:@escaping @Sendable (Int) throws -> BootstrapStopOutcome) throws -> BootstrapStopOutcome {
         guard remaining() > 0 else { return .uncertain }
         let box=ResultBox()
         DispatchQueue.global().async { [self] in
             let allowance=remaining()
-            if allowance > 0 { box.outcome=(try? operation(allowance)) ?? .uncertain }
+            if allowance > 0 { box.outcome=Result { try operation(allowance) } }
             box.done.signal()
         }
         while true {
             let allowance=remaining()
             guard allowance > 0 else { return .uncertain }
             if box.done.wait(timeout:.now() + .milliseconds(min(allowance,10))) == .success {
-                return remaining() > 0 ? box.outcome:.uncertain
+                let outcome = try box.outcome.get()
+                return remaining() > 0 ? outcome:.uncertain
             }
         }
     }
@@ -349,11 +350,17 @@ public final class BootstrapQualification: @unchecked Sendable {
     private var generation = 0, busy:UUID?, lifecycle:(any BootstrapOwnedLifecycle)?
     private var roles:[any BootstrapActivationTransaction] = []
     private var retired=Set<ObjectIdentifier>(), inFlight=Set<ObjectIdentifier>(), stoppedInFlight=Set<ObjectIdentifier>()
+    private var pendingRoles=Set<ObjectIdentifier>(), pendingLifecycles = 0
     private let cleanupBudget:BootstrapCleanupBudget
     private var _cleanupUncertain = false
-    var cleanupUncertain:Bool { lock.withLock { _cleanupUncertain } }
+    private var hasUnresolvedCleanup:Bool {
+        _cleanupUncertain || !pendingRoles.isEmpty || pendingLifecycles > 0 ||
+            (failed && (!inFlight.isEmpty || roles.contains { !retired.contains(ObjectIdentifier($0)) }))
+    }
+    var cleanupUncertain:Bool { lock.withLock { hasUnresolvedCleanup } }
     private var unresolvedRoles:[any BootstrapActivationTransaction] = []
     private var unresolvedLifecycles:[any BootstrapOwnedLifecycle] = []
+    private var unresolvedQualifications:[BootstrapQualification] = []
     fileprivate init(run:RunConfiguration,authority:RunAuthority,clock:any BrokerClock,probe:any BootstrapProbePort,
          executables:BootstrapExecutableAuthority,proof:AdmissionProof,lastClock:ClockSample) {
         self.run=run; self.authority=authority; self.clock=clock; self.probe=probe
@@ -378,34 +385,83 @@ public final class BootstrapQualification: @unchecked Sendable {
             if activation { activated = true }
             let token = UUID(); busy = token
             return (token,generation)
-        } } catch { latch(); throw error }
+        } } catch {
+            latch()
+            if cleanupUncertain { throw BootstrapCleanupFailure(cleanup:self) }
+            throw error
+        }
     }
     fileprivate func latch() {
         let owned = lock.withLock { () -> ((any BootstrapOwnedLifecycle)?,[any BootstrapActivationTransaction]) in
             failed = true; generation += 1; busy = nil
-            let pending=roles.filter { !retired.contains(ObjectIdentifier($0)) }
+            let pending=roles.filter { !retired.contains(ObjectIdentifier($0)) && !pendingRoles.contains(ObjectIdentifier($0)) }
             for owner in pending {
                 let id=ObjectIdentifier(owner); retired.insert(id)
+                pendingRoles.insert(id)
                 if inFlight.contains(id) { stoppedInFlight.insert(id) }
             }
-            let values = (lifecycle,pending); lifecycle=nil; return values
+            let values = (lifecycle,pending)
+            if lifecycle != nil { pendingLifecycles += 1 }
+            lifecycle=nil; return values
         }
-        for owner in owned.1.reversed() {
-            if cleanupBudget.stop({ try owner.stopOwned(deadline:$0) }) != .stopped {
-                lock.withLock { _cleanupUncertain=true; unresolvedRoles.append(owner) }
+        var pending=owned.1
+        while !pending.isEmpty {
+            for owner in pending.reversed() {
+                do {
+                    if try cleanupBudget.stop({ try owner.stopOwned(deadline:$0) }) != .stopped {
+                        lock.withLock { _cleanupUncertain=true; unresolvedRoles.append(owner) }
+                    }
+                } catch {
+                    rememberCleanupFailure(error)
+                    lock.withLock { _cleanupUncertain=true; unresolvedRoles.append(owner) }
+                }
+                _ = lock.withLock { pendingRoles.remove(ObjectIdentifier(owner)) }
+            }
+            pending = lock.withLock {
+                let next=roles.filter { !retired.contains(ObjectIdentifier($0)) && !pendingRoles.contains(ObjectIdentifier($0)) }
+                for owner in next {
+                    let id=ObjectIdentifier(owner); retired.insert(id); pendingRoles.insert(id)
+                    if inFlight.contains(id) { stoppedInFlight.insert(id) }
+                }
+                return next
             }
         }
         if let owner = owned.0 {
-            if cleanupBudget.stop({ try owner.stopOwned(deadline:$0) }) != .stopped {
+            do {
+                if try cleanupBudget.stop({ try owner.stopOwned(deadline:$0) }) != .stopped {
+                    lock.withLock { _cleanupUncertain=true; unresolvedLifecycles.append(owner) }
+                }
+            } catch {
+                rememberCleanupFailure(error)
                 lock.withLock { _cleanupUncertain=true; unresolvedLifecycles.append(owner) }
+            }
+            lock.withLock { pendingLifecycles -= 1 }
+        }
+    }
+    fileprivate func rememberCleanupFailure(_ error:Error) {
+        guard let error=error as? BootstrapCleanupFailure, error.cleanup !== self else { return }
+        lock.withLock {
+            _cleanupUncertain=true
+            if !unresolvedQualifications.contains(where:{ $0 === error.cleanup }) {
+                unresolvedQualifications.append(error.cleanup)
             }
         }
     }
     private func retain(_ owner:any BootstrapActivationTransaction) {
         lock.withLock { if !roles.contains(where:{ $0 === owner }) { roles.append(owner) } }
     }
+    private func beginPreparation(_ owner:any BootstrapActivationTransaction,_ token:UUID,_ admittedGeneration:Int) throws {
+        try lock.withLock {
+            if !roles.contains(where:{ $0 === owner }) { roles.append(owner) }
+            guard !failed, busy == token, generation == admittedGeneration else { throw VMFailure.terminal }
+            inFlight.insert(ObjectIdentifier(owner))
+        }
+    }
     private func finishActivation() {
-        lock.withLock { retired.subtract(stoppedInFlight); stoppedInFlight.removeAll(); inFlight.removeAll() }
+        lock.withLock { finishActivationLocked() }
+    }
+    private func finishActivationLocked() {
+        retired.subtract(stoppedInFlight); stoppedInFlight.removeAll(); inFlight.removeAll()
     }
     private func assertCurrent(_ token:UUID,_ admittedGeneration:Int) throws {
         try lock.withLock {
@@ -436,15 +492,23 @@ public final class BootstrapQualification: @unchecked Sendable {
         }
         return current
     }
-    func currentProofWithoutActivation() throws -> AdmissionProof { try lock.withLock { guard !failed else { throw VMFailure.terminal }; return proof } }
+    func currentProofWithoutActivation() throws -> AdmissionProof {
+        try lock.withLock {
+            if hasUnresolvedCleanup { throw BootstrapCleanupFailure(cleanup:self) }
+            guard !failed else { throw VMFailure.terminal }; return proof
+        }
+    }
     public func requireBrowserAdmission() throws -> AdmissionProof {
         let reservation = try reserve(activation:false)
         do {
             let current = try resample(token:reservation.0,generation:reservation.1)
             try lock.withLock { guard !failed, busy == reservation.0 else { throw VMFailure.terminal }; busy=nil }
             return current
-        } catch let error as VMFailure { latch(); throw error }
-          catch { latch(); throw VMFailure.admissionUnavailable }
+        } catch {
+            rememberCleanupFailure(error); latch()
+            if cleanupUncertain { throw BootstrapCleanupFailure(cleanup:self) }
+            throw (error as? VMFailure) ?? VMFailure.admissionUnavailable
+        }
     }
     func activateBrowser(_ activation:any BootstrapActivationPort) throws {
         let reservation = try reserve(activation:true)
@@ -452,8 +516,7 @@ public final class BootstrapQualification: @unchecked Sendable {
             let current = try resample(token:reservation.0,generation:reservation.1)
             try run.appliance.recheck(); _ = try checkedSample()
             let original=activation.cleanup
-            retain(original)
-            _ = lock.withLock { inFlight.insert(ObjectIdentifier(original)) }
+            try beginPreparation(original,reservation.0,reservation.1)
             let transaction = try activation.prepareBrowser(proof:current)
             retain(transaction)
             guard transaction === original else { throw VMFailure.terminal }
@@ -467,12 +530,13 @@ public final class BootstrapQualification: @unchecked Sendable {
             try lock.withLock {
                 guard !failed, busy == reservation.0, generation == reservation.1 else { throw VMFailure.terminal }
                 busy=nil
+                finishActivationLocked()
             }
-            finishActivation()
         } catch let error as VMFailure {
             finishActivation()
             latch(); if cleanupUncertain { throw BootstrapCleanupFailure(cleanup:self) }; throw error
         } catch {
+            rememberCleanupFailure(error)
             finishActivation()
             latch()
             if cleanupUncertain { throw BootstrapCleanupFailure(cleanup:self) }
@@ -573,6 +637,10 @@ enum OfflineVMHost {
             if error == .terminal { throw error }
             throw VMFailure.admissionUnavailable
         } catch {
+            if let error=error as? BootstrapCleanupFailure {
+                guard let qualification else { throw error }
+                qualification.rememberCleanupFailure(error)
+            }
             qualification?.latch()
             if let qualification, qualification.cleanupUncertain { throw BootstrapCleanupFailure(cleanup:qualification) }
             throw VMFailure.admissionUnavailable

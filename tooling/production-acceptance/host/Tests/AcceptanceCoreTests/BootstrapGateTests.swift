@@ -15,9 +15,11 @@ private final class BootstrapTestClock: BrokerClock, @unchecked Sendable {
 
 private final class BootstrapProbeFake: BootstrapProbePort, @unchecked Sendable {
     private var values:[Data]; var requested = [[BootstrapProbeID]]()
+    var onCapture:(@Sendable () throws -> Void)?
     init(_ values:[Data]) { self.values = values }
     func capture(ids:[BootstrapProbeID]) throws -> Data {
         requested.append(ids)
+        try onCapture?()
         guard !values.isEmpty else { throw VMFailure.admissionUnavailable }
         return values.count == 1 ? values[0]:values.removeFirst()
     }
@@ -49,10 +51,11 @@ private final class BootstrapRoleHandleFake: BootstrapActivationTransaction, @un
 
 private final class BootstrapActivationFake: BootstrapActivationPort, @unchecked Sendable {
     let handle = BootstrapRoleHandleFake()
-    var cleanup:any BootstrapActivationTransaction { handle }
+    var onCleanup:(@Sendable () -> Void)?, preparations = 0
+    var cleanup:any BootstrapActivationTransaction { onCleanup?(); return handle }
     var onPrepare:(@Sendable () throws -> Void)?
     func prepareBrowser(proof:AdmissionProof) throws -> any BootstrapActivationTransaction {
-        try onPrepare?(); return handle
+        preparations += 1; try onPrepare?(); return handle
     }
 }
 
@@ -193,6 +196,108 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
 }
 
 @Suite(.serialized) struct BootstrapGateTests {
+    @Test func local_n5_typed_capture_failure_remains_sticky_at_every_gate_entry() throws {
+        let run = try BootstrapRunFixture().run
+        let original = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run)]),lifecycle:BootstrapLifecycleFake(),
+            executables:try executableAuthority(run),clock:BootstrapTestClock())
+        let probe = BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)])
+        let q = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:BootstrapLifecycleFake(),
+            executables:try executableAuthority(run),clock:BootstrapTestClock())
+        probe.onCapture = { throw BootstrapCleanupFailure(cleanup:original) }
+        for operation in [{ _ = try q.requireBrowserAdmission() },
+                          { _ = try q.currentProofWithoutActivation() },
+                          { try q.activateBrowser(BootstrapActivationFake()) }] {
+            do { try operation(); Issue.record("cleanup failure returned admission") }
+            catch let error as BootstrapCleanupFailure { #expect(error.cleanup === q) }
+        }
+        #expect(q.cleanupUncertain)
+        #expect(throws:BootstrapCleanupFailure.self) {
+            _ = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:BootstrapLifecycleFake(),
+                executables:try executableAuthority(run),clock:BootstrapTestClock())
+        }
+    }
+
+    @Test func local_n3_pending_early_stop_is_compensated_after_preparation_settles() throws {
+        let run = try BootstrapRunFixture().run, lifecycle = BootstrapLifecycleFake()
+        let q = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+            lifecycle:lifecycle,executables:try executableAuthority(run),clock:BootstrapTestClock())
+        let activation = BootstrapActivationFake()
+        let prepared=DispatchSemaphore(value:0), settle=DispatchSemaphore(value:0)
+        let entered=DispatchSemaphore(value:0), release=DispatchSemaphore(value:0)
+        let activated=DispatchSemaphore(value:0), cleaned=DispatchSemaphore(value:0)
+        activation.onPrepare = { prepared.signal(); _ = settle.wait(timeout:.now() + .seconds(2)) }
+        activation.handle.onStop = {
+            if activation.handle.stops == 1 { entered.signal(); _ = release.wait(timeout:.now() + .seconds(2)) }
+        }
+        DispatchQueue.global().async {
+            do { try q.activateBrowser(activation); Issue.record("late preparation was admitted") }
+            catch let error as BootstrapCleanupFailure { #expect(error.cleanup === q) }
+            catch { Issue.record("pending cleanup lost authority: \(error)") }
+            activated.signal()
+        }
+        defer { settle.signal(); release.signal() }
+        #expect(prepared.wait(timeout:.now() + .seconds(1)) == .success)
+        DispatchQueue.global().async { lifecycle.triggerDrift(); cleaned.signal() }
+        #expect(entered.wait(timeout:.now() + .seconds(1)) == .success)
+        settle.signal(); #expect(activated.wait(timeout:.now() + .seconds(1)) == .success)
+        #expect(q.cleanupUncertain)
+        release.signal(); #expect(cleaned.wait(timeout:.now() + .seconds(1)) == .success)
+        #expect(activation.handle.stops == 2); #expect(!q.cleanupUncertain)
+    }
+
+    @Test func local_n3_terminal_drift_before_registration_prevents_prepare() throws {
+        let run = try BootstrapRunFixture().run, lifecycle = BootstrapLifecycleFake()
+        let q = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+            lifecycle:lifecycle,executables:try executableAuthority(run),clock:BootstrapTestClock())
+        let activation = BootstrapActivationFake()
+        activation.onCleanup = { lifecycle.triggerDrift() }
+        #expect(throws:VMFailure.self) { try q.activateBrowser(activation) }
+        #expect(activation.preparations == 0); #expect(activation.handle.calls == 0)
+        #expect(activation.handle.stops == 1); #expect(!q.cleanupUncertain)
+    }
+
+    @Test func local_n3_late_preparation_is_compensated_after_early_stop() throws {
+        let run = try BootstrapRunFixture().run, lifecycle = BootstrapLifecycleFake()
+        let q = try OfflineVMHost.bootstrapCheck(run:run,
+            probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+            lifecycle:lifecycle,executables:try executableAuthority(run),clock:BootstrapTestClock())
+        let activation = BootstrapActivationFake()
+        activation.onPrepare = { lifecycle.triggerDrift() }
+        #expect(throws:VMFailure.self) { try q.activateBrowser(activation) }
+        #expect(activation.handle.stops == 2); #expect(!q.cleanupUncertain)
+    }
+
+    @Test func local_n5_pending_role_and_lifecycle_cleanup_stays_visible() throws {
+        for stopRole in [true,false] {
+            let run = try BootstrapRunFixture().run, lifecycle = BootstrapLifecycleFake()
+            let q = try OfflineVMHost.bootstrapCheck(run:run,
+                probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+                lifecycle:lifecycle,executables:try executableAuthority(run),clock:BootstrapTestClock())
+            let activation = BootstrapActivationFake(); try q.activateBrowser(activation)
+            let entered=DispatchSemaphore(value:0), release=DispatchSemaphore(value:0), done=DispatchSemaphore(value:0)
+            let stop:@Sendable () -> Void = { entered.signal(); _ = release.wait(timeout:.now() + .seconds(2)) }
+            if stopRole { activation.handle.onStop=stop } else { lifecycle.onStop=stop }
+            DispatchQueue.global().async { lifecycle.triggerDrift(); done.signal() }
+            defer { release.signal() }
+            #expect(entered.wait(timeout:.now() + .seconds(1)) == .success)
+            #expect(q.cleanupUncertain)
+            lifecycle.triggerDrift(); #expect(q.cleanupUncertain)
+            for operation in [{ _ = try q.currentProofWithoutActivation() },
+                              { _ = try q.requireBrowserAdmission() },
+                              { try q.activateBrowser(activation) }] {
+                do { try operation(); Issue.record("pending cleanup returned admission") }
+                catch let error as BootstrapCleanupFailure { #expect(error.cleanup === q) }
+                catch { Issue.record("pending cleanup lost authority: \(error)") }
+            }
+            release.signal(); #expect(done.wait(timeout:.now() + .seconds(1)) == .success)
+            #expect(!q.cleanupUncertain)
+            #expect(activation.handle.stops == 1); #expect(lifecycle.stops == 1)
+        }
+    }
+
     @Test func round4_expiry_after_authorize_cannot_publish_success() throws {
         let run = try BootstrapRunFixture().run, clock = BootstrapTestClock()
         let q = try OfflineVMHost.bootstrapCheck(run:run,
@@ -381,7 +486,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         let clock = BootstrapTestClock(Array(repeating:.init(wall:100,monotonic:10),count:20))
         let qualification = try OfflineVMHost.bootstrapCheck(run:run,probe:probe,lifecycle:BootstrapLifecycleFake(),executables:try executableAuthority(run),clock:clock)
         let activation = BootstrapActivationFake()
-        activation.handle.callback = { #expect(throws:VMFailure.self) { try qualification.activateBrowser(activation) } }
+        activation.handle.callback = { #expect(throws:BootstrapCleanupFailure.self) { try qualification.activateBrowser(activation) } }
         #expect(throws:VMFailure.self) { try qualification.activateBrowser(activation) }
         #expect(activation.handle.calls == 0); #expect(activation.handle.stops == 2)
         #expect(throws:VMFailure.terminal) { _ = try qualification.requireBrowserAdmission() }

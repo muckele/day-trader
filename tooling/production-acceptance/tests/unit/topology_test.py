@@ -156,6 +156,223 @@ def snapshot(**changes):
 
 
 class TopologyTests(unittest.TestCase):
+    def test_local_n5_typed_cleanup_survives_native_source_boundaries(self):
+        cleanup = object()
+        failure = topology.CleanupFailure(cleanup)
+        class Source:
+            def beginOwned(self, *args): raise failure
+            def observeAccepted(self, *args): raise failure
+            def execute_native(self, *args): raise failure
+        source, policy = Source(), proxy_policy()
+        supervisor = topology.select_native_supervisor(source, 'linux', 'aarch64')
+        proxy_source = topology.select_task9_proxy_source(source, policy)
+        probes = topology.Task8ProbeSource(object(), object(), source, topology._COMPOSITION_SEAL)
+        for operation in (lambda: supervisor.begin('wire', lambda: None),
+                          lambda: proxy_source.observe(policy),
+                          lambda: probes.execute('BROWSER_IPV4_TCP'),
+                          lambda: topology.CleanupBudget().call(lambda remaining: source.beginOwned())):
+            with self.subTest(operation=operation):
+                with self.assertRaises(topology.TopologyError) as caught: operation()
+                self.assertIs(caught.exception, failure)
+
+    def test_local_n5_owned_observation_close_preserves_typed_cleanup(self):
+        cleanup = object()
+        failure = topology.CleanupFailure(cleanup)
+        class Owner:
+            def read(self, limit): return b''
+            def close(self): raise failure
+            def cleanup(self): pass
+        owner = Owner()
+        class Source:
+            def open_owned(self, path, flags): return owner
+            def collect(self, expected): raise AssertionError('not reached')
+            def observe(self, expected): raise AssertionError('not reached')
+            def execute(self, identifier): raise AssertionError('not reached')
+        source = Source()
+        adapter = topology.select_native_topology(source, source, source, source, source, 'linux', 'aarch64')
+        gate = topology.TopologyGate(authority(), adapter)
+        with self.assertRaises(topology.TopologyError) as caught: gate.admit()
+        self.assertIs(getattr(caught.exception, 'cleanup', None), gate)
+        self.assertIn(cleanup, gate.unresolved_cleanup)
+        self.assertEqual(adapter._unresolved, [owner])
+        self.assertTrue(gate.cleanup_uncertain)
+
+    def test_local_n3_pending_early_stop_cannot_retire_late_preparation(self):
+        prepared, settle, entered, release = (threading.Event() for _ in range(4))
+        class Preparation(Activation):
+            live = False
+            def prepare(self, handoff, proof):
+                prepared.set(); settle.wait(2); self.live = True
+                return super().prepare(handoff, proof)
+            def stop_owned(self, deadline):
+                self.cleaned += 1
+                if self.cleaned == 1:
+                    entered.set(); release.wait(2)
+                else: self.live = False
+                return {'status':'STOPPED','run_id':RUN}
+        activation = Preparation()
+        gate = topology.TopologyGate(authority(), Adapter([snapshot()]))
+        gate.admit(); errors = []
+        def activate():
+            try: gate.activate_browser(activation)
+            except Exception as error: errors.append(error)
+        activation_worker = threading.Thread(target=activate, daemon=True)
+        drift_errors = []
+        def drift():
+            try: gate.topology_drifted()
+            except Exception as error: drift_errors.append(error)
+        drift_worker = threading.Thread(target=drift, daemon=True)
+        activation_worker.start()
+        try:
+            self.assertTrue(prepared.wait(0.5)); drift_worker.start()
+            self.assertTrue(entered.wait(0.5)); settle.set(); activation_worker.join(1)
+            self.assertFalse(activation_worker.is_alive())
+            self.assertTrue(gate.cleanup_uncertain)
+            self.assertEqual(len(errors), 1)
+            self.assertIs(getattr(errors[0], 'cleanup', None), gate)
+        finally:
+            settle.set(); release.set(); activation_worker.join(1)
+            if drift_worker.ident is not None: drift_worker.join(1)
+        self.assertEqual(drift_errors, [])
+        self.assertEqual(activation.cleaned, 2)
+        self.assertFalse(activation.live)
+        self.assertFalse(gate.cleanup_uncertain)
+
+    def test_local_n3_drift_during_preparation_recheck_prevents_prepare(self):
+        class Preparation(Activation):
+            prepared = 0
+            def prepare(self, handoff, proof):
+                self.prepared += 1
+                return super().prepare(handoff, proof)
+        activation = Preparation()
+        class Recheck:
+            fired = False
+            def __call__(self):
+                if activation in gate._owners and not self.fired:
+                    self.fired = True
+                    try: gate.topology_drifted()
+                    except topology.CleanupFailure: pass
+        recheck = Recheck()
+        gate = topology.TopologyGate(authority(recheck=recheck), Adapter([snapshot()]))
+        gate.admit()
+        with self.assertRaises(topology.TopologyError): gate.activate_browser(activation)
+        self.assertTrue(recheck.fired)
+        self.assertEqual(activation.prepared, 0)
+        self.assertFalse(gate.cleanup_uncertain)
+
+    def test_local_n3_late_preparation_owner_is_compensated_after_early_stop(self):
+        gate = topology.TopologyGate(authority(), Adapter([snapshot()]))
+        gate.admit()
+        class Preparation(Activation):
+            live = False
+            def prepare(self, handoff, proof):
+                try: gate.topology_drifted()
+                except topology.CleanupFailure: pass
+                self.live = True
+                return super().prepare(handoff, proof)
+            def stop_owned(self, deadline):
+                self.live = False
+                return super().stop_owned(deadline)
+        activation = Preparation()
+        with self.assertRaises(topology.TopologyError): gate.activate_browser(activation)
+        self.assertFalse(activation.live)
+        self.assertEqual(activation.cleaned, 2)
+        self.assertFalse(gate.cleanup_uncertain)
+
+    def test_local_n5_pending_gate_role_and_snapshot_cleanup_is_visible(self):
+        for target, outcome in (('role', 'STOPPED'), ('role', 'TIMEOUT'), ('snapshot', 'STOPPED')):
+            with self.subTest(target=target, outcome=outcome):
+                entered, release = threading.Event(), threading.Event()
+                class Pending(Activation):
+                    def stop_owned(self, deadline):
+                        entered.set(); release.wait(1)
+                        return {'status':outcome, 'run_id':RUN}
+                class SnapshotAdapter(Adapter):
+                    def cleanup(self, value):
+                        if target == 'snapshot': entered.set(); release.wait(1)
+                gate = topology.TopologyGate(authority(), SnapshotAdapter([snapshot()]))
+                gate.admit()
+                gate.activate_browser(Pending() if target == 'role' else Activation())
+                errors = []
+                def drift():
+                    try: gate.topology_drifted()
+                    except Exception as error: errors.append(error)
+                worker = threading.Thread(target=drift, daemon=True); worker.start()
+                try:
+                    self.assertTrue(entered.wait(0.5))
+                    self.assertTrue(gate.cleanup_uncertain)
+                    for operation in (gate.topology_drifted, gate.admit, gate.require_current):
+                        with self.assertRaises(topology.CleanupFailure) as caught: operation()
+                        self.assertIs(caught.exception.cleanup, gate)
+                finally: release.set(); worker.join(1)
+                self.assertFalse(worker.is_alive())
+                if outcome == 'TIMEOUT':
+                    self.assertEqual(len(errors), 1)
+                    self.assertIs(getattr(errors[0], 'cleanup', None), gate)
+                    self.assertTrue(gate.cleanup_uncertain)
+                    with self.assertRaises(topology.CleanupFailure): gate.topology_drifted()
+                else:
+                    self.assertEqual(errors, [])
+                    self.assertFalse(gate.cleanup_uncertain)
+
+    def test_local_n5_native_capture_preserves_actual_collection_cleanup_authority(self):
+        for failure_at in ('device', 'probe', 'proxy', 'typed-probe'):
+            with self.subTest(failure_at=failure_at):
+                probe_cleanup = object()
+                launches, handoffs = launches_and_handoffs()
+                class CollectionKernel:
+                    def __init__(self): self.spawned, self.stops = [], []
+                    def spawn_waiting(self, launch, child):
+                        owner = handoffs[len(self.spawned)]._owned
+                        self.spawned.append(owner); return owner
+                    def inspect(self, pid):
+                        return next(dict(h.attestation.__dict__) for h in handoffs if h.attestation.pid == pid)
+                    def wait_owned(self, owner, deadline): raise AssertionError('not used')
+                    def stop_owned(self, owner, deadline):
+                        self.stops.append(owner)
+                        return {'status':'TIMEOUT', 'pid':owner.pid, 'run_id':RUN}
+                kernel = CollectionKernel()
+                collection = topology.Task8Collection(confinement.BootstrapConfig(kernel, RUN, launches[0].programs))
+                roles = topology.Task8RoleSource(collection, topology._COMPOSITION_SEAL)
+                header = b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n'
+                content = {
+                    '/proc/net/dev': b'Inter-| Receive\n face |bytes packets errs drop fifo frame compressed multicast\n lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n',
+                    '/proc/net/route': b'Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n',
+                    '/proc/net/ipv6_route': b'', '/etc/resolv.conf': b'',
+                    '/proc/net/tcp': header, '/proc/net/tcp6': header,
+                    '/proc/net/udp': header, '/proc/net/udp6': header,
+                    '/proc/net/unix': b'Num RefCount Protocol Flags Type St Inode Path\n',
+                }
+                class Observation:
+                    def open_owned(self, path, flags):
+                        class Owner:
+                            def __init__(self): self.chunks = [content[path], b'']
+                            def read(self, limit): return self.chunks.pop(0)
+                            def close(self): pass
+                            def cleanup(self): pass
+                        return Owner()
+                class Devices:
+                    def observe(self, expected):
+                        if failure_at == 'device': raise RuntimeError('inert device failure')
+                        return DEVICES
+                class Probes:
+                    def execute(self, identifier):
+                        if failure_at == 'typed-probe': raise topology.CleanupFailure(probe_cleanup)
+                        if failure_at == 'probe': raise topology.TopologyError('PROBE_DENIED')
+                        return result(identifier)
+                class Proxy:
+                    def observe(self, policy): raise topology.TopologyError('PROXY_DENIED')
+                adapter = topology.select_native_topology(Observation(), roles, Devices(), Probes(), Proxy(), 'linux', 'aarch64')
+                gate = topology.TopologyGate(authority(), adapter)
+                for operation in (gate.admit, gate.admit, gate.topology_drifted):
+                    with self.assertRaises(topology.CleanupFailure) as caught: operation()
+                    self.assertIs(caught.exception.cleanup, gate)
+                    self.assertTrue(gate.cleanup_uncertain)
+                    self.assertIn(collection, gate.unresolved_cleanup)
+                    if failure_at == 'typed-probe': self.assertIn(probe_cleanup, gate.unresolved_cleanup)
+                self.assertEqual(kernel.stops, list(reversed(kernel.spawned)))
+                self.assertEqual(collection.unresolved_owners, list(reversed(kernel.spawned)))
+
     def test_round4_async_roleport_is_unavailable_before_any_effect(self):
         clock = Clock()
         class Port:
