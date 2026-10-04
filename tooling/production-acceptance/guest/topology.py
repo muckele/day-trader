@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import sys
 import threading
 import struct
@@ -128,6 +129,459 @@ TASK8_PROBE_CASES = {
     'BROWSER_VSOCK': 'vsock_browser_controller_verifier_denied',
     'PROXY_VSOCK_CONTROL': 'proxy_fixed_vsock_positive',
 }
+
+# Reviewed Linux 6.8 event constants. Native selection remains unavailable
+# below because Task 2 could not establish exhaustive rule enumeration or a
+# combined delivery fence. These values only drive bounded literal parsing and
+# inert contract tests; they do not qualify the host running this module.
+_EVENT_SOURCES = ('AUDIT', 'ROUTE', 'UEVENT', 'INOTIFY')
+_EVENT_IDS = ('DEVICE', 'NIC', 'ROUTE', 'DNS', 'LISTENER', 'UNIX', 'ROLE',
+              'OVERFLOW', 'SOURCE_DIED')
+_EVENT_TRUNCATED = 1
+_EVENT_ENOBUFS = 2
+_ROUTE_GROUPS = 1 | 16 | 64 | 256 | 1024
+_INOTIFY_MASK = (2 | 4 | 8 | 64 | 128 | 256 | 512 | 1024 | 2048 |
+                 8192 | 16384 | 32768 | 33554432 | 268435456)
+_NATIVE_EVENT_SEMANTICS_UNAVAILABLE = (
+    'AUDIT_RULE_ENUMERATION', 'AUDIT_DELIVERY', 'ROUTE_DELIVERY',
+    'COMBINED_EFFECT_FENCE',
+)
+
+
+def _fixed_audit_rule():
+    words = [0] * 64
+    for number in (33, 39, 40, 41, 51, 93, 94, 97, 200, 201, 220, 221,
+                   268, 281, 435):
+        words[number // 32] |= 1 << (number % 32)
+    fields = [0] * 64; values = [0] * 64; operators = [0] * 64
+    fields[0], values[0], operators[0] = 11, 3221225655, 1073741824
+    return struct.pack('<III64I64I64I64II', 4, 2, 1, *words, *fields,
+                       *values, *operators, 0)
+
+
+_FIXED_AUDIT_RULE = _fixed_audit_rule()
+_OFFLINE_EVENT_NATIVE_SEAL = object()
+_EVENT_CHECKPOINT_SEAL = object()
+
+
+def _event_nlmsg(kind, sequence, payload, *, flags=0):
+    if (type(kind) is not int or not 0 <= kind <= 65535
+            or type(sequence) is not int or not 0 <= sequence <= 2**32 - 1
+            or type(flags) is not int or not 0 <= flags <= 65535
+            or type(payload) is not bytes or len(payload) > 65520):
+        _fail('EVENT_RECORD_DENIED')
+    return struct.pack('<IHHII', 16 + len(payload), kind, flags,
+                       sequence, 0) + payload
+
+
+def _parse_event_nlmsg(data):
+    if type(data) is not bytes or not 16 <= len(data) <= 65536:
+        _fail('EVENT_RECORD_DENIED')
+    length, kind, flags, sequence, pid = struct.unpack_from('<IHHII', data)
+    if length != len(data) or length < 16 or pid != 0:
+        _fail('EVENT_RECORD_DENIED')
+    return kind, flags, sequence, data[16:]
+
+
+@dataclass(frozen=True, slots=True)
+class EventCheckpoint:
+    _binding: object = field(repr=False)
+    generation: int
+    sequence: int
+    sourceIdentity: str
+    lostCount: int
+    _seal: object = field(repr=False, compare=False)
+
+    def __post_init__(self):
+        if (self._seal is not _EVENT_CHECKPOINT_SEAL
+                or type(self._binding) is not _CONFINEMENT.CompositionBinding
+                or not _integer(self.generation, 1)
+                or not _integer(self.sequence, 1)
+                or _RUN.fullmatch(self.sourceIdentity) is None
+                or not _integer(self.lostCount)):
+            _fail('EVENT_CHECKPOINT_DENIED')
+
+    @property
+    def binding(self):
+        return self._binding
+
+    def to_record(self):
+        return {'binding': self._binding.to_record(), 'generation': self.generation,
+                'sequence': self.sequence, 'sourceIdentity': self.sourceIdentity,
+                'lostCount': self.lostCount}
+
+
+@dataclass(frozen=True)
+class _OfflineEventNative:
+    native: object = field(repr=False)
+    _seal: object = field(repr=False)
+
+
+def qualify_offline_event_native(native):
+    """Seal a literal-record double; never native qualification."""
+    methods = ('retain_pending', 'open_audit', 'open_route', 'open_uevent',
+               'open_inotify', 'open_wakeup_pipe', 'poll_selector',
+               'add_inotify_watch', 'install_audit_rule', 'audit_health',
+               'audit_rules', 'poll_records', 'delivery_barrier',
+               'close_owned', 'cleanup_pending', 'current_monotonic_ms')
+    if (any(not callable(getattr(native, name, None)) for name in methods)
+            or type(getattr(native, 'audit_receiver_pid', None)) is not int
+            or not 1 <= native.audit_receiver_pid <= 2**32 - 1
+            or getattr(native, 'selector_kind', None) != 'selectors.PollSelector'):
+        _fail('ADAPTER_DENIED')
+    return _OfflineEventNative(native, _OFFLINE_EVENT_NATIVE_SEAL)
+
+
+def select_native_bootstrap_event_source(reference, platform_name, machine):
+    """Reviewed native constructor boundary: Task 2 remains unavailable."""
+    if platform_name != 'linux' or machine != 'aarch64':
+        _fail('ADAPTER_DENIED')
+    # AUDIT_RULE_ENUMERATION, AUDIT_DELIVERY, ROUTE_DELIVERY and the
+    # COMBINED_EFFECT_FENCE are source-reviewed UNAVAILABLE. No local runtime,
+    # empty queue or successful PollSelector construction can upgrade them.
+    _fail('NATIVE_EVENT_BARRIER_UNAVAILABLE')
+
+
+class BootstrapEventOwner:
+    """One finite original event owner with sticky failure and cleanup."""
+    def __init__(self, binding, native, budget, seal=None):
+        if (seal is not _OFFLINE_EVENT_NATIVE_SEAL
+                or type(binding) is not _CONFINEMENT.CompositionBinding
+                or type(native) is not _OfflineEventNative
+                or native._seal is not _OFFLINE_EVENT_NATIVE_SEAL
+                or type(budget) is not CleanupBudget):
+            _fail('AUTHORITY_LOST')
+        self.binding, self._native, self._port, self._budget = (
+            binding, native, native.native, budget)
+        self._source_identity = secrets.token_hex(16)
+        self.generation, self.sequence = 1, 0
+        self._sources, self._wakeup, self.selector = {}, None, None
+        self._obligations, self._pending_groups = [], {}
+        self._audit_sequence, self._lost, self._last_health = 0, None, None
+        self._last_audit_serial = 0
+        self._uevent_sequence = None
+        self._drift = False
+        self._last_clock = None
+        self._terminal, self._cleanup_status = None, None
+        self._lock = threading.RLock()
+
+    @property
+    def descriptor_count(self): return len(self._sources)
+
+    @property
+    def wakeup_descriptor_count(self):
+        return 2 if self._wakeup is not None else 0
+
+    def _acquire(self, kind, operation):
+        token = self._port.retain_pending(kind)
+        self._obligations.append(('pending', token))
+        owner = operation()
+        if owner is None or not callable(getattr(owner, 'fileno', None)):
+            _fail('EVENT_SETUP_DENIED')
+        self._obligations.pop()
+        self._obligations.append(('owner', owner))
+        return owner
+
+    def _install(self):
+        try:
+            self._check_binding()
+            self._sources['AUDIT'] = self._acquire('AUDIT', self._port.open_audit)
+            self._port.install_audit_rule(self._sources['AUDIT'], _FIXED_AUDIT_RULE)
+            self._sources['ROUTE'] = self._acquire(
+                'ROUTE', lambda: self._port.open_route(_ROUTE_GROUPS))
+            self._sources['UEVENT'] = self._acquire('UEVENT', self._port.open_uevent)
+            self._sources['INOTIFY'] = self._acquire('INOTIFY', self._port.open_inotify)
+            watches = (self._port.add_inotify_watch(
+                self._sources['INOTIFY'], path, _INOTIFY_MASK)
+                for path in ('/etc', '/etc/resolv.conf'))
+            if tuple(watches) != (1, 2): _fail('EVENT_SETUP_DENIED')
+            token = self._port.retain_pending('WAKEUP')
+            self._obligations.append(('pending', token))
+            self._wakeup = self._port.open_wakeup_pipe()
+            if (self._wakeup is None
+                    or not callable(getattr(self._wakeup, 'filenos', None))):
+                _fail('EVENT_SETUP_DENIED')
+            self._obligations.pop(); self._obligations.append(('owner', self._wakeup))
+            fds = [owner.fileno() for owner in self._sources.values()]
+            wake = self._wakeup.filenos()
+            if (len(set(fds + list(wake))) != 6 or any(
+                    type(fd) is not int or not 5 <= fd <= 4095
+                    for fd in fds + list(wake))):
+                _fail('EVENT_SETUP_DENIED')
+            self.selector = self._port.poll_selector()
+            if (self.selector is None or type(self.selector).__name__ != 'PollSelector'
+                    or hasattr(self.selector, 'fileno')
+                    or not callable(getattr(self.selector, 'register', None))
+                    or not callable(getattr(self.selector, 'close', None))):
+                _fail('EVENT_SETUP_DENIED')
+            for owner in self._sources.values(): self.selector.register(owner, 1)
+            self.selector.register(self._wakeup, 1)
+            for endpoint in getattr(self._port, 'role_endpoints', ()):
+                self.selector.register(endpoint, 1)
+            self._verify_health_and_rules()
+        except Exception as error:
+            if isinstance(error, TopologyError): failure = error
+            else: failure = TopologyError('EVENT_SETUP_DENIED')
+            failure.cleanup = self
+            raise failure from (None if isinstance(error, TopologyError) else error)
+
+    def _check_binding(self):
+        clock = self._budget.clock
+        try:
+            sample = clock.sample() if clock is not None else (
+                time.time_ns() // 1000000, time.monotonic_ns() // 1000000)
+        except Exception: self._terminate('EVENT_SOURCE_TERMINAL')
+        if (not _sample(sample) or sample[0] >= self.binding.expiresAtMs
+                or (self._last_clock is not None
+                    and (sample[0] < self._last_clock[0]
+                         or sample[1] < self._last_clock[1]))):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        self._last_clock = sample
+
+    def _next_audit_sequence(self):
+        self._audit_sequence += 1
+        if self._audit_sequence > 2**32 - 1: self._terminate('EVENT_SOURCE_TERMINAL')
+        return self._audit_sequence
+
+    def _verify_health_and_rules(self):
+        now = self._port.current_monotonic_ms()
+        if type(now) is not int or now < 0: self._terminate('EVENT_SOURCE_TERMINAL')
+        if self._last_health is not None and now - self._last_health > 100:
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        health_sequence = self._next_audit_sequence()
+        try: sender, observed, raw = self._port.audit_health(
+            self._sources['AUDIT'], health_sequence)
+        except Exception: self._terminate('EVENT_SOURCE_TERMINAL')
+        kind, flags, sequence, payload = _parse_event_nlmsg(raw)
+        if (sender != 0 or kind != 1000 or flags != 0 or sequence != health_sequence
+                or type(observed) is not int or not now <= observed <= now + 100
+                or len(payload) != 44):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        status = struct.unpack('<11I', payload)
+        receiver = self._port.audit_receiver_pid
+        if (status[0] != 31 or status[1:6] != (1, 0, receiver, 0, 256)
+                or (self._lost is None and status[6] != 0)
+                or (self._lost is not None and status[6] != self._lost)):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        if self._lost is None: self._lost = status[6]
+        rule_sequence = self._next_audit_sequence()
+        try: records = tuple(self._port.audit_rules(
+            self._sources['AUDIT'], rule_sequence))
+        except Exception: self._terminate('AUDIT_RULES_DENIED')
+        if not 2 <= len(records) <= 17:
+            self._terminate('AUDIT_RULES_DENIED')
+        total, rules, done = 0, [], False
+        for sender, observed, raw in records:
+            total += len(raw)
+            if (sender != 0 or type(observed) is not int
+                    or not now <= observed <= now + 100 or total > 65536):
+                self._terminate('AUDIT_RULES_DENIED')
+            kind, flags, sequence, payload = _parse_event_nlmsg(raw)
+            if sequence != rule_sequence or done:
+                self._terminate('AUDIT_RULES_DENIED')
+            if kind == 3:
+                if payload or flags not in (0, 2): self._terminate('AUDIT_RULES_DENIED')
+                done = True
+            elif kind == 1013:
+                if flags & 2 != 2 or len(payload) != 1040:
+                    self._terminate('AUDIT_RULES_DENIED')
+                rules.append(payload)
+            else: self._terminate('AUDIT_RULES_DENIED')
+        if not done or rules != [_FIXED_AUDIT_RULE]:
+            self._terminate('AUDIT_RULES_DENIED')
+        self._last_health = now
+
+    def _terminate(self, code):
+        if self._terminal is None:
+            self._terminal = code; self.generation += 1
+        _fail(code)
+
+    def _audit_record(self, raw, observed):
+        kind, flags, sequence, payload = _parse_event_nlmsg(raw)
+        if flags & (16 | 4) or sequence != 0:
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        try: text = payload.decode('ascii')
+        except UnicodeError: self._terminate('EVENT_SOURCE_TERMINAL')
+        match = re.search(r'audit\([^:]+:([1-9][0-9]*)\):', text)
+        if match is None: self._terminate('EVENT_SOURCE_TERMINAL')
+        serial = int(match.group(1))
+        if kind == 1320:
+            group = self._pending_groups.pop(serial, None)
+            if group is None: self._terminate('EVENT_SOURCE_TERMINAL')
+            if observed - group['first'] > 1000:
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            if group['events']:
+                self._drift = True
+            self.sequence += 1
+            return
+        if kind not in (1300, 1302, 1305, 1306, 1307, 1309, 1327):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        if serial not in self._pending_groups:
+            if serial <= self._last_audit_serial:
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            self._last_audit_serial = serial
+        group = self._pending_groups.setdefault(serial, {
+            'first': observed, 'events': set(), 'count': 0, 'bytes': 0})
+        group['count'] += 1; group['bytes'] += len(raw)
+        if (len(self._pending_groups) > 64 or group['count'] > 256
+                or group['bytes'] > 1048576 or observed - group['first'] > 1000):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        if kind == 1300 and 'success=yes' in text:
+            syscall = re.search(r'(?:^| )syscall=([0-9]+)', text)
+            if syscall and int(syscall.group(1)) in (200, 201):
+                group['events'].add('UNIX' if 'endpoint=unix' in text else 'LISTENER')
+            elif syscall and int(syscall.group(1)) in (93, 94, 220, 221, 281, 435):
+                group['events'].add('ROLE')
+
+    def _record(self, value):
+        if type(value) is not tuple or len(value) != 5:
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        source, sender, observed, raw, flags = value
+        if (source not in (*_EVENT_SOURCES, 'ROLE', 'SOURCE_DIED')
+                or type(sender) is not int or type(observed) is not int
+                or type(raw) is not bytes or len(raw) > 65536
+                or type(flags) is not int):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        if flags & (_EVENT_TRUNCATED | _EVENT_ENOBUFS):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        if source in ('ROLE', 'SOURCE_DIED'):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        if sender != 0: self._terminate('EVENT_SOURCE_TERMINAL')
+        if source == 'AUDIT': self._audit_record(raw, observed); return
+        if source == 'ROUTE':
+            kind, _, sequence, payload = _parse_event_nlmsg(raw)
+            if kind not in (16, 17, 20, 21, 24, 25) or not payload:
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            # Multicast sequence zero is normal and nonzero is not treated as
+            # a universal delivery sequence. Every relevant change still drifts.
+            self.sequence += 1; self._drift = True; return
+        if source == 'UEVENT':
+            try:
+                fields = dict(part.split(b'=', 1) for part in raw.rstrip(b'\0').split(b'\0'))
+                number = int(fields[b'SEQNUM'])
+            except Exception: self._terminate('EVENT_SOURCE_TERMINAL')
+            if number <= 0 or (self._uevent_sequence is not None
+                               and number != self._uevent_sequence + 1):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            self._uevent_sequence = number; self.sequence += 1
+            self._drift = True; return
+        if source == 'INOTIFY':
+            if len(raw) < 16: self._terminate('EVENT_SOURCE_TERMINAL')
+            wd, mask, cookie, size = struct.unpack_from('<iIII', raw)
+            if len(raw) != 16 + size or wd not in (-1, 1, 2):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            if mask & (16384 | 32768 | 8192):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            if not mask & _INOTIFY_MASK: self._terminate('EVENT_SOURCE_TERMINAL')
+            # Equal adjacent notifications may be coalesced; never infer an
+            # event count or delivery fence from their sequence/cookie.
+            self.sequence += 1; self._drift = True; return
+
+    def barrier(self):
+        with self._lock:
+            if self._terminal is not None: _fail('EVENT_SOURCE_TERMINAL')
+            self._check_binding()
+            try: records = tuple(self._port.poll_records(self.selector))
+            except Exception: self._terminate('EVENT_SOURCE_TERMINAL')
+            if len(records) > 256 or sum(len(row[3]) for row in records
+                                         if type(row) is tuple and len(row) == 5) > 1048576:
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            for value in records: self._record(value)
+            if self._drift: self._terminate('EVENT_DRIFT')
+            now = self._port.current_monotonic_ms()
+            if self._pending_groups:
+                if any(now - group['first'] > 1000
+                       for group in self._pending_groups.values()):
+                    self._terminate('EVENT_SOURCE_TERMINAL')
+                _fail('EVENT_PENDING')
+            self._verify_health_and_rules()
+            try: complete = self._port.delivery_barrier(
+                tuple(self._sources.values()), self._wakeup, self.selector)
+            except Exception: complete = False
+            if complete is not True:
+                self._terminate('NATIVE_EVENT_BARRIER_UNAVAILABLE')
+            self._check_binding()
+            self.sequence += 1
+            return EventCheckpoint(self.binding, self.generation, self.sequence,
+                                   self._source_identity, self._lost,
+                                   _EVENT_CHECKPOINT_SEAL)
+
+    def stop_owned(self, remaining_ms):
+        if type(remaining_ms) is not int or not 0 <= remaining_ms <= 60000:
+            _fail('CLEANUP_UNCERTAIN')
+        with self._lock:
+            if self._cleanup_status is not None:
+                return {'status': self._cleanup_status, 'runId': self.binding.runId}
+            self._cleanup_status = 'TIMEOUT'
+            if self.selector is not None:
+                try: self.selector.close()
+                except Exception: pass
+            failed = False
+            for kind, owner in reversed(self._obligations):
+                try:
+                    operation = (lambda allowance, owner=owner:
+                        self._port.close_owned(owner, allowance)) if kind == 'owner' else (
+                        lambda allowance, owner=owner:
+                        self._port.cleanup_pending(owner, allowance))
+                    self._budget.call(operation)
+                except Exception: failed = True
+            self._cleanup_status = 'TIMEOUT' if failed else 'STOPPED'
+            return {'status': self._cleanup_status,
+                    'runId': self.binding.runId}
+
+
+class LinuxBootstrapEventSource:
+    """Fixed factory; it accepts no caller-selected sources, rules or masks."""
+    @staticmethod
+    def install(binding, native, cleanup_budget):
+        owner = BootstrapEventOwner(binding, native, cleanup_budget,
+                                    _OFFLINE_EVENT_NATIVE_SEAL)
+        owner._install()
+        return owner
+
+
+def observe_current_roles(handoffs, runtime_owners, proxy_runtime_owner, binding):
+    """Observe complete runtime state through the accepted original owners."""
+    if (type(handoffs) is not tuple or len(handoffs) != 4
+            or type(runtime_owners) is not dict
+            or set(runtime_owners) != set(_CONFINEMENT.UIDS)
+            or not isinstance(proxy_runtime_owner, _PROXY.ProxyRuntimeOwner)
+            or type(binding) is not _CONFINEMENT.CompositionBinding):
+        _fail('ROLE_DENIED')
+    expected_roles = tuple(_CONFINEMENT.UIDS)
+    lifecycles = ('SERVICE', 'WAITING', 'WAITING', 'SERVICE')
+    result = []
+    for handoff, role, lifecycle in zip(handoffs, expected_roles, lifecycles):
+        if (type(handoff) is not _CONFINEMENT.RoleHandoff
+                or handoff.launch.role != role
+                or not isinstance(handoff._kernel, _CONFINEMENT.NativeKernelPort)):
+            _fail('ROLE_DENIED')
+        owner = runtime_owners[role]
+        if role == 'PROXY' and owner is not proxy_runtime_owner:
+            _fail('ROLE_DENIED')
+        try:
+            row = handoff._kernel.inspect_runtime(handoff, lifecycle, owner)
+            row = _CONFINEMENT.validate_runtime_observation(row, handoff, lifecycle)
+        except Exception:
+            _fail('ROLE_DENIED')
+        result.append(row)
+    try: proxy_record = proxy_runtime_owner.observe_current(binding).to_record()
+    except Exception: _fail('PROXY_DENIED')
+    if (not _keys(proxy_record, ('binding','runtimeId','sequence','status',
+            'listenAddress','listenPort','hostCID','servicePort','uid',
+            'observedAtMonotonicMs','currentFDs'))
+            or _CONFINEMENT.CompositionBinding.from_record(proxy_record['binding']) != binding
+            or proxy_record['status'] != 'CURRENT' or not _RUN.fullmatch(proxy_record['runtimeId'])):
+        _fail('PROXY_DENIED')
+    def kernel_facts(rows):
+        if type(rows) is not list: _fail('PROXY_DENIED')
+        try:
+            return [(row['fd'],row['kind'],row['device'],row['inode'],row['flags'])
+                    for row in rows]
+        except (KeyError,TypeError): _fail('PROXY_DENIED')
+    if kernel_facts(proxy_record['currentFDs']) != kernel_facts(result[3]['currentFDs']):
+        _fail('PROXY_DENIED')
+    return tuple(result)
 
 
 def _integer(value, lower=0, upper=_MAX):

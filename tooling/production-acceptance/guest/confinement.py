@@ -1151,6 +1151,66 @@ def _native_fd_exists(b,base,fd):
     except FileNotFoundError: return False
 
 
+_RUNTIME_FD_KINDS={
+    'NULL','COMMAND','RESULT','PROXY_LISTENER','PROXY_STOP_SELECTOR',
+    'PROXY_ACCEPTED_STREAM','PROXY_VSOCK_STREAM','PROXY_CONNECT_SELECTOR',
+}
+
+
+def validate_runtime_observation(value,handoff,lifecycle):
+    """Strictly retain inherited authority separately from current inventory."""
+    if (type(value) is not dict
+            or set(value)!=set(('role','childId','pipeId','lifecycle',
+                                'inheritedFDs','currentFDs'))
+            or type(handoff) is not RoleHandoff
+            or value['role']!=handoff.launch.role
+            or value['lifecycle']!=lifecycle
+            or lifecycle not in ('WAITING','SERVICE','BROWSER_ACTIVE')
+            or not _run(value['childId']) or not _run(value['pipeId'])
+            or value['inheritedFDs']!=[0,1,2,3,4]
+            or type(value['currentFDs']) is not list
+            or not 5<=len(value['currentFDs'])<=55):
+        _fail('FD_DENIED')
+    seen=[]
+    for row in value['currentFDs']:
+        if (type(row) is not dict
+                or set(row)!=set(('fd','kind','device','inode','flags','ownerId',
+                                  'acquiredGeneration'))
+                or type(row['fd']) is not int or not 0<=row['fd']<=4095
+                or row['kind'] not in _RUNTIME_FD_KINDS
+                or type(row['device']) is not str or not row['device'].isdecimal()
+                or not 1<=len(row['device'])<=20
+                or type(row['inode']) is not str or not row['inode'].isdecimal()
+                or not 1<=len(row['inode'])<=20
+                or type(row['flags']) is not int or not 0<=row['flags']<=9007199254740991
+                or not _run(row['ownerId'])
+                or type(row['acquiredGeneration']) is not int
+                or row['acquiredGeneration']!=1):
+            _fail('FD_DENIED')
+        seen.append(row['fd'])
+    if seen!=sorted(set(seen)) or seen[:5]!=[0,1,2,3,4]: _fail('FD_DENIED')
+    if [row['kind'] for row in value['currentFDs'][:5]]!=[
+            'NULL','NULL','NULL','COMMAND','RESULT']:
+        _fail('FD_DENIED')
+    if lifecycle=='WAITING' and len(value['currentFDs'])!=5:
+        _fail('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')
+    if handoff.launch.role!='PROXY' and any(
+            row['kind'].startswith('PROXY_') for row in value['currentFDs']):
+        _fail('FD_DENIED')
+    if handoff.launch.role=='PROXY':
+        counts={kind:sum(row['kind']==kind for row in value['currentFDs'])
+                for kind in _RUNTIME_FD_KINDS}
+        if (lifecycle!='SERVICE' or counts['PROXY_LISTENER']>1
+                or counts['PROXY_STOP_SELECTOR']>1
+                or counts['PROXY_ACCEPTED_STREAM']>16
+                or counts['PROXY_VSOCK_STREAM']>16
+                or counts['PROXY_CONNECT_SELECTOR']>16):
+            _fail('FD_DENIED')
+    return {key:([dict(row) for row in value[key]] if key=='currentFDs'
+                 else list(value[key]) if key=='inheritedFDs' else value[key])
+            for key in ('role','childId','pipeId','lifecycle','inheritedFDs','currentFDs')}
+
+
 class NativeKernelPort:
     """Root bootstrap parent + fixed per-role direct-parent reaper.
 
@@ -1217,7 +1277,10 @@ class NativeKernelPort:
         _check(_attestation(facts),h.launch,waiting=lifecycle=='WAITING')
         executable=self.b.os.stat('/proc/'+str(h.attestation.pid)+'/exe')
         if (executable.st_dev,executable.st_ino)!=s['exec_identity']: _fail('PROGRAM_DENIED')
-        return dict(role=h.launch.role,childId=state['childId'],pipeId=state['pipeId'],lifecycle=lifecycle,inheritedFDs=[0,1,2,3,4],currentFDs=[dict(row) for row in rows])
+        return validate_runtime_observation(dict(role=h.launch.role,
+            childId=state['childId'],pipeId=state['pipeId'],lifecycle=lifecycle,
+            inheritedFDs=[0,1,2,3,4],currentFDs=[dict(row) for row in rows]),
+            h,lifecycle)
 
     def _commit_browser_runtime(self,preparation):
         if type(preparation) is not BootstrapBrowserPreparation or not preparation._committed or preparation._roles._preparation is not preparation: _fail('AUTHORITY_LOST')

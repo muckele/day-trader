@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import pathlib
+import struct
 import sys
 import tempfile
 import threading
@@ -206,7 +207,239 @@ def native_capture_fixture(clock, before_open, fail_probe=False):
     return gate, bindings, collection, kernel
 
 
+class EventFD:
+    def __init__(self, native, kind, fd):
+        self.native, self.kind, self.fd, self.closed = native, kind, fd, False
+    def fileno(self): return -1 if self.closed else self.fd
+
+
+class EventPipe:
+    def __init__(self, native, read_fd, write_fd):
+        self.native, self.read_fd, self.write_fd, self.closed = native, read_fd, write_fd, False
+    def filenos(self): return (-1, -1) if self.closed else (self.read_fd, self.write_fd)
+
+
+class PollSelector:
+    """Inert PollSelector analogue: deliberately owns no descriptor."""
+    def __init__(self): self.registered, self.closed = [], False
+    def register(self, owner, mask): self.registered.append((owner, mask))
+    def close(self): self.closed = True
+
+
+class EventNative:
+    """Literal-record effect double. It cannot invoke a native syscall."""
+    def __init__(self, *, fence=True, fail_at=None):
+        self.fence, self.fail_at = fence, fail_at
+        self.visible, self.opened, self.closed, self.events = [], [], [], []
+        self.rules_changed = False
+        self.health_backlog = 0
+        self.audit_receiver_pid = 4242
+        self.selector_kind = 'selectors.PollSelector'
+        self.mono = 10
+        self.role_endpoints = (object(), object())
+
+    def retain_pending(self, kind):
+        token = object(); self.visible.append((kind, token)); return token
+
+    def _open(self, kind, fd):
+        if self.fail_at == kind: raise RuntimeError('inert setup failure')
+        owner = EventFD(self, kind, fd); self.opened.append(owner); return owner
+    def open_audit(self): return self._open('AUDIT', 10)
+    def open_route(self, groups):
+        self.route_groups = groups; return self._open('ROUTE', 11)
+    def open_uevent(self): return self._open('UEVENT', 12)
+    def open_inotify(self): return self._open('INOTIFY', 13)
+    def open_wakeup_pipe(self):
+        if self.fail_at == 'WAKEUP': raise RuntimeError('inert setup failure')
+        owner = EventPipe(self, 14, 15); self.opened.append(owner); return owner
+    def poll_selector(self): return PollSelector()
+    def add_inotify_watch(self, owner, path, mask):
+        if self.fail_at == 'WATCH': raise RuntimeError('inert setup failure')
+        return {'/etc': 1, '/etc/resolv.conf': 2}[path]
+    def install_audit_rule(self, owner, rule):
+        if self.fail_at == 'RULE': raise RuntimeError('inert setup failure')
+        self.installed_rule = rule
+    def audit_health(self, owner, sequence):
+        payload = struct.pack('<11I', 0x1f, 1, 0, 4242, 0, 256, 0,
+                              self.health_backlog, 0, 0, 0)
+        return (0, self.mono, topology._event_nlmsg(1000, sequence, payload))
+    def audit_rules(self, owner, sequence):
+        rule = bytearray(topology._FIXED_AUDIT_RULE)
+        if self.rules_changed: rule[4] ^= 1
+        return ((0, self.mono, topology._event_nlmsg(1013, sequence, bytes(rule), flags=2)),
+                (0, self.mono, topology._event_nlmsg(3, sequence, b'')))
+    def poll_records(self, selector):
+        values, self.events = tuple(self.events), []
+        return values
+    def delivery_barrier(self, owners, wakeup, selector): return self.fence
+    def close_owned(self, owner, remaining_ms):
+        if owner.closed: raise RuntimeError('double close')
+        owner.closed = True; self.closed.append(owner)
+    def cleanup_pending(self, token, remaining_ms): self.closed.append(token)
+    def current_monotonic_ms(self): return self.mono
+
+    def message(self, source, payload, *, flags=0, sender=0):
+        return (source, sender, self.mono, payload, flags)
+
+
+def event_binding():
+    return confinement.CompositionBinding(1, RUN, MANIFEST, CONFIG, 'd' * 64, 1, 190)
+
+
+def audit_event(serial, syscall=201, *, path='inet'):
+    text = ('audit(1.000:%d): syscall=%d success=yes endpoint=%s' %
+            (serial, syscall, path)).encode('ascii')
+    return topology._event_nlmsg(1300, 0, text)
+
+
 class TopologyTests(unittest.TestCase):
+    def install_events(self, native=None):
+        native = native or EventNative()
+        budget = topology.CleanupBudget(clock=Clock((100, 10), (100, 10), (100, 10)))
+        owner = topology.LinuxBootstrapEventSource.install(
+            event_binding(), topology.qualify_offline_event_native(native), budget)
+        return owner, native, budget
+
+    def test_v1_event_source_installed_before_first_snapshot(self):
+        native = EventNative(); timeline = []
+        original = native.retain_pending
+        def visible(kind): timeline.append(('retain', kind)); return original(kind)
+        native.retain_pending = visible
+        owner, native, _ = self.install_events(native)
+        timeline.append(('snapshot', owner.barrier().to_record()['sequence']))
+        self.assertEqual([kind for action, kind in timeline if action == 'retain'],
+                         ['AUDIT', 'ROUTE', 'UEVENT', 'INOTIFY', 'WAKEUP'])
+        self.assertEqual(timeline[-1][0], 'snapshot')
+        self.assertEqual(len(native.opened), 5)
+
+    def test_v1_transient_listener_and_unix_creation_latch(self):
+        for endpoint in ('inet', 'unix'):
+            owner, native, _ = self.install_events()
+            native.events += [native.message('AUDIT', audit_event(7, path=endpoint)),
+                              native.message('AUDIT', topology._event_nlmsg(
+                                  1320, 0, b'audit(1.000:7): end'))]
+            with self.subTest(endpoint=endpoint), self.assertRaisesRegex(
+                    topology.TopologyError, '^EVENT_DRIFT$'):
+                owner.barrier()
+
+    def test_v1_event_loss_overflow_death_fail_closed(self):
+        records = (
+            lambda n: n.message('AUDIT', b'', flags=topology._EVENT_TRUNCATED),
+            lambda n: n.message('ROUTE', b'', flags=topology._EVENT_ENOBUFS),
+            lambda n: n.message('INOTIFY', struct.pack('<iIII', -1, 16384, 0, 0)),
+            lambda n: n.message('UEVENT', b'ACTION=add\0SEQNUM=9\0'),
+            lambda n: n.message('SOURCE_DIED', b'AUDIT'),
+        )
+        for make in records:
+            owner, native, _ = self.install_events(); native.events.append(make(native))
+            with self.subTest(make=make), self.assertRaises(topology.TopologyError): owner.barrier()
+            with self.assertRaisesRegex(topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
+                owner.barrier()
+
+    def test_v1_event_pending_group_cannot_pass_barrier(self):
+        owner, native, _ = self.install_events()
+        native.events.append(native.message('AUDIT', audit_event(20, syscall=93)))
+        with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
+            owner.barrier()
+        owner, native, _ = self.install_events()
+        native.events.append(('AUDIT', 0, 10, audit_event(21, syscall=93), 0))
+        native.mono = 1011
+        with self.assertRaisesRegex(topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
+            owner.barrier()
+
+    def test_v1_audit_healthy_status_changed_list_rules_denied(self):
+        owner, native, _ = self.install_events(); native.rules_changed = True
+        with self.assertRaisesRegex(topology.TopologyError, '^AUDIT_RULES_DENIED$'):
+            owner.barrier()
+
+    def test_v1_audit_empty_main_backlog_pending_delivery_unavailable(self):
+        owner, native, _ = self.install_events(EventNative(fence=False))
+        self.assertEqual(native.health_backlog, 0)
+        with self.assertRaisesRegex(topology.TopologyError,
+                                   '^NATIVE_EVENT_BARRIER_UNAVAILABLE$'):
+            owner.barrier()
+
+    def test_v1_list_rules_incomplete_foreign_or_oversized_denied(self):
+        for fault in ('incomplete', 'foreign', 'oversized'):
+            native = EventNative(); original = native.audit_rules
+            def bad(owner, sequence, fault=fault):
+                rows = list(original(owner, sequence))
+                if fault == 'incomplete': rows.pop()
+                elif fault == 'foreign': rows[0] = (42, rows[0][1], rows[0][2])
+                else: rows = rows[:1] * 17 + rows[-1:]
+                return tuple(rows)
+            native.audit_rules = bad
+            with self.subTest(fault=fault), self.assertRaisesRegex(
+                    topology.TopologyError, '^AUDIT_RULES_DENIED$'):
+                self.install_events(native)
+
+    def test_v1_source_specific_sequence_and_coalescing_limits(self):
+        owner, native, _ = self.install_events()
+        native.events += [
+            native.message('ROUTE', topology._event_nlmsg(16, 0, b'\x00' * 16)),
+            native.message('ROUTE', topology._event_nlmsg(20, 0, b'\x00' * 8)),
+            native.message('INOTIFY', struct.pack('<iIII', 2, 2, 0, 0)),
+            native.message('INOTIFY', struct.pack('<iIII', 2, 2, 0, 0)),
+        ]
+        with self.assertRaisesRegex(topology.TopologyError, '^EVENT_DRIFT$'): owner.barrier()
+        owner, native, _ = self.install_events()
+        native.events += [native.message('UEVENT', b'ACTION=change\0SEQNUM=4\0'),
+                          native.message('UEVENT', b'ACTION=change\0SEQNUM=6\0')]
+        with self.assertRaisesRegex(topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
+            owner.barrier()
+
+    def test_v1_event_fd_inventory_never_reaches_roles(self):
+        owner, native, _ = self.install_events()
+        self.assertEqual(owner.descriptor_count, 4)
+        self.assertEqual(owner.wakeup_descriptor_count, 2)
+        self.assertEqual(tuple(fd for launch in authority().role_launches
+                               for fd in (item.fd for item in launch.fds)),
+                         tuple(fd for _ in authority().role_launches for fd in range(5)))
+        self.assertFalse(hasattr(owner.selector, 'fileno'))
+
+    def test_v1_event_setup_failure_keeps_typed_cleanup(self):
+        native = EventNative(fail_at='INOTIFY')
+        with self.assertRaises(topology.TopologyError) as raised:
+            self.install_events(native)
+        self.assertTrue(hasattr(raised.exception, 'cleanup'))
+        receipt = raised.exception.cleanup.stop_owned(60000)
+        self.assertIn(receipt['status'], ('STOPPED', 'TIMEOUT'))
+        self.assertEqual(receipt['runId'], RUN)
+        self.assertGreaterEqual(len(native.closed), 4)
+
+    def test_v1_current_roles_use_real_observer_and_proxy_inventory(self):
+        # Reuse the literal /proc fixture while binding it to the exact module
+        # instance consumed by topology. This executes NativeKernelPort's real
+        # inspect_runtime -> _native_observe path; no inspect callback replaces it.
+        confinement_fixture = load(
+            'task8_event_current_confinement_fixture',
+            'tests/unit/confinement_test.py')
+        confinement_fixture.c = confinement
+        confinement_fixture.RUN = RUN
+        runtime = confinement_fixture.V1RoleTests().inspect_runtime()
+        self.assertEqual(runtime['lifecycle'], 'SERVICE')
+        self.assertEqual(runtime['inheritedFDs'], [0, 1, 2, 3, 4])
+        self.assertEqual(runtime['currentFDs'][-1]['kind'], 'PROXY_LISTENER')
+
+        # The accepted Task 7 harness reaches admitted_inherited_main and the
+        # actual serving loop. Observe while that exact loop owner is current.
+        proxy_fixture = load('task8_event_current_proxy_fixture',
+                             'tests/unit/proxy_test.py')
+        proxy_fixture.proxy = proxy
+        current = []
+        def capture(harness, owner):
+            current.append(owner.observe_current(
+                harness.nominal_binding).to_record())
+        harness = proxy_fixture.CompositionHarness(self, sink=capture).run()
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]['status'], 'CURRENT')
+        self.assertEqual([row['kind'] for row in current[0]['currentFDs'][:7]],
+            ['NULL','NULL','NULL','COMMAND','RESULT','PROXY_LISTENER',
+             'PROXY_STOP_SELECTOR'])
+        authored = inspect.getsource(topology.observe_current_roles)
+        self.assertIn('inspect_runtime', authored)
+        self.assertIn('observe_current', authored)
+
     def test_v1_first_terminal_latch_freezes_budget_before_capture_settles(self):
         for settlement in (30010, 70010):
             with self.subTest(settlement=settlement):

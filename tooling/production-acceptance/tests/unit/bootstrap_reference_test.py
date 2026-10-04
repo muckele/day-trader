@@ -374,5 +374,16 @@ class BootstrapReferenceTests(unittest.TestCase):
         self.assertIn('NLMSG_DONE', row['claim'])
         self.assertIn('allocation', row['claim'])
 
+    def test_v1_event_implementation_preserves_unavailable_native_constructor(self):
+        """The consumer must expose the reviewed blocker, never upgrade this record."""
+        self.validate(self.reference)
+        source = (ROOT / 'tooling/production-acceptance/guest/topology.py').read_text()
+        self.assertIn('class LinuxBootstrapEventSource', source)
+        self.assertIn('NATIVE_EVENT_BARRIER_UNAVAILABLE', source)
+        self.assertIn('def select_native_bootstrap_event_source', source)
+        for semantic in ('AUDIT_RULE_ENUMERATION', 'AUDIT_DELIVERY',
+                         'ROUTE_DELIVERY', 'COMBINED_EFFECT_FENCE'):
+            self.assertIn(semantic, source)
+
 if __name__ == '__main__':
     unittest.main()
