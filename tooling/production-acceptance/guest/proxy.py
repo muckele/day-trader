@@ -1,11 +1,27 @@
 """Finite guest CONNECT-to-vsock proxy with injected, offline-testable effects."""
 from dataclasses import dataclass, field
 import errno
+import hashlib
 import hmac
 import importlib.util
 import json
 import pathlib
 import re
+import secrets
+import sys
+import threading
+import time
+import weakref
+
+
+_CONFINEMENT_NAME = '_acceptance_topology_confinement'
+if _CONFINEMENT_NAME not in sys.modules:
+    _spec = importlib.util.spec_from_file_location(
+        _CONFINEMENT_NAME, pathlib.Path(__file__).with_name('confinement.py'))
+    _module = importlib.util.module_from_spec(_spec)
+    sys.modules[_CONFINEMENT_NAME] = _module
+    _spec.loader.exec_module(_module)
+CompositionBinding = sys.modules[_CONFINEMENT_NAME].CompositionBinding
 
 
 _PROTOCOL_SPEC = importlib.util.spec_from_file_location(
@@ -360,7 +376,7 @@ class _Timeline:
         tunnel.last_progress = self.mono
 
 
-def serve_proxy(config, transport):
+def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
     """Run one injected finite proxy authority; any terminal outcome is latched."""
     if type(config) is ProxyConfig and config._terminal:
         return ProxyOutcome('TERMINAL')
@@ -369,9 +385,14 @@ def serve_proxy(config, transport):
     tunnels = []
     used = 0
     outcome = 'INTERNAL_FAILURE'
+    runtime = None
     try:
         now = _sample(config.clock)
         _validate_config(config, now)
+        if composition is not None:
+            if type(composition) is not ProxyCompositionContext or composition not in _COMPOSITION_CONTEXTS:
+                raise ProxyError('ADMISSION_DENIED')
+            composition._claim(config, transport)
     except Exception:
         if type(config) is ProxyConfig:
             config._terminal = True
@@ -420,8 +441,20 @@ def serve_proxy(config, transport):
         if getattr(listener, 'endpoint', None) != (_LISTEN_ADDRESS, _LISTEN_PORT):
             raise _TerminalOutcome('LISTENER_DENIED')
 
+        if composition is not None:
+            config.sockets._ensure_selector()
+            runtime = ProxyRuntimeOwner(composition, config, transport, listener,
+                                        timeline, _COMPOSITION_SEAL)
+            composition._runtime = runtime
+            composition._send('PROXY_READY', {'observation': runtime._observe('READY').to_record()})
+            sink = runtime_sink if runtime_sink is not None else composition._policy.runtime_sink
+            if sink is not None:
+                sink(runtime)
+
         sequence = config.binding.first_sequence
         while True:
+            if runtime is not None:
+                runtime._check()
             _, monotonic = timeline.observe()
             try:
                 transport.check()
@@ -582,7 +615,7 @@ def serve_proxy(config, transport):
                 stopped = config.sockets.stop_requested()
             finally:
                 timeline.observe()
-            if stopped and not tunnels:
+            if stopped and (composition is not None or not tunnels):
                 outcome = 'COMPLETE'
                 break
             try:
@@ -602,21 +635,649 @@ def serve_proxy(config, transport):
         outcome = 'IDLE_TIMEOUT'
     except _TerminalOutcome as terminal:
         outcome = terminal.code
+    except _ChannelDenied:
+        outcome = 'CHANNEL_DENIED'
     except ProxyError:
-        outcome = 'CLOCK'
+        outcome = 'CHANNEL_DENIED' if composition is not None else 'CLOCK'
     except Exception:
         outcome = 'INTERNAL_FAILURE'
     finally:
         config._terminal = True
-        cleaned = True
-        for tunnel in tunnels:
-            cleaned = _close_tunnel(tunnel) and cleaned
-        if listener is not None:
-            cleaned = _close(listener) and cleaned
-        cleaned = _close(transport) and cleaned
+        if composition is not None:
+            composition._invalidate()
+            cleaned = composition._cleanup(passes=1)
+        else:
+            cleaned = True
+            for tunnel in tunnels:
+                cleaned = _close_tunnel(tunnel) and cleaned
+            if listener is not None:
+                cleaned = _close(listener) and cleaned
+            cleaned = _close(transport) and cleaned
         if not cleaned:
             outcome = 'CLEANUP_UNCERTAIN'
     return ProxyOutcome(outcome, used)
+
+
+# A v2 document carries correlations, never authority. Only this independently
+# supplied policy and the live serving invocation populate the nominal stores.
+_COMPOSITION_SEAL = object()
+_COMPOSITION_POLICIES = weakref.WeakSet()
+_ENTERED_POLICIES = weakref.WeakSet()
+_COMPOSITION_CONTEXTS = weakref.WeakSet()
+_CONTEXT_ORIGINALS = weakref.WeakKeyDictionary()
+_RUNTIME_OWNERS = weakref.WeakKeyDictionary()
+_OBSERVATIONS = weakref.WeakSet()
+_COMPOSITION_DOMAIN = b'acceptance:bootstrap-composition:v1\0PROXY:'
+_FD_LIMITS = {'PROXY_LISTENER': 1, 'PROXY_STOP_SELECTOR': 1,
+              'PROXY_ACCEPTED_STREAM': 16, 'PROXY_VSOCK_STREAM': 16,
+              'PROXY_CONNECT_SELECTOR': 16}
+
+
+def _canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'),
+                      ensure_ascii=True, allow_nan=False).encode('ascii')
+
+
+def _exact(value, fields):
+    if type(value) is not dict or set(value) != set(fields):
+        raise ProxyError('CHANNEL_DENIED')
+
+
+def _document(data, limit):
+    try:
+        if type(data) is not bytes or not 1 <= len(data) <= limit:
+            raise ProxyError('CHANNEL_DENIED')
+        text = data.decode('ascii')
+        _PROTOCOL._depth(text)
+        value = json.loads(text, object_pairs_hook=_PROTOCOL._pairs,
+                           parse_int=_PROTOCOL._integer,
+                           parse_float=lambda _: _PROTOCOL._invalid(),
+                           parse_constant=lambda _: _PROTOCOL._invalid())
+        # All finite v2 strings are ASCII even when JSON escape sequences were used.
+        if not json.dumps(value, ensure_ascii=False).isascii():
+            raise ProxyError('CHANNEL_DENIED')
+        return value
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        raise ProxyError('CHANNEL_DENIED') from None
+
+
+@dataclass(frozen=True, eq=False)
+class CompositionProxyPolicy:
+    binding: CompositionBinding
+    child: object = field(repr=False)
+    pipe: object = field(repr=False)
+    child_id: str
+    pipe_id: str
+    channel_key: bytes = field(repr=False)
+    admission_policy: object = field(repr=False)
+    cleanup_budget: object = field(repr=False)
+    provenance_validator: object = field(repr=False)
+    runtime_sink: object = field(repr=False)
+
+
+def qualify_composition_proxy(binding, *, child, pipe, child_id, pipe_id,
+                              channel_key, admission_policy, cleanup_budget,
+                              provenance_validator, runtime_sink=None):
+    """Trusted embedding only; no expected value is taken from incoming bytes.
+
+    The validator audits these exact original child and physical pipe owners.
+    An embedding without that provenance cannot select the composition path.
+    """
+    if (type(binding) is not CompositionBinding or child is None or pipe is None
+            or type(child_id) is not str or _HEX32_RE.fullmatch(child_id) is None
+            or type(pipe_id) is not str or _HEX32_RE.fullmatch(pipe_id) is None
+            or type(channel_key) is not bytes or len(channel_key) != 32
+            or type(admission_policy) is not NativeAdmissionPolicy
+            or admission_policy._seal is not _NATIVE_ADMISSION_SEAL
+            or not callable(provenance_validator)
+            or not callable(getattr(cleanup_budget, 'remaining', None))
+            or not callable(getattr(cleanup_budget, 'call', None))
+            or (runtime_sink is not None and not callable(runtime_sink))):
+        raise ProxyError('ADMISSION_DENIED')
+    run = admission_policy.binding
+    if (binding.runId, binding.manifestDigest, binding.configIdentity,
+            binding.rolePolicyDigest, binding.expiresAtMs) != (
+            run.run_id, run.manifest_identity, run.config_identity,
+            admission_policy.role_policy_identity, run.expires_at):
+        raise ProxyError('ADMISSION_DENIED')
+    if provenance_validator(child, pipe) is not True:
+        raise ProxyError('ADMISSION_DENIED')
+    policy = CompositionProxyPolicy(binding, child, pipe, child_id, pipe_id,
+        channel_key, admission_policy, cleanup_budget, provenance_validator, runtime_sink)
+    _COMPOSITION_POLICIES.add(policy)
+    return policy
+
+
+class _RuntimeDescriptors:
+    """Finite original acquisition ledger; never accepts caller-supplied FD rows."""
+    def __init__(self, os_module):
+        self.os, self.rows, self.endpoints = os_module, {}, {}
+        self.unresolved_reads = []
+
+    def capture_inherited(self):
+        for fd in range(5):
+            self._add(fd, 'NULL' if fd < 3 else 'COMMAND' if fd == 3 else 'RESULT')
+
+    def _facts(self, fd):
+        stat = self.os.fstat(fd)
+        handle = self.os.open('/proc/self/fdinfo/' + str(fd), self.os.O_RDONLY | self.os.O_CLOEXEC)
+        self.unresolved_reads.append(handle)
+        try:
+            data = bytearray()
+            while len(data) <= 4096:
+                part = self.os.read(handle, 4097-len(data))
+                if type(part) is not bytes: raise ProxyError('CHANNEL_DENIED')
+                if not part: break
+                data.extend(part)
+            if len(data) > 4096: raise ProxyError('CHANNEL_DENIED')
+            flags = [line.split()[1] for line in data.decode('ascii').splitlines()
+                     if line.startswith('flags:')]
+            if len(flags) != 1: raise ProxyError('CHANNEL_DENIED')
+            flags = int(flags[0], 8)
+        finally:
+            self.os.close(handle)
+            self.unresolved_reads.remove(handle)
+        if (not _plain_integer(flags, 0, _MAX_SAFE_INTEGER)
+                or any(type(v) is not int or not 0 <= v <= 99999999999999999999
+                       for v in (stat.st_dev, stat.st_ino))):
+            raise ProxyError('CHANNEL_DENIED')
+        return str(stat.st_dev), str(stat.st_ino), flags
+
+    def _add(self, fd, kind):
+        if not _plain_integer(fd, 0, 4095) or fd in self.rows:
+            raise ProxyError('CHANNEL_DENIED')
+        if kind in _FD_LIMITS and sum(row['kind'] == kind for row in self.rows.values()) >= _FD_LIMITS[kind]:
+            raise ProxyError('CHANNEL_DENIED')
+        dev, inode, flags = self._facts(fd)
+        self.rows[fd] = dict(fd=fd, kind=kind, device=dev, inode=inode, flags=flags,
+                            ownerId=secrets.token_hex(16), acquiredGeneration=1)
+
+    def acquire(self, endpoint, kind, owner, attribute):
+        fd = endpoint.fileno()
+        # Retain the original before reading any fallible descriptor facts.
+        self.endpoints[ id(endpoint) ] = (endpoint, owner, attribute, fd)
+        self._add(fd, kind)
+
+    def retire(self, endpoint):
+        original = self.endpoints.get(id(endpoint))
+        if original is None or original[0] is not endpoint:
+            raise ProxyError('CLEANUP_UNCERTAIN')
+        fd = original[3]
+        if endpoint.fileno() != -1 or str(fd) in self.os.listdir('/proc/self/fd'):
+            raise ProxyError('CLEANUP_UNCERTAIN')
+        self.endpoints.pop(id(endpoint)); self.rows.pop(fd, None)
+
+    def current(self):
+        if self.unresolved_reads: raise ProxyError('CLEANUP_UNCERTAIN')
+        for endpoint, owner, attribute, fd in self.endpoints.values():
+            if (getattr(owner, attribute) is not endpoint or endpoint.fileno() != fd
+                    or getattr(owner, 'closing', False) or getattr(owner, 'cleanup_uncertain', False)):
+                raise ProxyError('CLEANUP_UNCERTAIN')
+        listed = self.os.listdir('/proc/self/fd')
+        if set(listed) != {str(fd) for fd in self.rows} or len(listed) != len(self.rows):
+            raise ProxyError('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')
+        for fd, row in self.rows.items():
+            if self._facts(fd) != (row['device'], row['inode'], row['flags']):
+                raise ProxyError('CHANNEL_DENIED')
+        return tuple(tuple(row.items()) for _, row in sorted(self.rows.items()))
+
+
+@dataclass(frozen=True, eq=False)
+class ProxyRuntimeObservation:
+    _binding: CompositionBinding = field(repr=False)
+    _runtime_id: str
+    _sequence: int
+    _status: str
+    _observed: int
+    _rows: tuple = field(repr=False)
+
+    def to_record(self):
+        if self not in _OBSERVATIONS: raise ProxyError('CHANNEL_DENIED')
+        return dict(binding=self._binding.to_record(), runtimeId=self._runtime_id,
+                    sequence=self._sequence, status=self._status,
+                    listenAddress=_LISTEN_ADDRESS, listenPort=_LISTEN_PORT,
+                    hostCID=_HOST_CID, servicePort=_VSOCK_SERVICE, uid=10004,
+                    observedAtMonotonicMs=self._observed,
+                    currentFDs=[dict(row) for row in self._rows])
+
+
+def _config_facts(config):
+    return (config.binding, tuple(sorted(config.destinations.items())),
+            config.aggregate_bytes, config.idle_timeout_ms, config.run_timeout_ms,
+            config.phase, config.event, config.clock, config.sockets, config.native_admission)
+
+
+class ProxyRuntimeOwner:
+    def __init__(self, context, config, transport, listener, timeline, seal=None):
+        if seal is not _COMPOSITION_SEAL or context not in _COMPOSITION_CONTEXTS:
+            raise ProxyError('ADMISSION_DENIED')
+        self._context, self._config, self._transport = context, config, transport
+        self._sockets, self._listener, self._timeline = config.sockets, listener, timeline
+        self._budget = context._policy.cleanup_budget
+        self._runtime_id, self._sequence = secrets.token_hex(16), 0
+        _RUNTIME_OWNERS[self] = (context, config, transport, config.sockets, listener,
+                               timeline, self._budget, _config_facts(config),
+                               transport.binding, transport.module, transport.selectors,
+                               config.sockets.module, config.sockets.selectors)
+
+    def _check(self):
+        originals = _RUNTIME_OWNERS.get(self)
+        if originals is None: raise ProxyError('TERMINAL')
+        context, config, transport, sockets, listener, timeline, budget, facts, binding, module, selectors, smodule, sselectors = originals
+        try:
+            if (any(a is not b for a, b in zip(
+                    (self._context,self._config,self._transport,self._sockets,self._listener,self._timeline,self._budget), originals[:7]))
+                    or _config_facts(config) != facts or config.binding is not facts[0]
+                    or config._terminal or sockets.listener is not listener
+                    or transport.binding is not binding or transport.module is not module
+                    or transport.selectors is not selectors or sockets.module is not smodule
+                    or sockets.selectors is not sselectors or not transport.claimed
+                    or config.clock is not facts[7] or config.sockets is not sockets
+                    or config.native_admission is not facts[9]
+                    or (transport.host_cid,transport.service,transport.connect_timeout_ms) != (2,4050,config.idle_timeout_ms)
+                    or listener.module is not smodule
+                    or listener.endpoint != (_LISTEN_ADDRESS, _LISTEN_PORT)
+                    or tuple(map(id, transport.streams)) != tuple(map(id, transport._owned_streams))
+                    or tuple(map(id, listener.streams)) != tuple(map(id, listener._owned_streams))
+                    or transport.closed or transport.closing or listener.closed or listener.closing):
+                raise ProxyError('TERMINAL')
+            context._check(); timeline.observe()
+        except Exception:
+            context._invalidate(); raise ProxyError('TERMINAL') from None
+
+    def _observe(self, status):
+        original = _RUNTIME_OWNERS.get(self)
+        if original is None: raise ProxyError('TERMINAL')
+        context = original[0]
+        try:
+            self._check()
+            rows = context._inventory.current()
+            self._check()
+            self._sequence += 1
+            if self._sequence > _MAX_SAFE_INTEGER: raise ProxyError('TERMINAL')
+            observation = ProxyRuntimeObservation(context._policy.binding,
+                self._runtime_id, self._sequence, status, self._timeline.mono, rows)
+            _OBSERVATIONS.add(observation)
+            return observation
+        except Exception:
+            context._invalidate(); raise ProxyError('TERMINAL') from None
+
+    def observe_current(self, binding):
+        original = _RUNTIME_OWNERS.get(self)
+        if original is None: raise ProxyError('TERMINAL')
+        if type(binding) is not CompositionBinding or binding != original[0]._policy.binding:
+            original[0]._invalidate(); raise ProxyError('TERMINAL')
+        return self._observe('CURRENT')
+
+    def stop_owned(self, remaining_ms):
+        original = _RUNTIME_OWNERS.get(self)
+        if original is None: raise ProxyError('TERMINAL')
+        context, _, transport, sockets = original[:4]
+        context._invalidate()
+        if not _plain_integer(remaining_ms, 0, 60000): raise ProxyError('CLEANUP_UNCERTAIN')
+        context._clamp(context._last_mono + remaining_ms)
+        cleaned = context._cleanup()
+        return {'status': 'STOPPED' if cleaned else 'TIMEOUT', 'runId': context._policy.binding.runId}
+
+
+class ProxyCompositionContext:
+    def __init__(self, policy, config, sockets, seal=None):
+        if seal is not _COMPOSITION_SEAL or policy not in _COMPOSITION_POLICIES:
+            raise ProxyError('ADMISSION_DENIED')
+        self._policy, self._config, self._sockets = policy, config, sockets
+        self._inventory = _RuntimeDescriptors(sockets.os)
+        self._runtime, self._transport = None, None
+        self._terminal, self._terminal_sent, self._claimed = False, False, False
+        self._output_failed = False
+        self._receive, self._send_sequence = 0, 0
+        self._requests, self._stop_request = set(), ('', 0)
+        self._last_mono, self._last_wall = _sample(config.clock)[1], None
+        self._failed_at, self._real_end = None, None
+        self._cleanup_lock = threading.Lock()
+        _COMPOSITION_CONTEXTS.add(self)
+        _CONTEXT_ORIGINALS[self] = (policy, config, sockets, self._inventory,
+                                    sockets.os, sockets.selectors, None)
+
+    def _check(self):
+        if self not in _COMPOSITION_CONTEXTS or self._terminal:
+            raise ProxyError('TERMINAL')
+        original = _CONTEXT_ORIGINALS[self]
+        if any(a is not b for a,b in zip((self._policy,self._config,self._sockets,
+                self._inventory,self._sockets.os,self._sockets.selectors,self._transport),original)):
+            raise ProxyError('TERMINAL')
+        wall, mono = _sample(self._config.clock)
+        if mono < self._last_mono or (self._last_wall is not None and wall < self._last_wall):
+            self._clamp(0); raise ProxyError('CLOCK')
+        self._last_wall, self._last_mono = wall, mono
+        if wall >= self._policy.binding.expiresAtMs:
+            raise ProxyError('EXPIRED')
+        if self._policy.provenance_validator(self._policy.child, self._policy.pipe) is not True:
+            raise ProxyError('CHANNEL_DENIED')
+        return mono
+
+    def _claim(self, config, transport):
+        self._check()
+        if self._claimed or config is not self._config or config.sockets is not self._sockets or type(transport) is not NativeVsockTransport:
+            raise ProxyError('ADMISSION_DENIED')
+        self._claimed = True; self._transport = transport
+        _CONTEXT_ORIGINALS[self] = (*_CONTEXT_ORIGINALS[self][:-1], transport)
+        transport.inventory = self._inventory
+
+    def _clamp(self, end):
+        budget = _CONTEXT_ORIGINALS[self][0].cleanup_budget
+        old = getattr(budget, 'deadline', None)
+        if old is None:
+            try:
+                budget.remaining()
+                old = getattr(budget, 'deadline', None)
+            except Exception:
+                old = 0
+        budget.deadline = end if old is None else min(old, end)
+
+    def _invalidate(self, immediate=False):
+        if immediate: self._clamp(0)
+        if not self._terminal:
+            self._terminal = True
+            policy, config = _CONTEXT_ORIGINALS[self][:2]
+            try:
+                _, mono = _sample(config.clock)
+                if mono < self._last_mono: raise ProxyError('CLOCK')
+                self._last_mono = mono
+            except Exception:
+                self._clamp(0)
+            self._failed_at = self._last_mono
+            self._real_end = time.monotonic_ns()//1000000 + 60000
+            try:
+                policy.cleanup_budget.remaining()
+                real = getattr(policy.cleanup_budget, 'real_deadline', None)
+                if real is not None: self._real_end = min(self._real_end, real)
+                end = self._failed_at + 60000
+                self._clamp(end if end <= _MAX_SAFE_INTEGER else 0)
+            except Exception:
+                self._clamp(0)
+
+    def _cleanup(self, passes=2):
+        self._invalidate()
+        if not self._cleanup_lock.acquire(blocking=False): return False
+        try:
+            policy, _, sockets, inventory, _, _, transport = _CONTEXT_ORIGINALS[self]
+            # Every native close below is nonblocking. Zero/expired budgets
+            # permit only these finite attempts, never a wait or fresh window.
+            try:
+                if time.monotonic_ns()//1000000 >= self._real_end:
+                    self._clamp(0)
+                policy.cleanup_budget.remaining()
+            except Exception:
+                self._clamp(0)
+            cleaned = _cleanup_resources((sockets, transport), passes=passes)
+            # A failed close of a proc reader is retained uncertainty. Never
+            # retry an integer descriptor that the kernel may already recycle.
+            return cleaned and not inventory.unresolved_reads
+        finally:
+            self._cleanup_lock.release()
+
+    def _send(self, kind, payload, *, started=None):
+        if self._output_failed: raise ProxyError('RESULT_DENIED')
+        if self._send_sequence >= _MAX_SAFE_INTEGER: raise ProxyError('CHANNEL_DENIED')
+        if kind != 'PROXY_TERMINAL': self._check()
+        self._send_sequence += 1
+        p, _, sockets, _, os_module, selectors, _ = _CONTEXT_ORIGINALS[self]
+        value = dict(version=2, kind=kind, binding=p.binding.to_record(), childId=p.child_id,
+                     pipeId=p.pipe_id, sequence=self._send_sequence, payload=payload)
+        value['mac'] = hmac.new(p.channel_key, _COMPOSITION_DOMAIN+b'TO_BOOTSTRAP\0'+_canonical(value), hashlib.sha256).hexdigest()
+        body = _canonical(value)
+        if len(body) > 16384: raise ProxyError('RESULT_DENIED')
+        data = memoryview(len(body).to_bytes(2, 'big')+body)
+        selector = None
+        terminal = kind == 'PROXY_TERMINAL'
+        try:
+            if terminal:
+                # SelectSelector owns no kernel descriptor on pinned Linux.
+                # Terminal delivery cannot reacquire a runtime selector FD.
+                selector = selectors.SelectSelector()
+                selector.register(4, selectors.EVENT_WRITE)
+            else:
+                selector = sockets._owned_stop_selector
+            if selector is None: raise ProxyError('RESULT_DENIED')
+            while data:
+                if not terminal:
+                    mono = self._check()
+                    if started is not None and mono-started > 100: raise ProxyError('CHANNEL_DENIED')
+                # Original sole-writer Linux pipe: one writable event permits
+                # an atomic <=4096-byte write. Never wait or retry on full.
+                if not any(getattr(key, 'fd', None) == 4 and events & selectors.EVENT_WRITE
+                           for key, events in selector.select(0)):
+                    raise ProxyError('RESULT_DENIED')
+                chunk = data[:4096]
+                count = os_module.write(4, chunk)
+                if not _plain_integer(count, 1, len(chunk)): raise ProxyError('RESULT_DENIED')
+                data = data[count:]
+        except Exception:
+            self._output_failed = True
+            self._invalidate()
+            raise
+        finally:
+            if terminal and selector is not None: selector.close()
+        if kind != 'PROXY_TERMINAL':
+            mono = self._check()
+            if started is not None and mono-started > 100: raise ProxyError('CHANNEL_DENIED')
+
+    def _command(self, data, started):
+        try:
+            mono = self._check()
+            if mono-started > 100: raise ProxyError('CHANNEL_DENIED')
+            value = _document(data, 4096)
+            _exact(value, ('version','kind','binding','childId','pipeId','sequence','payload','mac'))
+            p = self._policy
+            if (type(value['version']) is not int or value['version'] != 2
+                    or CompositionBinding.from_record(value['binding']) != p.binding
+                    or value['childId'] != p.child_id or value['pipeId'] != p.pipe_id
+                    or not _plain_integer(value['sequence'], 1, _MAX_SAFE_INTEGER)
+                    or value['sequence'] != self._receive+1
+                    or type(value['mac']) is not str or _HEX64_RE.fullmatch(value['mac']) is None):
+                raise ProxyError('CHANNEL_DENIED')
+            mac = value.pop('mac')
+            expected = hmac.new(p.channel_key, _COMPOSITION_DOMAIN+b'FROM_BOOTSTRAP\0'+_canonical(value), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(mac, expected): raise ProxyError('CHANNEL_DENIED')
+            payload, kind = value['payload'], value['kind']
+            if kind == 'PROXY_CURRENT':
+                _exact(payload, ('requestId','generation'))
+                if type(payload['generation']) is not int or payload['generation'] != 1:
+                    raise ProxyError('CHANNEL_DENIED')
+            elif kind == 'PROXY_STOP':
+                _exact(payload, ('requestId','cleanupEndsAtMonotonicMs'))
+                if not _plain_integer(payload['cleanupEndsAtMonotonicMs'], 0, _MAX_SAFE_INTEGER):
+                    raise ProxyError('CHANNEL_DENIED')
+            else: raise ProxyError('CHANNEL_DENIED')
+            request_id = payload['requestId']
+            if type(request_id) is not str or _HEX32_RE.fullmatch(request_id) is None or request_id in self._requests:
+                raise ProxyError('CHANNEL_DENIED')
+            # Bound memory independently of attacker-selected request IDs.
+            if len(self._requests) >= 4096: raise ProxyError('CHANNEL_DENIED')
+            self._requests.add(request_id); self._receive = value['sequence']
+            if kind == 'PROXY_STOP':
+                self._stop_request = (request_id, self._receive)
+                self._clamp(payload['cleanupEndsAtMonotonicMs']); self._invalidate()
+                return True
+            observation = self._runtime.observe_current(p.binding)
+            self._send('PROXY_CURRENT', dict(requestId=request_id, requestSequence=self._receive,
+                observation=observation.to_record()), started=started)
+            return False
+        except Exception:
+            self._invalidate(); raise _ChannelDenied() from None
+
+    def _finish(self, outcome, cleaned):
+        self._invalidate()
+        if self._terminal_sent: raise ProxyError('TERMINAL')
+        self._terminal_sent = True
+        request_id, request_sequence = self._stop_request
+        self._send('PROXY_TERMINAL', dict(requestId=request_id, requestSequence=request_sequence,
+            runtimeId=self._runtime._runtime_id if self._runtime is not None else '',
+            code=outcome.code, usedBytes=outcome.used_bytes,
+            cleanupStatus='PROVEN' if cleaned else 'UNCERTAIN', failedAtMonotonicMs=self._failed_at))
+
+
+def _observation_record(value, binding, status):
+    _exact(value, ('binding','runtimeId','sequence','status','listenAddress','listenPort',
+                   'hostCID','servicePort','uid','observedAtMonotonicMs','currentFDs'))
+    if (CompositionBinding.from_record(value['binding']) != binding
+            or type(value['runtimeId']) is not str or _HEX32_RE.fullmatch(value['runtimeId']) is None
+            or not _plain_integer(value['sequence'], 1, _MAX_SAFE_INTEGER)
+            or value['status'] != status or value['listenAddress'] != _LISTEN_ADDRESS
+            or any(type(value[k]) is not int or value[k] != v for k,v in
+                   (('listenPort',3128),('hostCID',2),('servicePort',4050),('uid',10004)))
+            or not _plain_integer(value['observedAtMonotonicMs'], 0, _MAX_SAFE_INTEGER)
+            or type(value['currentFDs']) is not list or not 6 <= len(value['currentFDs']) <= 55):
+        raise ProxyError('CHANNEL_DENIED')
+    last, counts, owners = -1, {}, set()
+    for row in value['currentFDs']:
+        _exact(row, ('fd','kind','device','inode','flags','ownerId','acquiredGeneration'))
+        fd = row['fd']
+        if (not _plain_integer(fd, last+1, 4095)
+                or not _plain_integer(row['flags'], 0, _MAX_SAFE_INTEGER)
+                or type(row['acquiredGeneration']) is not int or row['acquiredGeneration'] != 1
+                or type(row['ownerId']) is not str or _HEX32_RE.fullmatch(row['ownerId']) is None
+                or row['ownerId'] in owners
+                or any(type(row[k]) is not str or re.fullmatch(r'0|[1-9][0-9]{0,19}', row[k]) is None
+                       for k in ('device','inode'))):
+            raise ProxyError('CHANNEL_DENIED')
+        kind = row['kind']
+        if fd < 5:
+            if fd != last+1 or kind != ('NULL' if fd<3 else 'COMMAND' if fd==3 else 'RESULT'):
+                raise ProxyError('CHANNEL_DENIED')
+        elif kind not in _FD_LIMITS: raise ProxyError('CHANNEL_DENIED')
+        counts[kind] = counts.get(kind, 0)+1; owners.add(row['ownerId']); last = fd
+    if [r['fd'] for r in value['currentFDs'][:5]] != [0,1,2,3,4] or counts.get('PROXY_LISTENER') != 1:
+        raise ProxyError('CHANNEL_DENIED')
+    if any(counts.get(kind,0)>limit for kind,limit in _FD_LIMITS.items()):
+        raise ProxyError('CHANNEL_DENIED')
+    return value
+
+
+class ProxyCompositionClient:
+    """Bootstrap-side finite correlation. Returned records are data, not owners.
+
+    The embedding sends/receives these two-byte frames on the policy's original
+    physical pipe. This class cannot adopt a new pipe or mint serving authority.
+    """
+    def __init__(self, policy, clock):
+        if type(policy) is not CompositionProxyPolicy or policy not in _COMPOSITION_POLICIES:
+            raise ProxyError('ADMISSION_DENIED')
+        self._policy, self._clock = policy, clock
+        self._sent = self._received = self._observation = 0
+        self._pending = self._runtime = None
+        self._requests, self._terminal, self._last = set(), False, None
+
+    def _check(self):
+        if self._terminal: raise ProxyError('TERMINAL')
+        now = _sample(self._clock)
+        if (self._last is not None and any(a<b for a,b in zip(now,self._last))) or now[0] >= self._policy.binding.expiresAtMs:
+            raise ProxyError('EXPIRED')
+        self._last = now
+        if self._policy.provenance_validator(self._policy.child, self._policy.pipe) is not True:
+            raise ProxyError('CHANNEL_DENIED')
+        return now[1]
+
+    def _fail(self, immediate=False, end=None):
+        budget = self._policy.cleanup_budget
+        if immediate: end = 0
+        if not self._terminal:
+            self._terminal = True
+            try:
+                mono = _sample(self._clock)[1]
+                first_end = mono+60000
+                if first_end > _MAX_SAFE_INTEGER: first_end = 0
+                end = first_end if end is None else min(end, first_end)
+                budget.remaining()
+            except Exception: end = 0
+        if end is not None:
+            old = getattr(budget, 'deadline', None)
+            budget.deadline = end if old is None else min(old, end)
+
+    def _request(self, kind, request_id, value):
+        try:
+            mono = self._check()
+            if (self._runtime is None or self._pending is not None
+                    or type(request_id) is not str or _HEX32_RE.fullmatch(request_id) is None
+                    or request_id in self._requests or len(self._requests) >= 4096
+                    or self._sent >= _MAX_SAFE_INTEGER): raise ProxyError('CHANNEL_DENIED')
+            if kind == 'PROXY_CURRENT':
+                if type(value) is not int or value != 1: raise ProxyError('CHANNEL_DENIED')
+                payload = dict(requestId=request_id, generation=value)
+            else:
+                if not _plain_integer(value, 0, _MAX_SAFE_INTEGER): raise ProxyError('CHANNEL_DENIED')
+                payload = dict(requestId=request_id, cleanupEndsAtMonotonicMs=value)
+            self._sent += 1; self._requests.add(request_id)
+            self._pending = (kind, request_id, self._sent, mono)
+            p = self._policy
+            frame = dict(version=2, kind=kind, binding=p.binding.to_record(), childId=p.child_id,
+                         pipeId=p.pipe_id, sequence=self._sent, payload=payload)
+            frame['mac'] = hmac.new(p.channel_key, _COMPOSITION_DOMAIN+b'FROM_BOOTSTRAP\0'+_canonical(frame), hashlib.sha256).hexdigest()
+            body = _canonical(frame)
+            return len(body).to_bytes(2,'big')+body
+        except Exception:
+            self._fail(); raise ProxyError('CHANNEL_DENIED') from None
+
+    def current(self, request_id, generation):
+        return self._request('PROXY_CURRENT', request_id, generation)
+
+    def stop(self, request_id, cleanup_ends_at_monotonic_ms):
+        return self._request('PROXY_STOP', request_id, cleanup_ends_at_monotonic_ms)
+
+    def accept_frame(self, wire):
+        try:
+            mono = self._check()
+            if wire == b'': self._fail(immediate=True); raise ProxyError('CHANNEL_DENIED')
+            if type(wire) is not bytes or len(wire)<3 or not 1<=int.from_bytes(wire[:2],'big')<=16384 or len(wire)!=2+int.from_bytes(wire[:2],'big'):
+                raise ProxyError('CHANNEL_DENIED')
+            f = _document(wire[2:], 16384)
+            _exact(f, ('version','kind','binding','childId','pipeId','sequence','payload','mac'))
+            p = self._policy
+            if (type(f['version']) is not int or f['version'] != 2
+                    or CompositionBinding.from_record(f['binding']) != p.binding
+                    or f['childId'] != p.child_id or f['pipeId'] != p.pipe_id
+                    or not _plain_integer(f['sequence'], 1, _MAX_SAFE_INTEGER) or f['sequence'] != self._received+1
+                    or type(f['mac']) is not str or _HEX64_RE.fullmatch(f['mac']) is None):
+                raise ProxyError('CHANNEL_DENIED')
+            mac = f.pop('mac')
+            if not hmac.compare_digest(mac, hmac.new(p.channel_key, _COMPOSITION_DOMAIN+b'TO_BOOTSTRAP\0'+_canonical(f), hashlib.sha256).hexdigest()):
+                raise ProxyError('CHANNEL_DENIED')
+            payload, kind = f['payload'], f['kind']
+            if kind == 'PROXY_TERMINAL':
+                _exact(payload, ('requestId','requestSequence','runtimeId','code','usedBytes','cleanupStatus','failedAtMonotonicMs'))
+                expected = self._pending[1:3] if self._pending and self._pending[0]=='PROXY_STOP' else ('',0)
+                if ((payload['requestId'],payload['requestSequence']) != expected
+                        or type(payload['requestSequence']) is not int
+                        or payload['runtimeId'] != (self._runtime or '')
+                        or payload['code'] not in _OUTCOME_CODES
+                        or not _plain_integer(payload['usedBytes'],0,_AGGREGATE_LIMIT)
+                        or payload['cleanupStatus'] not in ('PROVEN','UNCERTAIN')
+                        or not _plain_integer(payload['failedAtMonotonicMs'],0,mono)):
+                    raise ProxyError('CHANNEL_DENIED')
+                self._fail(end=min(_MAX_SAFE_INTEGER, payload['failedAtMonotonicMs']+60000))
+                return dict(payload)
+            if kind == 'PROXY_READY':
+                _exact(payload, ('observation',))
+                if self._runtime is not None or self._pending is not None: raise ProxyError('CHANNEL_DENIED')
+                observed = _observation_record(payload['observation'], p.binding, 'READY')
+                start = max(0, mono-100)
+            elif kind == 'PROXY_CURRENT':
+                _exact(payload, ('requestId','requestSequence','observation'))
+                if (self._pending is None or self._pending[0] != 'PROXY_CURRENT'
+                        or type(payload['requestSequence']) is not int
+                        or (payload['requestId'],payload['requestSequence']) != self._pending[1:3]):
+                    raise ProxyError('CHANNEL_DENIED')
+                observed = _observation_record(payload['observation'], p.binding, 'CURRENT')
+                start = self._pending[3]
+                if observed['runtimeId'] != self._runtime or mono-start>100: raise ProxyError('CHANNEL_DENIED')
+            else: raise ProxyError('CHANNEL_DENIED')
+            if not start <= observed['observedAtMonotonicMs'] <= mono or observed['sequence'] <= self._observation:
+                raise ProxyError('CHANNEL_DENIED')
+            self._received = f['sequence']; self._runtime = observed['runtimeId']
+            self._observation = observed['sequence']; self._pending = None
+            return observed
+        except Exception:
+            self._fail(); raise ProxyError('CHANNEL_DENIED') from None
 
 
 # The inherited worker frame is a strict authenticated-controller handoff. It
@@ -803,7 +1464,25 @@ def _write_inherited_result(os_module, run_id, outcome):
     _write_all_fd(os_module, 4, len(data).to_bytes(2, 'big') + data)
 
 
-def _decode_bootstrap(data, clock, sockets):
+def _decode_bootstrap(data, clock, sockets, composition_policy=None):
+    composition = None
+    value = _document(data, _HEADER_LIMIT)
+    if type(value) is dict and value.get('version') == 2:
+        _exact(value, ('version','kind','binding','childId','pipeId','channelKeyHex','proxyBootstrap'))
+        policy = composition_policy
+        if (type(policy) is not CompositionProxyPolicy or policy not in _COMPOSITION_POLICIES
+                or type(value['version']) is not int or value['version'] != 2
+                or value['kind'] != 'PROXY_COMPOSITION_INIT'
+                or CompositionBinding.from_record(value['binding']) != policy.binding
+                or value['childId'] != policy.child_id or value['pipeId'] != policy.pipe_id
+                or type(value['channelKeyHex']) is not str
+                or not hmac.compare_digest(value['channelKeyHex'], policy.channel_key.hex())
+                or policy.provenance_validator(policy.child, policy.pipe) is not True):
+            raise ProxyError('BOOTSTRAP_DENIED')
+        composition = policy
+        data = _canonical(value['proxyBootstrap'])
+    elif composition_policy is not None:
+        raise ProxyError('BOOTSTRAP_DENIED')
     try:
         value = _PROTOCOL.decode_document(
             data, rule=_BOOTSTRAP_RULE, definitions=_BOOTSTRAP_DEFINITIONS,
@@ -821,9 +1500,15 @@ def _decode_bootstrap(data, clock, sockets):
         value['runId'], bytes.fromhex(value['capability']), value['expiresAt'],
         value['firstSequence'], value['manifestIdentity'], value['configIdentity'],
         tuple((name, origins[name]) for name in _DESTINATIONS))
-    return ProxyConfig(
+    config = ProxyConfig(
         destinations, binding, value['aggregateBytes'], value['idleTimeoutMs'],
         value['runTimeoutMs'], clock, sockets, native_admission=admission)
+    if composition is not None:
+        _admit_native_config(config, composition.admission_policy)
+        sockets.composition = ProxyCompositionContext(composition, config, sockets, _COMPOSITION_SEAL)
+        sockets.inventory = sockets.composition._inventory
+        sockets.inventory.capture_inherited()
+    return config
 
 
 class NativeClock:
@@ -842,20 +1527,27 @@ class NativeClock:
 
 class NativeStream:
     """Owned nonblocking stream retaining recvmsg ancillary evidence."""
-    def __init__(self, endpoint, socket_module, connector=None):
+    def __init__(self, endpoint, socket_module, connector=None, inventory=None):
         self.socket = endpoint
+        self._owned_socket = endpoint
         self.module = socket_module
         self.connector = connector
+        self._owned_connector = connector
         self.connector_closed = connector is None
         self.socket_closed = False
         self.closing = False
         self.closed = False
+        self.inventory = inventory
+        self.cleanup_uncertain = False
 
     def attach_connector(self, connector):
         if self.connector is not None or self.closing:
             raise OSError('stream')
         self.connector = connector
+        self._owned_connector = connector
         self.connector_closed = False
+        if self.inventory is not None:
+            self.inventory.acquire(connector, 'PROXY_CONNECT_SELECTOR', self, 'connector')
 
     def _connected(self):
         if self.connector is None:
@@ -867,10 +1559,14 @@ class NativeStream:
             raise OSError(error, 'vsock connect')
         try:
             self.connector.close()
+            if self.inventory is not None:
+                self.inventory.retire(self.connector)
         except Exception:
+            self.cleanup_uncertain = True
             raise OSError('connector cleanup') from None
         self.connector_closed = True
         self.connector = None
+        self._owned_connector = None
         return True
 
     def read(self, max_bytes):
@@ -910,16 +1606,23 @@ class NativeStream:
             return
         self.closing = True
         error = None
-        if not self.connector_closed and self.connector is not None:
+        connector = self._owned_connector if self.inventory is not None else self.connector
+        endpoint = self._owned_socket if self.inventory is not None else self.socket
+        if not self.connector_closed and connector is not None:
             try:
-                self.connector.close()
+                connector.close()
+                if self.inventory is not None:
+                    self.inventory.retire(connector)
                 self.connector_closed = True
                 self.connector = None
+                self._owned_connector = None
             except Exception as failure:
                 error = failure
         if not self.socket_closed:
             try:
-                self.socket.close()
+                endpoint.close()
+                if self.inventory is not None:
+                    self.inventory.retire(endpoint)
                 self.socket_closed = True
             except Exception as failure:
                 if error is None:
@@ -930,15 +1633,18 @@ class NativeStream:
 
 
 class NativeListener:
-    def __init__(self, endpoint, socket_module):
+    def __init__(self, endpoint, socket_module, inventory=None):
         self.socket = endpoint
+        self._owned_socket = endpoint
         self.module = socket_module
         self.endpoint = ('127.0.0.1', 3128)
         self.streams = []
+        self._owned_streams = []
         self.closed_streams = set()
         self.socket_closed = False
         self.closing = False
         self.closed = False
+        self.inventory = inventory
 
     def accept(self):
         if self.closed or self.closing:
@@ -947,9 +1653,12 @@ class NativeListener:
             endpoint, _ = self.socket.accept()
         except BlockingIOError:
             return None
-        stream = NativeStream(endpoint, self.module)
+        stream = NativeStream(endpoint, self.module, inventory=self.inventory)
         self.streams.append(stream)
+        self._owned_streams.append(stream)
         try:
+            if self.inventory is not None:
+                self.inventory.acquire(endpoint, 'PROXY_ACCEPTED_STREAM', stream, 'socket')
             endpoint.setblocking(False)
             return stream
         except Exception:
@@ -965,7 +1674,8 @@ class NativeListener:
             return
         self.closing = True
         error = None
-        for stream in self.streams:
+        streams = self._owned_streams if self.inventory is not None else self.streams
+        for stream in streams:
             key = id(stream)
             if key in self.closed_streams:
                 continue
@@ -977,12 +1687,15 @@ class NativeListener:
                     error = failure
         if not self.socket_closed:
             try:
-                self.socket.close()
+                endpoint = self._owned_socket if self.inventory is not None else self.socket
+                endpoint.close()
+                if self.inventory is not None:
+                    self.inventory.retire(endpoint)
                 self.socket_closed = True
             except Exception as failure:
                 if error is None:
                     error = failure
-        self.closed = self.socket_closed and len(self.closed_streams) == len(self.streams)
+        self.closed = self.socket_closed and len(self.closed_streams) == len(streams)
         if error is not None:
             raise error
 
@@ -997,22 +1710,30 @@ class NativeSockets:
         self.stop_fd = stop_fd
         self.os = os_module
         self.listener = None
+        self._owned_listener = None
         self.listener_closed = True
         self.stop_selector = None
+        self._owned_stop_selector = None
         self.stop_selector_closed = True
         self.stop_data = bytearray()
         self.stopped = False
         self.closing = False
         self.closed = False
+        self.composition = None
+        self.inventory = None
+        self.command_started = None
 
     def listen(self, address, port, backlog):
         if (address, port, backlog) != ('127.0.0.1', 3128, 16) or self.listener is not None or self.closing:
             raise ProxyError('LISTENER_DENIED')
         kind = self.module.SOCK_STREAM | self.module.SOCK_NONBLOCK | self.module.SOCK_CLOEXEC
         endpoint = self.module.socket(self.module.AF_INET, kind, 0)
-        self.listener = NativeListener(endpoint, self.module)
+        self.listener = NativeListener(endpoint, self.module, self.inventory)
+        self._owned_listener = self.listener
         self.listener_closed = False
         try:
+            if self.inventory is not None:
+                self.inventory.acquire(endpoint, 'PROXY_LISTENER', self.listener, 'socket')
             endpoint.setblocking(False)
             endpoint.bind(('127.0.0.1', 3128))
             endpoint.listen(16)
@@ -1030,20 +1751,9 @@ class NativeSockets:
     def stop_requested(self):
         if self.closed or self.closing or self.stopped:
             return True
-        if self.stop_selector is None:
-            selector = self.selectors.DefaultSelector()
-            self.stop_selector = selector
-            self.stop_selector_closed = False
-            try:
-                selector.register(self.stop_fd, self.selectors.EVENT_READ)
-            except Exception:
-                try:
-                    selector.close()
-                    self.stop_selector_closed = True
-                    self.stop_selector = None
-                except Exception:
-                    pass
-                raise
+        self._ensure_selector()
+        if self.composition is not None:
+            return self._composition_command()
         if not self.stop_selector.select(0):
             return False
         data = self.os.read(self.stop_fd, 4 - len(self.stop_data))
@@ -1062,22 +1772,90 @@ class NativeSockets:
             return True
         return False
 
+    def _ensure_selector(self):
+        if self.stop_selector is None:
+            selector = self.selectors.DefaultSelector()
+            self.stop_selector = selector
+            self._owned_stop_selector = selector
+            self.stop_selector_closed = False
+            try:
+                if self.inventory is not None:
+                    self.inventory.acquire(selector, 'PROXY_STOP_SELECTOR', self, 'stop_selector')
+                selector.register(self.stop_fd, self.selectors.EVENT_READ)
+                if self.composition is not None:
+                    selector.register(4, self.selectors.EVENT_WRITE)
+            except Exception:
+                try:
+                    selector.close()
+                    if self.inventory is not None:
+                        self.inventory.retire(selector)
+                    self.stop_selector_closed = True
+                    self.stop_selector = None
+                    self._owned_stop_selector = None
+                except Exception:
+                    pass
+                raise
+
+    def _composition_command(self):
+        context = self.composition
+        try:
+            # Read at most one finite command per loop. Partial commands retain
+            # their initial deadline; no next iteration renews it.
+            consumed = 0
+            while consumed < 4098:
+                mono = context._check()
+                if self.command_started is not None and mono-self.command_started > 100:
+                    raise _ChannelDenied()
+                if not any(getattr(key,'fd',None)==3 and events & self.selectors.EVENT_READ
+                           for key,events in self.stop_selector.select(0)): return False
+                target = 2 if len(self.stop_data) < 2 else (
+                    4 if self.stop_data[:2] == b'ST' else 2+int.from_bytes(self.stop_data[:2], 'big'))
+                if not 2 <= target <= 4098: raise _ChannelDenied()
+                data = self.os.read(3, target-len(self.stop_data))
+                if type(data) is not bytes or len(data) > target-len(self.stop_data): raise _ChannelDenied()
+                if not data:
+                    context._invalidate(immediate=True)
+                    if self.stop_data: raise _ChannelDenied()
+                    self.stopped = True; return True
+                if self.command_started is None: self.command_started = mono
+                self.stop_data.extend(data); consumed += len(data)
+                if len(self.stop_data) < target or target == 2:
+                    if len(self.stop_data) == 2 and self.stop_data != b'ST':
+                        size = int.from_bytes(self.stop_data, 'big')
+                        if not 1 <= size <= 4096: raise _ChannelDenied()
+                    continue
+                if self.stop_data[:2] == b'ST':
+                    if self.stop_data != b'STOP': raise _ChannelDenied()
+                    context._invalidate(immediate=True); self.stopped = True; return True
+                body = bytes(self.stop_data[2:]); started = self.command_started
+                self.stop_data.clear(); self.command_started = None
+                self.stopped = context._command(body, started)
+                return self.stopped
+            return False
+        except Exception:
+            context._invalidate(); raise _ChannelDenied() from None
+
     def close(self):
         if self.closed:
             return
         self.closing = True
         error = None
-        if self.listener is not None and not self.listener_closed:
+        listener = self._owned_listener if self.inventory is not None else self.listener
+        selector = self._owned_stop_selector if self.inventory is not None else self.stop_selector
+        if listener is not None and not self.listener_closed:
             try:
-                self.listener.close()
+                listener.close()
                 self.listener_closed = True
             except Exception as failure:
                 error = failure
-        if not self.stop_selector_closed and self.stop_selector is not None:
+        if not self.stop_selector_closed and selector is not None:
             try:
-                self.stop_selector.close()
+                selector.close()
+                if self.inventory is not None:
+                    self.inventory.retire(selector)
                 self.stop_selector_closed = True
                 self.stop_selector = None
+                self._owned_stop_selector = None
             except Exception as failure:
                 if error is None:
                     error = failure
@@ -1104,7 +1882,9 @@ class NativeVsockTransport:
         self.closing = False
         self.closed = False
         self.streams = []
+        self._owned_streams = []
         self.closed_streams = set()
+        self.inventory = None
 
     def authenticate(self, binding):
         if self.closed or self.closing or self.claimed or not _same_binding(self.binding, binding):
@@ -1123,9 +1903,12 @@ class NativeVsockTransport:
             raise OSError('transport')
         kind = self.module.SOCK_STREAM | self.module.SOCK_NONBLOCK | self.module.SOCK_CLOEXEC
         endpoint = self.module.socket(self.module.AF_VSOCK, kind, 0)
-        stream = NativeStream(endpoint, self.module)
+        stream = NativeStream(endpoint, self.module, inventory=self.inventory)
         self.streams.append(stream)
+        self._owned_streams.append(stream)
         try:
+            if self.inventory is not None:
+                self.inventory.acquire(endpoint, 'PROXY_VSOCK_STREAM', stream, 'socket')
             endpoint.setblocking(False)
             result = endpoint.connect_ex((2, 4050))
             pending = {errno.EINPROGRESS, errno.EALREADY, errno.EWOULDBLOCK}
@@ -1152,7 +1935,8 @@ class NativeVsockTransport:
             return
         self.closing = True
         error = None
-        for stream in self.streams:
+        streams = self._owned_streams if self.inventory is not None else self.streams
+        for stream in streams:
             key = id(stream)
             if key in self.closed_streams:
                 continue
@@ -1162,7 +1946,7 @@ class NativeVsockTransport:
             except Exception as failure:
                 if error is None:
                     error = failure
-        self.closed = len(self.closed_streams) == len(self.streams)
+        self.closed = len(self.closed_streams) == len(streams)
         if error is not None:
             raise error
 
@@ -1205,10 +1989,10 @@ def qualify_native_bindings(os_module, socket_module, selectors_module, time_mod
                           runner, _NATIVE_BINDINGS_SEAL)
 
 
-def _cleanup_resources(resources):
+def _cleanup_resources(resources, passes=2):
     """Two finite passes retry only owners whose preceding close raised."""
     pending = [resource for resource in resources if resource is not None]
-    for _ in range(2):
+    for _ in range(passes):
         unresolved = []
         for resource in pending:
             try:
@@ -1221,13 +2005,14 @@ def _cleanup_resources(resources):
     return not pending
 
 
-def _inherited_entry(arguments, bindings, policy):
+def _inherited_entry(arguments, bindings, policy, composition_policy=None):
     if tuple(arguments) != ('--inherited',):
         return 64
     if type(bindings) is not NativeBindings or bindings._seal is not _NATIVE_BINDINGS_SEAL:
         return 1
     sockets = transport = None
     config = outcome = None
+    composition = None
     result_ok = False
     try:
         # Task8 does not publish FD3 until it has consumed this exact worker
@@ -1242,11 +2027,21 @@ def _inherited_entry(arguments, bindings, policy):
             raise ProxyError('ADMISSION_DENIED') from None
         if type(admitted) is not bool or not admitted:
             raise ProxyError('ADMISSION_DENIED')
+        if composition_policy is not None:
+            if (type(composition_policy) is not CompositionProxyPolicy
+                    or composition_policy not in _COMPOSITION_POLICIES
+                    or composition_policy in _ENTERED_POLICIES
+                    or composition_policy.admission_policy is not policy
+                    or composition_policy.provenance_validator(composition_policy.child, composition_policy.pipe) is not True
+                    or bindings.runner is not serve_proxy):
+                raise ProxyError('ADMISSION_DENIED')
+            _ENTERED_POLICIES.add(composition_policy)
         clock = NativeClock(bindings.time)
         sockets = NativeSockets(bindings.socket, bindings.selectors,
                                 stop_fd=3, os_module=bindings.os)
         frame = _read_inherited_frame(bindings.os)
-        config = _decode_bootstrap(frame, clock, sockets)
+        config = _decode_bootstrap(frame, clock, sockets, composition_policy)
+        composition = sockets.composition
         if (type(config.native_admission) is not NativeAdmission
                 or config.native_admission.command_fd != 3
                 or config.native_admission.result_fd != 4):
@@ -1255,17 +2050,30 @@ def _inherited_entry(arguments, bindings, policy):
         transport = NativeVsockTransport(
             bindings.socket, bindings.selectors, config.binding, 2, 4050,
             config.idle_timeout_ms)
-        outcome = bindings.runner(config, transport)
+        outcome = (serve_proxy(config, transport, composition=composition) if composition is not None
+                   else bindings.runner(config, transport))
     except Exception:
-        outcome = None
+        # A validated initializer can fail during descriptor observation. The
+        # context was registered before that acquisition and retains uncertainty.
+        if sockets is not None and sockets.composition is not None:
+            composition = sockets.composition
+            config = _CONTEXT_ORIGINALS[composition][1]
+        outcome = ProxyOutcome('CHANNEL_DENIED') if composition is not None else None
 
-    cleaned = _cleanup_resources((sockets, transport))
+    if composition is not None:
+        composition._invalidate()
+
+    cleaned = (composition._cleanup() if composition is not None
+               else _cleanup_resources((sockets, transport)))
     if not cleaned and config is not None:
         used = outcome.used_bytes if type(outcome) is ProxyOutcome else 0
         outcome = ProxyOutcome('CLEANUP_UNCERTAIN', used)
     if config is not None and outcome is not None:
         try:
-            _write_inherited_result(bindings.os, config.binding.run_id, outcome)
+            if composition is not None:
+                composition._finish(outcome, cleaned)
+            else:
+                _write_inherited_result(bindings.os, config.binding.run_id, outcome)
             result_ok = True
         except Exception:
             result_ok = False
@@ -1284,9 +2092,9 @@ def inherited_main(arguments, bindings):
     return _inherited_entry(arguments, bindings, None)
 
 
-def admitted_inherited_main(arguments, bindings, policy):
+def admitted_inherited_main(arguments, bindings, policy, *, composition_policy=None):
     """Injected future-composition entry requiring independent nominal policy."""
-    return _inherited_entry(arguments, bindings, policy)
+    return _inherited_entry(arguments, bindings, policy, composition_policy)
 
 
 def _system_bindings():
