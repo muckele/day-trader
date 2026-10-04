@@ -761,6 +761,18 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             self.assertEqual(composition._generation,2)
             self.assertIsNone(composition._proof);self.assertIsNone(composition._handoff)
 
+    def test_v1_composed_handoff_retains_distinct_command_result_identities(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            proof=composition.begin()
+            runtime=json.loads(proof.handoff)['payload']['composition']['roleRuntime']
+            self.assertEqual([row['role'] for row in runtime],list(c.UIDS))
+            for row in runtime:
+                command,result=row['currentFDs'][3:5]
+                self.assertNotEqual(
+                    (command['device'],command['inode']),
+                    (result['device'],result['inode']),row['role'])
+
     def test_v1_controller_forwarder_owns_prepare_and_commit_state_change(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack:

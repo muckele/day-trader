@@ -1192,6 +1192,9 @@ def validate_runtime_observation(value,handoff,lifecycle,*,_allow_proxy_pre_list
     if [row['kind'] for row in value['currentFDs'][:5]]!=[
             'NULL','NULL','NULL','COMMAND','RESULT']:
         _fail('FD_DENIED')
+    if len({(row['device'],row['inode'])
+            for row in value['currentFDs'][3:5]})!=2:
+        _fail('FD_DENIED')
     if lifecycle=='WAITING' and len(value['currentFDs'])!=5:
         _fail('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')
     if handoff.launch.role!='PROXY' and any(

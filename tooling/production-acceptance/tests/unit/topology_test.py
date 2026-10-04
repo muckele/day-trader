@@ -342,6 +342,9 @@ def literal_runtime_role(confinement_fixture, role, lifecycle, runtime_owner,
     old_read, old_list = bindings.read_file, bindings.os.listdir
     old_link, old_stat = bindings.os.readlink, bindings.os.stat
     rows = {row['fd']: row for row in desired_rows}
+    role_index = list(confinement.UIDS).index(role)
+    inherited = {fd:types.SimpleNamespace(
+        st_dev=2,st_ino=1000 + role_index * 10 + fd) for fd in range(5)}
     active = {'fds': [0, 1, 2, 3, 4]}
 
     def read(path, *args):
@@ -370,6 +373,7 @@ def literal_runtime_role(confinement_fixture, role, lifecycle, runtime_owner,
             row = rows.get(fd)
             if row is not None:
                 return types.SimpleNamespace(st_dev=int(row['device']), st_ino=int(row['inode']))
+            if fd in inherited:return inherited[fd]
         value = old_stat(path)
         if path.endswith('/exe'):
             return types.SimpleNamespace(st_dev=1, st_ino=999)
@@ -2183,6 +2187,11 @@ class TopologyTests(unittest.TestCase):
             .__setitem__('lostCount',True))
         invalid_composition(lambda e:e['payload']['composition']['roleRuntime'][3]
             ['currentFDs'].pop())
+        invalid_composition(lambda e:e['payload']['composition']['roleRuntime'][0]
+            ['currentFDs'][4].update(device=e['payload']['composition']
+                ['roleRuntime'][0]['currentFDs'][3]['device'],
+                inode=e['payload']['composition']['roleRuntime'][0]
+                ['currentFDs'][3]['inode']))
         invalid_composition(lambda e:e['payload']['composition']['binding']
             .__setitem__('epoch',2))
         invalid_composition(lambda e:e['payload']['composition']

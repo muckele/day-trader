@@ -2286,6 +2286,8 @@ def _runtime_wire_row(value, role, handoff=None, expected_lifecycle=None):
             or [row['kind'] for row in rows[:5]] !=
                ['NULL','NULL','NULL','COMMAND','RESULT']):
         _fail('HANDOFF_DENIED')
+    if len({(row['device'],row['inode']) for row in rows[3:5]}) != 2:
+        _fail('HANDOFF_DENIED')
     proxy_counts = {kind:sum(row['kind'] == kind for row in rows)
                     for kind in _CONFINEMENT._RUNTIME_FD_KINDS
                     if kind.startswith('PROXY_')}
