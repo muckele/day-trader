@@ -10,9 +10,11 @@ import hashlib
 import hmac
 import json
 import importlib.util
+import inspect
 from pathlib import Path
 import struct
 import sys
+import threading
 import types
 import unittest
 
@@ -109,6 +111,8 @@ class V1RoleTests(unittest.TestCase):
         self.assertEqual(dict(owner.to_prepare_result(),grantId='x'),dict(proof,grantId='x'))
         with self.assertRaises(TypeError):json.dumps(owner)
         with self.assertRaises(c.ConfinementError):roles.commit_browser(dict(owner.to_prepare_result()))
+        with self.assertRaises(c.ConfinementError):roles.commit_browser(owner)
+        roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof)
         self.assertEqual(roles.commit_browser(owner),{'status':'ACTIVE','generation':1})
         self.assertEqual([v['action'] for _,v in writes if 'action' in v],['PREPARE','COMMIT','CURRENT'])
         with self.assertRaises(c.ConfinementError):roles.commit_browser(owner)
@@ -196,6 +200,85 @@ class V1RoleTests(unittest.TestCase):
         roles,k,budget,proof,writes,init=self.setup_roles();k.read_role=lambda owned,limit:b''
         with self.assertRaises(c.ConfinementError):roles.prepare_browser(proof)
         self.assertEqual(budget.remaining(),0)
+
+    def test_v1_malformed_prepare_terminally_consumes_original_owner(self):
+        roles,k,budget,proof,writes,init=self.setup_roles()
+        with self.assertRaises(c.ConfinementError) as raised:roles.prepare_browser(dict(proof,extra=True))
+        self.assertIs(raised.exception.cleanup,roles)
+        self.assertIsNotNone(budget.deadline)
+        with self.assertRaises(c.ConfinementError):roles.prepare_browser(proof)
+        self.assertFalse(any(v.get('action')=='PREPARE' for _,v in writes))
+
+    def test_v1_cancel_eof_retains_owner_and_nonblocking_shared_cleanup(self):
+        for native_error,delivered in ((False,None),(True,None),(False,223),(True,223)):
+            with self.subTest(native_error=native_error,delivered=delivered):
+                roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof);allowances=[]
+                def eof(*args):
+                    if native_error:raise c.ConfinementError('CHANNEL_EOF')
+                    return b''
+                k.read_role=eof
+                k.stop_owned=lambda owned,ms:allowances.append(ms) or dict(status='TIMEOUT',pid=owned.pid,run_id=RUN)
+                with self.assertRaisesRegex(c.ConfinementError,'CHANNEL_EOF') as raised:roles.cancel(delivered)
+                self.assertIs(raised.exception.cleanup,owner);self.assertEqual(budget.remaining(),0)
+                self.assertEqual(owner.stop_owned(60000)['status'],'TIMEOUT')
+                self.assertEqual(allowances,[0]*4);budget.clock.mono+=1
+                self.assertEqual(owner.stop_owned(60000)['status'],'TIMEOUT');self.assertEqual(allowances,[0]*8)
+
+    def test_v1_python_clock_loss_keeps_original_nonblocking_cleanup(self):
+        for fault in ('wall','mono','throw','shape'):
+            with self.subTest(fault=fault):
+                roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof);allowances=[]
+                if fault in ('wall','mono'):setattr(budget.clock,fault,99)
+                elif fault=='shape':budget.clock.sample=lambda:[]
+                else:
+                    def failed_clock():raise OSError('inert clock failure')
+                    budget.clock.sample=failed_clock
+                with self.assertRaises(c.ConfinementError) as raised:roles.commit_browser(owner)
+                self.assertIs(raised.exception.cleanup,owner);self.assertEqual(budget.deadline,0)
+                budget.clock=V1Clock()
+                k.stop_owned=lambda owned,ms:allowances.append(ms) or dict(status='STOPPED',pid=owned.pid,run_id=RUN)
+                self.assertEqual(owner.stop_owned(60000)['status'],'STOPPED');self.assertEqual(allowances,[0]*4)
+                self.assertEqual(owner.stop_owned(60000)['status'],'STOPPED');self.assertEqual(allowances,[0]*4)
+                with self.assertRaises(c.ConfinementError):roles.commit_browser(owner)
+
+    def test_v1_original_wait_and_stop_reserve_atomically(self):
+        for second_wait in (True,False):
+            with self.subTest(second_wait=second_wait):
+                roles,k,budget,proof,writes,init=self.setup_roles()
+                lines,start=inspect.getsourcelines(c.OriginalRoleSet._stop_one)
+                pause_line=start+next(i for i,line in enumerate(lines) if 'self._busy.add(id(owned))' in line)
+                paused=threading.Event();resume=threading.Event();entered=threading.Event();overlap=threading.Event();release=threading.Event();second_started=threading.Event()
+                guard=threading.Lock();active=0;peak=0;outcomes=[]
+                def trace(frame,event,arg):
+                    if frame.f_code is c.OriginalRoleSet._stop_one.__code__ and event=='line' and frame.f_lineno==pause_line:
+                        paused.set();resume.wait(2)
+                    return trace
+                def callback(owned,ms):
+                    nonlocal active,peak
+                    if owned.role!='BROWSER':return dict(status='STOPPED',pid=owned.pid,run_id=RUN)
+                    with guard:
+                        active+=1;peak=max(peak,active)
+                        if active==2:overlap.set()
+                    entered.set();release.wait(2)
+                    with guard:active-=1
+                    return dict(status='EXITED',pid=owned.pid,run_id=RUN)
+                k.wait_owned=callback;k.stop_owned=callback
+                def invoke(first):
+                    if first:sys.settrace(trace)
+                    else:second_started.set()
+                    try:outcomes.append(roles.wait_exit('BROWSER',100) if first or second_wait else roles.stop_owned(100))
+                    except c.ConfinementError as error:outcomes.append(str(error))
+                    finally:sys.settrace(None)
+                first=threading.Thread(target=invoke,args=(True,));second=threading.Thread(target=invoke,args=(False,));first.start()
+                try:
+                    self.assertTrue(paused.wait(1));second.start();self.assertTrue(second_started.wait(1))
+                    entered.wait(.05);resume.set();self.assertTrue(entered.wait(1));overlap.wait(.1)
+                finally:
+                    resume.set();release.set();first.join(2)
+                    if second.ident is not None:second.join(2)
+                self.assertFalse(first.is_alive());self.assertFalse(second.is_alive());self.assertEqual(peak,1)
+                self.assertTrue('CLEANUP_UNCERTAIN' in outcomes or any(isinstance(v,dict) and v['status']=='TIMEOUT' for v in outcomes))
+                self.assertEqual(budget.deadline,60100)
 
     def test_v1_cancel_at_each_forwarding_boundary_denies_commit(self):
         for action in ('PREPARE','COMMIT','CURRENT'):

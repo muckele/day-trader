@@ -165,3 +165,74 @@ test('v1_event_generation_is_rechecked_after_final_channel_drain',async()=>{
   const tx=await f.bound.prepareBrowser(f.proof);
   await assert.rejects(tx.port.activateOnce(tx.grant));assert.equal(atFinal,true);assert.equal(f.launches.length,0);
 });
+
+test('v1_rejected_worker_entry_terminally_consumes_original_reservation',async()=>{
+  for(const misuse of ['bytes','mac','sequence','action','payload','foreign','copy','callback']){
+    const f=await fixture().init(),tx=await f.bound.prepareBrowser(f.proof);
+    if(['foreign','copy','callback'].includes(misuse)){
+      await assert.rejects(f.workerBinding.commitFixedBrowserLaunch(misuse==='foreign'?tx:misuse==='copy'?{...f.reservation}:f.reservation,misuse==='callback'?null:()=>assert.fail('foreign launch')));
+    }else{
+      let record=f.cancelRecord();
+      if(misuse==='bytes')record=Buffer.from('bad');
+      else{const v=JSON.parse(record.subarray(4));if(misuse==='sequence')v.sequence++;if(misuse==='action')v.action='UNKNOWN';if(misuse==='payload')v.payload.generation=2;delete v.mac;v.mac=misuse==='mac'?'0'.repeat(64):mac(v,f.workerFacts.channelKeyHex,'BROWSER','FROM_BOOTSTRAP');record=frame(v);}
+      await assert.rejects(f.workerBinding.cancel(record));
+    }
+    await assert.rejects(tx.port.activateOnce(tx.grant));assert.equal(f.launches.length,0,misuse);
+    assert.ok(f.stops.some(x=>x[0]==='worker-family'),misuse+' retains original cleanup');
+  }
+});
+test('v1_early_controller_prepare_failure_cleans_original_child_and_cannot_retry',async()=>{
+  const f=await fixture().init();
+  await assert.rejects(f.bound.prepareBrowser({...f.proof,extra:true}));
+  assert.ok(f.stops.some(x=>x[0]===map[1].childId));
+  await assert.rejects(f.bound.prepareBrowser(f.proof));assert.equal(f.launches.length,0);
+  assert.equal(f.stops.filter(x=>x[0]===map[1].childId).length,1,'successful original stop is not repeated');
+});
+test('v1_clock_failure_after_acquisition_cannot_bypass_original_cleanup',async()=>{
+  const faults=[f=>{f.clock.mono=99;},f=>{f.clock.wall=99;},f=>{f.clock.sample=()=>{throw Error('clock failed');};},f=>{f.clock.sample=()=>[];}];
+  for(const fault of faults)for(const phase of ['sync','pending-before','pending-after']){
+    let entered,settle;const ready=new Promise(r=>{entered=r;});
+    const f=await fixture({hooks:{launch(f,owner){if(phase==='sync'){fault(f);return owner;}entered();return new Promise(r=>{settle=()=>r(owner);});},started(f){if(phase==='pending-after')fault(f);}}}).init();
+    const tx=await f.bound.prepareBrowser(f.proof),activation=tx.port.activateOnce(tx.grant);
+    if(phase!=='sync'){await ready;if(phase==='pending-before'){fault(f);assert.equal((await f.workerBinding.stopOwned(100)).status,'TIMEOUT');}settle();}
+    await assert.rejects(activation);assert.equal(f.launches.length,1);
+    for(const target of ['browser','worker-family',map[1].childId]){
+      const stops=f.stops.filter(x=>x[0]===target);assert.equal(stops.length,1,target+' cleaned once');assert.equal(stops[0][1],0,target+' nonblocking after clock loss');
+    }
+  }
+});
+test('v1_failed_browser_stop_retains_owner_and_still_stops_original_family',async()=>{
+  let calls=0;
+  const f=await fixture({hooks:{launch(f,owner){owner.stopOwned=async ms=>{calls++;assert.equal(ms,0);throw Error('pending original browser');};f.clock.mono=99;return owner;}}}).init();
+  const tx=await f.bound.prepareBrowser(f.proof);let error;
+  try{await tx.port.activateOnce(tx.grant);}catch(e){error=e;}
+  assert.equal(calls,1);assert.ok(f.stops.some(x=>x[0]==='worker-family'));
+  assert.equal(typeof error?.cause?.cleanup?.stopOwned,'function','original worker cleanup remains local on the typed cause');
+  f.clock.mono=100; // Clock recovery must not restore the failed cleanup end.
+  await assert.rejects(error.cause.cleanup.stopOwned(10));assert.equal(calls,2);
+});
+test('v1_opaque_post_launch_failure_cannot_replace_typed_cleanup_chain',async()=>{
+  for(const cause of [undefined,Object.freeze(new Error('inert transport failure'))]){
+    const f=await fixture({hooks:{started(){throw cause;}}}).init(),tx=await f.bound.prepareBrowser(f.proof);let error;
+    try{await tx.port.activateOnce(tx.grant);}catch(e){error=e;}
+    assert.equal(f.launches.length,1);assert.ok(f.stops.some(x=>x[0]==='browser'));
+    assert.equal(typeof error?.cause?.cleanup?.stopOwned,'function');
+    assert.equal(error.cause.cause,cause);
+  }
+});
+test('v1_failure_report_keeps_first_terminal_instant_before_compensation',async()=>{
+  const sent=[];
+  const f=await fixture({hooks:{launch(f,owner){f.clock.wall=9000;const stop=owner.stopOwned;owner.stopOwned=async ms=>{f.clock.mono+=10;return stop(ms);};return owner;}}}).init();
+  const write=f.workerChannel.write;f.workerChannel.write=async bytes=>{sent.push(JSON.parse(bytes.subarray(4)));return write(bytes);};
+  const tx=await f.bound.prepareBrowser(f.proof);await assert.rejects(tx.port.activateOnce(tx.grant));
+  assert.equal(sent.find(v=>v.action==='FAILED').payload.failedAtMonotonicMs,100);
+});
+test('v1_malformed_current_does_not_fabricate_correlated_failed_reply',async()=>{
+  const f=await fixture().init(),sent=[],tx=await f.bound.prepareBrowser(f.proof);
+  const read=f.workerChannel.read,write=f.workerChannel.write;
+  f.workerChannel.read=async()=>{const bytes=await read();return JSON.parse(bytes.subarray(4)).action==='CURRENT'?Buffer.from('bad'):bytes;};
+  f.workerChannel.write=async bytes=>{sent.push(JSON.parse(bytes.subarray(4)));return write(bytes);};
+  await assert.rejects(tx.port.activateOnce(tx.grant));assert.equal(f.launches.length,0);
+  assert.ok(f.stops.some(x=>x[0]==='worker-family'));
+  assert.equal(sent.some(v=>v.action==='FAILED'),false,'an unreadable CURRENT cannot borrow the previous COMMIT sequence');
+});

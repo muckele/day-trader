@@ -75,13 +75,13 @@ function adoptRole(kind, handoff) {
           (kind === 'VERIFIER' ? !object(g.session) : g.session !== null)) fail('ACTIVATION_DENIED');
       await r.authority.activate(r.expected.child,grant);
       current('ACTIVATION_DENIED',false);
-    } catch {
+    } catch (cause) {
       let stopped;
       try { stopped=await cleanup.stopOwned(r.authority.cleanupBudget ? r.authority.cleanupBudget.remaining() : 120000); } catch { /* explicitly uncertain below */ }
       if (!stopped || !['STOPPED','EXITED'].includes(stopped.status)) {
-        const e=new Error('CLEANUP_UNCERTAIN'); e.code='CLEANUP_UNCERTAIN'; e.cleanup=cleanup; throw e;
+        const e=new Error('CLEANUP_UNCERTAIN',{cause}); e.code='CLEANUP_UNCERTAIN'; e.cleanup=cleanup; throw e;
       }
-      fail('ACTIVATION_DENIED');
+      const e=new Error('ACTIVATION_DENIED',{cause});e.code='ACTIVATION_DENIED';throw e;
     }
     return privateHandle({privatePipe:r.expected.privatePipe,
       waitExit:cleanup.waitExit, stopOwned:cleanup.stopOwned});
@@ -133,20 +133,36 @@ function checkpoint(v,binding,generation,original) {
   if(original&&(v.sourceIdentity!==original.sourceIdentity||v.sequence<original.sequence||v.lostCount!==original.lostCount))fail('AUTHORITY_LOST');return v;
 }
 function clockReader(clock) {
-  if(!clock||typeof clock.sample!=='function')fail('CLOCK');let last;
-  return ()=>{const s=clock.sample();if(!Array.isArray(s)||s.length!==2)fail('CLOCK');s.forEach(n=>integer(n,0));if(last&&(s[0]<last[0]||s[1]<last[1]))fail('CLOCK');last=[...s];return last;};
+  if(!clock||typeof clock.sample!=='function')fail('CLOCK');let last,failed=false;
+  return ()=>{
+    if(failed)fail('CLOCK');
+    try{const s=clock.sample();if(!Array.isArray(s)||s.length!==2)fail('CLOCK');s.forEach(n=>integer(n,0));if(last&&(s[0]<last[0]||s[1]<last[1]))fail('CLOCK');last=[...s];return last;}
+    catch{failed=true;fail('CLOCK');}
+  };
 }
 function cleanupBoundary(budget,sample) {
   if(!budget||typeof budget.remaining!=='function'||typeof budget.clamp!=='function')fail('CLEANUP_UNCERTAIN');
-  let end=null,realEnd=null;const busy=new Map();
+  let end=null,realEnd=null,nonblocking=false;const busy=new Map();
+  function revokeWait() {
+    nonblocking=true;end=0;realEnd=0;
+    // Admission clock loss must never disable the retained cleanup capability.
+    // Zero is absolute, so even a later clock recovery cannot renew this end.
+    try{budget.clamp(0);}catch{}
+    return 0;
+  }
   function remaining(delivered) {
-    const now=sample()[1],real=Number(process.hrtime.bigint()/1000000n);
-    if(delivered!==undefined){integer(delivered,0);budget.clamp(delivered);end=Math.min(end??delivered,delivered);}
-    const allowance=integer(budget.remaining(),0);
-    if(end===null)end=now+Math.min(60000,allowance);
-    end=Math.min(end,integer(budget.deadline,0));
-    if(realEnd===null)realEnd=real+Math.max(0,end-now);
-    return Math.max(0,Math.min(end-now,realEnd-real,allowance));
+    if(delivered!==undefined)integer(delivered,0);
+    if(nonblocking)return 0;
+    const real=Number(process.hrtime.bigint()/1000000n);
+    try{
+      const now=sample()[1];
+      if(delivered!==undefined){budget.clamp(delivered);end=Math.min(end??delivered,delivered);}
+      const allowance=integer(budget.remaining(),0);
+      if(end===null)end=now+Math.min(60000,allowance);
+      end=Math.min(end,integer(budget.deadline,0));
+      realEnd=Math.min(realEnd??Infinity,real+Math.max(0,end-now));
+      return Math.max(0,Math.min(end-now,realEnd-real,allowance));
+    }catch{return revokeWait();}
   }
   async function call(owner,fn,requested=60000) {
     if(busy.has(owner))fail('CLEANUP_UNCERTAIN');const ms=Math.min(integer(requested,0),remaining());
@@ -155,7 +171,7 @@ function cleanupBoundary(budget,sample) {
     try {return await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('CLEANUP_UNCERTAIN'),{code:'CLEANUP_UNCERTAIN'})),ms);})]);}
     finally{clearTimeout(timer);}
   }
-  return {remaining,call,get deadline(){remaining();return end;}};
+  return {remaining,call,revokeWait,get deadline(){remaining();return end;}};
 }
 function auditSnapshot(channel,role,binding,expected) {
   if(!channel||['audit','read','write'].some(k=>typeof channel[k]!=='function')||channels.has(channel))fail('CHANNEL_DENIED');
@@ -195,13 +211,13 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
   const binding=bindingRecord(input),sample=clockReader(clock),cleanup=cleanupBoundary(cleanupBudget,sample);
   const wire=await originalChannel(channel,'CONTROLLER',binding);let terminal=false,inflight=false,prepared=false,reading=false,cancelling=false;
   const pending=new Map();
-  const local=new Map(),grants=new WeakMap();
+  const local=new Map(),grants=new WeakMap(),stopped=new WeakSet();
   function current(p) {wire.check();const [wall,mono]=sample();if(terminal||wall>=binding.expiresAtMs||(p&&(p.generation!==1||wall>=p.expiresAtMs||mono>=p.monotonicDeadlineMs)))fail('AUTHORITY_LOST');}
   async function responses() {
     if(reading)return;reading=true;
     try{while(pending.size){const f=await wire.receive();exact(f.payload,['requestSequence','result']);const slot=pending.get(f.payload.requestSequence);
       if(!slot||f.action!=='RESULT'||f.role!==slot.role)fail('FRAME_DENIED');pending.delete(f.payload.requestSequence);slot.resolve(f.payload.result);}}
-    catch(e){terminal=true;if(e.code==='CHANNEL_EOF')cleanup.remaining(sample()[1]);for(const slot of pending.values())slot.reject(e);pending.clear();}
+    catch(e){terminal=true;if(e.code==='CHANNEL_EOF')cleanup.revokeWait();else cleanup.remaining();for(const slot of pending.values())slot.reject(e);pending.clear();}
     finally{reading=false;}
   }
   async function request(role,action,payload,cleaning=false) {
@@ -215,7 +231,9 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
     finally{if(isCancel)cancelling=false;else inflight=false;}
   }
   async function stop(kind,ms,operation='STOP_OWNED') {
-    const row=wire.saved.roles.find(r=>r.role===kind);return cleanup.call(row,async allowance=>{const r=await request(kind,operation,{remainingMs:allowance,cleanupEndsAtMonotonicMs:cleanup.deadline},true);exact(r,['status','runId']);if(!['STOPPED','EXITED','TIMEOUT'].includes(r.status)||r.runId!==binding.runId)fail('CLEANUP_UNCERTAIN');return r;},ms);
+    const row=wire.saved.roles.find(r=>r.role===kind);integer(ms,0);
+    if(stopped.has(row))return {status:'STOPPED',runId:binding.runId};
+    return cleanup.call(row,async allowance=>{const r=await request(kind,operation,{remainingMs:allowance,cleanupEndsAtMonotonicMs:cleanup.deadline},true);exact(r,['status','runId']);if(!['STOPPED','EXITED','TIMEOUT'].includes(r.status)||r.runId!==binding.runId)fail('CLEANUP_UNCERTAIN');if(r.status!=='TIMEOUT')stopped.add(row);return r;},ms);
   }
   const authority={cleanupBudget:cleanup,
     inspectHandoff(h){current();const r=local.get(h);return r?{kind:r.kind,runId:binding.runId,uid:kinds[r.kind],child:r.child,privatePipe:r.pipe,waiting:!r.active,confined:true}:null;},
@@ -232,8 +250,8 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
     const handoff=privateHandle({}),r={kind,child:privateHandle({}),pipe:privateHandle({}),active:false};local.set(handoff,r);bootstrap.audit(handoff);const port=adoptRole(kind,handoff);adopted.set(kind,{port,r});return port;
   }
   return privateHandle({adopt,async prepareBrowser(value){
-    if(prepared)fail('ACTIVATION_DENIED');prepared=true;const p=proofRecord(value);current(p);
-    try{if(!adopted.has('BROWSER'))await adopt('BROWSER');const entry=adopted.get('BROWSER');if(!entry)fail('HANDOFF_DENIED');
+    try{if(prepared)fail('ACTIVATION_DENIED');prepared=true;const p=proofRecord(value);current(p);
+      if(!adopted.has('BROWSER'))await adopt('BROWSER');const entry=adopted.get('BROWSER');if(!entry)fail('HANDOFF_DENIED');
       const result=prepareResult(await request('BROWSER','PREPARE_BROWSER',p));current(p);
       if(['proofDigest','generation','expiresAtMs','monotonicDeadlineMs'].some(k=>result[k]!==p[k]))fail('AUTHORITY_LOST');
       const grant=privateHandle({});Object.assign(entry.r,{proof:p,grantId:result.grantId,used:false});grants.set(grant,entry.r);
@@ -244,23 +262,55 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
 
 async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
   const binding=bindingRecord(expected.binding),sample=clockReader(clock),cleanup=cleanupBoundary(cleanupBudget,sample);
-  const wire=await originalChannel(channel,'BROWSER',binding,expected);let terminal=false,preparing=false,active=null,acquiring=false,pendingCancel=null;
+  const wire=await originalChannel(channel,'BROWSER',binding,expected);let terminal=false,preparing=false,active=null,acquiring=false,pendingCancel=null,originalReservation=null;
+  const stopped=new WeakSet();let terminalRecorded=false,firstTerminalAt=null;
   function current(p) {wire.check();const [wall,mono]=sample();if(terminal)fail('CANCELLED');if(wall>=binding.expiresAtMs||(p&&(wall>=p.expiresAtMs||mono>=p.monotonicDeadlineMs)))fail('EXPIRED');if(p&&p.generation!==1)fail('AUTHORITY_LOST');}
-  function cancel(f) {if(f.action!=='CANCEL'||pendingCancel!==null)fail('FRAME_DENIED');exact(f.payload,['generation','cleanupEndsAtMonotonicMs']);if(f.payload.generation!==1)fail('FRAME_DENIED');terminal=true;pendingCancel=f.sequence;cleanup.remaining(f.payload.cleanupEndsAtMonotonicMs);}
+  function cancel(f) {if(f.action!=='CANCEL'||pendingCancel!==null)fail('FRAME_DENIED');exact(f.payload,['generation','cleanupEndsAtMonotonicMs']);if(f.payload.generation!==1)fail('FRAME_DENIED');invalidate();pendingCancel=f.sequence;cleanup.remaining(f.payload.cleanupEndsAtMonotonicMs);}
   async function acknowledgeCancel() {if(pendingCancel!==null){const seq=pendingCancel;pendingCancel=null;await wire.write('BROWSER','CANCELLED',{requestSequence:seq,generation:1});}}
   function drain() {if(typeof channel.drain!=='function')fail('NATIVE_EFFECT_FENCE_UNAVAILABLE');const pending=channel.drain();if(!Array.isArray(pending)||pending.length>16)fail('FRAME_DENIED');for(const bytes of pending)cancel(wire.read(bytes));}
-  async function stop(ms) {terminal=true;const receipts=[];if(active)receipts.push(await cleanup.call(active,n=>active.stopOwned(n),ms));if(typeof channel.stopOwned!=='function')fail('CLEANUP_UNCERTAIN');receipts.push(await cleanup.call(channel,n=>channel.stopOwned(n),ms));for(const r of receipts){exact(r,['status','runId']);if(!['STOPPED','EXITED'].includes(r.status)||r.runId!==binding.runId)fail('CLEANUP_UNCERTAIN');}return {status:acquiring?'TIMEOUT':'STOPPED',runId:binding.runId};}
+  function invalidate() {
+    terminal=true;if(originalReservation)originalReservation.used=true;
+    if(!terminalRecorded){terminalRecorded=true;try{firstTerminalAt=sample()[1];}catch{}}
+  }
+  async function stop(ms) {
+    invalidate();let uncertain=false;
+    // A failed browser stop must not suppress the original-family stop. Each
+    // owner remains reserved until its callback settles, even after timeout.
+    for(const owner of active?[active,channel]:[channel]){
+      if(object(owner)&&stopped.has(owner))continue;
+      try{await cleanup.call(owner,async allowance=>{
+        if(!object(owner)||typeof owner.stopOwned!=='function')fail('CLEANUP_UNCERTAIN');
+        const r=await owner.stopOwned(allowance);exact(r,['status','runId']);
+        if(!['STOPPED','EXITED'].includes(r.status)||r.runId!==binding.runId)fail('CLEANUP_UNCERTAIN');stopped.add(owner);
+      },ms);}catch{uncertain=true;}
+    }
+    if(uncertain)fail('CLEANUP_UNCERTAIN');return {status:acquiring?'TIMEOUT':'STOPPED',runId:binding.runId};
+  }
+  async function failed(cause,requestSequence=0) {
+    const code=object(cause)&&['FRAME_DENIED','AUTHORITY_LOST','CLOCK','CANCELLED','EXPIRED','NATIVE_EFFECT_FENCE_UNAVAILABLE','LAUNCH_FAILED','CLEANUP_UNCERTAIN','CHANNEL_EOF'].includes(cause.code)?cause.code:'LAUNCH_FAILED';
+    const error=Object.assign(new Error(code,{cause}),{code});
+    invalidate();if(error.code==='CHANNEL_EOF')cleanup.revokeWait();else cleanup.remaining();
+    // Failure reporting is best effort; it cannot precede ownership retention
+    // or let a second clock exception bypass compensation.
+    error.cleanup=privateHandle({stopOwned:stop});
+    try{await stop(cleanup.remaining());}catch{}
+    if(pendingCancel!==null){try{await cleanup.call(wire,acknowledgeCancel);}catch{}}
+    // Framing/EOF failures have no authenticated correlation of their own;
+    // never borrow an earlier COMMIT/CURRENT sequence for their failure reply.
+    else if(requestSequence&&firstTerminalAt!==null&&!['FRAME_DENIED','CHANNEL_EOF'].includes(code))try{await cleanup.call(wire,()=>wire.write('BROWSER','FAILED',{requestSequence,generation:1,code:['CANCELLED','EXPIRED','AUTHORITY_LOST','CLEANUP_UNCERTAIN'].includes(error.code)?error.code:'LAUNCH_FAILED',failedAtMonotonicMs:firstTerminalAt}));}catch{}
+    throw error;
+  }
   return privateHandle({async prepare(record){
-    if(preparing){terminal=true;fail('AUTHORITY_LOST');}preparing=true;
-    try{current();const f=wire.read(record);if(f.action!=='PREPARE')fail('FRAME_DENIED');const p=prepareResult(f.payload);current(p);
+    try{if(preparing)fail('AUTHORITY_LOST');preparing=true;current();const f=wire.read(record);if(f.action!=='PREPARE')fail('FRAME_DENIED');const p=prepareResult(f.payload);current(p);
       const reservation=privateHandle({}),r={binding,proof:p,reservationId:randomBytes(16).toString('hex'),used:false,effect:false};reservations.set(reservation,r);
+      originalReservation=r;
       await wire.write('BROWSER','PREPARED',{requestSequence:f.sequence,grantId:p.grantId,reservationId:r.reservationId,generation:1});drain();current(p);return reservation;
-    }catch(e){terminal=true;try{await acknowledgeCancel();}catch{}try{await stop(cleanup.remaining());}catch{e.cleanup=privateHandle({stopOwned:stop});}throw e;}
+    }catch(e){return failed(e);}
   },async commitFixedBrowserLaunch(reservation,launchPinnedBrowser){
-    const r=reservations.get(reservation);
-    if(!r||r.binding!==binding||r.used||typeof launchPinnedBrowser!=='function')fail('AUTHORITY_LOST');r.used=true;
     let requestSequence=0;
-    try{drain();current(r.proof);const commit=await wire.receive();requestSequence=commit.sequence;current(r.proof);
+    try{const r=reservations.get(reservation);
+      if(!r||r.binding!==binding||r.used||typeof launchPinnedBrowser!=='function')fail('AUTHORITY_LOST');r.used=true;
+      drain();current(r.proof);const commit=await wire.receive();requestSequence=commit.sequence;current(r.proof);
       if(commit.action==='CANCEL'){cancel(commit);fail('CANCELLED');}
       exact(commit.payload,['grantId','reservationId','commitId','generation']);const p=commit.payload;hex(p.commitId);
       if(commit.action!=='COMMIT'||p.grantId!==r.proof.grantId||p.reservationId!==r.reservationId||p.generation!==1)fail('AUTHORITY_LOST');
@@ -279,11 +329,7 @@ async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
       if(!object(active)||typeof active.stopOwned!=='function')fail('LAUNCH_FAILED');drain();current(r.proof);
       await wire.write('BROWSER','STARTED',{requestSequence:response.sequence,...p});drain();current(r.proof);
       return privateHandle({status:'STARTED',browserOwner:active});
-    }catch(e){terminal=true;const failedAtMonotonicMs=sample()[1];cleanup.remaining(e.code==='CHANNEL_EOF'?failedAtMonotonicMs:failedAtMonotonicMs+60000);
-      if(pendingCancel!==null){try{await acknowledgeCancel();}catch{}}
-      else if(requestSequence)try{await wire.write('BROWSER','FAILED',{requestSequence,generation:1,code:['CANCELLED','EXPIRED','AUTHORITY_LOST','CLEANUP_UNCERTAIN'].includes(e.code)?e.code:'LAUNCH_FAILED',failedAtMonotonicMs});}catch{}
-      try{await stop(cleanup.remaining());}catch{e.cleanup=privateHandle({stopOwned:stop});}throw e;
-    }
-  },async cancel(record){cancel(wire.read(record));await acknowledgeCancel();return stop(cleanup.remaining());},stopOwned:stop});
+    }catch(e){return failed(e,requestSequence);}
+  },async cancel(record){try{cancel(wire.read(record));await cleanup.call(wire,acknowledgeCancel);return await stop(cleanup.remaining());}catch(e){return failed(e);}},stopOwned:stop});
 }
 module.exports = Object.freeze({bindRoleBootstrap,adoptRole,bindBootstrapComposition,bindBrowserWorkerChannel});

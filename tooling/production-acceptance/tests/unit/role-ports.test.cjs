@@ -13,6 +13,13 @@ test('v1_shared_budget_clamps_existing_activate_once_compensation',async()=>{
   await assert.rejects(roles.adoptRole('BROWSER',f.handoff).activateOnce({}));
   assert.equal(allowance,37,'composed activation must retain the shared cleanup end');
 });
+test('v1_activate_once_preserves_worker_cleanup_cause_after_original_compensation',async()=>{
+  const f=fixture(),workerCleanup=Object.freeze({stopOwned:async()=>({status:'TIMEOUT',runId:RUN})});
+  const cause=Object.assign(new Error('CLEANUP_UNCERTAIN'),{code:'CLEANUP_UNCERTAIN',cleanup:workerCleanup});
+  f.authority.cleanupBudget={remaining:()=>0};f.authority.activate=async()=>{throw cause;};
+  let error;try{await roles.adoptRole('BROWSER',f.handoff).activateOnce(f.grant);}catch(e){error=e;}
+  assert.equal(error.code,'ACTIVATION_DENIED');assert.equal(error.cause,cause);assert.equal(error.cause.cleanup,workerCleanup);assert.equal(f.stops(),1);
+});
 // Every double is an injected bootstrap/pipe boundary, never a role-port policy.
 function fixture(kind = 'BROWSER', overrides = {}) {
   assert.ok(roles, 'Task 8 inherited role-port behavior is absent');

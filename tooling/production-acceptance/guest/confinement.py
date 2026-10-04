@@ -20,6 +20,7 @@ import json
 import re
 import secrets
 import struct
+import threading
 import time
 from types import MappingProxyType
 from typing import NoReturn, Protocol
@@ -544,17 +545,35 @@ class OriginalRoleSet:
         self._originals=[];self._handoffs={};self._map={};self._facts={};self._keys={}
         self._send={'CONTROLLER':0,'BROWSER':0};self._receive={'CONTROLLER':0,'BROWSER':0}
         self._terminal=False;self._preparation=None;self._source=None;self._last=None;self._busy=set();self._stopped=set();self._event=None
+        self._cleanup_lock=threading.RLock();self._stop_tokens={};self._clock_failed=False
 
     @property
     def originals(self): return tuple(self._originals)
 
     def _sample(self):
-        clock=getattr(self._budget,'clock',None)
-        value=clock.sample() if clock is not None else (time.time_ns()//1000000,time.monotonic_ns()//1000000)
-        if type(value) not in (tuple,list) or len(value)!=2: _fail('CLOCK')
-        for v in value: _v1_int(v,0)
-        if self._last is not None and any(a<b for a,b in zip(value,self._last)): _fail('CLOCK')
-        self._last=tuple(value);return self._last
+        if self._clock_failed:_fail('CLOCK')
+        try:
+            clock=getattr(self._budget,'clock',None)
+            value=clock.sample() if clock is not None else (time.time_ns()//1000000,time.monotonic_ns()//1000000)
+            if type(value) not in (tuple,list) or len(value)!=2: _fail('CLOCK')
+            for v in value: _v1_int(v,0)
+            if self._last is not None and any(a<b for a,b in zip(value,self._last)): _fail('CLOCK')
+            self._last=tuple(value);return self._last
+        except Exception:
+            self._clock_failed=True;_fail('CLOCK')
+
+    def _cleanup_remaining(self):
+        with self._cleanup_lock:
+            if self._clock_failed:self._budget.deadline=0
+            try:return _v1_int(self._budget.remaining(),0)
+            except Exception:self._budget.deadline=0;return 0
+
+    def _failed(self,error):
+        self._terminal=True
+        if self._preparation is not None:self._preparation._used=True
+        if str(error)=='CHANNEL_EOF':self._clamp(0)
+        self._cleanup_remaining()
+        error.cleanup=self._preparation if self._preparation is not None else self
 
     def _check(self,proof=None):
         if self._terminal: _fail('CANCELLED')
@@ -607,14 +626,18 @@ class OriginalRoleSet:
         if not cleaning:self._check(self._preparation._proof if self._preparation else None)
         return self._send[channel]
 
+    def _read_worker(self,remaining_ms):
+        try:data=self._config.kernel.read_role(self._handoffs['BROWSER']._owned,remaining_ms)
+        except ConfinementError as error:
+            if str(error)=='CHANNEL_EOF':self._terminal=True;self._clamp(0)
+            raise
+        if data==b'':self._terminal=True;self._clamp(0);_fail('CHANNEL_EOF')
+        return data
+
     def _worker(self):
         self._check(self._preparation._proof)
         wall,mono=self._sample();p=self._preparation._proof
-        try:data=self._config.kernel.read_role(self._handoffs['BROWSER']._owned,min(p['expiresAtMs']-wall,p['monotonicDeadlineMs']-mono))
-        except ConfinementError as error:
-            if str(error)=='CHANNEL_EOF':self._clamp(self._sample()[1])
-            raise
-        if data==b'':self._clamp(self._sample()[1]);_fail('CHANNEL_EOF')
+        data=self._read_worker(min(p['expiresAtMs']-wall,p['monotonicDeadlineMs']-mono))
         self._check(p);value=self._decode('BROWSER',data)
         if value['action']=='FAILED':
             f=value['payload'];_v1_exact(f,('requestSequence','generation','code','failedAtMonotonicMs'))
@@ -632,11 +655,11 @@ class OriginalRoleSet:
         return dict(kind=role,runId=self.binding.runId,uid=UIDS[role],childId=row['childId'],pipeId=row['pipeId'],waiting=True,confined=True,attestationDigest=h.attestation.filter_digest)
 
     def prepare_browser(self,proof):
-        proof=_v1_proof(proof);self._check(proof)
-        if self._preparation is not None: _fail('AUTHORITY_LOST')
-        self._preparation=BootstrapBrowserPreparation(self,proof,_COMPOSITION_SEAL)
-        owner=self._preparation
         try:
+            proof=_v1_proof(proof);self._check(proof)
+            if self._preparation is not None: _fail('AUTHORITY_LOST')
+            self._preparation=BootstrapBrowserPreparation(self,proof,_COMPOSITION_SEAL)
+            owner=self._preparation
             self._current(proof);self.audit('BROWSER')
             seq=self._write('BROWSER','BROWSER','PREPARE',dict(grantId=owner._grant,**proof))
             response=self._worker();p=response['payload'];_v1_exact(p,('requestSequence','grantId','reservationId','generation'))
@@ -644,12 +667,12 @@ class OriginalRoleSet:
             if response['action']!='PREPARED' or p['requestSequence']!=seq or p['grantId']!=owner._grant or not _run(p['reservationId']) or type(p['generation']) is not int or p['generation']!=1: _fail('AUTHORITY_LOST')
             self._current(proof);owner._reservation=p['reservationId'];owner._prepared=True;return owner
         except Exception as error:
-            self._terminal=True;self._budget.remaining();error.cleanup=owner;raise
+            self._failed(error);raise
 
     def commit_browser(self,owner):
-        if type(owner) is not BootstrapBrowserPreparation or owner is not self._preparation or owner._used or not owner._prepared: _fail('AUTHORITY_LOST')
-        owner._used=True
         try:
+            if type(owner) is not BootstrapBrowserPreparation or owner is not self._preparation or owner._used or not owner._prepared: _fail('AUTHORITY_LOST')
+            owner._used=True
             self._current(owner._proof)
             p=dict(grantId=owner._grant,reservationId=owner._reservation,commitId=secrets.token_hex(16),generation=1)
             seq=self._write('BROWSER','BROWSER','COMMIT',p);response=self._worker();v=response['payload']
@@ -665,35 +688,53 @@ class OriginalRoleSet:
             if isinstance(self._config.kernel,NativeKernelPort):self._config.kernel._commit_browser_runtime(owner)
             return {'status':'ACTIVE','generation':1}
         except Exception as error:
-            self._terminal=True;self._budget.remaining();error.cleanup=owner;raise
+            self._failed(error);raise
 
     def _clamp(self,end):
-        _v1_int(end,0);self._budget.remaining()
-        self._budget.deadline=min(self._budget.deadline,end)
+        _v1_int(end,0)
+        with self._cleanup_lock:
+            if end==0:self._budget.deadline=0
+            else:
+                self._cleanup_remaining()
+                self._budget.deadline=min(self._budget.deadline,end)
 
     def cancel(self,cleanup_ends_at=None):
         self._terminal=True
-        if cleanup_ends_at is not None:self._clamp(cleanup_ends_at)
-        self._budget.remaining()
-        self._write('BROWSER','BROWSER','CANCEL',dict(generation=1,cleanupEndsAtMonotonicMs=self._budget.deadline),True)
-        data=self._config.kernel.read_role(self._handoffs['BROWSER']._owned,self._budget.remaining())
-        value=self._decode('BROWSER',data)
-        if value['action']!='CANCELLED' or value['payload']!=dict(requestSequence=self._send['BROWSER'],generation=1): _fail('FRAME_DENIED')
-        return {'status':'CANCELLED','generation':1}
+        if self._preparation is not None:self._preparation._used=True
+        try:
+            # Without an authenticated earlier end, cancellation can only ask
+            # for nonblocking cleanup, never allocate a fresh waiting window.
+            self._clamp(0 if cleanup_ends_at is None else cleanup_ends_at)
+            self._write('BROWSER','BROWSER','CANCEL',dict(generation=1,cleanupEndsAtMonotonicMs=self._budget.deadline),True)
+            value=self._decode('BROWSER',self._read_worker(self._cleanup_remaining()))
+            if value['action']!='CANCELLED' or value['payload']!=dict(requestSequence=self._send['BROWSER'],generation=1): _fail('FRAME_DENIED')
+            return {'status':'CANCELLED','generation':1}
+        except Exception as error:
+            self._failed(error);raise
 
     def _stop_one(self,owned,remaining_ms,wait=False):
-        if id(owned) in self._busy: _fail('CLEANUP_UNCERTAIN')
-        if id(owned) in self._stopped:return {'status':'STOPPED','runId':self.binding.runId}
-        self._busy.add(id(owned))
+        token=object()
+        with self._cleanup_lock:
+            if id(owned) in self._busy: _fail('CLEANUP_UNCERTAIN')
+            if id(owned) in self._stopped:return {'status':'STOPPED','runId':self.binding.runId}
+            self._busy.add(id(owned))
+            self._stop_tokens[id(owned)]=token
         def stop(allowance):
             try:
                 op=self._config.kernel.wait_owned if wait else self._config.kernel.stop_owned
                 r=op(owned,min(remaining_ms,allowance))
                 if type(r) is not dict or set(r)!={'status','pid','run_id'} or r['pid']!=owned.pid or type(r['pid']) is not int or r['run_id']!=self.binding.runId or r['status'] not in ('STOPPED','EXITED','TIMEOUT'): _fail('CLEANUP_UNCERTAIN')
-                if r['status']!='TIMEOUT':self._stopped.add(id(owned))
+                with self._cleanup_lock:
+                    if self._stop_tokens.get(id(owned)) is not token:_fail('CLEANUP_UNCERTAIN')
+                    if r['status']!='TIMEOUT':self._stopped.add(id(owned))
                 return {'status':r['status'],'runId':self.binding.runId}
-            finally:self._busy.discard(id(owned))
-        return self._budget.call(stop) if self._budget.remaining() else stop(0)
+            finally:
+                with self._cleanup_lock:
+                    if self._stop_tokens.get(id(owned)) is token:
+                        self._busy.discard(id(owned));del self._stop_tokens[id(owned)]
+        # A timed-out budget.call may still own its callback thread. Only that
+        # callback retires this token; callers must not release it on timeout.
+        return self._budget.call(stop) if self._cleanup_remaining() else stop(0)
 
     def wait_exit(self,role,remaining_ms):
         _v1_int(remaining_ms,0)
@@ -735,7 +776,7 @@ class OriginalRoleSet:
             else:_fail('FRAME_DENIED')
             return self._frame('CONTROLLER',role,'RESULT',dict(requestSequence=f['sequence'],result=result))
         except Exception as error:
-            self._terminal=True;self._budget.remaining();error.cleanup=self;raise
+            self._failed(error);raise
 
 
 def bind_original_roles(config,binding,cleanup_budget):
@@ -757,7 +798,7 @@ def bind_original_roles(config,binding,cleanup_budget):
         config.kernel.write_role(owner._handoffs['BROWSER']._owned,_v1_encode(dict(version=1,kind='BROWSER_WORKER_INIT',binding=binding.to_record(),channelKeyHex=owner._keys['BROWSER'].hex(),**owner._map['BROWSER'])))
         owner._check();return owner
     except Exception as error:
-        owner._terminal=True;cleanup_budget.remaining();error.cleanup=owner;raise
+        owner._failed(error);raise
 
 
 @dataclass
