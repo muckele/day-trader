@@ -14,7 +14,19 @@ function frame(v) { const bytes=Buffer.from(canon(v)); const n=Buffer.alloc(4);n
 function mac(v,key,role,direction) { return crypto.createHmac('sha256',Buffer.from(key,'hex')).update('acceptance:bootstrap-composition:v1\0'+role+':'+direction+'\0'+canon(v)).digest('hex'); }
 function context() {const module={exports:{}};vm.runInNewContext(source,{module,exports:module.exports,require,Buffer,TextDecoder,setTimeout,clearTimeout,process});return module.exports;}
 function budget(clock) {return {deadline:null,remaining(){if(this.deadline===null)this.deadline=clock.mono+60000;return Math.max(0,this.deadline-clock.mono);},clamp(end){this.deadline=Math.min(this.deadline??end,end);}};}
+function pythonTranscript(){
+  const input=process.env.BOOTSTRAP_V1_INPUT;
+  if(!input)return undefined;
+  const transcript=JSON.parse(fs.readFileSync(input,'ascii'));
+  assert.deepEqual(Object.keys(transcript).sort(),['binding','frameEncoding','frameSHA256','frames','nominalContexts','producer','roles','version']);
+  assert.equal(transcript.version,1);assert.equal(transcript.producer,'python-original-role-set');
+  assert.equal(transcript.frameEncoding,'length-prefixed-canonical-ascii');
+  assert.deepEqual(transcript.nominalContexts,['PYTHON_BOOTSTRAP','CONTROLLER_JS','BROWSER_WORKER_JS']);
+  for(const [name,hex] of Object.entries(transcript.frames))assert.equal(crypto.createHash('sha256').update(Buffer.from(hex,'hex')).digest('hex'),transcript.frameSHA256[name]);
+  return transcript;
+}
 function fixture(options={}) {
+  const transcript=options.transcript;
   const controller=context(), worker=context(), clock={wall:100,mono:100,sample(){return [this.wall,this.mono];}}, stops=[], launches=[];
   const proof={proofDigest:'e'.repeat(64),generation:1,expiresAtMs:9000,monotonicDeadlineMs:9000};
   const checkpoint={binding,generation:1,sequence:1,sourceIdentity:'f'.repeat(32),lostCount:0};
@@ -37,17 +49,18 @@ function fixture(options={}) {
     drain(){hooks.drain?.(f);return pending.splice(0);},
     effectFence(value){assert.equal(value.sourceIdentity,checkpoint.sourceIdentity);hooks.fence?.(f);return options.fence===false?null:checkpoint;},
     stopOwned:async remaining=>{stops.push(['worker-family',remaining]);return {status:'STOPPED',runId:binding.runId};}};
-  queue.push(frame({version:1,kind:'BROWSER_WORKER_INIT',binding,...map[1],channelKeyHex:keyW}));
-  const controllerQueue=[frame({version:1,kind:'BOOTSTRAP_INIT',binding,channelKeyHex:keyC,roles:map})];
+  queue.push(transcript?Buffer.from(transcript.frames.workerInit,'hex'):frame({version:1,kind:'BROWSER_WORKER_INIT',binding,...map[1],channelKeyHex:keyW}));
+  const controllerQueue=[transcript?Buffer.from(transcript.frames.controllerInit,'hex'):frame({version:1,kind:'BOOTSTRAP_INIT',binding,channelKeyHex:keyC,roles:map})];
   const controllerChannel={audit:()=>controllerFacts,read:async()=>controllerQueue.shift(),
     async write(bytes){const v=JSON.parse(bytes.subarray(4));const unsigned={...v};delete unsigned.mac;assert.equal(v.mac,mac(unsigned,keyC,'CONTROLLER','TO_BOOTSTRAP'));
-      let result;
-      if(v.action==='ADOPT') result={kind:v.role,runId:binding.runId,uid:v.role==='BROWSER'?10002:10003,childId:v.childId,pipeId:v.pipeId,waiting:true,confined:true,attestationDigest:'9'.repeat(64)};
-      if(v.action==='PREPARE_BROWSER') {prepareBytes=deliver('PREPARE',{grantId,...proof});reservation=await workerBinding.prepare(prepareBytes);queue.shift();result={grantId,...proof};hooks.result?.(result,f);}
+      let result,recorded;
+      if(v.action==='ADOPT') {result={kind:v.role,runId:binding.runId,uid:v.role==='BROWSER'?10002:10003,childId:v.childId,pipeId:v.pipeId,waiting:true,confined:true,attestationDigest:'9'.repeat(64)};if(transcript)recorded=Buffer.from(transcript.frames.controllerAdoptResult,'hex');}
+      if(v.action==='PREPARE_BROWSER') {prepareBytes=transcript?Buffer.from(transcript.frames.browserPrepare,'hex'):deliver('PREPARE',{grantId,...proof});if(transcript)workerSeq=1;reservation=await workerBinding.prepare(prepareBytes);queue.shift();result={grantId,...proof};hooks.result?.(result,f);if(transcript)recorded=Buffer.from(transcript.frames.controllerPrepareResult,'hex');}
       if(v.action==='COMMIT_BROWSER') {deliver('COMMIT',{grantId,reservationId,commitId,generation:1});workerOutcome=await workerBinding.commitFixedBrowserLaunch(reservation,()=>{launches.push(1);const owner={stopOwned:async remaining=>{stops.push(['browser',remaining]);return {status:'STOPPED',runId:binding.runId};}};return hooks.launch?hooks.launch(f,owner):owner;});result={status:'ACTIVE',generation:1};}
       if(v.action==='STOP_OWNED'||v.action==='WAIT_EXIT'){stops.push([v.childId,v.payload.remainingMs]);result={status:options.stopTimeout?'TIMEOUT':'STOPPED',runId:binding.runId};}
       if(v.action==='CANCEL'){f.cancel();result={status:'CANCELLED',generation:1};}
-      controllerQueue.push(make('CONTROLLER',keyC,++controllerSeq,'RESULT',{requestSequence:v.sequence,result},map.find(r=>r.role===v.role)));
+      if(recorded){controllerSeq=JSON.parse(recorded.subarray(4)).sequence;controllerQueue.push(recorded);}
+      else controllerQueue.push(make('CONTROLLER',keyC,++controllerSeq,'RESULT',{requestSequence:v.sequence,result},map.find(r=>r.role===v.role)));
     }};
   const f={controller,worker,clock,proof,checkpoint,stops,launches,workerFacts,controllerFacts,workerChannel,controllerChannel,
     cancelRecord(){return make('BROWSER',keyW,++workerSeq,'CANCEL',{generation:1,cleanupEndsAtMonotonicMs:clock.mono+123},map[1]);},
@@ -275,4 +288,34 @@ test('v1_unrepresentable_terminal_end_only_allows_nonblocking_cleanup',async()=>
   const f=await fixture().init();await f.bound.prepareBrowser(f.proof);f.clock.mono=Number.MAX_SAFE_INTEGER;
   await f.workerBinding.stopOwned(60000);
   assert.equal(f.stops.find(v=>v[0]==='worker-family')[1],0,'an unsafe absolute end must not allocate a fresh window');
+});
+
+test('v1_python_frames_adopt_original_role_and_guard_launch_once',async()=>{
+  const transcript=pythonTranscript();
+  if(transcript){
+    const substituted=JSON.parse(JSON.stringify(transcript));
+    const init=JSON.parse(Buffer.from(substituted.frames.controllerInit,'hex').subarray(4));
+    init.roles[1].childId='0'.repeat(32);
+    substituted.frames.controllerInit=frame(init).toString('hex');
+    substituted.frameSHA256.controllerInit=crypto.createHash('sha256').update(frame(init)).digest('hex');
+    await assert.rejects(fixture({transcript:substituted}).init());
+  }
+  const f=await fixture({transcript}).init(),tx=await f.bound.prepareBrowser(f.proof);
+  assert.equal(typeof tx.port.activateOnce,'function');
+  assert.equal(tx.constructor.name,'ControllerBrowserTransaction');
+  assert.equal(f.reservation.constructor.name,'WorkerLaunchReservation');
+  assert.notEqual(tx,f.reservation,'decoded PrepareBrowserResult must mint a controller-local transaction');
+  await tx.port.activateOnce(tx.grant);
+  await assert.rejects(tx.port.activateOnce(tx.grant));
+  assert.equal(f.launches.length,1);
+});
+
+test('v1_forwarded_cancel_expiry_between_worker_hops_denies_launch',async()=>{
+  const transcript=pythonTranscript();
+  for(const hop of ['prepared','refresh','current'])for(const action of ['cancel','expire']){
+    const f=fixture({transcript,hooks:{[hop](state){action==='cancel'?state.cancel():state.expire();}}});
+    await f.init();
+    await assert.rejects(async()=>{const tx=await f.bound.prepareBrowser(f.proof);await tx.port.activateOnce(tx.grant);});
+    assert.equal(f.launches.length,0,hop+'/'+action);
+  }
 });

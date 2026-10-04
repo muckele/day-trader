@@ -7,6 +7,11 @@ import struct
 import sys
 import types
 import unittest
+import os
+import tempfile
+from unittest import mock
+import contextlib
+import threading
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -24,6 +29,9 @@ def load(name, path):
 t = load('bootstrap_v1_test_topology', ROOT / 'guest/topology.py')
 c = t._CONFINEMENT
 p = load('bootstrap_v1_test_probes', ROOT / 'tests/guest/confinement_probe.py')
+proxy_fixture = load('bootstrap_v1_proxy_fixture', ROOT / 'tests/unit/proxy_test.py')
+topology_fixture = load('bootstrap_v1_topology_fixture', ROOT / 'tests/unit/topology_test.py')
+confinement_fixture = load('bootstrap_v1_confinement_fixture', ROOT / 'tests/unit/confinement_test.py')
 
 
 class Clock:
@@ -495,6 +503,264 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
         setup[1].mutate=mutate
         with self.assertRaises(p.ProbeFailure): p.qualify_probe_epoch(setup[0],setup[4].fixtures,setup[3])
         self.assertEqual(sum(event[0]=='spawn' for event in setup[4].events),1)
+
+
+class BootstrapOwnedCompositionTests(unittest.TestCase):
+    """Task 9 public boundary; full inert integration is built below this API."""
+
+    class Harness:
+        def __init__(self, test):
+            self.test=test;self.timeline=[];self.clock=Clock()
+            self.clock.wall,self.clock.mono=100,10
+            self.binding=c.CompositionBinding(
+                1,'1'*32,'b'*64,'a'*64,'c'*64,7,190)
+            confinement_fixture.c=c;confinement_fixture.RUN=self.binding.runId
+            self.role_kernel=confinement_fixture.Kernel()
+            spawn_waiting=self.role_kernel.spawn_waiting
+            def spawn_identified(launch,entry):
+                owned=spawn_waiting(launch,entry);owned.identity=object();return owned
+            self.role_kernel.spawn_waiting=spawn_identified
+            self.role_config=confinement_fixture.ConfinementTests().config(self.role_kernel)
+            launches=tuple(c.prepare_role(role,c.RoleConfig(
+                self.role_config,c.role_fds(role,self.binding.runId))) for role in c.UIDS)
+            self.role_init={};self.role_queue=[];self.worker_sequence=0
+            def write_role(owned,data):
+                value=json.loads(data[4:])
+                if 'kind' in value:self.role_init[owned.role]=value;return
+                if value['action']!='PREPARE':raise AssertionError('unexpected role action')
+                self.worker_sequence+=1
+                payload=value['payload'];response=dict(version=1,binding=self.binding.to_record(),
+                    sequence=self.worker_sequence,role='BROWSER',childId=value['childId'],
+                    pipeId=value['pipeId'],action='PREPARED',payload=dict(
+                        requestSequence=value['sequence'],grantId=payload['grantId'],
+                        reservationId='6'*32,generation=1))
+                unsigned=c._v1_canonical(response)
+                response['mac']=__import__('hmac').new(
+                    bytes.fromhex(self.role_init['BROWSER']['channelKeyHex']),
+                    b'acceptance:bootstrap-composition:v1\0BROWSER:TO_BOOTSTRAP\0'+unsigned,
+                    hashlib.sha256).hexdigest()
+                self.role_queue.append(c._v1_encode(response))
+            self.role_kernel.write_role=write_role
+            self.role_kernel.read_role=lambda owned,remaining:self.role_queue.pop(0)
+            run=t._PROXY.RunBinding(self.binding.runId,b'7'*32,190,1,
+                self.binding.manifestDigest,self.binding.configIdentity,
+                (('FRONTEND','https://frontend.example'),('BACKEND','https://backend.example')))
+            policy=t._PROXY.qualify_native_admission(run,
+                {'FRONTEND':'frontend.example','BACKEND':'backend.example'},1024,1000,10000,
+                runtime_identity='e'*64,role_policy_identity=self.binding.rolePolicyDigest,
+                handoff_validator=lambda value:value)
+            self.expected=t.qualify_topology_authority(run_id=self.binding.runId,
+                manifest_identity=self.binding.manifestDigest,config_identity=self.binding.configIdentity,
+                expires_at=190,capability=b'7'*32,role_launches=tuple(launches),
+                proxy_policy=policy,clock=self.clock,appliance_recheck=lambda:self.timeline.append('recheck'))
+            self.roles=None
+            self.budget=t.CleanupBudget(self.clock)
+            inventory=[]
+            for name,case in p.PROBES.items():
+                for operation in case.operations:
+                    family,transport,port=p.receiver_shape(operation)
+                    endpoint='127.0.0.2' if family=='IPV4' else '::2' if family=='IPV6' else '2'
+                    inventory.append(p.ReceiverBinding(self.binding,name,operation,family,
+                        transport,port,endpoint,'f'*64))
+            self.probe_channel=Channel();receivers=p.ReceiverAuthority(tuple(inventory),self.probe_channel)
+            self.probe_family=InertFamily(self.binding,receivers,self.clock,self.budget)
+            self.fixture=self.probe_family.fixtures
+            header=b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n'
+            content={'/proc/net/dev':b'Inter-| Receive\n face |bytes packets errs drop fifo frame compressed multicast\n lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n',
+                '/proc/net/route':b'Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n',
+                '/proc/net/ipv6_route':b'', '/etc/resolv.conf':b'',
+                '/proc/net/tcp':header+b'0: 0100007F:0C38 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10004 0 123 1 0000000000000000 100 0 0 10 0\n',
+                '/proc/net/tcp6':header,'/proc/net/udp':header,'/proc/net/udp6':header,
+                '/proc/net/unix':b'Num RefCount Protocol Flags Type St Inode Path\n'}
+            class Observation:
+                def open_owned(_,path,flags):
+                    self.timeline.append(('open',path))
+                    class Owner:
+                        def __init__(owner):owner.parts=[content[path],b'']
+                        def read(owner,n):return owner.parts.pop(0)
+                        def close(owner):pass
+                        def cleanup(owner):pass
+                    return Owner()
+            dummy=types.SimpleNamespace(collect=lambda value:(),cleanup_owned=lambda value:None,
+                observe=lambda value:t.HOST_DEVICES,execute=lambda value:None)
+            self.observations=t.NativeTopologyBindings(Observation(),dummy,dummy,dummy,dummy,t._NATIVE_SEAL)
+            self.host=types.SimpleNamespace(observe=lambda expected:t.HOST_DEVICES)
+            self.event_native=topology_fixture.EventNative()
+            retain=self.event_native.retain_pending
+            self.event_native.retain_pending=lambda kind:(self.timeline.append(('event-retain',kind)) or retain(kind))
+            self.events=t.qualify_offline_event_native(self.event_native)
+            self.runtime=None
+            self.raw_handoffs=self.raw_endpoints=None
+            self.proxy_harness=self.proxy_thread=self.proxy_release=None
+
+        def build(self):
+            stack=contextlib.ExitStack()
+            qualify=p.qualify_probe_epoch
+            def run_probes(*args):
+                value=qualify(*args);self.timeline.append('probes');return value
+            stack.enter_context(mock.patch.object(p,'qualify_probe_epoch',side_effect=run_probes))
+            bind_roles=c.bind_original_roles
+            def start_roles(*args):
+                self.timeline.append('roles');self.roles=bind_roles(*args);return self.roles
+            stack.enter_context(mock.patch.object(c,'bind_original_roles',side_effect=start_roles))
+            stack.enter_context(mock.patch.object(t.BootstrapComposition,'_bind_runtime_owners',side_effect=lambda owner:self.timeline.append('runtime-bind'),autospec=True))
+            observe_current_roles=t.observe_current_roles
+            def current_roles(handoffs,runtime_owners,proxy_owner,binding):
+                proxy_rows=proxy_owner.observe_current(binding).to_record()['currentFDs']
+                roles_owner=runtime_owners['CONTROLLER'];raw=[];retained=[]
+                if self.raw_handoffs is None:
+                    for role in c.UIDS:
+                        lifecycle='SERVICE' if role in ('CONTROLLER','PROXY') else 'WAITING'
+                        rowset=proxy_rows if role=='PROXY' else ()
+                        handoff,kernel,_,endpoints=topology_fixture.literal_runtime_role(
+                            confinement_fixture,role,lifecycle,runtime_owners[role],rowset)
+                        state=kernel._runtime_owners[id(handoff)]
+                        state['childId']=roles_owner._map[role]['childId']
+                        state['pipeId']=roles_owner._map[role]['pipeId']
+                        raw.append(handoff);retained.extend(endpoints)
+                    self.raw_handoffs,self.raw_endpoints=tuple(raw),tuple(retained)
+                self.runtime=observe_current_roles(
+                    self.raw_handoffs,runtime_owners,proxy_owner,binding)
+                return self.runtime
+            stack.enter_context(mock.patch.object(t,'observe_current_roles',side_effect=current_roles))
+            stack.enter_context(mock.patch.object(proxy_fixture,'proxy',t._PROXY))
+            stack.enter_context(mock.patch.object(topology_fixture,'topology',t))
+            stack.enter_context(mock.patch.object(topology_fixture,'confinement',c))
+            def proxy_entry(*_):
+                ready,release=threading.Event(),threading.Event();box=[]
+                def sink(harness,owner):
+                    self.timeline.append('proxy-loop-owner');box.append(owner);ready.set()
+                    if not release.wait(5): raise AssertionError('bounded proxy loop release missing')
+                harness=proxy_fixture.CompositionHarness(self.test,commands=[],sink=sink)
+                thread=threading.Thread(target=harness.run,daemon=True);thread.start()
+                if not ready.wait(5): raise AssertionError('actual inherited proxy loop did not mint owner')
+                self.proxy_harness,self.proxy_thread,self.proxy_release=harness,thread,release
+                def finish():
+                    release.set();thread.join(5)
+                    if thread.is_alive(): raise AssertionError('actual proxy loop did not terminate')
+                stack.callback(finish)
+                self.timeline.append('proxy');return box[0]
+            composition=t.compose_bootstrap_v1(binding=self.binding,expected=self.expected,
+                role_config=self.role_config,fixtures=self.fixture,
+                proxy_entry=proxy_entry,
+                observations=self.observations,host_devices=self.host,events=self.events,
+                cleanup_budget=self.budget)
+            return composition,stack
+
+    def test_v1_all_probe_families_exit_before_persistent_roles(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack: composition.begin()
+        self.assertLess(h.timeline.index('probes'),h.timeline.index('roles'))
+        self.assertLess(h.timeline.index('roles'),h.timeline.index('proxy'))
+        event_index=next(i for i,v in enumerate(h.timeline) if isinstance(v,tuple) and v[0]=='event-retain')
+        open_index=next(i for i,v in enumerate(h.timeline) if isinstance(v,tuple) and v[0]=='open')
+        self.assertLess(event_index,open_index)
+
+    def test_v1_resample_reuses_probe_epoch_without_spawn(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            composition.begin();composition.require_current()
+        self.assertEqual(h.timeline.count('probes'),1);self.assertEqual(h.timeline.count('roles'),1)
+
+    def test_v1_binding_mutation_invalidates_every_owner(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:proof=composition.begin()
+        self.assertEqual(t.verify_bootstrap_handoff_v1(proof.handoff,h.expected,h.binding,composition)['runId'],h.binding.runId)
+        value=json.loads(proof.handoff);value['payload']['composition']['binding']['epoch']=2
+        value['mac']=__import__('hmac').new(h.expected.capability,t.BOOTSTRAP_HANDOFF_DOMAIN+t._canonical(value['payload']),hashlib.sha256).hexdigest()
+        with self.assertRaises(t.TopologyError):t.verify_bootstrap_handoff_v1(t._canonical(value).decode(),h.expected,h.binding,composition)
+
+    def test_v1_capture_failure_at_each_acquisition_keeps_original_cleanup(self):
+        h=self.Harness(self);composition,stack=h.build()
+        h.observations.observation_port.open_owned=lambda *args:(_ for _ in ()).throw(OSError('inert capture'))
+        with stack,self.assertRaises(Exception) as caught:composition.begin()
+        self.assertEqual(composition._state,'FAILED');self.assertIs(composition._roles,h.roles)
+        self.assertIs(caught.exception.cleanup,composition)
+
+    def test_v1_partial_role_and_event_acquisitions_keep_exact_cleanup_owners(self):
+        h=self.Harness(self);h.role_kernel.fail_spawn='PROXY';composition,stack=h.build()
+        with stack,self.assertRaises(Exception) as caught:composition.begin()
+        self.assertIs(caught.exception.cleanup,composition)
+        self.assertTrue(any(type(owner) is c.OriginalRoleSet
+                            for owner in composition._cleanup_chain))
+        h=self.Harness(self);h.event_native.fail_at='ROUTE';composition,stack=h.build()
+        with stack,self.assertRaises(Exception) as caught:composition.begin()
+        self.assertIs(caught.exception.cleanup,composition)
+        events=[owner for owner in composition._cleanup_chain
+                if type(owner) is t.BootstrapEventOwner]
+        self.assertEqual(len(events),1)
+        self.assertIs(events[0]._port,h.event_native)
+        self.assertTrue(h.event_native.opened)
+        self.assertTrue(all(owner.closed for owner in h.event_native.opened))
+        self.assertIs(caught.exception.cleanup,composition)
+
+    def test_v1_complete_guest_composition_uses_actual_accepted_modules(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:proof=composition.begin()
+        self.assertEqual(h.proxy_harness.events[:3],['bind','listen','owner'])
+        self.assertEqual(len(h.proxy_harness.owners),1)
+        self.assertIs(type(composition._proxy_owner),t._PROXY.ProxyRuntimeOwner)
+        self.assertEqual(h.proxy_harness.exit,0)
+        self.assertIs(type(composition._handoff),t.BootstrapHandoffV1)
+        self.assertEqual(json.loads(proof.handoff)['version'],2)
+        self.assertEqual([r['role'] for r in composition._handoff.payload['composition']['roleRuntime']],list(c.UIDS))
+
+    def test_v1_composition_preparation_returns_original_python_owner(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            composition.begin();owner=composition.prepare_browser()
+        self.assertIs(type(owner),c.BootstrapBrowserPreparation)
+        self.assertEqual(set(owner.to_prepare_result()),{'grantId','proofDigest','generation','expiresAtMs','monotonicDeadlineMs'})
+        self.assertIs(owner._roles,h.roles)
+
+    def test_v1_handoff_envelope_is_distinct_strict_and_bounded(self):
+        self.assertEqual(t.BOOTSTRAP_HANDOFF_VERSION, 2)
+        self.assertEqual(t.BOOTSTRAP_HANDOFF_LIMIT, 131072)
+        self.assertEqual(t.BOOTSTRAP_HANDOFF_DOMAIN,
+                         b'acceptance:bootstrap-composition:v1\0')
+
+    def test_v1_exchange_directory_is_created_only_when_explicitly_requested(self):
+        target = os.environ.get('BOOTSTRAP_V1_EXCHANGE')
+        if target is None:
+            return
+        self.assertFalse(Path(target).exists(), 'exchange must start absent')
+        Path(target).mkdir(parents=False)
+        binding=c.CompositionBinding(1,'a'*32,'b'*64,'c'*64,'d'*64,1,10000)
+        programs=tuple(c.ProgramPin(path,'a'*64) for path in sorted(c.PROGRAM_PATHS))
+        owner=c.OriginalRoleSet(c.BootstrapConfig(object(),binding.runId,programs),
+            binding,t.CleanupBudget(Clock()),c._COMPOSITION_SEAL)
+        owner._map={role:dict(role=role,childId=str(i+1)*32,pipeId=str(i+5)*32)
+                    for i,role in enumerate(c.UIDS)}
+        owner._keys={'CONTROLLER':bytes.fromhex('c3'*32),
+                     'BROWSER':bytes.fromhex('d4'*32),'PROXY':bytes.fromhex('e5'*32)}
+        proof=dict(proofDigest='e'*64,generation=1,expiresAtMs=9000,
+                   monotonicDeadlineMs=9000)
+        frames={
+            'controllerInit':c._v1_encode(dict(version=1,kind='BOOTSTRAP_INIT',
+                binding=binding.to_record(),channelKeyHex=owner._keys['CONTROLLER'].hex(),
+                roles=list(owner._map.values()))),
+            'workerInit':c._v1_encode(dict(version=1,kind='BROWSER_WORKER_INIT',
+                binding=binding.to_record(),channelKeyHex=owner._keys['BROWSER'].hex(),
+                **owner._map['BROWSER'])),
+            'browserPrepare':owner._frame('BROWSER','BROWSER','PREPARE',
+                dict(grantId='a1'*16,**proof)),
+            'controllerAdoptResult':owner._frame('CONTROLLER','BROWSER','RESULT',
+                dict(requestSequence=1,result=dict(kind='BROWSER',runId=binding.runId,
+                    uid=10002,childId=owner._map['BROWSER']['childId'],
+                    pipeId=owner._map['BROWSER']['pipeId'],waiting=True,confined=True,
+                    attestationDigest='9'*64))),
+            'controllerPrepareResult':owner._frame('CONTROLLER','BROWSER','RESULT',
+                dict(requestSequence=2,result=dict(grantId='a1'*16,**proof))),
+        }
+        record={'version':1,'producer':'python-original-role-set',
+            'frameEncoding':'length-prefixed-canonical-ascii',
+            'nominalContexts':['PYTHON_BOOTSTRAP','CONTROLLER_JS','BROWSER_WORKER_JS'],
+            'binding':binding.to_record(),'roles':list(owner._map.values()),
+            'frames':{name:value.hex() for name,value in frames.items()},
+            'frameSHA256':{name:hashlib.sha256(value).hexdigest()
+                           for name,value in frames.items()}}
+        (Path(target) / 'roles.json').write_text(
+            json.dumps(record, sort_keys=True, separators=(',', ':')), encoding='ascii')
 
 
 if __name__ == '__main__': unittest.main()

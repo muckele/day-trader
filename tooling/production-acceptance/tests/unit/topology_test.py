@@ -12,6 +12,8 @@ import threading
 import time
 import types
 import unittest
+import hashlib
+import hmac
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -401,6 +403,42 @@ def literal_runtime_role(confinement_fixture, role, lifecycle, runtime_owner,
 
 
 class TopologyTests(unittest.TestCase):
+    def test_v1_composition_handoff_requires_complete_proxy_runtime_inventory(self):
+        expected = authority()
+        binding = confinement.CompositionBinding(
+            1, RUN, MANIFEST, CONFIG, 'd' * 64, 1, 190)
+        base = topology._payload(snapshot(), expected, (100, 10), (100, 10))
+        _, handoffs = launches_and_handoffs()
+        runtime = []
+        for index, (role, handoff) in enumerate(zip(confinement.UIDS, handoffs)):
+            rows = [dict(fd=fd,kind='NULL' if fd < 3 else 'COMMAND' if fd == 3 else 'RESULT',
+                         device='1',inode=str(100 + fd + index * 10),flags=0,
+                         ownerId=('%x' % (index * 5 + fd + 1))[-1] * 32,
+                         acquiredGeneration=1)
+                    for fd in range(5)]
+            runtime.append(dict(role=role,childId=('%x' % (index + 1)) * 32,
+                pipeId=('%x' % (index + 5)) * 32,
+                lifecycle='SERVICE' if role in ('CONTROLLER','PROXY') else 'WAITING',
+                inheritedFDs=[0,1,2,3,4],currentFDs=rows))
+        payload = dict(base, composition=dict(binding=binding.to_record(),
+            probeEpochDigest='e' * 64, fixtureInventoryDigest='f' * 64,
+            eventCheckpoint=dict(binding=binding.to_record(), generation=1,
+                sequence=1, sourceIdentity='a' * 32, lostCount=0),
+            proxyRuntimeId='b' * 32, roleRuntime=runtime))
+        def wire(value):
+            mac = hmac.new(expected.capability, topology.BOOTSTRAP_HANDOFF_DOMAIN +
+                topology._canonical(value), hashlib.sha256).hexdigest()
+            return topology._canonical({'mac':mac,'payload':value,'version':2}).decode('ascii')
+        with self.assertRaises(topology.TopologyError):
+            topology.verify_bootstrap_handoff_v1(wire(payload), expected, binding)
+        runtime[3]['currentFDs'].append(dict(fd=5,kind='PROXY_LISTENER',device='1',
+            inode='999',flags=0,ownerId='9' * 32,acquiredGeneration=1))
+        self.assertEqual(topology.verify_bootstrap_handoff_v1(
+            wire(payload), expected, binding), payload)
+        payload['composition']['eventCheckpoint']['lostCount'] = True
+        with self.assertRaises(topology.TopologyError):
+            topology.verify_bootstrap_handoff_v1(wire(payload), expected, binding)
+
     def install_events(self, native=None):
         native = native or EventNative()
         budget = topology.CleanupBudget(clock=Clock((100, 10), (100, 10), (100, 10)))
@@ -2095,6 +2133,70 @@ class TopologyTests(unittest.TestCase):
         if path:
             with pathlib.Path(path + '.invalid.json').open('x', encoding='ascii') as output:
                 json.dump(vectors, output, separators=(',', ':'))
+
+        expected = authority()
+        binding = confinement.CompositionBinding(
+            1, RUN, MANIFEST, CONFIG, 'd' * 64, 1, 190)
+        payload = topology._payload(snapshot(), expected, (100, 10), (100, 10))
+        role_runtime = []
+        for index, role in enumerate(confinement.UIDS):
+            rows = [dict(fd=fd,
+                kind='NULL' if fd < 3 else 'COMMAND' if fd == 3 else 'RESULT',
+                device='1', inode=str(100 + index * 10 + fd), flags=0,
+                ownerId=('%x' % (index * 5 + fd + 1))[-1] * 32,
+                acquiredGeneration=1) for fd in range(5)]
+            if role == 'PROXY':
+                rows.append(dict(fd=5,kind='PROXY_LISTENER',device='1',
+                    inode='999',flags=0,ownerId='9' * 32,
+                    acquiredGeneration=1))
+            role_runtime.append(dict(role=role,
+                childId=('%x' % (index + 1)) * 32,
+                pipeId=('%x' % (index + 5)) * 32,
+                lifecycle='SERVICE' if role in ('CONTROLLER','PROXY') else 'WAITING',
+                inheritedFDs=[0,1,2,3,4],currentFDs=rows))
+        payload['composition'] = dict(binding=binding.to_record(),
+            probeEpochDigest='e' * 64,fixtureInventoryDigest='f' * 64,
+            eventCheckpoint=dict(binding=binding.to_record(),generation=1,
+                sequence=1,sourceIdentity='a' * 32,lostCount=0),
+            proxyRuntimeId='b' * 32,roleRuntime=role_runtime)
+        def composition_wire(value):
+            mac = hmac.new(expected.capability,topology.BOOTSTRAP_HANDOFF_DOMAIN +
+                topology._canonical(value),hashlib.sha256).hexdigest()
+            return topology._canonical(
+                {'mac':mac,'payload':value,'version':2}).decode('ascii')
+        valid_composition = composition_wire(payload)
+        self.assertEqual(topology.verify_bootstrap_handoff_v1(
+            valid_composition,expected,binding),payload)
+        composition_vectors = []
+        def invalid_composition(mutate, *, remac=True):
+            envelope=json.loads(valid_composition);mutate(envelope)
+            if remac:
+                envelope['mac']=hmac.new(expected.capability,
+                    topology.BOOTSTRAP_HANDOFF_DOMAIN +
+                    topology._canonical(envelope['payload']),hashlib.sha256).hexdigest()
+            value=topology._canonical(envelope).decode('ascii')
+            with self.assertRaises(topology.TopologyError):
+                topology.verify_bootstrap_handoff_v1(value,expected,binding)
+            composition_vectors.append(value)
+        invalid_composition(lambda e:e.__setitem__('version',1))
+        invalid_composition(lambda e:e['payload']['composition']['eventCheckpoint']
+            .__setitem__('lostCount',True))
+        invalid_composition(lambda e:e['payload']['composition']['roleRuntime'][3]
+            ['currentFDs'].pop())
+        invalid_composition(lambda e:e['payload']['composition']['binding']
+            .__setitem__('epoch',2))
+        invalid_composition(lambda e:e['payload']['composition']
+            .__setitem__('unknown',0))
+        invalid_composition(lambda e:e.__setitem__('mac','0' * 64),remac=False)
+        if path:
+            with pathlib.Path(path + '.bootstrap-v1.json').open(
+                    'x',encoding='ascii') as output:
+                output.write(valid_composition)
+            with pathlib.Path(path + '.bootstrap-v1.invalid.json').open(
+                    'x',encoding='ascii') as output:
+                json.dump(composition_vectors,output,separators=(',',':'))
+            self.assertTrue(pathlib.Path(path + '.bootstrap-v1.json').is_file())
+            self.assertTrue(pathlib.Path(path + '.bootstrap-v1.invalid.json').is_file())
         self.assertEqual(json.loads(proof.handoff)['version'], 1)
 
 

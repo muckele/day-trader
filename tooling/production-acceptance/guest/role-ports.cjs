@@ -94,6 +94,20 @@ function adoptRole(kind, handoff) {
 const {createHmac, timingSafeEqual, randomBytes} = require('node:crypto');
 const ROLE_ORDER=Object.freeze(['CONTROLLER','BROWSER','VERIFIER','PROXY']);
 const reservations=new WeakMap(), transactions=new WeakMap(), channels=new WeakSet();
+const CONTROLLER_TRANSACTION_SEAL={}, WORKER_RESERVATION_SEAL={};
+class ControllerBrowserTransaction {
+  constructor(port,grant,stopOwned,seal) {
+    if(seal!==CONTROLLER_TRANSACTION_SEAL)fail('AUTHORITY_LOST');
+    this.port=port;this.grant=grant;this.stopOwned=stopOwned;
+    return privateHandle(this);
+  }
+}
+class WorkerLaunchReservation {
+  constructor(seal) {
+    if(seal!==WORKER_RESERVATION_SEAL)fail('AUTHORITY_LOST');
+    return privateHandle(this);
+  }
+}
 const ID=/^[0-9a-f]{32}$/, DIGEST=/^[0-9a-f]{64}$/;
 function exact(v,keys) {
   if (!v || typeof v!=='object' || Array.isArray(v) || Reflect.ownKeys(v).length!==keys.length || keys.some(k=>!Object.hasOwn(v,k))) fail('FRAME_DENIED');
@@ -255,7 +269,7 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
       const result=prepareResult(await request('BROWSER','PREPARE_BROWSER',p));current(p);
       if(['proofDigest','generation','expiresAtMs','monotonicDeadlineMs'].some(k=>result[k]!==p[k]))fail('AUTHORITY_LOST');
       const grant=privateHandle({});Object.assign(entry.r,{proof:p,grantId:result.grantId,used:false});grants.set(grant,entry.r);
-      const tx=privateHandle({port:entry.port,grant,stopOwned:ms=>stop('BROWSER',ms)});transactions.set(tx,entry.r);return tx;
+      const tx=new ControllerBrowserTransaction(entry.port,grant,ms=>stop('BROWSER',ms),CONTROLLER_TRANSACTION_SEAL);transactions.set(tx,entry.r);return tx;
     }catch(e){terminal=true;try{const receipt=await stop('BROWSER',cleanup.remaining());if(!['STOPPED','EXITED'].includes(receipt.status))fail('CLEANUP_UNCERTAIN');}catch{e.cleanup=privateHandle({stopOwned:ms=>stop('BROWSER',ms)});}throw e;}
   },async cancel(){terminal=true;const result=await request('BROWSER','CANCEL',{generation:1,cleanupEndsAtMonotonicMs:cleanup.deadline},true);exact(result,['status','generation']);if(result.status!=='CANCELLED'||result.generation!==1)fail('FRAME_DENIED');return result;},stopOwned:ms=>stop('BROWSER',ms)});
 }
@@ -309,7 +323,7 @@ async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
   }
   return privateHandle({async prepare(record){
     try{if(preparing)fail('AUTHORITY_LOST');preparing=true;current();const f=wire.read(record);if(f.action!=='PREPARE')fail('FRAME_DENIED');const p=prepareResult(f.payload);current(p);
-      const reservation=privateHandle({}),r={binding,proof:p,reservationId:randomBytes(16).toString('hex'),used:false,effect:false};reservations.set(reservation,r);
+      const reservation=new WorkerLaunchReservation(WORKER_RESERVATION_SEAL),r={binding,proof:p,reservationId:randomBytes(16).toString('hex'),used:false,effect:false};reservations.set(reservation,r);
       originalReservation=r;
       await wire.write('BROWSER','PREPARED',{requestSequence:f.sequence,grantId:p.grantId,reservationId:r.reservationId,generation:1});drain();current(p);return reservation;
     }catch(e){return failed(e);}

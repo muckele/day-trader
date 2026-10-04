@@ -2201,6 +2201,431 @@ def select_native_topology(observation_port, role_source, host_device_source,
 
 
 _COMPOSITION_SEAL = object()
+_BOOTSTRAP_COMPOSITION_OWNER_SEAL = object()
+_BOOTSTRAP_COMPOSITIONS = set()
+BOOTSTRAP_HANDOFF_VERSION = 2
+BOOTSTRAP_HANDOFF_LIMIT = 131072
+BOOTSTRAP_HANDOFF_DOMAIN = b'acceptance:bootstrap-composition:v1\0'
+
+
+@dataclass(frozen=True, eq=False)
+class BootstrapHandoffV1:
+    """A v2 wire envelope retained by its one original Python composition."""
+    payload: dict
+    mac: str
+    wire: str
+    _owner: object = field(repr=False, compare=False)
+    _seal: object = field(repr=False, compare=False)
+
+    def __post_init__(self):
+        if (self._seal is not _BOOTSTRAP_COMPOSITION_OWNER_SEAL
+                or self._owner not in _BOOTSTRAP_COMPOSITIONS):
+            _fail('HANDOFF_DENIED')
+
+
+def _runtime_wire_row(value, role, handoff=None):
+    if (type(value) is not dict
+            or set(value) != {'role','childId','pipeId','lifecycle',
+                              'inheritedFDs','currentFDs'}
+            or value['role'] != role or not _RUN.fullmatch(value['childId'])
+            or not _RUN.fullmatch(value['pipeId'])
+            or value['inheritedFDs'] != [0,1,2,3,4]
+            or value['lifecycle'] != {'CONTROLLER':'SERVICE','BROWSER':'WAITING',
+                'VERIFIER':'WAITING','PROXY':'SERVICE'}[role]):
+        _fail('HANDOFF_DENIED')
+    if handoff is not None:
+        try: return _CONFINEMENT.validate_runtime_observation(value, handoff,
+                                                               value['lifecycle'])
+        except Exception: _fail('HANDOFF_DENIED')
+    rows = value['currentFDs']
+    if type(rows) is not list or not 5 <= len(rows) <= 55:
+        _fail('HANDOFF_DENIED')
+    previous, owners = -1, set()
+    for row in rows:
+        if (not _keys(row, ('fd','kind','device','inode','flags','ownerId',
+                            'acquiredGeneration'))
+                or not _integer(row['fd'], previous + 1, 4095)
+                or row['kind'] not in _CONFINEMENT._RUNTIME_FD_KINDS
+                or type(row['device']) is not str
+                or re.fullmatch(r'0|[1-9][0-9]{0,19}', row['device']) is None
+                or type(row['inode']) is not str
+                or re.fullmatch(r'0|[1-9][0-9]{0,19}', row['inode']) is None
+                or not _integer(row['flags']) or not _RUN.fullmatch(row['ownerId'])
+                or row['ownerId'] in owners
+                or type(row['acquiredGeneration']) is not int
+                or row['acquiredGeneration'] != 1):
+            _fail('HANDOFF_DENIED')
+        previous = row['fd']; owners.add(row['ownerId'])
+    if ([row['fd'] for row in rows[:5]] != [0,1,2,3,4]
+            or [row['kind'] for row in rows[:5]] !=
+               ['NULL','NULL','NULL','COMMAND','RESULT']):
+        _fail('HANDOFF_DENIED')
+    proxy_counts = {kind:sum(row['kind'] == kind for row in rows)
+                    for kind in _CONFINEMENT._RUNTIME_FD_KINDS
+                    if kind.startswith('PROXY_')}
+    if role == 'PROXY':
+        if (proxy_counts.get('PROXY_LISTENER') != 1
+                or proxy_counts.get('PROXY_STOP_SELECTOR', 0) > 1
+                or any(proxy_counts.get(kind, 0) > 16 for kind in
+                       ('PROXY_ACCEPTED_STREAM','PROXY_VSOCK_STREAM',
+                        'PROXY_CONNECT_SELECTOR'))):
+            _fail('HANDOFF_DENIED')
+    elif len(rows) != 5 or any(proxy_counts.values()):
+        _fail('HANDOFF_DENIED')
+    return value
+
+
+def _validate_composition_payload(payload, expected, binding, owner=None):
+    if (type(payload) is not dict or set(payload) != {
+            'configIdentity','devices','expiresAt','manifestIdentity',
+            'observedMonotonic','observedWall','probes','proxy','roles',
+            'runId','sequence','composition'} or not _wire_shape(payload)):
+        _fail('HANDOFF_DENIED')
+    base = dict(payload); composition = base.pop('composition')
+    _validate_payload(base, expected)
+    if (not _keys(composition, ('binding','probeEpochDigest',
+            'fixtureInventoryDigest','eventCheckpoint','proxyRuntimeId',
+            'roleRuntime')) or not _digest(composition['probeEpochDigest'])
+            or not _digest(composition['fixtureInventoryDigest'])
+            or not _RUN.fullmatch(composition['proxyRuntimeId'])
+            or _CONFINEMENT.CompositionBinding.from_record(
+                composition['binding']) != binding):
+        _fail('HANDOFF_DENIED')
+    checkpoint = composition['eventCheckpoint']
+    if (not _keys(checkpoint, ('binding','generation','sequence','sourceIdentity',
+                               'lostCount'))
+            or _CONFINEMENT.CompositionBinding.from_record(
+                checkpoint['binding']) != binding
+            or type(checkpoint['generation']) is not int
+            or checkpoint['generation'] != 1
+            or not _integer(checkpoint['sequence'], 1)
+            or not _RUN.fullmatch(checkpoint['sourceIdentity'])
+            or type(checkpoint['lostCount']) is not int
+            or checkpoint['lostCount'] != 0):
+        _fail('HANDOFF_DENIED')
+    runtime = composition['roleRuntime']
+    if type(runtime) is not list or len(runtime) != 4:
+        _fail('HANDOFF_DENIED')
+    handoffs = None if owner is None else tuple(owner._roles._handoffs[r]
+                                               for r in _CONFINEMENT.UIDS)
+    for index, role in enumerate(_CONFINEMENT.UIDS):
+        _runtime_wire_row(runtime[index], role,
+                          None if handoffs is None else handoffs[index])
+    if owner is not None:
+        if (binding is not owner.binding
+                or composition['probeEpochDigest'] != owner._probe_epoch.digest
+                or composition['fixtureInventoryDigest'] !=
+                   owner._probe_epoch.fixture_inventory_digest
+                or checkpoint['sourceIdentity'] != owner._event_source_id
+                or composition['proxyRuntimeId'] != owner._proxy_runtime_id):
+            _fail('HANDOFF_DENIED')
+        for row, role in zip(runtime, _CONFINEMENT.UIDS):
+            if any(row[key] != owner._roles._map[role][key]
+                   for key in ('childId','pipeId')):
+                _fail('HANDOFF_DENIED')
+    return payload
+
+
+def verify_bootstrap_handoff_v1(wire, expected, binding, owner=None):
+    """Strict v2 consumer; a valid MAC alone is never original provenance."""
+    _authority(expected)
+    try:
+        if (type(wire) is not str or not wire.isascii()
+                or not 0 < len(wire.encode('ascii')) <= BOOTSTRAP_HANDOFF_LIMIT):
+            _fail('HANDOFF_DENIED')
+        envelope = json.loads(wire, object_pairs_hook=_json_object,
+                              parse_int=_json_integer, parse_float=_json_forbidden,
+                              parse_constant=_json_forbidden)
+        if (not _keys(envelope, ('version','payload','mac'))
+                or type(envelope['version']) is not int
+                or envelope['version'] != BOOTSTRAP_HANDOFF_VERSION
+                or type(envelope['mac']) is not str
+                or _DIGEST.fullmatch(envelope['mac']) is None
+                or _canonical(envelope).decode('ascii') != wire):
+            _fail('HANDOFF_DENIED')
+        payload = _validate_composition_payload(envelope['payload'], expected,
+                                                binding, owner)
+        calculated = hmac.new(expected.capability,
+            BOOTSTRAP_HANDOFF_DOMAIN + _canonical(payload), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(calculated, envelope['mac']):
+            _fail('HANDOFF_DENIED')
+        return payload
+    except TopologyError:
+        raise
+    except Exception:
+        _fail('HANDOFF_DENIED')
+
+
+class _CompositionCurrentSource:
+    def __init__(self, owner): self._owner = owner
+    def require_current(self): return self._owner._role_current()
+
+
+class BootstrapComposition:
+    """One terminal owner for the fixed probe→role→proxy→event→snapshot chain."""
+    def __init__(self, *, binding, expected, role_config, fixtures, proxy_entry,
+                 observations, host_devices, events, cleanup_budget, seal=None):
+        if (seal is not _BOOTSTRAP_COMPOSITION_OWNER_SEAL
+                or type(binding) is not _CONFINEMENT.CompositionBinding
+                or type(expected) is not TopologyAuthority
+                or type(role_config) is not _CONFINEMENT.BootstrapConfig
+                or role_config.run_id != binding.runId
+                or (expected.run_id, expected.manifest_identity,
+                    expected.config_identity, expected.expires_at) !=
+                   (binding.runId, binding.manifestDigest,
+                    binding.configIdentity, binding.expiresAtMs)
+                or type(observations) is not NativeTopologyBindings
+                or type(events) is not _OfflineEventNative
+                or type(cleanup_budget) is not CleanupBudget
+                or cleanup_budget.clock is not expected.clock
+                or not callable(getattr(host_devices, 'observe', None))
+                or not (callable(proxy_entry)
+                        or callable(getattr(proxy_entry, 'activate_original', None)))):
+            _fail('ADAPTER_DENIED')
+        self.binding, self._expected, self._role_config = binding, expected, role_config
+        self._fixtures, self._proxy_entry = fixtures, proxy_entry
+        self._observations, self._host_devices, self._events = (
+            observations, host_devices, events)
+        self._budget, self._state = cleanup_budget, 'NEW'
+        self._probe_epoch = self._roles = self._proxy_owner = self._event_owner = None
+        self._cleanup_chain = []
+        self._proof = self._handoff = None
+        self._proxy_runtime_id = self._event_source_id = None
+        self._generation, self._sequence = 1, 0
+        self._terminal, self._cleanup_status = False, None
+        self._last_clock = None
+        _BOOTSTRAP_COMPOSITIONS.add(self)
+
+    def _retain_cleanup(self, owner):
+        if (owner is not None and callable(getattr(owner, 'stop_owned', None))
+                and not any(owner is retained for retained in self._cleanup_chain)):
+            wrapped = getattr(owner, '_roles', None)
+            if not any(wrapped is retained for retained in self._cleanup_chain):
+                self._cleanup_chain.append(owner)
+
+    def _failed(self, error):
+        self._retain_cleanup(getattr(error, 'cleanup', None))
+        self._terminal = True; self._state = 'FAILED'
+        try: self.stop_owned(self._budget.remaining())
+        except Exception: pass
+        try: error.cleanup = self
+        except Exception: pass
+
+    def _clock(self):
+        value = self._expected.clock.sample()
+        if (not _sample(value) or (self._last_clock is not None and
+                (value[0] < self._last_clock[0] or value[1] < self._last_clock[1]))
+                or value[0] >= self.binding.expiresAtMs):
+            _fail('CLOCK_DENIED')
+        self._last_clock = value
+        return value
+
+    def _probe_module(self):
+        module = sys.modules.get(type(self._fixtures).__module__)
+        if (module is None or not callable(getattr(module, 'qualify_probe_epoch', None))
+                or not hasattr(module, 'CompletedProbeEpoch')):
+            _fail('PROBE_EPOCH_UNAVAILABLE')
+        return module
+
+    def _activate_proxy(self):
+        operation = (self._proxy_entry if callable(self._proxy_entry) else
+                     self._proxy_entry.activate_original)
+        owner = operation(self._roles, self.binding, self._budget)
+        if not isinstance(owner, _PROXY.ProxyRuntimeOwner):
+            _fail('PROXY_RUNTIME_UNAVAILABLE')
+        return owner
+
+    def _bind_runtime_owners(self):
+        for role in _CONFINEMENT.UIDS:
+            handoff = self._roles._handoffs[role]
+            if not isinstance(handoff._kernel, _CONFINEMENT.NativeKernelPort):
+                _fail('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')
+            row = self._roles._map[role]
+            lifecycle = 'SERVICE' if role in ('CONTROLLER','PROXY') else 'WAITING'
+            runtime_owner = self._proxy_owner if role == 'PROXY' else self._roles
+            handoff._kernel.bind_runtime_owner(
+                handoff, lifecycle, runtime_owner, row['childId'], row['pipeId'], 1)
+        inventory = self._proxy_owner._context._inventory
+        proxy_handoff = self._roles._handoffs['PROXY']
+        endpoints = {entry[3]: entry[0] for entry in inventory.endpoints.values()}
+        for fd, row in sorted(inventory.rows.items()):
+            if fd >= 5:
+                endpoint = endpoints.get(fd)
+                if endpoint is None: _fail('PROXY_DENIED')
+                proxy_handoff._kernel.register_runtime_descriptor(
+                    proxy_handoff, self._proxy_owner, endpoint, row['kind'], 1)
+
+    def _read_topology(self):
+        raw = tuple(self._observations._read(path)
+                    for path in NATIVE_OBSERVATION_PATHS)
+        interfaces = _interfaces(raw[0])
+        routes = _routes4(raw[1]) + _routes6(raw[2])
+        dns = _dns(raw[3])
+        listeners = (_network_rows(raw[4], 'TCP', 4)
+                     + _network_rows(raw[5], 'TCP', 6)
+                     + _network_rows(raw[6], 'UDP', 4)
+                     + _network_rows(raw[7], 'UDP', 6))
+        return interfaces, routes, dns, tuple(listeners), _abstract(raw[8])
+
+    def _capture(self):
+        before = self._event_owner.barrier()
+        self._clock(); self._expected.appliance_recheck()
+        topology = self._read_topology()
+        devices = self._host_devices.observe(self._expected)
+        handoffs = tuple(self._roles._handoffs[role] for role in _CONFINEMENT.UIDS)
+        runtime_owners = {role:(self._proxy_owner if role == 'PROXY' else self._roles)
+                          for role in _CONFINEMENT.UIDS}
+        runtime = observe_current_roles(handoffs, runtime_owners,
+                                        self._proxy_owner, self.binding)
+        proxy_record = self._proxy_owner.observe_current(self.binding).to_record()
+        observed = self._clock()
+        after = self._event_owner.barrier()
+        final = self._clock(); self._expected.appliance_recheck()
+        if (before.binding is not self.binding or after.binding is not self.binding
+                or before.sourceIdentity != after.sourceIdentity
+                or after.sequence <= before.sequence
+                or before.generation != after.generation
+                or before.lostCount != after.lostCount):
+            _fail('EVENT_DRIFT')
+        self._probe_epoch.require_current(
+            self.binding, self._probe_epoch.fixture_inventory_digest, final[0])
+        self._sequence += 1
+        probes = tuple(ProbeResult(name, attempted, outcome, count)
+                       for name, attempted, outcome, count
+                       in self._probe_epoch.task10_projection)
+        snapshot = TopologySnapshot(
+            self._sequence, observed[0], observed[1], self.binding.runId,
+            self.binding.manifestDigest, self.binding.configIdentity, devices,
+            topology[0], topology[1], topology[2], topology[3], topology[4],
+            handoffs, probes, ProxyRuntime(
+                self.binding.runId, self.binding.manifestDigest,
+                self.binding.configIdentity, self.binding.expiresAtMs,
+                proxy_record['listenAddress'], proxy_record['listenPort'],
+                proxy_record['hostCID'], proxy_record['servicePort'],
+                proxy_record['uid']))
+        base = _payload(snapshot, self._expected, observed, final)
+        composition = dict(binding=self.binding.to_record(),
+            probeEpochDigest=self._probe_epoch.digest,
+            fixtureInventoryDigest=self._probe_epoch.fixture_inventory_digest,
+            eventCheckpoint=after.to_record(),
+            proxyRuntimeId=proxy_record['runtimeId'],
+            roleRuntime=[dict(row) for row in runtime])
+        payload = dict(base, composition=composition)
+        self._proxy_runtime_id = proxy_record['runtimeId']
+        self._event_source_id = after.sourceIdentity
+        _validate_composition_payload(payload, self._expected, self.binding, self)
+        stable = json.loads(_canonical(payload))
+        stable.pop('sequence'); stable.pop('observedWall'); stable.pop('observedMonotonic')
+        stable['composition']['eventCheckpoint'].pop('sequence')
+        proof_digest = hashlib.sha256(_canonical(stable)).hexdigest()
+        mac = hmac.new(self._expected.capability,
+            BOOTSTRAP_HANDOFF_DOMAIN + _canonical(payload), hashlib.sha256).hexdigest()
+        wire = _canonical({'mac':mac,'payload':payload,
+                           'version':BOOTSTRAP_HANDOFF_VERSION}).decode('ascii')
+        if len(wire.encode('ascii')) > BOOTSTRAP_HANDOFF_LIMIT:
+            _fail('HANDOFF_DENIED')
+        self._handoff = BootstrapHandoffV1(payload, mac, wire, self,
+                                           _BOOTSTRAP_COMPOSITION_OWNER_SEAL)
+        roles = _canonical(base['roles']); device_rows = _canonical(base['devices'])
+        return AdmissionProof(self.binding.runId, self.binding.manifestDigest,
+            self.binding.configIdentity, hashlib.sha256(roles).hexdigest(),
+            hashlib.sha256(device_rows).hexdigest(), proof_digest,
+            self.binding.expiresAtMs, self._sequence,
+            _canonical(payload).decode('ascii'), wire)
+
+    def begin(self) -> AdmissionProof:
+        if self._state != 'NEW' or self._terminal: _fail('TOPOLOGY_FAILED')
+        try:
+            self._state = 'PROBING'; module = self._probe_module()
+            self._probe_epoch = module.qualify_probe_epoch(
+                self.binding, self._fixtures, self._budget)
+            if type(self._probe_epoch) is not module.CompletedProbeEpoch:
+                _fail('PROBE_EPOCH_DENIED')
+            self._state = 'PROBES_EXITED'
+            self._roles = _CONFINEMENT.bind_original_roles(
+                self._role_config, self.binding, self._budget)
+            self._retain_cleanup(self._roles)
+            self._state = 'ROLES_WAITING'
+            self._proxy_owner = self._activate_proxy()
+            self._retain_cleanup(self._proxy_owner); self._state = 'PROXY_READY'
+            self._bind_runtime_owners()
+            self._event_owner = LinuxBootstrapEventSource.install(
+                self.binding, self._events, self._budget)
+            self._retain_cleanup(self._event_owner)
+            self._state = 'WATCHING'
+            self._roles.bind_current_source(_CompositionCurrentSource(self))
+            self._proof = self._capture(); self._state = 'ADMITTED'
+            return self._proof
+        except Exception as error:
+            self._failed(error)
+            raise
+
+    def require_current(self) -> AdmissionProof:
+        if self._state not in ('ADMITTED','BROWSER_COMMITTED') or self._terminal:
+            _fail('TOPOLOGY_FAILED')
+        try:
+            self._proof = self._capture(); return self._proof
+        except Exception as error:
+            self._failed(error)
+            raise
+
+    def _role_current(self):
+        proof = self.require_current()
+        return dict(proofDigest=proof.topology_digest, generation=self._generation,
+            expiresAtMs=self.binding.expiresAtMs,
+            monotonicDeadlineMs=self._activation_deadline(),
+            eventCheckpoint=self._handoff.payload['composition']['eventCheckpoint'])
+
+    def _activation_deadline(self):
+        wall, mono = self._clock()
+        end = mono + self.binding.expiresAtMs - wall
+        if end > _MAX: _fail('TOPOLOGY_EXPIRED')
+        if self._budget.deadline is not None: end = min(end, self._budget.deadline)
+        return end
+
+    def prepare_browser(self) -> _CONFINEMENT.BootstrapBrowserPreparation:
+        try:
+            proof = self.require_current()
+            record = dict(proofDigest=proof.topology_digest, generation=self._generation,
+                expiresAtMs=self.binding.expiresAtMs,
+                monotonicDeadlineMs=self._activation_deadline())
+            owner = self._roles.prepare_browser(record)
+            if type(owner) is not _CONFINEMENT.BootstrapBrowserPreparation:
+                _fail('AUTHORITY_LOST')
+            return owner
+        except Exception as error:
+            self._failed(error)
+            raise
+
+    def stop_owned(self, remaining_ms):
+        if type(remaining_ms) is not int or not 0 <= remaining_ms <= 60000:
+            _fail('CLEANUP_UNCERTAIN')
+        self._terminal = True
+        if self._cleanup_status is not None:
+            return {'status':self._cleanup_status,'runId':self.binding.runId}
+        failed = False
+        for owner in reversed(self._cleanup_chain):
+            try:
+                allowance = min(remaining_ms, self._budget.remaining())
+                receipt = owner.stop_owned(allowance)
+                if (type(receipt) is not dict
+                        or receipt.get('status') not in ('STOPPED','EXITED')):
+                    failed = True
+            except Exception: failed = True
+        try: self._observations.cleanup_unresolved()
+        except Exception: failed = True
+        self._cleanup_status = 'TIMEOUT' if failed else 'STOPPED'
+        return {'status':self._cleanup_status,'runId':self.binding.runId}
+
+
+def compose_bootstrap_v1(*, binding, expected, role_config, fixtures,
+                         proxy_entry, observations, host_devices, events,
+                         cleanup_budget):
+    """Select the inert composition; no probe, child, socket or event opens here."""
+    return BootstrapComposition(binding=binding, expected=expected,
+        role_config=role_config, fixtures=fixtures, proxy_entry=proxy_entry,
+        observations=observations, host_devices=host_devices, events=events,
+        cleanup_budget=cleanup_budget, seal=_BOOTSTRAP_COMPOSITION_OWNER_SEAL)
 
 
 @dataclass(frozen=True)
