@@ -98,8 +98,24 @@ def _dependency(filename, name):
     return module
 
 
+def _fixed_dependency(target, name):
+    target = pathlib.Path(target).resolve()
+    if name in sys.modules:
+        module = sys.modules[name]
+        if pathlib.Path(getattr(module, '__file__', '')).resolve() != target:
+            raise ImportError('fixed dependency identity mismatch')
+        return module
+    spec = importlib.util.spec_from_file_location(name, target)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 _CONFINEMENT = _dependency('confinement.py', '_acceptance_topology_confinement')
 _PROXY = _dependency('proxy.py', '_acceptance_topology_proxy')
+_PROBES = _fixed_dependency(pathlib.Path(__file__).resolve().parents[1] /
+    'tests/guest/confinement_probe.py', '_acceptance_topology_confinement_probe')
 _RUN = re.compile(r'[0-9a-f]{32}')
 _DIGEST = re.compile(r'[0-9a-f]{64}')
 _MAX = 9007199254740991
@@ -2223,19 +2239,29 @@ class BootstrapHandoffV1:
             _fail('HANDOFF_DENIED')
 
 
-def _runtime_wire_row(value, role, handoff=None):
+def _runtime_wire_row(value, role, handoff=None, expected_lifecycle=None):
+    lifecycle = {'CONTROLLER':'SERVICE','BROWSER':'WAITING',
+                 'VERIFIER':'WAITING','PROXY':'SERVICE'}[role]
+    if expected_lifecycle is not None:
+        if (role != 'BROWSER'
+                or expected_lifecycle not in ('WAITING','BROWSER_ACTIVE')):
+            _fail('HANDOFF_DENIED')
+        lifecycle = expected_lifecycle
+    elif role == 'BROWSER' and type(value) is dict:
+        if value.get('lifecycle') not in ('WAITING','BROWSER_ACTIVE'):
+            _fail('HANDOFF_DENIED')
+        lifecycle = value['lifecycle']
     if (type(value) is not dict
             or set(value) != {'role','childId','pipeId','lifecycle',
                               'inheritedFDs','currentFDs'}
             or value['role'] != role or not _RUN.fullmatch(value['childId'])
             or not _RUN.fullmatch(value['pipeId'])
             or value['inheritedFDs'] != [0,1,2,3,4]
-            or value['lifecycle'] != {'CONTROLLER':'SERVICE','BROWSER':'WAITING',
-                'VERIFIER':'WAITING','PROXY':'SERVICE'}[role]):
+            or value['lifecycle'] != lifecycle):
         _fail('HANDOFF_DENIED')
     if handoff is not None:
         try: return _CONFINEMENT.validate_runtime_observation(value, handoff,
-                                                               value['lifecycle'])
+                                                               lifecycle)
         except Exception: _fail('HANDOFF_DENIED')
     rows = value['currentFDs']
     if type(rows) is not list or not 5 <= len(rows) <= 55:
@@ -2308,9 +2334,22 @@ def _validate_composition_payload(payload, expected, binding, owner=None):
         _fail('HANDOFF_DENIED')
     handoffs = None if owner is None else tuple(owner._roles._handoffs[r]
                                                for r in _CONFINEMENT.UIDS)
+    browser_lifecycle = None
+    if owner is not None:
+        preparation = owner._browser_preparation
+        active = (owner._state == 'BROWSER_COMMITTED'
+                  and type(preparation) is _CONFINEMENT.BootstrapBrowserPreparation
+                  and preparation is owner._roles._preparation
+                  and preparation._committed
+                  and type(owner._browser_reservation) is BrowserTransitionReservation
+                  and owner._browser_reservation._used)
+        if owner._state == 'BROWSER_COMMITTED' and not active:
+            _fail('HANDOFF_DENIED')
+        browser_lifecycle = 'BROWSER_ACTIVE' if active else 'WAITING'
     for index, role in enumerate(_CONFINEMENT.UIDS):
         _runtime_wire_row(runtime[index], role,
-                          None if handoffs is None else handoffs[index])
+                          None if handoffs is None else handoffs[index],
+                          browser_lifecycle if role == 'BROWSER' else None)
     if owner is not None:
         if (binding is not owner.binding
                 or composition['probeEpochDigest'] != owner._probe_epoch.digest
@@ -2370,6 +2409,7 @@ class BootstrapComposition:
                 or type(expected) is not TopologyAuthority
                 or type(role_config) is not _CONFINEMENT.BootstrapConfig
                 or role_config.run_id != binding.runId
+                or type(fixtures) is not _PROBES.NativeProbeFixtures
                 or (expected.run_id, expected.manifest_identity,
                     expected.config_identity, expected.expires_at) !=
                    (binding.runId, binding.manifestDigest,
@@ -2388,6 +2428,8 @@ class BootstrapComposition:
             observations, host_devices, events)
         self._budget, self._state = cleanup_budget, 'NEW'
         self._probe_epoch = self._roles = self._proxy_owner = self._event_owner = None
+        self._browser_preparation = self._browser_reservation = None
+        self._browser_commit_currents = 0
         self._cleanup_chain = []
         self._proof = self._handoff = None
         self._proxy_runtime_id = self._event_source_id = None
@@ -2419,13 +2461,6 @@ class BootstrapComposition:
             _fail('CLOCK_DENIED')
         self._last_clock = value
         return value
-
-    def _probe_module(self):
-        module = sys.modules.get(type(self._fixtures).__module__)
-        if (module is None or not callable(getattr(module, 'qualify_probe_epoch', None))
-                or not hasattr(module, 'CompletedProbeEpoch')):
-            _fail('PROBE_EPOCH_UNAVAILABLE')
-        return module
 
     def _activate_proxy(self):
         operation = (self._proxy_entry if callable(self._proxy_entry) else
@@ -2536,10 +2571,10 @@ class BootstrapComposition:
     def begin(self) -> AdmissionProof:
         if self._state != 'NEW' or self._terminal: _fail('TOPOLOGY_FAILED')
         try:
-            self._state = 'PROBING'; module = self._probe_module()
-            self._probe_epoch = module.qualify_probe_epoch(
+            self._state = 'PROBING'
+            self._probe_epoch = _PROBES.qualify_probe_epoch(
                 self.binding, self._fixtures, self._budget)
-            if type(self._probe_epoch) is not module.CompletedProbeEpoch:
+            if type(self._probe_epoch) is not _PROBES.CompletedProbeEpoch:
                 _fail('PROBE_EPOCH_DENIED')
             self._state = 'PROBES_EXITED'
             self._roles = _CONFINEMENT.bind_original_roles(
@@ -2571,6 +2606,15 @@ class BootstrapComposition:
 
     def _role_current(self):
         proof = self.require_current()
+        preparation = self._browser_preparation
+        if (preparation is not None and preparation is self._roles._preparation
+                and preparation._used and not preparation._committed):
+            self._browser_commit_currents += 1
+            if self._browser_commit_currents == 2:
+                self._event_owner.commit_browser_transition(
+                    self._browser_reservation)
+            elif self._browser_commit_currents > 2:
+                _fail('AUTHORITY_LOST')
         return dict(proofDigest=proof.topology_digest, generation=self._generation,
             expiresAtMs=self.binding.expiresAtMs,
             monotonicDeadlineMs=self._activation_deadline(),
@@ -2592,7 +2636,63 @@ class BootstrapComposition:
             owner = self._roles.prepare_browser(record)
             if type(owner) is not _CONFINEMENT.BootstrapBrowserPreparation:
                 _fail('AUTHORITY_LOST')
+            self._retain_browser_preparation(owner)
             return owner
+        except Exception as error:
+            self._failed(error)
+            raise
+
+    def _retain_browser_preparation(self, owner):
+        if (self._state != 'ADMITTED'
+                or type(owner) is not _CONFINEMENT.BootstrapBrowserPreparation
+                or owner is not self._roles._preparation or not owner._prepared
+                or owner._used or self._browser_preparation is not None
+                or self._browser_reservation is not None):
+            _fail('AUTHORITY_LOST')
+        reservation = self._event_owner.reserve_browser_transition(
+            self.binding, self._generation, self._roles._handoffs['BROWSER'],
+            self._roles, self._proxy_owner)
+        if type(reservation) is not BrowserTransitionReservation:
+            _fail('AUTHORITY_LOST')
+        self._browser_preparation, self._browser_reservation = owner, reservation
+
+    def _finish_browser_commit(self, result):
+        owner, reservation = self._browser_preparation, self._browser_reservation
+        if (self._state != 'ADMITTED' or result != {'status':'ACTIVE','generation':1}
+                or type(owner) is not _CONFINEMENT.BootstrapBrowserPreparation
+                or owner is not self._roles._preparation or not owner._committed
+                or type(reservation) is not BrowserTransitionReservation
+                or reservation._event_owner is not self._event_owner
+                or not reservation._used or self._browser_commit_currents != 2):
+            _fail('AUTHORITY_LOST')
+        self._state = 'BROWSER_COMMITTED'
+        self.require_current()
+        return result
+
+    def commit_browser(self, owner):
+        if (owner is not self._browser_preparation or self._terminal
+                or self._state != 'ADMITTED'):
+            _fail('AUTHORITY_LOST')
+        try:
+            return self._finish_browser_commit(self._roles.commit_browser(owner))
+        except Exception as error:
+            self._failed(error)
+            raise
+
+    def handle_controller(self, data, ancillary=(), flags=0):
+        """Forward one exact controller frame through the retained Task 6 owner."""
+        if self._state not in ('ADMITTED','BROWSER_COMMITTED') or self._terminal:
+            _fail('TOPOLOGY_FAILED')
+        try:
+            prior = self._browser_preparation
+            result = self._roles.handle_controller(data, ancillary, flags)
+            current = self._roles._preparation
+            if prior is None and current is not None:
+                self._retain_browser_preparation(current)
+            elif (prior is not None and current is prior and current._committed
+                  and self._state == 'ADMITTED'):
+                self._finish_browser_commit({'status':'ACTIVE','generation':1})
+            return result
         except Exception as error:
             self._failed(error)
             raise

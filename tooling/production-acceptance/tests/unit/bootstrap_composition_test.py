@@ -1,5 +1,6 @@
 """Offline composition contracts. Every kernel/channel effect here is inert."""
 import hashlib
+import hmac
 import importlib.util
 import json
 from pathlib import Path
@@ -28,7 +29,7 @@ def load(name, path):
 
 t = load('bootstrap_v1_test_topology', ROOT / 'guest/topology.py')
 c = t._CONFINEMENT
-p = load('bootstrap_v1_test_probes', ROOT / 'tests/guest/confinement_probe.py')
+p = t._PROBES
 proxy_fixture = load('bootstrap_v1_proxy_fixture', ROOT / 'tests/unit/proxy_test.py')
 topology_fixture = load('bootstrap_v1_topology_fixture', ROOT / 'tests/unit/topology_test.py')
 confinement_fixture = load('bootstrap_v1_confinement_fixture', ROOT / 'tests/unit/confinement_test.py')
@@ -515,11 +516,53 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             self.binding=c.CompositionBinding(
                 1,'1'*32,'b'*64,'a'*64,'c'*64,7,190)
             confinement_fixture.c=c;confinement_fixture.RUN=self.binding.runId
-            self.role_kernel=confinement_fixture.Kernel()
-            spawn_waiting=self.role_kernel.spawn_waiting
+            self.role_finite=confinement_fixture.Kernel()
+            self.role_kernel=c.NativeKernelPort(types.SimpleNamespace())
+            spawn_waiting=self.role_finite.spawn_waiting
             def spawn_identified(launch,entry):
                 owned=spawn_waiting(launch,entry);owned.identity=object();return owned
             self.role_kernel.spawn_waiting=spawn_identified
+            self.role_kernel.inspect=self.role_finite.inspect
+            self.role_kernel.stop_owned=self.role_finite.stop_owned
+            self.role_kernel.wait_owned=self.role_finite.wait_owned
+            self.native_runtime={}
+            def bind_runtime(handoff,lifecycle,owner,child_id,pipe_id,generation):
+                index=list(c.UIDS).index(handoff.launch.role)
+                rows=[dict(fd=fd,
+                    kind='NULL' if fd<3 else 'COMMAND' if fd==3 else 'RESULT',
+                    device='1',inode=str(index*10+fd+1),flags=0,
+                    ownerId=hex(index*10+fd+1)[-1]*32,acquiredGeneration=1)
+                    for fd in range(5)]
+                self.native_runtime[id(handoff)]=dict(handoff=handoff,owner=owner,
+                    role=handoff.launch.role,lifecycle=lifecycle,
+                    childId=child_id,pipeId=pipe_id,
+                    inheritedFDs=[0,1,2,3,4],currentFDs=rows)
+            def runtime_lifecycle(handoff,owner):
+                state=self.native_runtime[id(handoff)]
+                if state['owner'] is not owner:raise c.ConfinementError('AUTHORITY_LOST')
+                return state['lifecycle']
+            def inspect_runtime(handoff,lifecycle,owner):
+                state=self.native_runtime[id(handoff)]
+                if state['owner'] is not owner or state['lifecycle']!=lifecycle:
+                    raise c.ConfinementError('AUTHORITY_LOST')
+                return {key:([dict(row) for row in state[key]] if key=='currentFDs'
+                    else list(state[key]) if key=='inheritedFDs' else state[key])
+                    for key in ('role','childId','pipeId','lifecycle','inheritedFDs','currentFDs')}
+            def register_runtime(handoff,owner,endpoint,kind,generation):
+                record=owner.observe_current(self.binding).to_record()
+                row=next(value for value in record['currentFDs']
+                         if value['fd']==endpoint.fileno())
+                self.native_runtime[id(handoff)]['currentFDs'].append(dict(row))
+            def commit_runtime(preparation):
+                state=self.native_runtime[id(preparation._child)]
+                if preparation is not preparation._roles._preparation or not preparation._committed:
+                    raise c.ConfinementError('AUTHORITY_LOST')
+                state['lifecycle']='BROWSER_ACTIVE'
+            self.role_kernel.bind_runtime_owner=bind_runtime
+            self.role_kernel.runtime_lifecycle=runtime_lifecycle
+            self.role_kernel.inspect_runtime=inspect_runtime
+            self.role_kernel.register_runtime_descriptor=register_runtime
+            self.role_kernel._commit_browser_runtime=commit_runtime
             self.role_config=confinement_fixture.ConfinementTests().config(self.role_kernel)
             launches=tuple(c.prepare_role(role,c.RoleConfig(
                 self.role_config,c.role_fds(role,self.binding.runId))) for role in c.UIDS)
@@ -527,13 +570,21 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             def write_role(owned,data):
                 value=json.loads(data[4:])
                 if 'kind' in value:self.role_init[owned.role]=value;return
-                if value['action']!='PREPARE':raise AssertionError('unexpected role action')
                 self.worker_sequence+=1
-                payload=value['payload'];response=dict(version=1,binding=self.binding.to_record(),
+                payload=value['payload'];action=value['action']
+                if action=='PREPARE':result_action='PREPARED';result_payload=dict(
+                    requestSequence=value['sequence'],grantId=payload['grantId'],
+                    reservationId='6'*32,generation=1)
+                elif action=='COMMIT':result_action='REFRESH';result_payload=dict(
+                    requestSequence=value['sequence'],**payload)
+                elif action=='CURRENT':
+                    result_action='STARTED';result_payload={key:payload[key] for key in
+                        ('grantId','reservationId','commitId','generation')}
+                    result_payload['requestSequence']=value['sequence']
+                else:raise AssertionError('unexpected role action')
+                response=dict(version=1,binding=self.binding.to_record(),
                     sequence=self.worker_sequence,role='BROWSER',childId=value['childId'],
-                    pipeId=value['pipeId'],action='PREPARED',payload=dict(
-                        requestSequence=value['sequence'],grantId=payload['grantId'],
-                        reservationId='6'*32,generation=1))
+                    pipeId=value['pipeId'],action=result_action,payload=result_payload)
                 unsigned=c._v1_canonical(response)
                 response['mac']=__import__('hmac').new(
                     bytes.fromhex(self.role_init['BROWSER']['channelKeyHex']),
@@ -601,9 +652,12 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(p,'qualify_probe_epoch',side_effect=run_probes))
             bind_roles=c.bind_original_roles
             def start_roles(*args):
-                self.timeline.append('roles');self.roles=bind_roles(*args);return self.roles
+                self.timeline.append('roles');self.roles=bind_roles(*args)
+                self.event_native.audit_role_pids={
+                    handoff.attestation.pid:role
+                    for role,handoff in self.roles._handoffs.items()}
+                return self.roles
             stack.enter_context(mock.patch.object(c,'bind_original_roles',side_effect=start_roles))
-            stack.enter_context(mock.patch.object(t.BootstrapComposition,'_bind_runtime_owners',side_effect=lambda owner:self.timeline.append('runtime-bind'),autospec=True))
             observe_current_roles=t.observe_current_roles
             def current_roles(handoffs,runtime_owners,proxy_owner,binding):
                 proxy_rows=proxy_owner.observe_current(binding).to_record()['currentFDs']
@@ -619,6 +673,10 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                         state['pipeId']=roles_owner._map[role]['pipeId']
                         raw.append(handoff);retained.extend(endpoints)
                     self.raw_handoffs,self.raw_endpoints=tuple(raw),tuple(retained)
+                if (self.roles._preparation is not None
+                        and self.roles._preparation._committed):
+                    browser=self.raw_handoffs[1]
+                    browser._kernel._runtime_owners[id(browser)]['lifecycle']='BROWSER_ACTIVE'
                 self.runtime=observe_current_roles(
                     self.raw_handoffs,runtime_owners,proxy_owner,binding)
                 return self.runtime
@@ -646,6 +704,108 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 observations=self.observations,host_devices=self.host,events=self.events,
                 cleanup_budget=self.budget)
             return composition,stack
+
+    def test_v1_foreign_probe_module_is_rejected_before_persistent_effects(self):
+        h=self.Harness(self);original,stack=h.build()
+        module_name='task9_foreign_probe_adapter';module=types.ModuleType(module_name)
+        class ForeignFixtures:pass
+        class ForeignEpoch:
+            def __init__(self,binding):
+                self.binding=binding;self.task10_projection=tuple(
+                    (name,True,'ALLOWED' if name=='PROXY_VSOCK_CONTROL' else 'DENIED',
+                     int(name=='PROXY_VSOCK_CONTROL')) for name in t.FIXED_PROBE_IDS)
+                self.fixture_inventory_digest='f'*64;self.digest='e'*64
+                self.family_proofs=()
+            def require_current(self,*args):return self
+        ForeignFixtures.__module__=ForeignEpoch.__module__=module_name
+        module.CompletedProbeEpoch=ForeignEpoch
+        module.qualify_probe_epoch=lambda binding,fixtures,budget:ForeignEpoch(binding)
+        sys.modules[module_name]=module
+        try:
+            with stack,self.assertRaises(t.TopologyError):
+                composition=t.compose_bootstrap_v1(binding=h.binding,expected=h.expected,
+                    role_config=h.role_config,fixtures=ForeignFixtures(),
+                    proxy_entry=original._proxy_entry,observations=h.observations,
+                    host_devices=h.host,events=h.events,cleanup_budget=h.budget)
+                composition.begin()
+            self.assertNotIn('roles',h.timeline);self.assertNotIn('proxy',h.timeline)
+            self.assertFalse(h.event_native.opened)
+        finally:sys.modules.pop(module_name,None)
+
+    def test_v1_original_browser_commit_consumes_task8_transition_once(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            composition.begin();preparation=composition.prepare_browser()
+            self.assertIs(composition._browser_preparation,preparation)
+            reservation=composition._browser_reservation
+            self.assertIs(reservation._event_owner,composition._event_owner)
+            self.assertEqual(composition.commit_browser(preparation),
+                             {'status':'ACTIVE','generation':1})
+            self.assertTrue(reservation._used)
+            self.assertEqual(composition._state,'BROWSER_COMMITTED')
+            proof=composition.require_current()
+            runtime=json.loads(proof.handoff)['payload']['composition']['roleRuntime']
+            self.assertEqual(runtime[1]['lifecycle'],'BROWSER_ACTIVE')
+            browser_pid=h.roles._handoffs['BROWSER'].attestation.pid
+            child=browser_pid+100
+            for event in (dict(number=220,pid=browser_pid,ppid=1,exit=child,
+                               argument0='0',success=True),
+                          dict(number=221,pid=child,ppid=browser_pid,exit=0,
+                               argument0='0',success=True),
+                          dict(number=93,pid=child,ppid=browser_pid,exit=0,
+                               argument0='0',success=True)):
+                composition._event_owner._accept_browser_transition(event)
+            self.assertIsNone(composition._event_owner._browser_transition)
+            with self.assertRaises(Exception):composition.commit_browser(preparation)
+
+    def test_v1_controller_forwarder_owns_prepare_and_commit_state_change(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            admitted=composition.begin();row=next(value for value in
+                h.role_init['CONTROLLER']['roles'] if value['role']=='BROWSER')
+            key=bytes.fromhex(h.role_init['CONTROLLER']['channelKeyHex'])
+            def request(sequence,action,payload):
+                value=dict(version=1,binding=h.binding.to_record(),sequence=sequence,
+                    **row,action=action,payload=payload)
+                value['mac']=hmac.new(key,
+                    b'acceptance:bootstrap-composition:v1\0CONTROLLER:TO_BOOTSTRAP\0'
+                    +c._v1_canonical(value),hashlib.sha256).hexdigest()
+                return c._v1_encode(value)
+            composition.handle_controller(request(1,'ADOPT',{}))
+            proof=dict(proofDigest=composition.require_current().topology_digest,
+                generation=1,expiresAtMs=h.binding.expiresAtMs,
+                monotonicDeadlineMs=composition._activation_deadline())
+            prepared=json.loads(composition.handle_controller(
+                request(2,'PREPARE_BROWSER',proof))[4:])['payload']['result']
+            result=json.loads(composition.handle_controller(request(
+                3,'COMMIT_BROWSER',dict(grantId=prepared['grantId'],generation=1)))[4:])
+            self.assertEqual(result['payload']['result'],{'status':'ACTIVE','generation':1})
+            self.assertEqual(composition._state,'BROWSER_COMMITTED')
+            self.assertTrue(composition._browser_reservation._used)
+            self.assertNotEqual(admitted.handoff,composition._proof.handoff)
+
+    def test_v1_browser_failure_and_expiry_never_revive_reserved_transition(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            composition.begin();preparation=composition.prepare_browser()
+            read=h.role_kernel.read_role;reads=0
+            def fail_after_refresh(owned,remaining):
+                nonlocal reads
+                reads+=1
+                return read(owned,remaining) if reads==1 else b'bad'
+            h.role_kernel.read_role=fail_after_refresh
+            with self.assertRaises(Exception):composition.commit_browser(preparation)
+            self.assertTrue(composition._browser_reservation._used)
+            self.assertEqual(composition._state,'FAILED')
+            with self.assertRaises(Exception):composition.require_current()
+            with self.assertRaises(Exception):composition.commit_browser(preparation)
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            composition.begin();preparation=composition.prepare_browser()
+            h.clock.wall=h.binding.expiresAtMs
+            with self.assertRaises(Exception):composition.commit_browser(preparation)
+            self.assertFalse(composition._browser_reservation._used)
+            self.assertEqual(composition._state,'FAILED')
 
     def test_v1_all_probe_families_exit_before_persistent_roles(self):
         h=self.Harness(self);composition,stack=h.build()
@@ -678,7 +838,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
         self.assertIs(caught.exception.cleanup,composition)
 
     def test_v1_partial_role_and_event_acquisitions_keep_exact_cleanup_owners(self):
-        h=self.Harness(self);h.role_kernel.fail_spawn='PROXY';composition,stack=h.build()
+        h=self.Harness(self);h.role_finite.fail_spawn='PROXY';composition,stack=h.build()
         with stack,self.assertRaises(Exception) as caught:composition.begin()
         self.assertIs(caught.exception.cleanup,composition)
         self.assertTrue(any(type(owner) is c.OriginalRoleSet
@@ -725,40 +885,82 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             return
         self.assertFalse(Path(target).exists(), 'exchange must start absent')
         Path(target).mkdir(parents=False)
-        binding=c.CompositionBinding(1,'a'*32,'b'*64,'c'*64,'d'*64,1,10000)
-        programs=tuple(c.ProgramPin(path,'a'*64) for path in sorted(c.PROGRAM_PATHS))
-        owner=c.OriginalRoleSet(c.BootstrapConfig(object(),binding.runId,programs),
-            binding,t.CleanupBudget(Clock()),c._COMPOSITION_SEAL)
-        owner._map={role:dict(role=role,childId=str(i+1)*32,pipeId=str(i+5)*32)
-                    for i,role in enumerate(c.UIDS)}
-        owner._keys={'CONTROLLER':bytes.fromhex('c3'*32),
-                     'BROWSER':bytes.fromhex('d4'*32),'PROXY':bytes.fromhex('e5'*32)}
-        proof=dict(proofDigest='e'*64,generation=1,expiresAtMs=9000,
-                   monotonicDeadlineMs=9000)
-        frames={
-            'controllerInit':c._v1_encode(dict(version=1,kind='BOOTSTRAP_INIT',
-                binding=binding.to_record(),channelKeyHex=owner._keys['CONTROLLER'].hex(),
-                roles=list(owner._map.values()))),
-            'workerInit':c._v1_encode(dict(version=1,kind='BROWSER_WORKER_INIT',
-                binding=binding.to_record(),channelKeyHex=owner._keys['BROWSER'].hex(),
-                **owner._map['BROWSER'])),
-            'browserPrepare':owner._frame('BROWSER','BROWSER','PREPARE',
-                dict(grantId='a1'*16,**proof)),
-            'controllerAdoptResult':owner._frame('CONTROLLER','BROWSER','RESULT',
-                dict(requestSequence=1,result=dict(kind='BROWSER',runId=binding.runId,
-                    uid=10002,childId=owner._map['BROWSER']['childId'],
-                    pipeId=owner._map['BROWSER']['pipeId'],waiting=True,confined=True,
-                    attestationDigest='9'*64))),
-            'controllerPrepareResult':owner._frame('CONTROLLER','BROWSER','RESULT',
-                dict(requestSequence=2,result=dict(grantId='a1'*16,**proof))),
-        }
-        record={'version':1,'producer':'python-original-role-set',
+        def actual_forwarder(cancel=False):
+            forwarder=confinement_fixture.c
+            captured=[];original_bind=forwarder.bind_original_roles
+            def bind(config,binding,budget):
+                write=config.kernel.write_role
+                def capture_write(owned,data):
+                    captured.append(bytes(data));return write(owned,data)
+                config.kernel.write_role=capture_write
+                return original_bind(config,binding,budget)
+            case=confinement_fixture.V1RoleTests(methodName='runTest')
+            with mock.patch.object(forwarder,'bind_original_roles',side_effect=bind):
+                roles,k,budget,proof,_,init=case.setup_roles()
+            received=[];read=k.read_role
+            def capture_read(owned,remaining):
+                data=read(owned,remaining);received.append(bytes(data));return data
+            k.read_role=capture_read
+            controller=init['CONTROLLER'];rows=controller['roles']
+            browser=next(row for row in rows if row['role']=='BROWSER')
+            key=bytes.fromhex(controller['channelKeyHex'])
+            def request(sequence,action,payload):
+                value=dict(version=1,binding=roles.binding.to_record(),
+                    sequence=sequence,**browser,action=action,payload=payload)
+                value['mac']=hmac.new(key,
+                    b'acceptance:bootstrap-composition:v1\0CONTROLLER:TO_BOOTSTRAP\0'
+                    +forwarder._v1_canonical(value),hashlib.sha256).hexdigest()
+                return forwarder._v1_encode(value)
+            controller_init=next(data for data in captured
+                if json.loads(data[4:]).get('kind')=='BOOTSTRAP_INIT')
+            worker_init=next(data for data in captured
+                if json.loads(data[4:]).get('kind')=='BROWSER_WORKER_INIT')
+            controller_adopt=request(1,'ADOPT',{})
+            controller_adopt_result=roles.handle_controller(controller_adopt)
+            controller_prepare=request(2,'PREPARE_BROWSER',proof)
+            controller_prepare_result=roles.handle_controller(controller_prepare)
+            if cancel:
+                budget.remaining()
+                controller_final=request(3,'CANCEL',dict(generation=1,
+                    cleanupEndsAtMonotonicMs=budget.deadline))
+                controller_final_result=roles.handle_controller(controller_final)
+            else:
+                preparation=json.loads(controller_prepare_result[4:])['payload']['result']
+                controller_final=request(3,'COMMIT_BROWSER',dict(
+                    grantId=preparation['grantId'],generation=1))
+                controller_final_result=roles.handle_controller(controller_final)
+            sent_actions={json.loads(data[4:])['action']:data for data in captured
+                          if 'action' in json.loads(data[4:])}
+            received_actions={json.loads(data[4:])['action']:data for data in received}
+            frames=dict(controllerInit=controller_init,workerInit=worker_init,
+                controllerAdopt=controller_adopt,
+                controllerAdoptResult=controller_adopt_result,
+                controllerPrepare=controller_prepare,
+                browserPrepare=sent_actions['PREPARE'],
+                browserPrepared=received_actions['PREPARED'],
+                controllerPrepareResult=controller_prepare_result)
+            if cancel:
+                frames.update(controllerCancel=controller_final,
+                    browserCancel=sent_actions['CANCEL'],
+                    browserCancelled=received_actions['CANCELLED'],
+                    controllerCancelResult=controller_final_result)
+            else:
+                frames.update(controllerCommit=controller_final,
+                    browserCommit=sent_actions['COMMIT'],
+                    browserRefresh=received_actions['REFRESH'],
+                    browserCurrent=sent_actions['CURRENT'],
+                    browserStarted=received_actions['STARTED'],
+                    controllerCommitResult=controller_final_result)
+            order=list(frames)
+            return {'binding':roles.binding.to_record(),'roles':list(rows),
+                'order':order,'frames':{name:value.hex() for name,value in frames.items()},
+                'frameSHA256':{name:hashlib.sha256(value).hexdigest()
+                               for name,value in frames.items()}}
+        success=actual_forwarder();cancel=actual_forwarder(True)
+        record={'version':1,'producer':'python-original-role-set-forwarder',
             'frameEncoding':'length-prefixed-canonical-ascii',
             'nominalContexts':['PYTHON_BOOTSTRAP','CONTROLLER_JS','BROWSER_WORKER_JS'],
-            'binding':binding.to_record(),'roles':list(owner._map.values()),
-            'frames':{name:value.hex() for name,value in frames.items()},
-            'frameSHA256':{name:hashlib.sha256(value).hexdigest()
-                           for name,value in frames.items()}}
+            **success,'cancelVariant':cancel}
         (Path(target) / 'roles.json').write_text(
             json.dumps(record, sort_keys=True, separators=(',', ':')), encoding='ascii')
 

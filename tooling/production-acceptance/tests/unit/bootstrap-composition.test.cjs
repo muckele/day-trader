@@ -12,62 +12,94 @@ const map = ['CONTROLLER','BROWSER','VERIFIER','PROXY'].map((role,i)=>({role,chi
 const canon = v => Array.isArray(v) ? '['+v.map(canon).join(',')+']' : v && typeof v==='object' ? '{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canon(v[k])).join(',')+'}' : JSON.stringify(v);
 function frame(v) { const bytes=Buffer.from(canon(v)); const n=Buffer.alloc(4);n.writeUInt32BE(bytes.length);return Buffer.concat([n,bytes]); }
 function mac(v,key,role,direction) { return crypto.createHmac('sha256',Buffer.from(key,'hex')).update('acceptance:bootstrap-composition:v1\0'+role+':'+direction+'\0'+canon(v)).digest('hex'); }
-function context() {const module={exports:{}};vm.runInNewContext(source,{module,exports:module.exports,require,Buffer,TextDecoder,setTimeout,clearTimeout,process});return module.exports;}
+function context() {const module={exports:{}},localRequire=name=>name==='node:crypto'?{...crypto,randomBytes:n=>Buffer.alloc(n,0x66)}:require(name);vm.runInNewContext(source,{module,exports:module.exports,require:localRequire,Buffer,TextDecoder,setTimeout,clearTimeout,process});return module.exports;}
 function budget(clock) {return {deadline:null,remaining(){if(this.deadline===null)this.deadline=clock.mono+60000;return Math.max(0,this.deadline-clock.mono);},clamp(end){this.deadline=Math.min(this.deadline??end,end);}};}
 function pythonTranscript(){
   const input=process.env.BOOTSTRAP_V1_INPUT;
   if(!input)return undefined;
   const transcript=JSON.parse(fs.readFileSync(input,'ascii'));
-  assert.deepEqual(Object.keys(transcript).sort(),['binding','frameEncoding','frameSHA256','frames','nominalContexts','producer','roles','version']);
-  assert.equal(transcript.version,1);assert.equal(transcript.producer,'python-original-role-set');
+  assert.deepEqual(Object.keys(transcript).sort(),['binding','cancelVariant','frameEncoding','frameSHA256','frames','nominalContexts','order','producer','roles','version']);
+  assert.equal(transcript.version,1);assert.equal(transcript.producer,'python-original-role-set-forwarder');
   assert.equal(transcript.frameEncoding,'length-prefixed-canonical-ascii');
   assert.deepEqual(transcript.nominalContexts,['PYTHON_BOOTSTRAP','CONTROLLER_JS','BROWSER_WORKER_JS']);
-  for(const [name,hex] of Object.entries(transcript.frames))assert.equal(crypto.createHash('sha256').update(Buffer.from(hex,'hex')).digest('hex'),transcript.frameSHA256[name]);
+  const expected=['controllerInit','workerInit','controllerAdopt','controllerAdoptResult',
+    'controllerPrepare','browserPrepare','browserPrepared','controllerPrepareResult',
+    'controllerCommit','browserCommit','browserRefresh','browserCurrent','browserStarted',
+    'controllerCommitResult'];
+  const cancelled=['controllerInit','workerInit','controllerAdopt','controllerAdoptResult',
+    'controllerPrepare','browserPrepare','browserPrepared','controllerPrepareResult',
+    'controllerCancel','browserCancel','browserCancelled','controllerCancelResult'];
+  function validate(record,names,keys){
+    assert.deepEqual(Object.keys(record).sort(),keys);
+    assert.deepEqual(Object.keys(record.frames).sort(),[...names].sort());
+    assert.deepEqual(Object.keys(record.frameSHA256).sort(),[...names].sort());
+    assert.deepEqual(record.order,names);
+    for(const [name,hex] of Object.entries(record.frames))assert.equal(crypto.createHash('sha256').update(Buffer.from(hex,'hex')).digest('hex'),record.frameSHA256[name]);
+  }
+  validate(transcript,expected,['binding','cancelVariant','frameEncoding','frameSHA256','frames','nominalContexts','order','producer','roles','version']);
+  validate(transcript.cancelVariant,cancelled,['binding','frameSHA256','frames','order','roles']);
   return transcript;
 }
 function fixture(options={}) {
   const transcript=options.transcript;
+  const cancelBytes=options.cancelTranscript?Buffer.from(options.cancelTranscript.frames.browserCancel,'hex'):null;
   const controller=context(), worker=context(), clock={wall:100,mono:100,sample(){return [this.wall,this.mono];}}, stops=[], launches=[];
-  const proof={proofDigest:'e'.repeat(64),generation:1,expiresAtMs:9000,monotonicDeadlineMs:9000};
-  const checkpoint={binding,generation:1,sequence:1,sourceIdentity:'f'.repeat(32),lostCount:0};
-  const grantId='a1'.repeat(16),commitId='b2'.repeat(16), keyC='c3'.repeat(32),keyW='d4'.repeat(32);
+  const recorded=name=>Buffer.from(transcript.frames[name],'hex');
+  const decoded=name=>JSON.parse(recorded(name).subarray(4));
+  const initC=transcript?decoded('controllerInit'):null,initW=transcript?decoded('workerInit'):null;
+  const runBinding=transcript?transcript.binding:binding,roleMap=transcript?transcript.roles:map;
+  const preparePayload=transcript?decoded('browserPrepare').payload:null;
+  const proof=transcript?Object.fromEntries(Object.entries(preparePayload).filter(([key])=>key!=='grantId')):
+    {proofDigest:'e'.repeat(64),generation:1,expiresAtMs:9000,monotonicDeadlineMs:9000};
+  const checkpoint=transcript&&transcript.frames.browserCurrent?decoded('browserCurrent').payload.eventCheckpoint:
+    {binding:runBinding,generation:1,sequence:1,sourceIdentity:'f'.repeat(32),lostCount:0};
+  const grantId=transcript?preparePayload.grantId:'a1'.repeat(16);
+  const commitId=transcript&&transcript.frames.browserCommit?decoded('browserCommit').payload.commitId:'b2'.repeat(16);
+  const keyC=transcript?initC.channelKeyHex:'c3'.repeat(32),keyW=transcript?initW.channelKeyHex:'d4'.repeat(32);
   let workerBinding, reservation, workerOutcome, controllerSeq=0, workerSeq=0, workerRead, reservationId,prepareBytes;
   const queue=[], pending=[];
   const original={command:{},result:{}};
-  const workerFacts={...map[1],binding,channelKeyHex:keyW,...original};
-  const controllerFacts={...map[0],binding,channelKeyHex:keyC,roles:map,command:{},result:{}};
-  const make=(role,key,seq,action,payload,target)=>{const v={version:1,binding,sequence:seq,role:target.role,childId:target.childId,pipeId:target.pipeId,action,payload};return frame({...v,mac:mac(v,key,role,'FROM_BOOTSTRAP')});};
-  const deliver=(action,payload)=>{const bytes=make('BROWSER',keyW,++workerSeq,action,payload,map[1]);if(workerRead){const r=workerRead;workerRead=null;r(bytes);}else queue.push(bytes);return bytes;};
+  const workerFacts={...roleMap[1],binding:runBinding,channelKeyHex:keyW,...original};
+  const controllerFacts={...roleMap[0],binding:runBinding,channelKeyHex:keyC,roles:roleMap,command:{},result:{}};
+  const make=(role,key,seq,action,payload,target)=>{const v={version:1,binding:runBinding,sequence:seq,role:target.role,childId:target.childId,pipeId:target.pipeId,action,payload};return frame({...v,mac:mac(v,key,role,'FROM_BOOTSTRAP')});};
+  const deliver=(action,payload)=>{const bytes=make('BROWSER',keyW,++workerSeq,action,payload,roleMap[1]);if(workerRead){const r=workerRead;workerRead=null;r(bytes);}else queue.push(bytes);return bytes;};
   const hooks=options.hooks||{};
   const workerChannel={audit:()=>workerFacts,
     async read(){if(queue.length)return queue.shift();return new Promise(r=>{workerRead=r;});},
     async write(bytes){const v=JSON.parse(bytes.subarray(4));const unsigned={...v};delete unsigned.mac;assert.equal(v.mac,mac(unsigned,keyW,'BROWSER','TO_BOOTSTRAP'));
+      if(transcript){const names={PREPARED:'browserPrepared',REFRESH:'browserRefresh',STARTED:'browserStarted',CANCELLED:'browserCancelled'};assert.deepEqual(bytes,recorded(names[v.action]));}
       if(v.action==='PREPARED'){reservationId=v.payload.reservationId;hooks.prepared?.(f);}
-      if(v.action==='REFRESH'){hooks.refresh?.(f);deliver('CURRENT',{requestSequence:v.sequence,grantId,reservationId,commitId,...proof,eventCheckpoint:checkpoint});hooks.current?.(f);}
+      if(v.action==='REFRESH'){hooks.refresh?.(f);if(transcript){hooks.current?.(f);queue.push(recorded('browserCurrent'));}else{deliver('CURRENT',{requestSequence:v.sequence,grantId,reservationId,commitId,...proof,eventCheckpoint:checkpoint});hooks.current?.(f);}}
       if(v.action==='STARTED')hooks.started?.(f);
     },
     drain(){hooks.drain?.(f);return pending.splice(0);},
     effectFence(value){assert.equal(value.sourceIdentity,checkpoint.sourceIdentity);hooks.fence?.(f);return options.fence===false?null:checkpoint;},
-    stopOwned:async remaining=>{stops.push(['worker-family',remaining]);return {status:'STOPPED',runId:binding.runId};}};
-  queue.push(transcript?Buffer.from(transcript.frames.workerInit,'hex'):frame({version:1,kind:'BROWSER_WORKER_INIT',binding,...map[1],channelKeyHex:keyW}));
-  const controllerQueue=[transcript?Buffer.from(transcript.frames.controllerInit,'hex'):frame({version:1,kind:'BOOTSTRAP_INIT',binding,channelKeyHex:keyC,roles:map})];
+    stopOwned:async remaining=>{stops.push(['worker-family',remaining]);return {status:'STOPPED',runId:runBinding.runId};}};
+  queue.push(transcript?recorded('workerInit'):frame({version:1,kind:'BROWSER_WORKER_INIT',binding:runBinding,...roleMap[1],channelKeyHex:keyW}));
+  const controllerQueue=[transcript?recorded('controllerInit'):frame({version:1,kind:'BOOTSTRAP_INIT',binding:runBinding,channelKeyHex:keyC,roles:roleMap})];
   const controllerChannel={audit:()=>controllerFacts,read:async()=>controllerQueue.shift(),
     async write(bytes){const v=JSON.parse(bytes.subarray(4));const unsigned={...v};delete unsigned.mac;assert.equal(v.mac,mac(unsigned,keyC,'CONTROLLER','TO_BOOTSTRAP'));
       let result,recorded;
-      if(v.action==='ADOPT') {result={kind:v.role,runId:binding.runId,uid:v.role==='BROWSER'?10002:10003,childId:v.childId,pipeId:v.pipeId,waiting:true,confined:true,attestationDigest:'9'.repeat(64)};if(transcript)recorded=Buffer.from(transcript.frames.controllerAdoptResult,'hex');}
-      if(v.action==='PREPARE_BROWSER') {prepareBytes=transcript?Buffer.from(transcript.frames.browserPrepare,'hex'):deliver('PREPARE',{grantId,...proof});if(transcript)workerSeq=1;reservation=await workerBinding.prepare(prepareBytes);queue.shift();result={grantId,...proof};hooks.result?.(result,f);if(transcript)recorded=Buffer.from(transcript.frames.controllerPrepareResult,'hex');}
-      if(v.action==='COMMIT_BROWSER') {deliver('COMMIT',{grantId,reservationId,commitId,generation:1});workerOutcome=await workerBinding.commitFixedBrowserLaunch(reservation,()=>{launches.push(1);const owner={stopOwned:async remaining=>{stops.push(['browser',remaining]);return {status:'STOPPED',runId:binding.runId};}};return hooks.launch?hooks.launch(f,owner):owner;});result={status:'ACTIVE',generation:1};}
-      if(v.action==='STOP_OWNED'||v.action==='WAIT_EXIT'){stops.push([v.childId,v.payload.remainingMs]);result={status:options.stopTimeout?'TIMEOUT':'STOPPED',runId:binding.runId};}
-      if(v.action==='CANCEL'){f.cancel();result={status:'CANCELLED',generation:1};}
+      if(transcript){const names={ADOPT:'controllerAdopt',PREPARE_BROWSER:'controllerPrepare',COMMIT_BROWSER:'controllerCommit',CANCEL:'controllerCancel'};assert.deepEqual(bytes,Buffer.from(transcript.frames[names[v.action]],'hex'));}
+      if(v.action==='ADOPT') {result={kind:v.role,runId:runBinding.runId,uid:v.role==='BROWSER'?10002:10003,childId:v.childId,pipeId:v.pipeId,waiting:true,confined:true,attestationDigest:'9'.repeat(64)};if(transcript)recorded=Buffer.from(transcript.frames.controllerAdoptResult,'hex');}
+      if(v.action==='PREPARE_BROWSER') {prepareBytes=transcript?Buffer.from(transcript.frames.browserPrepare,'hex'):deliver('PREPARE',{grantId,...proof});if(transcript)workerSeq=1;reservation=await workerBinding.prepare(prepareBytes);if(!transcript)queue.shift();result={grantId,...proof};hooks.result?.(result,f);if(transcript)recorded=Buffer.from(transcript.frames.controllerPrepareResult,'hex');}
+      if(v.action==='COMMIT_BROWSER') {if(transcript)queue.push(Buffer.from(transcript.frames.browserCommit,'hex'));else deliver('COMMIT',{grantId,reservationId,commitId,generation:1});workerOutcome=await workerBinding.commitFixedBrowserLaunch(reservation,()=>{launches.push(1);const owner={stopOwned:async remaining=>{stops.push(['browser',remaining]);return {status:'STOPPED',runId:runBinding.runId};}};return hooks.launch?hooks.launch(f,owner):owner;});result={status:'ACTIVE',generation:1};if(transcript)recorded=Buffer.from(transcript.frames.controllerCommitResult,'hex');}
+      if(v.action==='STOP_OWNED'||v.action==='WAIT_EXIT'){stops.push([v.childId,v.payload.remainingMs]);result={status:options.stopTimeout?'TIMEOUT':'STOPPED',runId:runBinding.runId};}
+      if(v.action==='CANCEL'){if(transcript){await workerBinding.cancel(Buffer.from(transcript.frames.browserCancel,'hex'));recorded=Buffer.from(transcript.frames.controllerCancelResult,'hex');}else f.cancel();result={status:'CANCELLED',generation:1};}
       if(recorded){controllerSeq=JSON.parse(recorded.subarray(4)).sequence;controllerQueue.push(recorded);}
-      else controllerQueue.push(make('CONTROLLER',keyC,++controllerSeq,'RESULT',{requestSequence:v.sequence,result},map.find(r=>r.role===v.role)));
+      else controllerQueue.push(make('CONTROLLER',keyC,++controllerSeq,'RESULT',{requestSequence:v.sequence,result},roleMap.find(r=>r.role===v.role)));
     }};
+  function cancellationRecord(){
+    if(cancelBytes)return Buffer.from(cancelBytes);
+    if(transcript?.frames.browserCancel)return Buffer.from(transcript.frames.browserCancel,'hex');
+    return make('BROWSER',keyW,++workerSeq,'CANCEL',{generation:1,cleanupEndsAtMonotonicMs:clock.mono+123},roleMap[1]);
+  }
   const f={controller,worker,clock,proof,checkpoint,stops,launches,workerFacts,controllerFacts,workerChannel,controllerChannel,
-    cancelRecord(){return make('BROWSER',keyW,++workerSeq,'CANCEL',{generation:1,cleanupEndsAtMonotonicMs:clock.mono+123},map[1]);},
-    cancel(){pending.push(make('BROWSER',keyW,++workerSeq,'CANCEL',{generation:1,cleanupEndsAtMonotonicMs:clock.mono+123},map[1]));},
+    cancelRecord(){return cancellationRecord();},
+    cancel(){pending.push(cancellationRecord());},
     expire(){clock.mono=9000;},
     get reservation(){return reservation;},get outcome(){return workerOutcome;},get prepareBytes(){return prepareBytes;},
-    async init(){assert.equal(typeof worker.bindBrowserWorkerChannel,'function','separate worker launch authority is absent');workerBinding=await worker.bindBrowserWorkerChannel(workerChannel,workerFacts,clock,budget(clock));this.workerBinding=workerBinding;this.bound=await controller.bindBootstrapComposition(controllerChannel,binding,clock,budget(clock));return this;}};
+    async init(){assert.equal(typeof worker.bindBrowserWorkerChannel,'function','separate worker launch authority is absent');workerBinding=await worker.bindBrowserWorkerChannel(workerChannel,workerFacts,clock,budget(clock));this.workerBinding=workerBinding;this.bound=await controller.bindBootstrapComposition(controllerChannel,runBinding,clock,budget(clock));return this;}};
   return f;
 }
 
@@ -313,9 +345,42 @@ test('v1_python_frames_adopt_original_role_and_guard_launch_once',async()=>{
 test('v1_forwarded_cancel_expiry_between_worker_hops_denies_launch',async()=>{
   const transcript=pythonTranscript();
   for(const hop of ['prepared','refresh','current'])for(const action of ['cancel','expire']){
-    const f=fixture({transcript,hooks:{[hop](state){action==='cancel'?state.cancel():state.expire();}}});
+    const f=fixture({transcript,cancelTranscript:transcript?.cancelVariant,
+      hooks:{[hop](state){action==='cancel'?state.cancel():state.expire();}}});
     await f.init();
     await assert.rejects(async()=>{const tx=await f.bound.prepareBrowser(f.proof);await tx.port.activateOnce(tx.grant);});
     assert.equal(f.launches.length,0,hop+'/'+action);
   }
+});
+
+test('v1_python_cancel_variant_routes_only_exact_forwarder_bytes',async()=>{
+  const transcript=pythonTranscript();if(!transcript)return;
+  const f=await fixture({transcript:transcript.cancelVariant}).init();
+  const tx=await f.bound.prepareBrowser(f.proof);
+  await f.bound.cancel();
+  await assert.rejects(tx.port.activateOnce(tx.grant));
+  assert.equal(f.launches.length,0);
+});
+
+test('v1_python_transcript_each_hop_substitution_and_replay_are_denied',async()=>{
+  const transcript=pythonTranscript();if(!transcript)return;
+  for(const variant of ['success','cancel']){
+    const base=variant==='success'?transcript:transcript.cancelVariant;
+    for(const name of base.order){
+      const changed=JSON.parse(JSON.stringify(base)),bytes=Buffer.from(changed.frames[name],'hex');
+      bytes[bytes.length-1]^=1;changed.frames[name]=bytes.toString('hex');
+      changed.frameSHA256[name]=crypto.createHash('sha256').update(bytes).digest('hex');
+      let rejected=false,launches=0;
+      try{
+        const f=fixture({transcript:changed});await f.init();
+        const tx=await f.bound.prepareBrowser(f.proof);
+        if(variant==='success')await tx.port.activateOnce(tx.grant);else await f.bound.cancel();
+        launches=f.launches.length;
+      }catch{rejected=true;}
+      assert.equal(rejected,true,variant+'/'+name);assert.ok(launches<=1,variant+'/'+name);
+    }
+  }
+  const f=await fixture({transcript}).init(),tx=await f.bound.prepareBrowser(f.proof);
+  await assert.rejects(f.workerBinding.prepare(f.prepareBytes));
+  await assert.rejects(tx.port.activateOnce(tx.grant));assert.equal(f.launches.length,0);
 });
