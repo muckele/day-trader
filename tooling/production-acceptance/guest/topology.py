@@ -2445,9 +2445,23 @@ class BootstrapComposition:
             if not any(wrapped is retained for retained in self._cleanup_chain):
                 self._cleanup_chain.append(owner)
 
+    def _invalidate_terminal(self, state):
+        if not self._terminal:
+            self._generation += 1
+        preparation, reservation = (
+            self._browser_preparation, self._browser_reservation)
+        if type(preparation) is _CONFINEMENT.BootstrapBrowserPreparation:
+            preparation._used = True
+        if type(reservation) is BrowserTransitionReservation:
+            reservation._used = True
+        self._terminal = True; self._state = state
+        self._proof = self._handoff = None
+        self._browser_preparation = self._browser_reservation = None
+        self._proxy_runtime_id = self._event_source_id = None
+
     def _failed(self, error):
         self._retain_cleanup(getattr(error, 'cleanup', None))
-        self._terminal = True; self._state = 'FAILED'
+        self._invalidate_terminal('FAILED')
         try: self.stop_owned(self._budget.remaining())
         except Exception: pass
         try: error.cleanup = self
@@ -2670,10 +2684,10 @@ class BootstrapComposition:
         return result
 
     def commit_browser(self, owner):
-        if (owner is not self._browser_preparation or self._terminal
-                or self._state != 'ADMITTED'):
-            _fail('AUTHORITY_LOST')
         try:
+            if (owner is not self._browser_preparation or self._terminal
+                    or self._state != 'ADMITTED'):
+                _fail('AUTHORITY_LOST')
             return self._finish_browser_commit(self._roles.commit_browser(owner))
         except Exception as error:
             self._failed(error)
@@ -2692,6 +2706,14 @@ class BootstrapComposition:
             elif (prior is not None and current is prior and current._committed
                   and self._state == 'ADMITTED'):
                 self._finish_browser_commit({'status':'ACTIVE','generation':1})
+            elif self._roles._terminal:
+                reply = _CONFINEMENT._v1_decode(result)
+                terminal = reply.get('payload', {}).get('result', {})
+                state = ('CANCELLED' if type(terminal) is dict
+                         and terminal.get('status') == 'CANCELLED' else 'FAILED')
+                self._invalidate_terminal(state)
+                try: self.stop_owned(self._budget.remaining())
+                except Exception: pass
             return result
         except Exception as error:
             self._failed(error)

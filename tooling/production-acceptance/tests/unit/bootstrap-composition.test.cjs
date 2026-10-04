@@ -18,7 +18,7 @@ function pythonTranscript(){
   const input=process.env.BOOTSTRAP_V1_INPUT;
   if(!input)return undefined;
   const transcript=JSON.parse(fs.readFileSync(input,'ascii'));
-  assert.deepEqual(Object.keys(transcript).sort(),['binding','cancelVariant','frameEncoding','frameSHA256','frames','nominalContexts','order','producer','roles','version']);
+  assert.deepEqual(Object.keys(transcript).sort(),['binding','cancelVariants','frameEncoding','frameSHA256','frames','nominalContexts','order','producer','roles','version']);
   assert.equal(transcript.version,1);assert.equal(transcript.producer,'python-original-role-set-forwarder');
   assert.equal(transcript.frameEncoding,'length-prefixed-canonical-ascii');
   assert.deepEqual(transcript.nominalContexts,['PYTHON_BOOTSTRAP','CONTROLLER_JS','BROWSER_WORKER_JS']);
@@ -29,6 +29,9 @@ function pythonTranscript(){
   const cancelled=['controllerInit','workerInit','controllerAdopt','controllerAdoptResult',
     'controllerPrepare','browserPrepare','browserPrepared','controllerPrepareResult',
     'controllerCancel','browserCancel','browserCancelled','controllerCancelResult'];
+  const cancelOrders={PREPARED:cancelled,
+    REFRESH:[...cancelled.slice(0,8),'controllerCommit','browserCommit','browserRefresh',...cancelled.slice(8)],
+    CURRENT:[...cancelled.slice(0,8),'controllerCommit','browserCommit','browserRefresh','browserCurrent',...cancelled.slice(8)]};
   function validate(record,names,keys){
     assert.deepEqual(Object.keys(record).sort(),keys);
     assert.deepEqual(Object.keys(record.frames).sort(),[...names].sort());
@@ -36,13 +39,14 @@ function pythonTranscript(){
     assert.deepEqual(record.order,names);
     for(const [name,hex] of Object.entries(record.frames))assert.equal(crypto.createHash('sha256').update(Buffer.from(hex,'hex')).digest('hex'),record.frameSHA256[name]);
   }
-  validate(transcript,expected,['binding','cancelVariant','frameEncoding','frameSHA256','frames','nominalContexts','order','producer','roles','version']);
-  validate(transcript.cancelVariant,cancelled,['binding','frameSHA256','frames','order','roles']);
+  validate(transcript,expected,['binding','cancelVariants','frameEncoding','frameSHA256','frames','nominalContexts','order','producer','roles','version']);
+  assert.deepEqual(Object.keys(transcript.cancelVariants).sort(),['CURRENT','PREPARED','REFRESH']);
+  for(const [hop,variant] of Object.entries(transcript.cancelVariants))
+    validate(variant,cancelOrders[hop],['binding','frameSHA256','frames','order','roles']);
   return transcript;
 }
 function fixture(options={}) {
   const transcript=options.transcript;
-  const cancelBytes=options.cancelTranscript?Buffer.from(options.cancelTranscript.frames.browserCancel,'hex'):null;
   const controller=context(), worker=context(), clock={wall:100,mono:100,sample(){return [this.wall,this.mono];}}, stops=[], launches=[];
   const recorded=name=>Buffer.from(transcript.frames[name],'hex');
   const decoded=name=>JSON.parse(recorded(name).subarray(4));
@@ -56,7 +60,8 @@ function fixture(options={}) {
   const grantId=transcript?preparePayload.grantId:'a1'.repeat(16);
   const commitId=transcript&&transcript.frames.browserCommit?decoded('browserCommit').payload.commitId:'b2'.repeat(16);
   const keyC=transcript?initC.channelKeyHex:'c3'.repeat(32),keyW=transcript?initW.channelKeyHex:'d4'.repeat(32);
-  let workerBinding, reservation, workerOutcome, controllerSeq=0, workerSeq=0, workerRead, reservationId,prepareBytes;
+  let workerBinding, reservation, workerOutcome, controllerCancellation,
+    controllerSeq=0, workerSeq=0, workerRead, reservationId,prepareBytes;
   const queue=[], pending=[];
   const original={command:{},result:{}};
   const workerFacts={...roleMap[1],binding:runBinding,channelKeyHex:keyW,...original};
@@ -65,11 +70,13 @@ function fixture(options={}) {
   const deliver=(action,payload)=>{const bytes=make('BROWSER',keyW,++workerSeq,action,payload,roleMap[1]);if(workerRead){const r=workerRead;workerRead=null;r(bytes);}else queue.push(bytes);return bytes;};
   const hooks=options.hooks||{};
   const workerChannel={audit:()=>workerFacts,
-    async read(){if(queue.length)return queue.shift();return new Promise(r=>{workerRead=r;});},
+    async read(){const bytes=queue.length?queue.shift():await new Promise(r=>{workerRead=r;});
+      if(options.cancelAt==='CURRENT'&&JSON.parse(bytes.subarray(4)).action==='CURRENT')await f.cancelFromController();
+      return bytes;},
     async write(bytes){const v=JSON.parse(bytes.subarray(4));const unsigned={...v};delete unsigned.mac;assert.equal(v.mac,mac(unsigned,keyW,'BROWSER','TO_BOOTSTRAP'));
       if(transcript){const names={PREPARED:'browserPrepared',REFRESH:'browserRefresh',STARTED:'browserStarted',CANCELLED:'browserCancelled'};assert.deepEqual(bytes,recorded(names[v.action]));}
       if(v.action==='PREPARED'){reservationId=v.payload.reservationId;hooks.prepared?.(f);}
-      if(v.action==='REFRESH'){hooks.refresh?.(f);if(transcript){hooks.current?.(f);queue.push(recorded('browserCurrent'));}else{deliver('CURRENT',{requestSequence:v.sequence,grantId,reservationId,commitId,...proof,eventCheckpoint:checkpoint});hooks.current?.(f);}}
+      if(v.action==='REFRESH'){hooks.refresh?.(f);if(transcript){if(options.cancelAt==='REFRESH')await f.cancelFromController();else if(transcript.frames.browserCurrent)queue.push(recorded('browserCurrent'));hooks.current?.(f);}else{deliver('CURRENT',{requestSequence:v.sequence,grantId,reservationId,commitId,...proof,eventCheckpoint:checkpoint});hooks.current?.(f);}}
       if(v.action==='STARTED')hooks.started?.(f);
     },
     drain(){hooks.drain?.(f);return pending.splice(0);},
@@ -83,20 +90,23 @@ function fixture(options={}) {
       if(transcript){const names={ADOPT:'controllerAdopt',PREPARE_BROWSER:'controllerPrepare',COMMIT_BROWSER:'controllerCommit',CANCEL:'controllerCancel'};assert.deepEqual(bytes,Buffer.from(transcript.frames[names[v.action]],'hex'));}
       if(v.action==='ADOPT') {result={kind:v.role,runId:runBinding.runId,uid:v.role==='BROWSER'?10002:10003,childId:v.childId,pipeId:v.pipeId,waiting:true,confined:true,attestationDigest:'9'.repeat(64)};if(transcript)recorded=Buffer.from(transcript.frames.controllerAdoptResult,'hex');}
       if(v.action==='PREPARE_BROWSER') {prepareBytes=transcript?Buffer.from(transcript.frames.browserPrepare,'hex'):deliver('PREPARE',{grantId,...proof});if(transcript)workerSeq=1;reservation=await workerBinding.prepare(prepareBytes);if(!transcript)queue.shift();result={grantId,...proof};hooks.result?.(result,f);if(transcript)recorded=Buffer.from(transcript.frames.controllerPrepareResult,'hex');}
-      if(v.action==='COMMIT_BROWSER') {if(transcript)queue.push(Buffer.from(transcript.frames.browserCommit,'hex'));else deliver('COMMIT',{grantId,reservationId,commitId,generation:1});workerOutcome=await workerBinding.commitFixedBrowserLaunch(reservation,()=>{launches.push(1);const owner={stopOwned:async remaining=>{stops.push(['browser',remaining]);return {status:'STOPPED',runId:runBinding.runId};}};return hooks.launch?hooks.launch(f,owner):owner;});result={status:'ACTIVE',generation:1};if(transcript)recorded=Buffer.from(transcript.frames.controllerCommitResult,'hex');}
+      if(v.action==='COMMIT_BROWSER') {if(transcript)queue.push(Buffer.from(transcript.frames.browserCommit,'hex'));else deliver('COMMIT',{grantId,reservationId,commitId,generation:1});workerOutcome=await workerBinding.commitFixedBrowserLaunch(reservation,()=>{launches.push(1);const owner={stopOwned:async remaining=>{stops.push(['browser',remaining]);return {status:'STOPPED',runId:runBinding.runId};}};return hooks.launch?hooks.launch(f,owner):owner;});result={status:'ACTIVE',generation:1};if(transcript?.frames.controllerCommitResult)recorded=Buffer.from(transcript.frames.controllerCommitResult,'hex');}
       if(v.action==='STOP_OWNED'||v.action==='WAIT_EXIT'){stops.push([v.childId,v.payload.remainingMs]);result={status:options.stopTimeout?'TIMEOUT':'STOPPED',runId:runBinding.runId};}
       if(v.action==='CANCEL'){if(transcript){await workerBinding.cancel(Buffer.from(transcript.frames.browserCancel,'hex'));recorded=Buffer.from(transcript.frames.controllerCancelResult,'hex');}else f.cancel();result={status:'CANCELLED',generation:1};}
       if(recorded){controllerSeq=JSON.parse(recorded.subarray(4)).sequence;controllerQueue.push(recorded);}
       else controllerQueue.push(make('CONTROLLER',keyC,++controllerSeq,'RESULT',{requestSequence:v.sequence,result},roleMap.find(r=>r.role===v.role)));
     }};
   function cancellationRecord(){
-    if(cancelBytes)return Buffer.from(cancelBytes);
     if(transcript?.frames.browserCancel)return Buffer.from(transcript.frames.browserCancel,'hex');
     return make('BROWSER',keyW,++workerSeq,'CANCEL',{generation:1,cleanupEndsAtMonotonicMs:clock.mono+123},roleMap[1]);
   }
   const f={controller,worker,clock,proof,checkpoint,stops,launches,workerFacts,controllerFacts,workerChannel,controllerChannel,
     cancelRecord(){return cancellationRecord();},
     cancel(){pending.push(cancellationRecord());},
+    async cancelFromController(){
+      if(!controllerCancellation)controllerCancellation=this.bound.cancel();
+      return controllerCancellation;
+    },
     expire(){clock.mono=9000;},
     get reservation(){return reservation;},get outcome(){return workerOutcome;},get prepareBytes(){return prepareBytes;},
     async init(){assert.equal(typeof worker.bindBrowserWorkerChannel,'function','separate worker launch authority is absent');workerBinding=await worker.bindBrowserWorkerChannel(workerChannel,workerFacts,clock,budget(clock));this.workerBinding=workerBinding;this.bound=await controller.bindBootstrapComposition(controllerChannel,runBinding,clock,budget(clock));return this;}};
@@ -342,39 +352,45 @@ test('v1_python_frames_adopt_original_role_and_guard_launch_once',async()=>{
   assert.equal(f.launches.length,1);
 });
 
-test('v1_forwarded_cancel_expiry_between_worker_hops_denies_launch',async()=>{
+test('v1_python_expiry_between_worker_hops_denies_launch',async()=>{
   const transcript=pythonTranscript();
-  for(const hop of ['prepared','refresh','current'])for(const action of ['cancel','expire']){
-    const f=fixture({transcript,cancelTranscript:transcript?.cancelVariant,
-      hooks:{[hop](state){action==='cancel'?state.cancel():state.expire();}}});
+  for(const hop of ['prepared','refresh','current']){
+    const f=fixture({transcript,hooks:{[hop](state){state.expire();}}});
     await f.init();
     await assert.rejects(async()=>{const tx=await f.bound.prepareBrowser(f.proof);await tx.port.activateOnce(tx.grant);});
-    assert.equal(f.launches.length,0,hop+'/'+action);
+    assert.equal(f.launches.length,0,hop);
   }
 });
 
-test('v1_python_cancel_variant_routes_only_exact_forwarder_bytes',async()=>{
+test('v1_python_authenticated_cancel_at_each_forwarder_window_is_terminal',async()=>{
   const transcript=pythonTranscript();if(!transcript)return;
-  const f=await fixture({transcript:transcript.cancelVariant}).init();
-  const tx=await f.bound.prepareBrowser(f.proof);
-  await f.bound.cancel();
-  await assert.rejects(tx.port.activateOnce(tx.grant));
-  assert.equal(f.launches.length,0);
+  for(const hop of ['PREPARED','REFRESH','CURRENT']){
+    const f=await fixture({transcript:transcript.cancelVariants[hop],
+                           cancelAt:hop==='PREPARED'?undefined:hop}).init();
+    const tx=await f.bound.prepareBrowser(f.proof);
+    if(hop==='PREPARED')await f.bound.cancel();
+    else await assert.rejects(tx.port.activateOnce(tx.grant));
+    await assert.rejects(tx.port.activateOnce(tx.grant));
+    assert.equal(f.launches.length,0,hop);
+  }
 });
 
 test('v1_python_transcript_each_hop_substitution_and_replay_are_denied',async()=>{
   const transcript=pythonTranscript();if(!transcript)return;
-  for(const variant of ['success','cancel']){
-    const base=variant==='success'?transcript:transcript.cancelVariant;
+  for(const variant of ['success','PREPARED','REFRESH','CURRENT']){
+    const base=variant==='success'?transcript:transcript.cancelVariants[variant];
     for(const name of base.order){
       const changed=JSON.parse(JSON.stringify(base)),bytes=Buffer.from(changed.frames[name],'hex');
       bytes[bytes.length-1]^=1;changed.frames[name]=bytes.toString('hex');
       changed.frameSHA256[name]=crypto.createHash('sha256').update(bytes).digest('hex');
       let rejected=false,launches=0;
       try{
-        const f=fixture({transcript:changed});await f.init();
+        const f=fixture({transcript:changed,
+          cancelAt:['REFRESH','CURRENT'].includes(variant)?variant:undefined});await f.init();
         const tx=await f.bound.prepareBrowser(f.proof);
-        if(variant==='success')await tx.port.activateOnce(tx.grant);else await f.bound.cancel();
+        if(variant==='success')await tx.port.activateOnce(tx.grant);
+        else if(variant==='PREPARED')await f.bound.cancel();
+        else await tx.port.activateOnce(tx.grant);
         launches=f.launches.length;
       }catch{rejected=true;}
       assert.equal(rejected,true,variant+'/'+name);assert.ok(launches<=1,variant+'/'+name);

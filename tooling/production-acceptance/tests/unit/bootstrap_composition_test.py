@@ -736,8 +736,8 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
         h=self.Harness(self);composition,stack=h.build()
         with stack:
             composition.begin();preparation=composition.prepare_browser()
-            self.assertIs(composition._browser_preparation,preparation)
             reservation=composition._browser_reservation
+            self.assertIs(composition._browser_preparation,preparation)
             self.assertIs(reservation._event_owner,composition._event_owner)
             self.assertEqual(composition.commit_browser(preparation),
                              {'status':'ACTIVE','generation':1})
@@ -757,6 +757,9 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 composition._event_owner._accept_browser_transition(event)
             self.assertIsNone(composition._event_owner._browser_transition)
             with self.assertRaises(Exception):composition.commit_browser(preparation)
+            self.assertTrue(composition._terminal);self.assertEqual(composition._state,'FAILED')
+            self.assertEqual(composition._generation,2)
+            self.assertIsNone(composition._proof);self.assertIsNone(composition._handoff)
 
     def test_v1_controller_forwarder_owns_prepare_and_commit_state_change(self):
         h=self.Harness(self);composition,stack=h.build()
@@ -788,6 +791,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
         h=self.Harness(self);composition,stack=h.build()
         with stack:
             composition.begin();preparation=composition.prepare_browser()
+            reservation=composition._browser_reservation
             read=h.role_kernel.read_role;reads=0
             def fail_after_refresh(owned,remaining):
                 nonlocal reads
@@ -795,17 +799,69 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 return read(owned,remaining) if reads==1 else b'bad'
             h.role_kernel.read_role=fail_after_refresh
             with self.assertRaises(Exception):composition.commit_browser(preparation)
-            self.assertTrue(composition._browser_reservation._used)
+            self.assertTrue(reservation._used)
             self.assertEqual(composition._state,'FAILED')
+            self.assertEqual(composition._generation,2)
+            self.assertIsNone(composition._proof);self.assertIsNone(composition._handoff)
+            self.assertIsNone(composition._browser_preparation)
+            self.assertIsNone(composition._browser_reservation)
             with self.assertRaises(Exception):composition.require_current()
             with self.assertRaises(Exception):composition.commit_browser(preparation)
         h=self.Harness(self);composition,stack=h.build()
         with stack:
             composition.begin();preparation=composition.prepare_browser()
+            reservation=composition._browser_reservation
             h.clock.wall=h.binding.expiresAtMs
             with self.assertRaises(Exception):composition.commit_browser(preparation)
-            self.assertFalse(composition._browser_reservation._used)
+            self.assertTrue(reservation._used)
             self.assertEqual(composition._state,'FAILED')
+            self.assertEqual(composition._generation,2)
+            self.assertIsNone(composition._proof);self.assertIsNone(composition._handoff)
+
+    def test_v1_authenticated_cancel_terminalizes_composition_and_cleanup_once(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            composition.begin();preparation=composition.prepare_browser()
+            reservation=composition._browser_reservation
+            def write_cancelled(owned,data):
+                value=json.loads(data[4:]);self.assertEqual(value['action'],'CANCEL')
+                h.worker_sequence+=1
+                response=dict(version=1,binding=h.binding.to_record(),
+                    sequence=h.worker_sequence,role='BROWSER',childId=value['childId'],
+                    pipeId=value['pipeId'],action='CANCELLED',
+                    payload=dict(requestSequence=value['sequence'],generation=1))
+                response['mac']=hmac.new(bytes.fromhex(
+                    h.role_init['BROWSER']['channelKeyHex']),
+                    b'acceptance:bootstrap-composition:v1\0BROWSER:TO_BOOTSTRAP\0'
+                    +c._v1_canonical(response),hashlib.sha256).hexdigest()
+                h.role_queue.append(c._v1_encode(response))
+            h.role_kernel.write_role=write_cancelled
+            controller=h.role_init['CONTROLLER'];row=next(value for value in
+                controller['roles'] if value['role']=='BROWSER')
+            h.budget.remaining()
+            request=dict(version=1,binding=h.binding.to_record(),sequence=1,**row,
+                action='CANCEL',payload=dict(generation=1,
+                    cleanupEndsAtMonotonicMs=h.budget.deadline))
+            request['mac']=hmac.new(bytes.fromhex(controller['channelKeyHex']),
+                b'acceptance:bootstrap-composition:v1\0CONTROLLER:TO_BOOTSTRAP\0'
+                +c._v1_canonical(request),hashlib.sha256).hexdigest()
+            response=json.loads(composition.handle_controller(c._v1_encode(request))[4:])
+            self.assertEqual(response['payload']['result'],
+                             {'status':'CANCELLED','generation':1})
+            self.assertTrue(composition._terminal);self.assertEqual(composition._state,'CANCELLED')
+            self.assertEqual(composition._generation,2)
+            self.assertIsNone(composition._proof);self.assertIsNone(composition._handoff)
+            self.assertIsNone(composition._browser_preparation)
+            self.assertIsNone(composition._browser_reservation)
+            self.assertTrue(preparation._used);self.assertTrue(reservation._used)
+            stopped=tuple(h.role_finite.stopped)
+            for operation in (composition.require_current,composition.prepare_browser,
+                    lambda:composition.commit_browser(preparation),
+                    lambda:composition.handle_controller(c._v1_encode(request))):
+                with self.assertRaises(Exception):operation()
+            self.assertEqual(tuple(h.role_finite.stopped),stopped)
+            self.assertEqual(composition.stop_owned(0)['status'],'STOPPED')
+            self.assertEqual(tuple(h.role_finite.stopped),stopped)
 
     def test_v1_all_probe_families_exit_before_persistent_roles(self):
         h=self.Harness(self);composition,stack=h.build()
@@ -885,7 +941,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             return
         self.assertFalse(Path(target).exists(), 'exchange must start absent')
         Path(target).mkdir(parents=False)
-        def actual_forwarder(cancel=False):
+        def actual_forwarder(cancel_at=None):
             forwarder=confinement_fixture.c
             captured=[];original_bind=forwarder.bind_original_roles
             def bind(config,binding,budget):
@@ -919,15 +975,49 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             controller_adopt_result=roles.handle_controller(controller_adopt)
             controller_prepare=request(2,'PREPARE_BROWSER',proof)
             controller_prepare_result=roles.handle_controller(controller_prepare)
-            if cancel:
+            preparation=json.loads(controller_prepare_result[4:])['payload']['result']
+            controller_commit=request(3,'COMMIT_BROWSER',dict(
+                grantId=preparation['grantId'],generation=1))
+            if cancel_at == 'PREPARED':
                 budget.remaining()
                 controller_final=request(3,'CANCEL',dict(generation=1,
                     cleanupEndsAtMonotonicMs=budget.deadline))
                 controller_final_result=roles.handle_controller(controller_final)
+            elif cancel_at in ('REFRESH','CURRENT'):
+                window,release=threading.Event(),threading.Event();errors=[]
+                if cancel_at == 'REFRESH':
+                    source_current=roles._source.require_current;current_calls=0
+                    def pause_after_refresh():
+                        nonlocal current_calls
+                        current_calls+=1;value=source_current()
+                        if current_calls == 2:
+                            window.set()
+                            if not release.wait(5):raise AssertionError('cancel window release missing')
+                        return value
+                    roles._source.require_current=pause_after_refresh
+                else:
+                    forward_write=k.write_role
+                    def pause_after_current(owned,data):
+                        value=json.loads(data[4:])
+                        if value.get('action') == 'CURRENT':
+                            captured.append(bytes(data));window.set()
+                            if not release.wait(5):raise AssertionError('cancel window release missing')
+                            return
+                        return forward_write(owned,data)
+                    k.write_role=pause_after_current
+                def commit():
+                    try:roles.handle_controller(controller_commit)
+                    except Exception as error:errors.append(error)
+                worker=threading.Thread(target=commit,daemon=True);worker.start()
+                self.assertTrue(window.wait(5),cancel_at+' cancellation window absent')
+                budget.remaining()
+                controller_final=request(4,'CANCEL',dict(generation=1,
+                    cleanupEndsAtMonotonicMs=budget.deadline))
+                try:controller_final_result=roles.handle_controller(controller_final)
+                finally:release.set();worker.join(5)
+                self.assertFalse(worker.is_alive());self.assertEqual(len(errors),1)
             else:
-                preparation=json.loads(controller_prepare_result[4:])['payload']['result']
-                controller_final=request(3,'COMMIT_BROWSER',dict(
-                    grantId=preparation['grantId'],generation=1))
+                controller_final=controller_commit
                 controller_final_result=roles.handle_controller(controller_final)
             sent_actions={json.loads(data[4:])['action']:data for data in captured
                           if 'action' in json.loads(data[4:])}
@@ -939,7 +1029,13 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 browserPrepare=sent_actions['PREPARE'],
                 browserPrepared=received_actions['PREPARED'],
                 controllerPrepareResult=controller_prepare_result)
-            if cancel:
+            if cancel_at:
+                if cancel_at != 'PREPARED':
+                    frames.update(controllerCommit=controller_commit,
+                        browserCommit=sent_actions['COMMIT'],
+                        browserRefresh=received_actions['REFRESH'])
+                    if cancel_at == 'CURRENT':
+                        frames.update(browserCurrent=sent_actions['CURRENT'])
                 frames.update(controllerCancel=controller_final,
                     browserCancel=sent_actions['CANCEL'],
                     browserCancelled=received_actions['CANCELLED'],
@@ -956,11 +1052,13 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 'order':order,'frames':{name:value.hex() for name,value in frames.items()},
                 'frameSHA256':{name:hashlib.sha256(value).hexdigest()
                                for name,value in frames.items()}}
-        success=actual_forwarder();cancel=actual_forwarder(True)
+        success=actual_forwarder()
+        cancellations={hop:actual_forwarder(hop)
+                       for hop in ('PREPARED','REFRESH','CURRENT')}
         record={'version':1,'producer':'python-original-role-set-forwarder',
             'frameEncoding':'length-prefixed-canonical-ascii',
             'nominalContexts':['PYTHON_BOOTSTRAP','CONTROLLER_JS','BROWSER_WORKER_JS'],
-            **success,'cancelVariant':cancel}
+            **success,'cancelVariants':cancellations}
         (Path(target) / 'roles.json').write_text(
             json.dumps(record, sort_keys=True, separators=(',', ':')), encoding='ascii')
 
