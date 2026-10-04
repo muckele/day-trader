@@ -301,9 +301,13 @@ def event_binding():
     return confinement.CompositionBinding(1, RUN, MANIFEST, CONFIG, 'd' * 64, 1, 190)
 
 
-def audit_event(serial, syscall=201, *, pid=500, ppid=1, exit_code=0):
-    text = ('audit(1.000:%d): arch=c00000b7 syscall=%d success=yes exit=%d '
-            'pid=%d ppid=%d' % (serial, syscall, exit_code, pid, ppid)).encode('ascii')
+def audit_event(serial, syscall=201, *, pid=500, ppid=1, exit_code=0,
+                success='yes', argument0=None):
+    text = ('audit(1.000:%d): arch=c00000b7 syscall=%d success=%s exit=%d '
+            'pid=%d ppid=%d' %
+            (serial, syscall, success, exit_code, pid, ppid))
+    if argument0 is not None: text += ' a0=%s' % argument0
+    text = text.encode('ascii')
     return topology._event_nlmsg(1300, 0, text)
 
 
@@ -526,6 +530,32 @@ class TopologyTests(unittest.TestCase):
                                    '^(EVENT_DRIFT|EVENT_SOURCE_TERMINAL)$'):
             owner.barrier()
 
+    def test_v1_final_all_source_fence_closes_every_post_health_window(self):
+        def event(native, source):
+            if source == 'ROUTE':
+                return native.message(
+                    source, topology._event_nlmsg(16, 0, b'\0' * 16))
+            if source == 'UEVENT':
+                return native.message(source, b'ACTION=change\0SEQNUM=1\0')
+            if source == 'INOTIFY':
+                return native.message(source, struct.pack('<iIII', 2, 2, 0, 0))
+            return native.message('ROLE', b'BROWSER')
+        for request_count in (5, 6):
+            for source in ('ROUTE', 'UEVENT', 'INOTIFY', 'ROLE'):
+                class PostHealthArrival(EventNative):
+                    def __init__(self):
+                        super().__init__(); self.request_count = 0
+                    def audit_request(self, owner, request, sequence):
+                        self.request_count += 1
+                        if self.request_count == request_count:
+                            self.events.append(event(self, source))
+                        return super().audit_request(owner, request, sequence)
+                owner, _, _ = self.install_events(PostHealthArrival())
+                with self.subTest(request_count=request_count, source=source), \
+                        self.assertRaisesRegex(topology.TopologyError,
+                            '^(EVENT_DRIFT|EVENT_SOURCE_TERMINAL)$'):
+                    owner.barrier()
+
     def test_v1_pending_caps_are_aggregate_across_groups_and_barriers(self):
         owner, native, _ = self.install_events()
         native.events.append(native.message('AUDIT', audit_event(1, syscall=93)))
@@ -574,6 +604,32 @@ class TopologyTests(unittest.TestCase):
         budget.deadline, budget.real_deadline = 10, time.monotonic_ns() // 1000000
         self.assertEqual(owner.stop_owned(50)['status'], 'TIMEOUT')
         self.assertTrue(all(value == 0 for value in native.allowances))
+
+    def test_v1_cleanup_requires_exact_original_descriptor_closed_facts(self):
+        class BrokenClose(EventNative):
+            def __init__(self, fault): super().__init__(); self.fault = fault
+            def close_owned(self, owner, remaining_ms):
+                if self.fault == 'substitute':
+                    replacement = EventFD(self, 'SUBSTITUTE', 99)
+                    replacement.closed = True; self.closed.append(replacement)
+                    return None
+                self.closed.append(owner)
+                if self.fault == 'false-return': return False
+                if self.fault == 'live': return object()
+                if self.fault == 'partial-wakeup' and isinstance(owner, EventPipe):
+                    owner.filenos = lambda: (-1, owner.write_fd)
+                    return None
+                owner.closed = True
+                if self.fault == 'observation' and isinstance(owner, EventFD):
+                    owner.fileno = lambda: (_ for _ in ()).throw(RuntimeError('fact'))
+        for fault in ('false-return', 'live', 'substitute',
+                      'partial-wakeup', 'observation'):
+            owner, native, _ = self.install_events(BrokenClose(fault))
+            receipt = owner.stop_owned(1000)
+            with self.subTest(fault=fault):
+                self.assertEqual(receipt['status'], 'TIMEOUT')
+                self.assertEqual(owner.stop_owned(1000)['status'], 'TIMEOUT')
+                self.assertTrue(native.closed)
 
     def test_v1_audit_empty_main_backlog_pending_delivery_unavailable(self):
         owner, native, _ = self.install_events(EventNative(fence=False))
@@ -693,6 +749,118 @@ class TopologyTests(unittest.TestCase):
             observations.extend((before, after, tuple(retained)))
         proxy_fixture.CompositionHarness(self, sink=capture).run()
         self.assertEqual(len(observations), 3)
+
+    def test_v1_browser_family_event_reservation_is_nominal_ordered_and_one_use(self):
+        confinement_fixture = load(
+            'task8_event_reservation_confinement_fixture',
+            'tests/unit/confinement_test.py')
+        confinement_fixture.c = confinement
+        confinement_fixture.RUN = RUN
+        proxy_fixture = load('task8_event_reservation_proxy_fixture',
+                             'tests/unit/proxy_test.py')
+        proxy_fixture.proxy = proxy
+        completed = []
+        def capture(harness, proxy_owner):
+            runtime_owners = {role: object() for role in confinement.UIDS}
+            runtime_owners['PROXY'] = proxy_owner
+            browser, _, _, _ = literal_runtime_role(
+                confinement_fixture, 'BROWSER', 'WAITING',
+                runtime_owners['BROWSER'])
+
+            def event_owner():
+                native = EventNative()
+                del native.audit_role_pids[501]
+                native.audit_role_pids[300] = 'BROWSER'
+                budget = topology.CleanupBudget(clock=Clock(
+                    (100, 10), (100, 10), (100, 10), (100, 10),
+                    (100, 10), (100, 10), (100, 10), (100, 10)))
+                value = topology.LinuxBootstrapEventSource.install(
+                    harness.nominal_binding,
+                    topology.qualify_offline_event_native(native), budget)
+                return value, native
+
+            def group(native, serial, syscall, pid, ppid, exit_code,
+                      argument0=None):
+                return (native.message('AUDIT', audit_event(serial, syscall,
+                    pid=pid, ppid=ppid, exit_code=exit_code,
+                    argument0=argument0)),
+                    native.message('AUDIT', topology._event_nlmsg(
+                        1320, 0, ('audit(1.000:%d): end' % serial).encode())))
+
+            source, native = event_owner()
+            completed.append(hasattr(source, 'reserve_browser_transition'))
+            self.assertTrue(completed[-1])
+            reservation = source.reserve_browser_transition(
+                harness.nominal_binding, 1, browser,
+                runtime_owners['BROWSER'], proxy_owner)
+            source.commit_browser_transition(reservation)
+            native.events.extend(group(native, 101, 220, 300, 1, 600))
+            with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
+                source.barrier()
+            native.events.extend(group(native, 102, 221, 600, 300, 0))
+            with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
+                source.barrier()
+            native.events.extend(group(native, 103, 93, 600, 300, 0, '0'))
+            self.assertEqual(source.barrier().generation, 1)
+
+            source, native = event_owner()
+            native.events.extend(group(native, 104, 220, 300, 1, 601))
+            with self.assertRaisesRegex(topology.TopologyError,
+                                       '^EVENT_SOURCE_TERMINAL$'):
+                source.barrier()
+
+            for fault in ('mismatch', 'out-of-order', 'extra', 'replay'):
+                source, native = event_owner()
+                reservation = source.reserve_browser_transition(
+                    harness.nominal_binding, 1, browser,
+                    runtime_owners['BROWSER'], proxy_owner)
+                source.commit_browser_transition(reservation)
+                if fault == 'replay':
+                    with self.assertRaisesRegex(topology.TopologyError,
+                                               '^EVENT_SOURCE_TERMINAL$'):
+                        source.commit_browser_transition(reservation)
+                    continue
+                values = {'mismatch': (105, 220, 301, 1, 602),
+                          'out-of-order': (106, 221, 300, 1, 0),
+                          'extra': (107, 40, 300, 1, 0)}[fault]
+                native.events.extend(group(native, *values))
+                with self.assertRaisesRegex(topology.TopologyError,
+                                           '^EVENT_SOURCE_TERMINAL$'):
+                    source.barrier()
+
+            source, _ = event_owner()
+            with self.assertRaisesRegex(topology.TopologyError,
+                                       '^EVENT_SOURCE_TERMINAL$'):
+                source.reserve_browser_transition(
+                    harness.nominal_binding, 2, browser,
+                    runtime_owners['BROWSER'], proxy_owner)
+            for fault in ('binding', 'role-owner', 'runtime-owner',
+                          'proxy-owner'):
+                source, _ = event_owner()
+                values = dict(binding=harness.nominal_binding,
+                    handoff=browser, runtime=runtime_owners['BROWSER'],
+                    proxy=proxy_owner)
+                if fault == 'binding':
+                    values['binding'] = dataclasses.replace(
+                        harness.nominal_binding, epoch=2)
+                elif fault == 'role-owner':
+                    values['handoff'] = dataclasses.replace(browser)
+                elif fault == 'runtime-owner':
+                    values['runtime'] = object()
+                else: values['proxy'] = object()
+                with self.subTest(fault=fault), self.assertRaisesRegex(
+                        topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
+                    source.reserve_browser_transition(values['binding'], 1,
+                        values['handoff'], values['runtime'], values['proxy'])
+            first, _ = event_owner(); second, _ = event_owner()
+            reservation = first.reserve_browser_transition(
+                harness.nominal_binding, 1, browser,
+                runtime_owners['BROWSER'], proxy_owner)
+            with self.assertRaisesRegex(topology.TopologyError,
+                                       '^EVENT_SOURCE_TERMINAL$'):
+                second.commit_browser_transition(reservation)
+        proxy_fixture.CompositionHarness(self, sink=capture).run()
+        self.assertEqual(completed, [True])
 
     def test_v1_first_terminal_latch_freezes_budget_before_capture_settles(self):
         for settlement in (30010, 70010):

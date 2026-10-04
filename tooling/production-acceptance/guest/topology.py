@@ -224,6 +224,24 @@ class _OfflineFenceRecords:
     _seal: object = field(repr=False)
 
 
+class BrowserTransitionReservation:
+    """One nominal bootstrap-only reservation; no wire projection exists."""
+    __slots__ = ('_event_owner', '_binding', '_generation', '_handoff',
+                 '_runtime_owner', '_proxy_owner', '_proxy_runtime_id',
+                 '_proxy_facts', '_used', '_seal')
+
+    def __init__(self, event_owner, binding, generation, handoff,
+                 runtime_owner, proxy_owner, runtime_id, proxy_facts, seal=None):
+        if seal is not _OFFLINE_EVENT_NATIVE_SEAL:
+            _fail('AUTHORITY_LOST')
+        self._event_owner, self._binding, self._generation = (
+            event_owner, binding, generation)
+        self._handoff, self._runtime_owner, self._proxy_owner = (
+            handoff, runtime_owner, proxy_owner)
+        self._proxy_runtime_id, self._proxy_facts = runtime_id, proxy_facts
+        self._used, self._seal = False, seal
+
+
 def qualify_offline_fence_records(records, supported):
     """Seal an inert combined-fence result and its original-stream records."""
     if (type(records) is not tuple or type(supported) is not bool
@@ -287,6 +305,7 @@ class BootstrapEventOwner:
         self._drift = False
         self._last_clock = None
         self._terminal, self._cleanup_status = None, None
+        self._browser_reservation, self._browser_transition = None, None
         self._lock = threading.RLock()
 
     @property
@@ -450,6 +469,124 @@ class BootstrapEventOwner:
             self._pending_count = self._pending_bytes = 0
         _fail(code)
 
+    def _proxy_facts(self, proxy_owner):
+        try: value = proxy_owner.observe_current(self.binding).to_record()
+        except Exception: self._terminate('EVENT_SOURCE_TERMINAL')
+        if (not _keys(value, ('binding','runtimeId','sequence','status',
+                'listenAddress','listenPort','hostCID','servicePort','uid',
+                'observedAtMonotonicMs','currentFDs'))
+                or _CONFINEMENT.CompositionBinding.from_record(
+                    value['binding']) != self.binding
+                or value['status'] != 'CURRENT'
+                or _RUN.fullmatch(value['runtimeId']) is None
+                or type(value['currentFDs']) is not list
+                or sum(row.get('kind') == 'PROXY_LISTENER'
+                       for row in value['currentFDs'] if type(row) is dict) != 1):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        try:
+            facts = tuple((row['fd'], row['kind'], row['device'], row['inode'],
+                           row['flags'], row['ownerId'], row['acquiredGeneration'])
+                          for row in value['currentFDs'])
+        except (KeyError, TypeError):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        return value['runtimeId'], facts
+
+    def reserve_browser_transition(self, binding, generation, browser_handoff,
+                                   browser_runtime_owner, proxy_runtime_owner):
+        """Reserve the sole original Browser-family lifecycle transition."""
+        with self._lock:
+            if (self._terminal is not None or self._browser_reservation is not None
+                    or binding is not self.binding or generation != self.generation
+                    or type(browser_handoff) is not _CONFINEMENT.RoleHandoff
+                    or browser_handoff.launch.role != 'BROWSER'
+                    or not isinstance(browser_handoff._kernel,
+                                      _CONFINEMENT.NativeKernelPort)
+                    or self._audit_pids.get(browser_handoff.attestation.pid)
+                        != 'BROWSER'
+                    or not isinstance(proxy_runtime_owner,
+                                      _PROXY.ProxyRuntimeOwner)):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            try:
+                lifecycle = browser_handoff._kernel.runtime_lifecycle(
+                    browser_handoff, browser_runtime_owner)
+                observed = browser_handoff._kernel.inspect_runtime(
+                    browser_handoff, lifecycle, browser_runtime_owner)
+                _CONFINEMENT.validate_runtime_observation(
+                    observed, browser_handoff, lifecycle)
+            except Exception:
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            if lifecycle != 'WAITING':
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            runtime_id, proxy_facts = self._proxy_facts(proxy_runtime_owner)
+            reservation = BrowserTransitionReservation(self, binding, generation,
+                browser_handoff, browser_runtime_owner, proxy_runtime_owner,
+                runtime_id, proxy_facts, _OFFLINE_EVENT_NATIVE_SEAL)
+            self._browser_reservation = reservation
+            return reservation
+
+    def commit_browser_transition(self, reservation):
+        """Consume the exact nominal reservation before the launch effect."""
+        with self._lock:
+            if (type(reservation) is not BrowserTransitionReservation
+                    or reservation is not self._browser_reservation
+                    or reservation._seal is not _OFFLINE_EVENT_NATIVE_SEAL
+                    or reservation._event_owner is not self or reservation._used
+                    or reservation._binding is not self.binding
+                    or reservation._generation != self.generation
+                    or self._browser_transition is not None):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            try:
+                lifecycle = reservation._handoff._kernel.runtime_lifecycle(
+                    reservation._handoff, reservation._runtime_owner)
+                observed = reservation._handoff._kernel.inspect_runtime(
+                    reservation._handoff, lifecycle,
+                    reservation._runtime_owner)
+                _CONFINEMENT.validate_runtime_observation(
+                    observed, reservation._handoff, lifecycle)
+            except Exception:
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            runtime_id, proxy_facts = self._proxy_facts(reservation._proxy_owner)
+            if (lifecycle != 'WAITING'
+                    or runtime_id != reservation._proxy_runtime_id
+                    or proxy_facts != reservation._proxy_facts):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            reservation._used = True
+            self._browser_transition = {
+                'phase': 'CLONE',
+                'root': reservation._handoff.attestation.pid,
+                'child': None,
+            }
+
+    def _accept_browser_transition(self, syscall):
+        transition = self._browser_transition
+        if transition is None:
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        number, phase = syscall['number'], transition['phase']
+        if phase == 'CLONE':
+            if (number not in (220, 435) or syscall['pid'] != transition['root']
+                    or syscall['exit'] in self._audit_pids):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            transition['child'] = syscall['exit']
+            self._audit_pids[syscall['exit']] = 'BROWSER'
+            transition['phase'] = 'EXEC'
+            return
+        if phase == 'EXEC':
+            if (number not in (221, 281) or syscall['pid'] != transition['child']
+                    or syscall['ppid'] != transition['root']):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            transition['phase'] = 'EXIT'
+            return
+        if phase == 'EXIT':
+            try: normal = int(syscall['argument0'], 16) == 0
+            except (TypeError, ValueError): normal = False
+            if (number not in (93, 94) or syscall['pid'] != transition['child']
+                    or syscall['ppid'] != transition['root'] or not normal):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            del self._audit_pids[transition['child']]
+            self._browser_transition = None
+            return
+        self._terminate('EVENT_SOURCE_TERMINAL')
+
     def _audit_record(self, raw, observed):
         kind, flags, sequence, payload = _parse_event_nlmsg(raw)
         if flags & (16 | 4) or sequence != 0:
@@ -475,14 +612,15 @@ class BootstrapEventOwner:
                 self._terminate('EVENT_SOURCE_TERMINAL')
             syscall = group['syscalls'][0]
             if syscall['success']:
-                if syscall['number'] in (220, 435):
-                    if syscall['exit'] <= 0 or syscall['exit'] in self._audit_pids:
+                if syscall['number'] in (93, 94, 220, 221, 281, 435):
+                    self._accept_browser_transition(syscall)
+                else:
+                    if self._browser_transition is not None:
                         self._terminate('EVENT_SOURCE_TERMINAL')
-                    self._audit_pids[syscall['exit']] = syscall['role']
-                group['events'].add('DEVICE' if syscall['number'] == 33 else
-                    ('UNIX' if syscall['number'] == 200
-                     and group['sockaddrs'][0] == 1 else
-                     'LISTENER' if syscall['number'] in (200, 201) else 'ROLE'))
+                    group['events'].add('DEVICE' if syscall['number'] == 33 else
+                        ('UNIX' if syscall['number'] == 200
+                         and group['sockaddrs'][0] == 1 else
+                         'LISTENER' if syscall['number'] in (200, 201) else 'ROLE'))
             if group['events']:
                 self._drift = True
             self.sequence += 1
@@ -522,7 +660,8 @@ class BootstrapEventOwner:
                 self._terminate('EVENT_SOURCE_TERMINAL')
             group['syscalls'].append(dict(number=number,
                 success=fields['success'] == 'yes', exit=exit_code,
-                role=self._audit_pids[pid]))
+                role=self._audit_pids[pid], pid=pid, ppid=ppid,
+                argument0=fields.get('a0')))
         elif kind == 1306:
             try: address = bytes.fromhex(fields['saddr'])
             except (KeyError, ValueError): self._terminate('EVENT_SOURCE_TERMINAL')
@@ -594,6 +733,26 @@ class BootstrapEventOwner:
                    for group in self._pending_groups.values()):
                 self._terminate('EVENT_SOURCE_TERMINAL')
             _fail('EVENT_PENDING')
+        if (self._browser_transition is not None
+                and self._browser_transition['phase'] in ('EXEC', 'EXIT')):
+            _fail('EVENT_PENDING')
+
+    def _sealed_fence(self):
+        """Process every source through one sealed all-source fence."""
+        try: fence = self._port.delivery_barrier(
+            tuple(self._sources.values()), self._wakeup, self.selector)
+        except Exception: fence = None
+        fence_records = (fence.records if type(fence) is _OfflineFenceRecords
+            and fence._seal is _OFFLINE_EVENT_NATIVE_SEAL else ())
+        try: queued = tuple(self._port.poll_records(self.selector))
+        except Exception: self._terminate('EVENT_SOURCE_TERMINAL')
+        self._consume_records(fence_records + queued)
+        if self._drift: self._terminate('EVENT_DRIFT')
+        self._check_pending()
+        if (type(fence) is not _OfflineFenceRecords
+                or fence._seal is not _OFFLINE_EVENT_NATIVE_SEAL
+                or not fence.supported):
+            self._terminate('NATIVE_EVENT_BARRIER_UNAVAILABLE')
 
     def barrier(self):
         with self._lock:
@@ -607,26 +766,14 @@ class BootstrapEventOwner:
             self._verify_health_and_rules()
             if self._drift: self._terminate('EVENT_DRIFT')
             self._check_pending()
-            try: fence = self._port.delivery_barrier(
-                tuple(self._sources.values()), self._wakeup, self.selector)
-            except Exception: fence = None
-            # A fence result carries every original-stream record that it
-            # consumed. Drain once more as well: an inert double returning an
-            # invalid result cannot hide an arrival queued during that call.
-            fence_records = (fence.records if type(fence) is _OfflineFenceRecords
-                and fence._seal is _OFFLINE_EVENT_NATIVE_SEAL else ())
-            try: after = tuple(self._port.poll_records(self.selector))
-            except Exception: self._terminate('EVENT_SOURCE_TERMINAL')
-            self._consume_records(fence_records + after)
-            if self._drift: self._terminate('EVENT_DRIFT')
-            self._check_pending()
-            if (type(fence) is not _OfflineFenceRecords
-                    or fence._seal is not _OFFLINE_EVENT_NATIVE_SEAL
-                    or not fence.supported):
-                self._terminate('NATIVE_EVENT_BARRIER_UNAVAILABLE')
+            self._sealed_fence()
             self._verify_health_and_rules()
             if self._drift: self._terminate('EVENT_DRIFT')
             self._check_pending()
+            # Health/rule verification is itself fallible and may race every
+            # producer. A second sealed all-source fence is the final external
+            # publication guard; no health request follows it.
+            self._sealed_fence()
             self._check_binding()
             self.sequence += 1
             return EventCheckpoint(self.binding, self.generation, self.sequence,
@@ -674,6 +821,16 @@ class BootstrapEventOwner:
                     else:
                         operation(0)
                         failed = True
+                    if kind == 'owner':
+                        if owner is self._wakeup:
+                            closed = owner.filenos()
+                            if (type(closed) is not tuple
+                                    or closed != (-1, -1)):
+                                failed = True
+                        else:
+                            closed = owner.fileno()
+                            if type(closed) is not int or closed != -1:
+                                failed = True
                 except Exception: failed = True
             self._cleanup_status = 'TIMEOUT' if failed else 'STOPPED'
             return {'status': self._cleanup_status,
