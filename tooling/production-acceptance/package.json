@@ -1,0 +1,39 @@
+{
+  "name": "day-trader-production-acceptance",
+  "version": "0.0.0-private",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": "24.21.0"
+  },
+  "scripts": {
+    "test:unit": "node --test tests/unit/*.test.cjs",
+    "test:browser-unit": "node --test tests/unit/browser.test.cjs"
+  },
+  "dependencies": {
+    "playwright": "1.58.2"
+  },
+  "acceptanceRuntime": {
+    "node": {
+      "version": "24.21.0",
+      "executablePath": "/opt/acceptance/runtime/node/bin/node",
+      "archiveSha256": "6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2",
+      "executableSha256": "0f8949d1028f6d61506b2d5bc57e7e6fe893d7b1997509b7847294fc9c616584"
+    },
+    "playwright": {
+      "version": "1.58.2",
+      "packageSha256": "6dd31a6dc9705b7536c07827db143ebc6ec28c6a65b99a1e0baac5bc8a28c0eb",
+      "coreSha256": "50e358de81526d5b20ce75a89c96bdc50ae653f077bbc834ada26d92046ce713"
+    },
+    "chromium": {
+      "revision": "1208",
+      "browserVersion": "145.0.7632.6",
+      "executablePath": "/opt/acceptance/runtime/chromium/chrome",
+      "archiveSha256": "70b4620521b1ada360475e1059dfe9d549a6461a79b9342f85b7d47e44123077",
+      "executableSha256": "53f5a63ee5d5328f69599a179f174061d50f5b42d41a3a8dec42f379c8193792",
+      "publisherChecksum": "OBSERVED_ONLY",
+      "licenseNotice": "ABSENT_IN_ARCHIVE",
+      "distributionStatus": "HOLD_PENDING_RUNTIME_QUALIFICATION"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "date": "2026-10-04",
+  "branch": "codex/production-acceptance-m1",
+  "baseline": "edfa48e3415730ab6f3d038df87602a042829be7",
+  "compatibilityCommit": "763b3299d333fd72c30f7bd6b293c94eda3188d4",
+  "prerequisiteInventory": {
+    "path": "/tmp/day-trader-task13-inputs.vLkNKT/provenance-inventory.json",
+    "sha256": "ece38e2365c3e91cfe7af60dc65ab30397fbc20e2519cc30d5d43a825ef793cb"
+  },
+  "verification": [
+    {"scope": "node-broad-unit", "passed": 362, "failed": 0, "status": "PASS"},
+    {"scope": "python-focused-compatibility", "passed": 122, "failed": 0, "status": "PASS"},
+    {"scope": "python-broad-unit", "passed": 353, "failed": 0, "status": "PASS"},
+    {"scope": "syntax-and-diff", "status": "PASS"},
+    {"scope": "independent-current-byte-review", "status": "ACCEPT"}
+  ],
+  "runtimeExecution": {
+    "browser": false,
+    "vm": false,
+    "acquiredBinary": false,
+    "network": false,
+    "production": false,
+    "trading": false
+  },
+  "operationalStatus": "HOLD_PENDING_NATIVE_EFFECT_FENCE_AND_RUNTIME_QUALIFICATION"
+}

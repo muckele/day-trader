@@ -1,0 +1,23 @@
+{
+  "sha256": {
+    "tooling/production-acceptance/guest/budget.cjs": "2ca2e912e62b2a5049dd97947cc5072077f23467cad3d00f6412e31f39d72e01",
+    "tooling/production-acceptance/guest/confinement.py": "3310afb04bbe031b81b060fc9404dbcd0501c497b5e58b404eccfcd8fdb98152",
+    "tooling/production-acceptance/guest/receipts.cjs": "7f275bcdb32c0b4d8f35f990cd7707fe0de16aed1c8cb3bcdaa1c8020be49b1d",
+    "tooling/production-acceptance/guest/role-ports.cjs": "0d87be7ba6221df6ea41e957144d0608402652438e65542bae7c25c094108fbb",
+    "tooling/production-acceptance/guest/route-policy.cjs": "dd64d8f5bc12ed294c9bf3abc48d9a2225f49888ecf66ebad5fe4d35385f9b5b",
+    "tooling/production-acceptance/guest/browser.cjs": "86e14b254a412f5f65ccfa82cc5560089874d5ad2ac9b0fcbb047f13cb33b24a",
+    "tooling/production-acceptance/guest/browser-worker.cjs": "ac01994c2482c94af33497346d9eb9c7238ccad9611eea86c130c3e4a148a1a1",
+    "tooling/production-acceptance/package.json": "75f9a531eb6e2fe90e25d7ffaa7c4f57d1e60bd70f1e2980ab348cfacce02323",
+    "tooling/production-acceptance/package-lock.json": "0ae1042c7976c1268d63fbbb597c9bcc4e4b2f98416f6a0d5f2f5298f33a0f87",
+    "tooling/production-acceptance/tests/guest/browser_test.cjs": "da23bb5cfa1157e757a2a702e4d4ae42037e2ce6be58243ea464d8c36cc818ef",
+    "tooling/production-acceptance/tests/unit/browser.test.cjs": "eeda1712827d000afae3bf9c37b1cb184d43a32846a6268ba73b93b4d9f2962f",
+    "tooling/production-acceptance/tests/unit/bootstrap-composition.test.cjs": "ace793f150a24c54f5be8eadfe13b4557b944c656ca22c04c39a76c3a2259f5c",
+    "tooling/production-acceptance/tests/unit/bootstrap_composition_test.py": "da01dee460e1dc219349cddc7ec46716a6df7aca7b1ccc23e419c6af7f556019",
+    "tooling/production-acceptance/tests/unit/budget.test.cjs": "6cd450822350d9ae4c02101f4c3749083f889e00777453dc7482583a4b03d3cb",
+    "tooling/production-acceptance/tests/unit/confinement_test.py": "1903524f9387030ca96057d7aa5e79efb5bb711c17cbadbaf0b26b9f13b943bf",
+    "tooling/production-acceptance/tests/unit/m1-admission.integration.test.cjs": "6f6108b4fc0e343af085667af3e89190a6416364e08acb74a4b7b808dd7efa81",
+    "tooling/production-acceptance/tests/unit/receipts.test.cjs": "5551546fdfc102ce4955910e169f1ae9722108d2719d7d164888fe3b77f9241e",
+    "tooling/production-acceptance/tests/unit/role-ports.test.cjs": "35d9517bf51bde7e306fb4c76b48071810f114f6d3360f91e68b21a5e90943bb",
+    "tooling/production-acceptance/tests/unit/route-policy.test.cjs": "460e2f6d0c3345881260fefb01feb1f72ebb84c0668847a10e45aa5f12d64e1c"
+  }
+}
