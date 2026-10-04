@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 
 
@@ -234,6 +235,8 @@ class EventNative:
         self.rules_changed = False
         self.health_backlog = 0
         self.audit_receiver_pid = 4242
+        self.audit_role_pids = {500: 'CONTROLLER', 501: 'BROWSER',
+                                502: 'VERIFIER', 503: 'PROXY'}
         self.selector_kind = 'selectors.PollSelector'
         self.mono = 10
         self.role_endpoints = (object(), object())
@@ -268,10 +271,22 @@ class EventNative:
         if self.rules_changed: rule[4] ^= 1
         return ((0, self.mono, topology._event_nlmsg(1013, sequence, bytes(rule), flags=2)),
                 (0, self.mono, topology._event_nlmsg(3, sequence, b'')))
+    def audit_request(self, owner, request, sequence):
+        if request == 'HEALTH':
+            sender, observed, raw = self.audit_health(owner, sequence)
+            return (self.message('AUDIT', raw, sender=sender),)
+        if request == 'LIST_RULES':
+            return tuple(self.message('AUDIT', raw, sender=sender)
+                         for sender, observed, raw in self.audit_rules(owner, sequence))
+        raise AssertionError('non-fixed audit request')
     def poll_records(self, selector):
         values, self.events = tuple(self.events), []
         return values
-    def delivery_barrier(self, owners, wakeup, selector): return self.fence
+    def delivery_barrier(self, owners, wakeup, selector):
+        if not self.fence: return topology.qualify_offline_fence_records((), False)
+        records = tuple(getattr(self, 'fence_events', ()))
+        self.fence_events = []
+        return topology.qualify_offline_fence_records(records, True)
     def close_owned(self, owner, remaining_ms):
         if owner.closed: raise RuntimeError('double close')
         owner.closed = True; self.closed.append(owner)
@@ -286,10 +301,99 @@ def event_binding():
     return confinement.CompositionBinding(1, RUN, MANIFEST, CONFIG, 'd' * 64, 1, 190)
 
 
-def audit_event(serial, syscall=201, *, path='inet'):
-    text = ('audit(1.000:%d): syscall=%d success=yes endpoint=%s' %
-            (serial, syscall, path)).encode('ascii')
+def audit_event(serial, syscall=201, *, pid=500, ppid=1, exit_code=0):
+    text = ('audit(1.000:%d): arch=c00000b7 syscall=%d success=yes exit=%d '
+            'pid=%d ppid=%d' % (serial, syscall, exit_code, pid, ppid)).encode('ascii')
     return topology._event_nlmsg(1300, 0, text)
+
+
+def audit_sockaddr(serial, family='inet'):
+    values = {'inet': '02000c387f0000010000000000000000',
+              'inet6': '0a000c3800000000000000000000000000000001',
+              'unix': '01002f72756e2f6261642e736f636b00'}
+    text = ('audit(1.000:%d): saddr=%s' % (serial, values[family])).encode('ascii')
+    return topology._event_nlmsg(1306, 0, text)
+
+
+def audit_aux(serial, kind=1302, size=0):
+    text = ('audit(1.000:%d): item=0 name="/fixed" ' % serial).encode('ascii')
+    text += b'x' * size
+    return topology._event_nlmsg(kind, 0, text)
+
+
+def literal_runtime_role(confinement_fixture, role, lifecycle, runtime_owner,
+                         desired_rows=()):
+    """Actual NativeKernelPort + literal /proc facts, with inert byte owners."""
+    legacy = confinement_fixture.ConfinementTests()
+    kernel = legacy.observed_native()
+    original, state = next(iter(kernel._owned.items()))
+    bindings = kernel.b
+    launch = confinement.prepare_role(
+        role, confinement.RoleConfig(legacy.config(), confinement.role_fds(role, RUN)))
+    state.update(launch=launch, exec_identity=(1, 999),
+                 digest=__import__('hashlib').sha256(
+                     confinement.filter_bytes(launch.filter)).hexdigest())
+    old_read, old_list = bindings.read_file, bindings.os.listdir
+    old_link, old_stat = bindings.os.readlink, bindings.os.stat
+    rows = {row['fd']: row for row in desired_rows}
+    active = {'fds': [0, 1, 2, 3, 4]}
+
+    def read(path, *args):
+        if '/fdinfo/' in path:
+            fd = int(path.rsplit('/', 1)[1])
+            flags = rows.get(fd, {}).get('flags', 1 if fd == 4 else 0)
+            return ('flags:\t%s\n' % oct(flags)[2:]).encode('ascii')
+        if path.endswith('/cmdline'):
+            return b'\0'.join(value.encode() for value in launch.argv) + b'\0'
+        return old_read(path, *args).replace(
+            b'10002', str(launch.uid).encode()).replace(b'browser', role.lower().encode())
+
+    def listed(path):
+        if path.endswith('/fd'): return [str(fd) for fd in active['fds']]
+        if path.endswith('/run/acceptance'): return [role.lower()]
+        return old_list(path)
+
+    def linked(path):
+        if '/fd/' in path and int(path.rsplit('/', 1)[1]) >= 5:
+            return 'socket:[%s]' % rows[int(path.rsplit('/', 1)[1])]['inode']
+        return old_link(path)
+
+    def stated(path):
+        if '/fd/' in path:
+            fd = int(path.rsplit('/', 1)[1])
+            row = rows.get(fd)
+            if row is not None:
+                return types.SimpleNamespace(st_dev=int(row['device']), st_ino=int(row['inode']))
+        value = old_stat(path)
+        if path.endswith('/exe'):
+            return types.SimpleNamespace(st_dev=1, st_ino=999)
+        value.st_uid = value.st_gid = launch.uid
+        return value
+
+    bindings.read_file, bindings.os.listdir = read, listed
+    bindings.os.readlink, bindings.os.stat = linked, stated
+    bindings.os.fstat = lambda fd: types.SimpleNamespace(
+        st_dev=int(rows[fd]['device']), st_ino=int(rows[fd]['inode']))
+    owned = confinement.NativeOwned(300, RUN, role, original.command,
+                                    original.result, original.identity)
+    del kernel._owned[original]; kernel._owned[owned] = state
+    handoff = confinement.RoleHandoff(launch, confinement.RoleAttestation(**dict(
+        pid=300, run_id=RUN, role=role, uids=(launch.uid,) * 3,
+        gids=(launch.uid,) * 3, groups=(), capabilities=(0,) * 5,
+        no_new_privs=1, seccomp=2, filter_digest=state['digest'], fds=launch.fds,
+        views=launch.views, waiting=True, programs=launch.programs)), kernel, owned)
+    marker = {'CONTROLLER': '1', 'BROWSER': '3', 'VERIFIER': '5', 'PROXY': '7'}[role]
+    kernel.bind_runtime_owner(handoff, lifecycle, runtime_owner,
+                              marker * 32, hex(int(marker, 16) + 1)[2:] * 32, 1)
+    endpoints = []
+    for row in desired_rows:
+        if row['fd'] < 5: continue
+        endpoint = types.SimpleNamespace(fileno=lambda fd=row['fd']: fd)
+        endpoints.append(endpoint)
+        kernel.register_runtime_descriptor(
+            handoff, runtime_owner, endpoint, row['kind'], 1)
+    active['fds'] = sorted(rows) if rows else [0, 1, 2, 3, 4]
+    return handoff, kernel, active, endpoints
 
 
 class TopologyTests(unittest.TestCase):
@@ -315,7 +419,8 @@ class TopologyTests(unittest.TestCase):
     def test_v1_transient_listener_and_unix_creation_latch(self):
         for endpoint in ('inet', 'unix'):
             owner, native, _ = self.install_events()
-            native.events += [native.message('AUDIT', audit_event(7, path=endpoint)),
+            native.events += [native.message('AUDIT', audit_event(7, syscall=200)),
+                              native.message('AUDIT', audit_sockaddr(7, endpoint)),
                               native.message('AUDIT', topology._event_nlmsg(
                                   1320, 0, b'audit(1.000:7): end'))]
             with self.subTest(endpoint=endpoint), self.assertRaisesRegex(
@@ -351,6 +456,124 @@ class TopologyTests(unittest.TestCase):
         owner, native, _ = self.install_events(); native.rules_changed = True
         with self.assertRaisesRegex(topology.TopologyError, '^AUDIT_RULES_DENIED$'):
             owner.barrier()
+
+    def test_v1_all_fixed_audit_syscalls_require_complete_original_attribution(self):
+        fixed = (33, 39, 40, 41, 51, 93, 94, 97, 200, 201, 220, 221,
+                 268, 281, 435)
+        for serial, syscall in enumerate(fixed, 1):
+            owner, native, _ = self.install_events()
+            rows = [native.message('AUDIT', audit_event(
+                serial, syscall=syscall, exit_code=700 if syscall in (220, 435) else 0))]
+            if syscall == 200:
+                rows.append(native.message('AUDIT', audit_sockaddr(serial, 'inet')))
+            rows.append(native.message('AUDIT', topology._event_nlmsg(
+                1320, 0, ('audit(1.000:%d): end' % serial).encode('ascii'))))
+            native.events.extend(rows)
+            with self.subTest(syscall=syscall), self.assertRaisesRegex(
+                    topology.TopologyError, '^(EVENT_DRIFT|EVENT_SOURCE_TERMINAL)$'):
+                owner.barrier()
+        for fault in ('foreign', 'missing-pid', 'duplicate-syscall',
+                      'missing-sockaddr', 'contradictory-exit',
+                      'nonzero-return'):
+            owner, native, _ = self.install_events(); serial = 80
+            if fault == 'missing-pid':
+                raw = topology._event_nlmsg(1300, 0,
+                    b'audit(1.000:80): arch=c00000b7 syscall=40 success=yes exit=0 ppid=1')
+            else:
+                raw = audit_event(serial, syscall=200 if fault == 'missing-sockaddr' else 40,
+                                  pid=999 if fault == 'foreign' else 500,
+                                  exit_code=(-1 if fault == 'contradictory-exit'
+                                             else 1 if fault == 'nonzero-return'
+                                             else 0))
+            native.events.append(native.message('AUDIT', raw))
+            if fault == 'duplicate-syscall':
+                native.events.append(native.message('AUDIT', raw))
+            native.events.append(native.message('AUDIT', topology._event_nlmsg(
+                1320, 0, b'audit(1.000:80): end')))
+            with self.subTest(fault=fault), self.assertRaisesRegex(
+                    topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
+                owner.barrier()
+        owner, native, _ = self.install_events()
+        native.events.extend((native.message('AUDIT', topology._event_nlmsg(
+            1300, 0, b'audit(1.000:81): arch=c00000b7 syscall=40 success=no '
+                       b'exit=-1 pid=500 ppid=1')),
+            native.message('AUDIT', topology._event_nlmsg(
+                1320, 0, b'audit(1.000:81): end'))))
+        self.assertEqual(owner.barrier().binding, event_binding())
+
+    def test_v1_audit_stream_demux_and_fence_records_precede_checkpoint(self):
+        class Interleaved(EventNative):
+            def audit_request(self, owner, request, sequence):
+                values = list(super().audit_request(owner, request, sequence))
+                if request == 'HEALTH' and not getattr(self, 'injected', False):
+                    self.injected = True
+                    values[0:0] = [self.message('AUDIT', audit_event(90, syscall=40)),
+                        self.message('AUDIT', topology._event_nlmsg(
+                            1320, 0, b'audit(1.000:90): end'))]
+                return tuple(values)
+        with self.assertRaisesRegex(topology.TopologyError,
+                                    '^(EVENT_DRIFT|EVENT_SOURCE_TERMINAL)$'):
+            self.install_events(Interleaved())
+
+        class FenceArrival(EventNative):
+            def delivery_barrier(self, owners, wakeup, selector):
+                rows = (self.message('AUDIT', audit_event(91, syscall=40)),
+                        self.message('AUDIT', topology._event_nlmsg(
+                            1320, 0, b'audit(1.000:91): end')))
+                return topology.qualify_offline_fence_records(rows, True)
+        owner, _, _ = self.install_events(FenceArrival())
+        with self.assertRaisesRegex(topology.TopologyError,
+                                   '^(EVENT_DRIFT|EVENT_SOURCE_TERMINAL)$'):
+            owner.barrier()
+
+    def test_v1_pending_caps_are_aggregate_across_groups_and_barriers(self):
+        owner, native, _ = self.install_events()
+        native.events.append(native.message('AUDIT', audit_event(1, syscall=93)))
+        native.events.extend(native.message('AUDIT', audit_aux(1)) for _ in range(127))
+        with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
+            owner.barrier()
+        native.events.append(native.message('AUDIT', audit_event(2, syscall=93)))
+        native.events.extend(native.message('AUDIT', audit_aux(2)) for _ in range(127))
+        with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
+            owner.barrier()
+        native.events.append(native.message('AUDIT', audit_aux(2)))
+        with self.assertRaisesRegex(topology.TopologyError,
+                                   '^EVENT_SOURCE_TERMINAL$'):
+            owner.barrier()
+
+        owner, native, _ = self.install_events()
+        native.events.append(native.message('AUDIT', audit_event(3, syscall=93)))
+        native.events.extend(native.message('AUDIT', audit_aux(3, size=65000))
+                             for _ in range(17))
+        with self.assertRaisesRegex(topology.TopologyError,
+                                   '^EVENT_SOURCE_TERMINAL$'):
+            owner.barrier()
+
+    def test_v1_cleanup_clamps_zero_smaller_and_expired_shared_allowance(self):
+        class AllowanceNative(EventNative):
+            def __init__(self): super().__init__(); self.allowances = []
+            def close_owned(self, owner, remaining_ms):
+                self.allowances.append(remaining_ms)
+                return super().close_owned(owner, remaining_ms)
+            def cleanup_pending(self, token, remaining_ms):
+                self.allowances.append(remaining_ms)
+                return super().cleanup_pending(token, remaining_ms)
+        owner, native, _ = self.install_events(AllowanceNative())
+        self.assertEqual(owner.stop_owned(0)['status'], 'TIMEOUT')
+        self.assertTrue(native.allowances)
+        self.assertTrue(all(value == 0 for value in native.allowances))
+        self.assertEqual(owner.stop_owned(60000)['status'], 'TIMEOUT')
+
+        owner, native, budget = self.install_events(AllowanceNative())
+        budget.deadline, budget.real_deadline = 1000, time.monotonic_ns() // 1000000 + 1000
+        self.assertEqual(owner.stop_owned(7)['status'], 'STOPPED')
+        self.assertTrue(all(0 <= value <= 7 for value in native.allowances))
+        self.assertLessEqual(budget.deadline, 17)
+
+        owner, native, budget = self.install_events(AllowanceNative())
+        budget.deadline, budget.real_deadline = 10, time.monotonic_ns() // 1000000
+        self.assertEqual(owner.stop_owned(50)['status'], 'TIMEOUT')
+        self.assertTrue(all(value == 0 for value in native.allowances))
 
     def test_v1_audit_empty_main_backlog_pending_delivery_unavailable(self):
         owner, native, _ = self.install_events(EventNative(fence=False))
@@ -408,37 +631,68 @@ class TopologyTests(unittest.TestCase):
         self.assertGreaterEqual(len(native.closed), 4)
 
     def test_v1_current_roles_use_real_observer_and_proxy_inventory(self):
-        # Reuse the literal /proc fixture while binding it to the exact module
-        # instance consumed by topology. This executes NativeKernelPort's real
-        # inspect_runtime -> _native_observe path; no inspect callback replaces it.
         confinement_fixture = load(
             'task8_event_current_confinement_fixture',
             'tests/unit/confinement_test.py')
         confinement_fixture.c = confinement
         confinement_fixture.RUN = RUN
-        runtime = confinement_fixture.V1RoleTests().inspect_runtime()
-        self.assertEqual(runtime['lifecycle'], 'SERVICE')
-        self.assertEqual(runtime['inheritedFDs'], [0, 1, 2, 3, 4])
-        self.assertEqual(runtime['currentFDs'][-1]['kind'], 'PROXY_LISTENER')
-
-        # The accepted Task 7 harness reaches admitted_inherited_main and the
-        # actual serving loop. Observe while that exact loop owner is current.
         proxy_fixture = load('task8_event_current_proxy_fixture',
                              'tests/unit/proxy_test.py')
         proxy_fixture.proxy = proxy
-        current = []
+        observations = []
         def capture(harness, owner):
-            current.append(owner.observe_current(
-                harness.nominal_binding).to_record())
-        harness = proxy_fixture.CompositionHarness(self, sink=capture).run()
-        self.assertEqual(len(current), 1)
-        self.assertEqual(current[0]['status'], 'CURRENT')
-        self.assertEqual([row['kind'] for row in current[0]['currentFDs'][:7]],
-            ['NULL','NULL','NULL','COMMAND','RESULT','PROXY_LISTENER',
-             'PROXY_STOP_SELECTOR'])
-        authored = inspect.getsource(topology.observe_current_roles)
-        self.assertIn('inspect_runtime', authored)
-        self.assertIn('observe_current', authored)
+            # Sample the exact serving owner once to configure an independent
+            # literal /proc view of the same kernel facts. The composed helper
+            # must then call both real observers itself.
+            proxy_rows = owner.observe_current(
+                harness.nominal_binding).to_record()['currentFDs']
+            runtime_owners = {role: object() for role in confinement.UIDS}
+            runtime_owners['PROXY'] = owner
+            handoffs, controls, retained = [], {}, []
+            for role, lifecycle in zip(confinement.UIDS,
+                    ('SERVICE', 'WAITING', 'WAITING', 'SERVICE')):
+                rowset = proxy_rows if role == 'PROXY' else ()
+                handoff, kernel, active, endpoints = literal_runtime_role(
+                    confinement_fixture, role, lifecycle,
+                    runtime_owners[role], rowset)
+                handoffs.append(handoff); controls[role] = (kernel, active)
+                retained.extend(endpoints)
+            before = topology.observe_current_roles(
+                tuple(handoffs), runtime_owners, owner, harness.nominal_binding)
+            self.assertEqual([row['lifecycle'] for row in before],
+                             ['SERVICE', 'WAITING', 'WAITING', 'SERVICE'])
+            self.assertEqual(before[3]['currentFDs'][-2]['kind'],
+                             'PROXY_LISTENER')
+
+            # Task 6 already proves only its completed original preparation can
+            # reach this private transition. Exercise that authored transition,
+            # then require the composed helper to derive BROWSER_ACTIVE.
+            browser = handoffs[1]; kernel = controls['BROWSER'][0]
+            preparation = object.__new__(confinement.BootstrapBrowserPreparation)
+            roles = types.SimpleNamespace(_preparation=preparation)
+            object.__setattr__(preparation, '_roles', roles)
+            object.__setattr__(preparation, '_child', browser)
+            object.__setattr__(preparation, '_committed', True)
+            kernel._commit_browser_runtime(preparation)
+            after = topology.observe_current_roles(
+                tuple(handoffs), runtime_owners, owner, harness.nominal_binding)
+            self.assertEqual(after[1]['lifecycle'], 'BROWSER_ACTIVE')
+
+            controls['BROWSER'][1]['fds'].append(6)
+            with self.assertRaisesRegex(topology.TopologyError,
+                    '^NATIVE_CURRENT_INVENTORY_UNAVAILABLE$'):
+                topology.observe_current_roles(
+                    tuple(handoffs), runtime_owners, owner,
+                    harness.nominal_binding)
+            controls['BROWSER'][1]['fds'].pop()
+            substituted = dict(runtime_owners); substituted['PROXY'] = object()
+            with self.assertRaisesRegex(topology.TopologyError, '^ROLE_DENIED$'):
+                topology.observe_current_roles(
+                    tuple(handoffs), substituted, owner,
+                    harness.nominal_binding)
+            observations.extend((before, after, tuple(retained)))
+        proxy_fixture.CompositionHarness(self, sink=capture).run()
+        self.assertEqual(len(observations), 3)
 
     def test_v1_first_terminal_latch_freezes_budget_before_capture_settles(self):
         for settlement in (30010, 70010):

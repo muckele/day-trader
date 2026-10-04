@@ -217,16 +217,38 @@ class _OfflineEventNative:
     _seal: object = field(repr=False)
 
 
+@dataclass(frozen=True)
+class _OfflineFenceRecords:
+    records: tuple
+    supported: bool
+    _seal: object = field(repr=False)
+
+
+def qualify_offline_fence_records(records, supported):
+    """Seal an inert combined-fence result and its original-stream records."""
+    if (type(records) is not tuple or type(supported) is not bool
+            or len(records) > 256
+            or any(type(row) is not tuple or len(row) != 5 for row in records)):
+        _fail('ADAPTER_DENIED')
+    return _OfflineFenceRecords(records, supported, _OFFLINE_EVENT_NATIVE_SEAL)
+
+
 def qualify_offline_event_native(native):
     """Seal a literal-record double; never native qualification."""
     methods = ('retain_pending', 'open_audit', 'open_route', 'open_uevent',
                'open_inotify', 'open_wakeup_pipe', 'poll_selector',
-               'add_inotify_watch', 'install_audit_rule', 'audit_health',
-               'audit_rules', 'poll_records', 'delivery_barrier',
+               'add_inotify_watch', 'install_audit_rule', 'audit_request',
+               'poll_records', 'delivery_barrier',
                'close_owned', 'cleanup_pending', 'current_monotonic_ms')
     if (any(not callable(getattr(native, name, None)) for name in methods)
             or type(getattr(native, 'audit_receiver_pid', None)) is not int
             or not 1 <= native.audit_receiver_pid <= 2**32 - 1
+            or type(getattr(native, 'audit_role_pids', None)) is not dict
+            or set(native.audit_role_pids.values()) != set(_CONFINEMENT.UIDS)
+            or len(native.audit_role_pids) != 4
+            or any(type(pid) is not int or not 1 <= pid <= 2**31 - 1
+                   or type(role) is not str
+                   for pid, role in native.audit_role_pids.items())
             or getattr(native, 'selector_kind', None) != 'selectors.PollSelector'):
         _fail('ADAPTER_DENIED')
     return _OfflineEventNative(native, _OFFLINE_EVENT_NATIVE_SEAL)
@@ -257,7 +279,9 @@ class BootstrapEventOwner:
         self.generation, self.sequence = 1, 0
         self._sources, self._wakeup, self.selector = {}, None, None
         self._obligations, self._pending_groups = [], {}
+        self._pending_count, self._pending_bytes = 0, 0
         self._audit_sequence, self._lost, self._last_health = 0, None, None
+        self._audit_pids = dict(self._port.audit_role_pids)
         self._last_audit_serial = 0
         self._uevent_sequence = None
         self._drift = False
@@ -319,6 +343,9 @@ class BootstrapEventOwner:
             for endpoint in getattr(self._port, 'role_endpoints', ()):
                 self.selector.register(endpoint, 1)
             self._verify_health_and_rules()
+            if self._drift:
+                self._terminate('EVENT_DRIFT')
+            self._check_pending()
         except Exception as error:
             if isinstance(error, TopologyError): failure = error
             else: failure = TopologyError('EVENT_SETUP_DENIED')
@@ -343,18 +370,47 @@ class BootstrapEventOwner:
         if self._audit_sequence > 2**32 - 1: self._terminate('EVENT_SOURCE_TERMINAL')
         return self._audit_sequence
 
+    def _audit_exchange(self, request, sequence, failure_code):
+        try:
+            records = tuple(self._port.audit_request(
+                self._sources['AUDIT'], request, sequence))
+        except Exception:
+            self._terminate(failure_code)
+        if len(records) > 273:
+            self._terminate(failure_code)
+        replies, total = [], 0
+        for value in records:
+            if type(value) is not tuple or len(value) != 5:
+                self._terminate(failure_code)
+            source, sender, observed, raw, flags = value
+            if source != 'AUDIT' or flags != 0:
+                self._terminate(failure_code)
+            try:
+                kind, message_flags, message_sequence, payload = _parse_event_nlmsg(raw)
+            except TopologyError:
+                self._terminate(failure_code)
+            if message_sequence == 0:
+                self._record(value)
+                continue
+            total += len(raw)
+            if (message_sequence != sequence or sender != 0
+                    or type(observed) is not int or total > 65536):
+                self._terminate(failure_code)
+            replies.append((kind, message_flags, observed, payload))
+        return tuple(replies)
+
     def _verify_health_and_rules(self):
         now = self._port.current_monotonic_ms()
         if type(now) is not int or now < 0: self._terminate('EVENT_SOURCE_TERMINAL')
         if self._last_health is not None and now - self._last_health > 100:
             self._terminate('EVENT_SOURCE_TERMINAL')
         health_sequence = self._next_audit_sequence()
-        try: sender, observed, raw = self._port.audit_health(
-            self._sources['AUDIT'], health_sequence)
-        except Exception: self._terminate('EVENT_SOURCE_TERMINAL')
-        kind, flags, sequence, payload = _parse_event_nlmsg(raw)
-        if (sender != 0 or kind != 1000 or flags != 0 or sequence != health_sequence
-                or type(observed) is not int or not now <= observed <= now + 100
+        health = self._audit_exchange(
+            'HEALTH', health_sequence, 'EVENT_SOURCE_TERMINAL')
+        if len(health) != 1:
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        kind, flags, observed, payload = health[0]
+        if (kind != 1000 or flags != 0 or not now <= observed <= now + 100
                 or len(payload) != 44):
             self._terminate('EVENT_SOURCE_TERMINAL')
         status = struct.unpack('<11I', payload)
@@ -365,19 +421,15 @@ class BootstrapEventOwner:
             self._terminate('EVENT_SOURCE_TERMINAL')
         if self._lost is None: self._lost = status[6]
         rule_sequence = self._next_audit_sequence()
-        try: records = tuple(self._port.audit_rules(
-            self._sources['AUDIT'], rule_sequence))
-        except Exception: self._terminate('AUDIT_RULES_DENIED')
+        records = self._audit_exchange(
+            'LIST_RULES', rule_sequence, 'AUDIT_RULES_DENIED')
         if not 2 <= len(records) <= 17:
             self._terminate('AUDIT_RULES_DENIED')
-        total, rules, done = 0, [], False
-        for sender, observed, raw in records:
-            total += len(raw)
-            if (sender != 0 or type(observed) is not int
-                    or not now <= observed <= now + 100 or total > 65536):
+        rules, done = [], False
+        for kind, flags, observed, payload in records:
+            if not now <= observed <= now + 100:
                 self._terminate('AUDIT_RULES_DENIED')
-            kind, flags, sequence, payload = _parse_event_nlmsg(raw)
-            if sequence != rule_sequence or done:
+            if done:
                 self._terminate('AUDIT_RULES_DENIED')
             if kind == 3:
                 if payload or flags not in (0, 2): self._terminate('AUDIT_RULES_DENIED')
@@ -394,6 +446,8 @@ class BootstrapEventOwner:
     def _terminate(self, code):
         if self._terminal is None:
             self._terminal = code; self.generation += 1
+            self._pending_groups.clear()
+            self._pending_count = self._pending_bytes = 0
         _fail(code)
 
     def _audit_record(self, raw, observed):
@@ -408,8 +462,27 @@ class BootstrapEventOwner:
         if kind == 1320:
             group = self._pending_groups.pop(serial, None)
             if group is None: self._terminate('EVENT_SOURCE_TERMINAL')
+            self._pending_count -= group['count']
+            self._pending_bytes -= group['bytes']
             if observed - group['first'] > 1000:
                 self._terminate('EVENT_SOURCE_TERMINAL')
+            if (len(group['syscalls']) != 1
+                    or (group['syscalls'][0]['number'] == 200
+                        and group['syscalls'][0]['success']
+                        and len(group['sockaddrs']) != 1)
+                    or (group['syscalls'][0]['number'] != 200
+                        and group['sockaddrs'])):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            syscall = group['syscalls'][0]
+            if syscall['success']:
+                if syscall['number'] in (220, 435):
+                    if syscall['exit'] <= 0 or syscall['exit'] in self._audit_pids:
+                        self._terminate('EVENT_SOURCE_TERMINAL')
+                    self._audit_pids[syscall['exit']] = syscall['role']
+                group['events'].add('DEVICE' if syscall['number'] == 33 else
+                    ('UNIX' if syscall['number'] == 200
+                     and group['sockaddrs'][0] == 1 else
+                     'LISTENER' if syscall['number'] in (200, 201) else 'ROLE'))
             if group['events']:
                 self._drift = True
             self.sequence += 1
@@ -421,17 +494,44 @@ class BootstrapEventOwner:
                 self._terminate('EVENT_SOURCE_TERMINAL')
             self._last_audit_serial = serial
         group = self._pending_groups.setdefault(serial, {
-            'first': observed, 'events': set(), 'count': 0, 'bytes': 0})
+            'first': observed, 'events': set(), 'count': 0, 'bytes': 0,
+            'syscalls': [], 'sockaddrs': []})
         group['count'] += 1; group['bytes'] += len(raw)
-        if (len(self._pending_groups) > 64 or group['count'] > 256
-                or group['bytes'] > 1048576 or observed - group['first'] > 1000):
+        self._pending_count += 1; self._pending_bytes += len(raw)
+        if (len(self._pending_groups) > 64 or self._pending_count > 256
+                or self._pending_bytes > 1048576
+                or observed - group['first'] > 1000):
             self._terminate('EVENT_SOURCE_TERMINAL')
-        if kind == 1300 and 'success=yes' in text:
-            syscall = re.search(r'(?:^| )syscall=([0-9]+)', text)
-            if syscall and int(syscall.group(1)) in (200, 201):
-                group['events'].add('UNIX' if 'endpoint=unix' in text else 'LISTENER')
-            elif syscall and int(syscall.group(1)) in (93, 94, 220, 221, 281, 435):
-                group['events'].add('ROLE')
+        fields = dict(re.findall(r'(?:^| )([A-Za-z_]+)=([^ ]+)', text))
+        if kind == 1300:
+            try:
+                number = int(fields['syscall'])
+                exit_code = int(fields['exit'])
+                pid, ppid = int(fields['pid']), int(fields['ppid'])
+            except (KeyError, ValueError):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            if (fields.get('arch') != 'c00000b7'
+                    or fields.get('success') not in ('yes', 'no')
+                    or number not in (33, 39, 40, 41, 51, 93, 94, 97, 200,
+                                      201, 220, 221, 268, 281, 435)
+                    or pid not in self._audit_pids or ppid < 0
+                    or (fields['success'] == 'yes'
+                        and ((number in (220, 435) and exit_code <= 0)
+                             or (number not in (220, 435) and exit_code != 0)))
+                    or (fields['success'] == 'no' and exit_code >= 0)):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            group['syscalls'].append(dict(number=number,
+                success=fields['success'] == 'yes', exit=exit_code,
+                role=self._audit_pids[pid]))
+        elif kind == 1306:
+            try: address = bytes.fromhex(fields['saddr'])
+            except (KeyError, ValueError): self._terminate('EVENT_SOURCE_TERMINAL')
+            if len(address) < 2:
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            family = int.from_bytes(address[:2], 'little')
+            if family not in (1, 2, 10):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            group['sockaddrs'].append(family)
 
     def _record(self, value):
         if type(value) is not tuple or len(value) != 5:
@@ -477,29 +577,56 @@ class BootstrapEventOwner:
             # event count or delivery fence from their sequence/cookie.
             self.sequence += 1; self._drift = True; return
 
+    def _consume_records(self, records):
+        if (type(records) is not tuple or len(records) > 256
+                or sum(len(row[3]) for row in records
+                       if type(row) is tuple and len(row) == 5) > 1048576):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        for value in records:
+            self._record(value)
+
+    def _check_pending(self):
+        now = self._port.current_monotonic_ms()
+        if type(now) is not int or now < 0:
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        if self._pending_groups:
+            if any(now - group['first'] > 1000
+                   for group in self._pending_groups.values()):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            _fail('EVENT_PENDING')
+
     def barrier(self):
         with self._lock:
             if self._terminal is not None: _fail('EVENT_SOURCE_TERMINAL')
             self._check_binding()
             try: records = tuple(self._port.poll_records(self.selector))
             except Exception: self._terminate('EVENT_SOURCE_TERMINAL')
-            if len(records) > 256 or sum(len(row[3]) for row in records
-                                         if type(row) is tuple and len(row) == 5) > 1048576:
-                self._terminate('EVENT_SOURCE_TERMINAL')
-            for value in records: self._record(value)
+            self._consume_records(records)
             if self._drift: self._terminate('EVENT_DRIFT')
-            now = self._port.current_monotonic_ms()
-            if self._pending_groups:
-                if any(now - group['first'] > 1000
-                       for group in self._pending_groups.values()):
-                    self._terminate('EVENT_SOURCE_TERMINAL')
-                _fail('EVENT_PENDING')
+            self._check_pending()
             self._verify_health_and_rules()
-            try: complete = self._port.delivery_barrier(
+            if self._drift: self._terminate('EVENT_DRIFT')
+            self._check_pending()
+            try: fence = self._port.delivery_barrier(
                 tuple(self._sources.values()), self._wakeup, self.selector)
-            except Exception: complete = False
-            if complete is not True:
+            except Exception: fence = None
+            # A fence result carries every original-stream record that it
+            # consumed. Drain once more as well: an inert double returning an
+            # invalid result cannot hide an arrival queued during that call.
+            fence_records = (fence.records if type(fence) is _OfflineFenceRecords
+                and fence._seal is _OFFLINE_EVENT_NATIVE_SEAL else ())
+            try: after = tuple(self._port.poll_records(self.selector))
+            except Exception: self._terminate('EVENT_SOURCE_TERMINAL')
+            self._consume_records(fence_records + after)
+            if self._drift: self._terminate('EVENT_DRIFT')
+            self._check_pending()
+            if (type(fence) is not _OfflineFenceRecords
+                    or fence._seal is not _OFFLINE_EVENT_NATIVE_SEAL
+                    or not fence.supported):
                 self._terminate('NATIVE_EVENT_BARRIER_UNAVAILABLE')
+            self._verify_health_and_rules()
+            if self._drift: self._terminate('EVENT_DRIFT')
+            self._check_pending()
             self._check_binding()
             self.sequence += 1
             return EventCheckpoint(self.binding, self.generation, self.sequence,
@@ -516,6 +643,24 @@ class BootstrapEventOwner:
             if self.selector is not None:
                 try: self.selector.close()
                 except Exception: pass
+            real = time.monotonic_ns() // 1000000
+            try:
+                sample = (self._budget.clock.sample() if self._budget.clock
+                          else (0, real))
+                if (not _sample(sample) or (self._budget.last is not None
+                        and sample[1] < self._budget.last)):
+                    raise ValueError('clock')
+                self._budget.last = sample[1]
+                caller_deadline = sample[1] + remaining_ms
+                caller_real_deadline = real + remaining_ms
+                self._budget.deadline = (caller_deadline
+                    if self._budget.deadline is None else
+                    min(self._budget.deadline, caller_deadline))
+                self._budget.real_deadline = (caller_real_deadline
+                    if self._budget.real_deadline is None else
+                    min(self._budget.real_deadline, caller_real_deadline))
+            except Exception:
+                self._budget.deadline = self._budget.real_deadline = 0
             failed = False
             for kind, owner in reversed(self._obligations):
                 try:
@@ -523,7 +668,12 @@ class BootstrapEventOwner:
                         self._port.close_owned(owner, allowance)) if kind == 'owner' else (
                         lambda allowance, owner=owner:
                         self._port.cleanup_pending(owner, allowance))
-                    self._budget.call(operation)
+                    allowance = self._budget.remaining()
+                    if allowance:
+                        self._budget.call(operation)
+                    else:
+                        operation(0)
+                        failed = True
                 except Exception: failed = True
             self._cleanup_status = 'TIMEOUT' if failed else 'STOPPED'
             return {'status': self._cleanup_status,
@@ -549,9 +699,8 @@ def observe_current_roles(handoffs, runtime_owners, proxy_runtime_owner, binding
             or type(binding) is not _CONFINEMENT.CompositionBinding):
         _fail('ROLE_DENIED')
     expected_roles = tuple(_CONFINEMENT.UIDS)
-    lifecycles = ('SERVICE', 'WAITING', 'WAITING', 'SERVICE')
     result = []
-    for handoff, role, lifecycle in zip(handoffs, expected_roles, lifecycles):
+    for handoff, role in zip(handoffs, expected_roles):
         if (type(handoff) is not _CONFINEMENT.RoleHandoff
                 or handoff.launch.role != role
                 or not isinstance(handoff._kernel, _CONFINEMENT.NativeKernelPort)):
@@ -560,8 +709,21 @@ def observe_current_roles(handoffs, runtime_owners, proxy_runtime_owner, binding
         if role == 'PROXY' and owner is not proxy_runtime_owner:
             _fail('ROLE_DENIED')
         try:
+            lifecycle = handoff._kernel.runtime_lifecycle(handoff, owner)
+            expected = {'CONTROLLER': ('SERVICE',),
+                        'BROWSER': ('WAITING', 'BROWSER_ACTIVE'),
+                        'VERIFIER': ('WAITING',),
+                        'PROXY': ('SERVICE',)}[role]
+            if lifecycle not in expected:
+                _fail('ROLE_DENIED')
             row = handoff._kernel.inspect_runtime(handoff, lifecycle, owner)
             row = _CONFINEMENT.validate_runtime_observation(row, handoff, lifecycle)
+        except _CONFINEMENT.ConfinementError as error:
+            if str(error) == 'NATIVE_CURRENT_INVENTORY_UNAVAILABLE':
+                _fail('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')
+            _fail('ROLE_DENIED')
+        except TopologyError:
+            raise
         except Exception:
             _fail('ROLE_DENIED')
         result.append(row)

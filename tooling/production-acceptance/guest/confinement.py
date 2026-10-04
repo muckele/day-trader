@@ -1157,7 +1157,7 @@ _RUNTIME_FD_KINDS={
 }
 
 
-def validate_runtime_observation(value,handoff,lifecycle):
+def validate_runtime_observation(value,handoff,lifecycle,*,_allow_proxy_pre_listener=False):
     """Strictly retain inherited authority separately from current inventory."""
     if (type(value) is not dict
             or set(value)!=set(('role','childId','pipeId','lifecycle',
@@ -1200,7 +1200,8 @@ def validate_runtime_observation(value,handoff,lifecycle):
     if handoff.launch.role=='PROXY':
         counts={kind:sum(row['kind']==kind for row in value['currentFDs'])
                 for kind in _RUNTIME_FD_KINDS}
-        if (lifecycle!='SERVICE' or counts['PROXY_LISTENER']>1
+        if (lifecycle!='SERVICE'
+                or counts['PROXY_LISTENER']!=(0 if _allow_proxy_pre_listener else 1)
                 or counts['PROXY_STOP_SELECTOR']>1
                 or counts['PROXY_ACCEPTED_STREAM']>16
                 or counts['PROXY_VSOCK_STREAM']>16
@@ -1280,7 +1281,19 @@ class NativeKernelPort:
         return validate_runtime_observation(dict(role=h.launch.role,
             childId=state['childId'],pipeId=state['pipeId'],lifecycle=lifecycle,
             inheritedFDs=[0,1,2,3,4],currentFDs=[dict(row) for row in rows]),
-            h,lifecycle)
+            h,lifecycle,_allow_proxy_pre_listener=(
+                h.launch.role=='PROXY' and not any(
+                    row['kind']=='PROXY_LISTENER' for row in rows)))
+
+    def runtime_lifecycle(self,original_handoff,runtime_owner):
+        """Return only the lifecycle retained with the original acquisition."""
+        state=self._runtime_owners.get(id(original_handoff))
+        if (not state or state['handoff'] is not original_handoff
+                or state['owner'] is not runtime_owner
+                or state['lifecycle'] not in ('WAITING','SERVICE','BROWSER_ACTIVE')
+                or _ownership_facts(original_handoff._owned)!=state['facts']):
+            _fail('AUTHORITY_LOST')
+        return state['lifecycle']
 
     def _commit_browser_runtime(self,preparation):
         if type(preparation) is not BootstrapBrowserPreparation or not preparation._committed or preparation._roles._preparation is not preparation: _fail('AUTHORITY_LOST')
