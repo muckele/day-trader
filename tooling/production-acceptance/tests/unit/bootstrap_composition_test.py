@@ -1013,6 +1013,76 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 if mode=='reentry':
                     self.assertIn({'status':'TIMEOUT','runId':h.binding.runId},receipts[1:])
 
+    def test_v1_stop_clamps_to_caller_and_never_widens_shared_budget(self):
+        for supplied,shared_cap in ((0,None),(7,None),(60000,3)):
+            with self.subTest(supplied=supplied,shared_cap=shared_cap):
+                h=self.Harness(self);composition,stack=h.build();allowances=[]
+                original=t.BootstrapEventOwner.stop_owned
+                def stop(owner,remaining):
+                    allowances.append(remaining);return original(owner,remaining)
+                with stack:
+                    composition.begin()
+                    if shared_cap is not None:
+                        self.assertIsNotNone(h.budget.deadline)
+                        h.clock.mono=h.budget.deadline-shared_cap
+                    with mock.patch.object(t.BootstrapEventOwner,'stop_owned',new=stop):
+                        first=composition.stop_owned(supplied)
+                        call_count=len(allowances)
+                        repeated=composition.stop_owned(60000)
+                    limit=supplied if shared_cap is None else shared_cap
+                    self.assertTrue(allowances)
+                    self.assertTrue(all(0 <= value <= limit for value in allowances))
+                    if limit==0:
+                        self.assertTrue(all(value==0 for value in allowances))
+                        self.assertEqual(first['status'],'TIMEOUT')
+                        self.assertEqual(repeated['status'],'TIMEOUT')
+                    else:
+                        self.assertEqual(len(allowances),call_count)
+                    self.assertLessEqual(composition._budget.remaining(),limit)
+
+    def test_v1_stop_cap_survives_late_registration_and_reentry(self):
+        for supplied in (0,7):
+            with self.subTest(supplied=supplied):
+                h=self.Harness(self);composition,stack=h.build();receipts=[]
+                class LateOwner:
+                    def __init__(owner):owner.allowances=[];owner.reentered=False
+                    def stop_owned(owner,remaining):
+                        owner.allowances.append(remaining)
+                        if supplied and not owner.reentered:
+                            owner.reentered=True
+                            receipts.append(composition.stop_owned(0))
+                        return {'status':'STOPPED','runId':h.binding.runId}
+                late=LateOwner()
+                def activate(*args):
+                    receipts.append(composition.stop_owned(supplied))
+                    receipts.append(composition.stop_owned(60000))
+                    return late
+                composition._proxy_entry=activate
+                with stack,self.assertRaises(Exception):composition.begin()
+                self.assertEqual(receipts[0],
+                                 {'status':'TIMEOUT','runId':h.binding.runId})
+                self.assertEqual(receipts[1],
+                                 {'status':'TIMEOUT','runId':h.binding.runId})
+                self.assertEqual(len(late.allowances),1)
+                self.assertLessEqual(late.allowances[0],supplied)
+                if supplied==0:self.assertEqual(late.allowances,[0])
+                if supplied:self.assertIn(
+                    {'status':'TIMEOUT','runId':h.binding.runId},receipts[2:])
+                self.assertEqual(composition._budget.remaining(),0)
+                self.assertEqual(composition.stop_owned(60000)['status'],'STOPPED')
+                self.assertEqual(len(late.allowances),1)
+
+    def test_v1_zero_stop_never_starts_unresolved_observation_cleanup(self):
+        h=self.Harness(self);composition,stack=h.build();calls=[]
+        class Unresolved:
+            def cleanup(owner):calls.append(owner)
+        unresolved=Unresolved();h.observations._unresolved.append(unresolved)
+        with stack:
+            receipt=composition.stop_owned(0)
+        self.assertEqual(receipt,{'status':'TIMEOUT','runId':h.binding.runId})
+        self.assertEqual(calls,[])
+        self.assertIs(h.observations._cleanup_budget,h.budget)
+
     def test_v1_all_probe_families_exit_before_persistent_roles(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack: composition.begin()

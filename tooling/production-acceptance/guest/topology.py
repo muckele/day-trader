@@ -62,6 +62,21 @@ class CleanupBudget:
                 self.deadline, self.real_deadline = sample[1] + 60000, real + 60000
             return max(0, min(self.deadline - sample[1], (self.real_deadline or 0) - real))
 
+    def clamp(self, remaining_ms):
+        """Shorten this shared deadline to a caller's current cleanup cap."""
+        with self.lock:
+            real = time.monotonic_ns() // 1000000
+            current = self.remaining()
+            if self.last is None or self.deadline is None:
+                self.deadline = 0
+                self.real_deadline = real
+                return 0
+            self.deadline = min(self.deadline, self.last + remaining_ms)
+            self.real_deadline = min(
+                self.real_deadline if self.real_deadline is not None else real,
+                real + remaining_ms)
+            return min(current, remaining_ms)
+
     def call(self, operation):
         remaining = self.remaining()
         if not remaining: _fail('CLEANUP_UNCERTAIN')
@@ -2429,6 +2444,7 @@ class BootstrapComposition:
         self._observations, self._host_devices, self._events = (
             observations, host_devices, events)
         self._budget, self._state = cleanup_budget, 'NEW'
+        self._observations.bind_cleanup_budget(self._budget)
         self._probe_epoch = self._roles = self._proxy_owner = self._event_owner = None
         self._browser_preparation = self._browser_reservation = None
         self._browser_commit_currents = 0
@@ -2858,6 +2874,7 @@ class BootstrapComposition:
     def stop_owned(self, remaining_ms):
         if type(remaining_ms) is not int or not 0 <= remaining_ms <= 60000:
             _fail('CLEANUP_UNCERTAIN')
+        self._budget.clamp(remaining_ms)
         self._invalidate_terminal('STOPPED')
         # Freeze the one shared end before any external stop callback. Reentry
         # observes provisional TIMEOUT; it never launches an overlapping stop.
