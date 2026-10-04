@@ -27,13 +27,15 @@ private final class BootstrapProbeFake: BootstrapProbePort, @unchecked Sendable 
 
 private final class BootstrapLifecycleFake: BootstrapLifecyclePort, BootstrapOwnedLifecycle, @unchecked Sendable {
     private var drift:(@Sendable () -> Void)?; var starts = 0, stops = 0, driftOnBegin = false
-    var onBegin:(@Sendable () -> Void)?
+    var onBegin:(@Sendable () -> Void)?, beginError:VMFailure?, returnedOwner:(any BootstrapOwnedLifecycle)?
     func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws -> any BootstrapOwnedLifecycle {
-        starts += 1; drift = onDrift; onBegin?(); if driftOnBegin { onDrift() }; return self
+        starts += 1; drift = onDrift; onBegin?(); if driftOnBegin { onDrift() }
+        if let beginError { throw beginError }
+        return returnedOwner ?? self
     }
-    var bounds:[Int] = [], onStop:(@Sendable () -> Void)?
+    var bounds:[Int] = [], onStop:(@Sendable () -> Void)?, uncertain=false
     func stopOwned(deadline:Int) throws -> BootstrapStopOutcome {
-        stops += 1; bounds.append(deadline); onStop?(); return .stopped
+        stops += 1; bounds.append(deadline); onStop?(); return uncertain ? .uncertain:.stopped
     }
     func triggerDrift() { drift?() }
 }
@@ -61,17 +63,19 @@ private final class BootstrapActivationFake: BootstrapActivationPort, @unchecked
 
 private struct BootstrapRunFixture {
     let run:RunConfiguration
-    init() throws {
+    init(legacy:Bool = false,incomplete:Bool = false) throws {
         let applianceFixture = try ApplianceFixture()
-        var applianceObject = applianceFixture.object
+        var applianceObject = legacy ? applianceFixture.legacyObject():applianceFixture.object
         var components = applianceObject["components"] as! [[String:Any]]
         for (index,id) in ["controller","guestBootstrap","guestProbes","proxy","rolePolicy","routePolicy","seccompPolicy","verifier"].enumerated() {
             if components.contains(where:{ $0["id"] as? String == id }) { continue }
             components.append(["id":id,"sha256":String(repeating:String(index + 1),count:64),
                                "sizeBytes":index + 1,"sourceId":"task10-independent-" + id,"version":"task10-v1"])
         }
+        if incomplete { components.removeAll { $0["id"] as? String == "browserWorker" } }
         applianceObject["components"] = components.sorted { ($0["id"] as! String) < ($1["id"] as! String) }
-        applianceObject["missingPayload"] = []; applianceObject["payloadState"] = "COMPLETE"
+        applianceObject["missingPayload"] = incomplete ? ["browserWorker"]:[]
+        applianceObject["payloadState"] = incomplete ? "INCOMPLETE":"COMPLETE"
         let manifest = try ApplianceManifest.decode(try applianceFixture.wire(applianceObject))
         let appliance = try manifest.verifyArtifacts(locations:applianceFixture.locations,
                                                       expectedManifestDigest:manifest.digest)
@@ -104,6 +108,32 @@ private struct BootstrapRunFixture {
                 direction:index == 1 ? 1:0,uid:501,device:1,inode:UInt64(100+index),tty:false),dispose:{}) }
         run = RunConfiguration(appliance:appliance,bootstrap:try BootstrapConfiguration.decode(bytes),
             channels:VMChannelSet(brokerFacts:facts,broker:broker,console:console,uid:501),capability:Data(repeating:7,count:32))
+    }
+}
+
+private final class BootstrapPopulationFixture: @unchecked Sendable {
+    let authority:OfflineBootstrapPopulationAuthority, paths:[String:URL]
+    init(_ run:RunConfiguration) throws {
+        let fixture=try ApplianceFixture()
+        let inventory=try OfflineInstalledExecutableInventory.decode(fixture.inventoryBytes(),appliance:run.appliance)
+        let bytes=fixture.memberBytes()
+        let directory=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:false)
+        var locations:[String:URL]=[:]
+        for (index,path) in bytes.keys.sorted().enumerated() {
+            let url=directory.appendingPathComponent(String(index))
+            try bytes[path]!.write(to:url)
+            try FileManager.default.setAttributes([.posixPermissions:0o400],ofItemAtPath:url.path)
+            locations[path]=url
+        }
+        paths=locations
+        authority=try OfflineVMHost.qualifyBootstrapPopulation(run:run,inventory:inventory,
+            memberBytes:bytes,installedLocations:locations)
+    }
+    func driftFirst() throws {
+        let url=paths[paths.keys.sorted()[0]]!
+        try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:url.path)
+        try Data("drift".utf8).write(to:url)
     }
 }
 
@@ -245,6 +275,9 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         proxy["configIdentity"] = run.binding.configIdentity
         proxy["expiresAt"] = run.binding.expiresAt
         payload["proxy"] = proxy
+        let fixture=try ApplianceFixture()
+        let inventory=try OfflineInstalledExecutableInventory.decode(fixture.inventoryBytes(),appliance:run.appliance)
+        let retainedPins=Dictionary(uniqueKeysWithValues:inventory.records.map { ($0.installedPath,$0.memberSHA256) })
         var roles = payload["roles"] as! [[String:Any]]
         for index in roles.indices {
             roles[index]["runId"] = run.binding.runID
@@ -253,7 +286,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
             roles[index]["fds"] = fds
             var programs = roles[index]["programs"] as! [[String:Any]]
             for programIndex in programs.indices {
-                programs[programIndex]["sha256"] = pythonProgramPins[programs[programIndex]["path"] as! String]!
+                programs[programIndex]["sha256"] = retainedPins[programs[programIndex]["path"] as! String]!
             }
             roles[index]["programs"] = programs
         }
@@ -273,6 +306,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         var checkpoint = composition["eventCheckpoint"] as! [String:Any]
         checkpoint["binding"] = binding
         checkpoint["generation"] = generation
+        checkpoint["sequence"] = sequence
         checkpoint["sourceIdentity"] = String(repeating:"a",count:32)
         composition["eventCheckpoint"] = checkpoint
         composition["roleRuntime"] = originals
@@ -282,12 +316,195 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
 
     private func offlineComposition(_ run:RunConfiguration, probe:BootstrapProbeFake,
                                     lifecycle:BootstrapLifecycleFake, clock:BootstrapTestClock,
-                                    originals:[[String:Any]]) throws -> BootstrapCompositionV1 {
-        try OfflineVMHost.composeBootstrapV1(run:run,probe:probe,lifecycle:lifecycle,
-            executables:executableAuthority(run),clock:clock,originalRoleRuntime:originals,
+                                    originals:[[String:Any]],
+                                    population:OfflineBootstrapPopulationAuthority? = nil,
+                                    events:OfflineBootstrapEventOwner? = nil) throws -> BootstrapCompositionV1 {
+        let retainedPopulation=try population ?? BootstrapPopulationFixture(run).authority
+        let retainedEvents=try events ?? OfflineVMHost.installBootstrapEvents(run:run,
+            rolePolicyDigest:String(repeating:"d",count:64),epoch:1,generation:1,
+            sourceID:String(repeating:"a",count:32),lostCount:0)
+        return try OfflineVMHost.composeBootstrapV1(run:run,probe:probe,lifecycle:lifecycle,
+            population:retainedPopulation,eventOwner:retainedEvents,clock:clock,originalRoleRuntime:originals,
             rolePolicyDigest:String(repeating:"d",count:64),epoch:1,generation:1,
             probeEpochDigest:String(repeating:"e",count:64),fixtureInventoryDigest:String(repeating:"f",count:64),
-            eventSourceID:String(repeating:"a",count:32),proxyRuntimeID:String(repeating:"b",count:32))
+            proxyRuntimeID:String(repeating:"b",count:32))
+    }
+
+    @Test func v1_review_initial_capture_preserves_typed_failure_and_stops_original_owner() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows()
+        let foreign=try OfflineVMHost.bootstrapCheck(run:run,composition:offlineComposition(run,
+            probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
+            lifecycle:BootstrapLifecycleFake(),clock:BootstrapTestClock(),originals:originals))
+        let probe=BootstrapProbeFake([]), lifecycle=BootstrapLifecycleFake()
+        probe.onCapture={ throw BootstrapCleanupFailure(cleanup:foreign) }
+        let composition=try offlineComposition(run,probe:probe,lifecycle:lifecycle,
+            clock:BootstrapTestClock(),originals:originals)
+        #expect(throws:BootstrapCleanupFailure.self) {
+            _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition)
+        }
+        #expect(lifecycle.stops == 1)
+    }
+
+    @Test func v1_review_partial_lifecycle_begin_stops_original_owner_once() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows()
+        let probe=BootstrapProbeFake([try compositionHandoff(run,originals:originals)])
+        let lifecycle=BootstrapLifecycleFake(); lifecycle.beginError = .start
+        let composition=try offlineComposition(run,probe:probe,lifecycle:lifecycle,
+            clock:BootstrapTestClock(),originals:originals)
+        #expect(throws:VMFailure.admissionUnavailable) {
+            _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition)
+        }
+        #expect(lifecycle.starts == 1)
+        #expect(lifecycle.stops == 1)
+    }
+
+    @Test func v1_review_replayed_or_decreased_event_checkpoint_is_denied() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows()
+        func data(_ sequence:Int,_ eventSequence:Int) throws -> Data {
+            try compositionHandoff(run,originals:originals,sequence:sequence) { value in
+                var x=value, c=x["composition"] as! [String:Any], e=c["eventCheckpoint"] as! [String:Any]
+                e["sequence"]=eventSequence; c["eventCheckpoint"]=e; x["composition"]=c; return x
+            }
+        }
+        for next in [9,8] {
+            let lifecycle=BootstrapLifecycleFake()
+            let q=try OfflineVMHost.bootstrapCheck(run:run,composition:offlineComposition(run,
+                probe:BootstrapProbeFake([try data(1,9),try data(2,next)]),
+                lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals))
+            #expect(throws:VMFailure.self) { _=try q.requireBrowserAdmission() }
+            #expect(lifecycle.stops == 1)
+        }
+    }
+
+    @Test func v1_review_legacy_manifest_denied_before_capture_or_lifecycle() throws {
+        for run in [try BootstrapRunFixture(legacy:true).run,try BootstrapRunFixture(incomplete:true).run] {
+            let originals=runtimeRows(), probe=BootstrapProbeFake([]), lifecycle=BootstrapLifecycleFake()
+            #expect(throws:(any Error).self) {
+                let composition=try offlineComposition(run,probe:probe,lifecycle:lifecycle,
+                    clock:BootstrapTestClock(),originals:originals)
+                _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition)
+            }
+            #expect(probe.requested.isEmpty)
+            #expect(lifecycle.starts == 0)
+        }
+    }
+
+    @Test func v1_review_original_lifecycle_drift_substitution_and_uncertain_cleanup_are_typed() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows()
+        do {
+            let lifecycle=BootstrapLifecycleFake(); lifecycle.driftOnBegin=true
+            let composition=try offlineComposition(run,
+                probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
+                lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals)
+            #expect(throws:VMFailure.terminal) { _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition) }
+            #expect(lifecycle.stops == 1)
+        }
+        do {
+            let lifecycle=BootstrapLifecycleFake(), substitute=BootstrapLifecycleFake()
+            lifecycle.returnedOwner=substitute
+            let composition=try offlineComposition(run,
+                probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
+                lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals)
+            #expect(throws:VMFailure.terminal) { _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition) }
+            #expect(lifecycle.stops == 1); #expect(substitute.stops == 1)
+        }
+        do {
+            let lifecycle=BootstrapLifecycleFake(); lifecycle.beginError = .start; lifecycle.uncertain=true
+            let composition=try offlineComposition(run,
+                probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
+                lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals)
+            var cleanup:(any BootstrapCleanupOwner)?
+            do { _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition) }
+            catch let error as BootstrapCleanupFailure { cleanup=error.cleanup }
+            #expect(cleanup?.cleanupUncertain == true); #expect(lifecycle.stops == 1)
+        }
+    }
+
+    @Test func v1_review_zero_shared_cleanup_budget_remains_typed() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows()
+        let lifecycle=BootstrapLifecycleFake(); lifecycle.beginError = .start
+        let clock=BootstrapTestClock([.init(wall:100,monotonic:10),.init(wall:100,monotonic:10),
+                                      .init(wall:100,monotonic:60010)])
+        let composition=try offlineComposition(run,
+            probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
+            lifecycle:lifecycle,clock:clock,originals:originals)
+        #expect(throws:BootstrapCleanupFailure.self) {
+            _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition)
+        }
+        #expect(lifecycle.stops == 0)
+    }
+
+    @Test func v1_review_population_substitution_and_member_drift_deny_before_effects() throws {
+        let run=try BootstrapRunFixture().run, other=try BootstrapRunFixture().run, originals=runtimeRows()
+        let foreign=try BootstrapPopulationFixture(other)
+        let probe=BootstrapProbeFake([try compositionHandoff(run,originals:originals)]), lifecycle=BootstrapLifecycleFake()
+        #expect(throws:(any Error).self) {
+            _=try offlineComposition(run,probe:probe,lifecycle:lifecycle,clock:BootstrapTestClock(),
+                originals:originals,population:foreign.authority)
+        }
+        #expect(probe.requested.isEmpty); #expect(lifecycle.starts == 0)
+
+        let retained=try BootstrapPopulationFixture(run)
+        let composition=try offlineComposition(run,probe:probe,lifecycle:lifecycle,clock:BootstrapTestClock(),
+            originals:originals,population:retained.authority)
+        try retained.driftFirst()
+        #expect(throws:(any Error).self) { _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition) }
+        #expect(probe.requested.isEmpty); #expect(lifecycle.starts == 0)
+    }
+
+    @Test func v1_review_member_population_rechecked_at_current_and_effect_boundaries() throws {
+        let originals=runtimeRows()
+        do {
+            let run=try BootstrapRunFixture().run, retained=try BootstrapPopulationFixture(run)
+            let lifecycle=BootstrapLifecycleFake(), probe=BootstrapProbeFake([
+                try compositionHandoff(run,originals:originals)])
+            let q=try OfflineVMHost.bootstrapCheck(run:run,composition:offlineComposition(run,
+                probe:probe,lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals,
+                population:retained.authority))
+            try retained.driftFirst()
+            #expect(throws:VMFailure.admissionUnavailable) { _=try q.currentProofWithoutActivation() }
+            #expect(lifecycle.stops == 1)
+        }
+        do {
+            let run=try BootstrapRunFixture().run, retained=try BootstrapPopulationFixture(run)
+            let lifecycle=BootstrapLifecycleFake(), probe=BootstrapProbeFake([
+                try compositionHandoff(run,originals:originals),
+                try compositionHandoff(run,originals:originals,sequence:2)])
+            let q=try OfflineVMHost.bootstrapCheck(run:run,composition:offlineComposition(run,
+                probe:probe,lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals,
+                population:retained.authority))
+            let activation=BootstrapActivationFake(); activation.handle.callback={ try retained.driftFirst() }
+            #expect(throws:VMFailure.admissionUnavailable) { try q.activateBrowser(activation) }
+            #expect(activation.handle.calls == 0); #expect(activation.handle.stops == 1)
+            #expect(lifecycle.stops == 1)
+        }
+    }
+
+    @Test func v1_review_event_owner_absent_late_or_foreign_is_denied_before_capture() throws {
+        let run=try BootstrapRunFixture().run, other=try BootstrapRunFixture().run, originals=runtimeRows()
+        let population=try BootstrapPopulationFixture(run).authority
+        let probe=BootstrapProbeFake([try compositionHandoff(run,originals:originals)]), lifecycle=BootstrapLifecycleFake()
+        #expect(throws:(any Error).self) {
+            _=try OfflineVMHost.composeBootstrapV1(run:run,probe:probe,lifecycle:lifecycle,
+                population:population,eventOwner:nil,clock:BootstrapTestClock(),originalRoleRuntime:originals,
+                rolePolicyDigest:String(repeating:"d",count:64),epoch:1,generation:1,
+                probeEpochDigest:String(repeating:"e",count:64),fixtureInventoryDigest:String(repeating:"f",count:64),
+                proxyRuntimeID:String(repeating:"b",count:32))
+        }
+        let late=OfflineBootstrapEventOwner.pending(run:run,rolePolicyDigest:String(repeating:"d",count:64),
+            epoch:1,generation:1,sourceID:String(repeating:"a",count:32),lostCount:0)
+        let foreign=try OfflineVMHost.installBootstrapEvents(run:other,rolePolicyDigest:String(repeating:"d",count:64),
+            epoch:1,generation:1,sourceID:String(repeating:"a",count:32),lostCount:0)
+        for owner in [late,foreign] {
+            #expect(throws:(any Error).self) {
+                _=try OfflineVMHost.composeBootstrapV1(run:run,probe:probe,lifecycle:lifecycle,
+                    population:population,eventOwner:owner,clock:BootstrapTestClock(),originalRoleRuntime:originals,
+                    rolePolicyDigest:String(repeating:"d",count:64),epoch:1,generation:1,
+                    probeEpochDigest:String(repeating:"e",count:64),fixtureInventoryDigest:String(repeating:"f",count:64),
+                    proxyRuntimeID:String(repeating:"b",count:32))
+            }
+        }
+        #expect(probe.requested.isEmpty); #expect(lifecycle.starts == 0)
     }
 
     @Test func v1_guest_handoff_matches_original_host_run_and_inventory() throws {
@@ -390,7 +607,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         let run = try BootstrapRunFixture().run, originals = runtimeRows(), lifecycle=BootstrapLifecycleFake()
         let probe=BootstrapProbeFake([try compositionHandoff(run,originals:originals)]), clock=BootstrapTestClock()
         let composition=try offlineComposition(run,probe:probe,lifecycle:lifecycle,clock:clock,originals:originals)
-        probe.onCapture = { #expect(composition.eventOwnerInstalledBeforeCapture) }
+        probe.onCapture = { #expect(composition.eventOwnerOwnsActiveCapture) }
         _ = try OfflineVMHost.bootstrapCheck(run:run,composition:composition)
     }
 
