@@ -236,3 +236,43 @@ test('v1_malformed_current_does_not_fabricate_correlated_failed_reply',async()=>
   assert.ok(f.stops.some(x=>x[0]==='worker-family'));
   assert.equal(sent.some(v=>v.action==='FAILED'),false,'an unreadable CURRENT cannot borrow the previous COMMIT sequence');
 });
+test('v1_first_terminal_instant_caps_cleanup_before_compensation_starts',async()=>{
+  // Removing the local first-terminal clamp leaves the correct FAILED time,
+  // but grants a fresh60000ms after1000ms of that original budget has elapsed.
+  const sent=[];let reads=0;
+  const f=await fixture({hooks:{launch(f,owner){
+    f.clock.wall=9000;
+    f.clock.sample=function(){if(++reads===3)this.mono=1100;return [this.wall,this.mono];};
+    return owner;
+  }}}).init();
+  const write=f.workerChannel.write;f.workerChannel.write=async bytes=>{sent.push(JSON.parse(bytes.subarray(4)));return write(bytes);};
+  const tx=await f.bound.prepareBrowser(f.proof);await assert.rejects(tx.port.activateOnce(tx.grant));
+  assert.equal(sent.find(v=>v.action==='FAILED').payload.failedAtMonotonicMs,100);
+  for(const target of ['browser','worker-family']){
+    const stops=f.stops.filter(v=>v[0]===target);assert.equal(stops.length,1);
+    assert.ok(stops[0][1]<=59000,target+' must use60100 minus current1100, not a new60000');
+  }
+});
+test('v1_direct_worker_stop_reuses_first_terminal_absolute_end',async()=>{
+  const f=await fixture().init();await f.bound.prepareBrowser(f.proof);let reads=0;
+  f.clock.sample=function(){if(++reads===2)this.mono=1100;return [this.wall,this.mono];};
+  const stop=f.workerChannel.stopOwned;
+  f.workerChannel.stopOwned=async ms=>({...await stop(ms),status:'TIMEOUT'});
+  await assert.rejects(f.workerBinding.stopOwned(60000),/CLEANUP_UNCERTAIN/);
+  assert.ok(f.stops[0][1]<=59000,'direct stop must establish the first terminal end');
+  f.clock.mono=1200;
+  await assert.rejects(f.workerBinding.stopOwned(60000),/CLEANUP_UNCERTAIN/);
+  assert.equal(f.stops.length,2);assert.ok(f.stops[1][1]<=58900,'retry cannot renew the first end');
+});
+test('v1_terminal_deadline_preserves_earlier_authenticated_cancel_end',async()=>{
+  const f=await fixture().init();await f.bound.prepareBrowser(f.proof);
+  const record=f.cancelRecord();let reads=0;
+  f.clock.sample=function(){if(++reads===2)this.mono=1100;return [this.wall,this.mono];};
+  await f.workerBinding.cancel(record);
+  assert.equal(f.stops.find(v=>v[0]==='worker-family')[1],0,'authenticated end223 is earlier than local end60100');
+});
+test('v1_unrepresentable_terminal_end_only_allows_nonblocking_cleanup',async()=>{
+  const f=await fixture().init();await f.bound.prepareBrowser(f.proof);f.clock.mono=Number.MAX_SAFE_INTEGER;
+  await f.workerBinding.stopOwned(60000);
+  assert.equal(f.stops.find(v=>v[0]==='worker-family')[1],0,'an unsafe absolute end must not allocate a fresh window');
+});

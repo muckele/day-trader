@@ -270,7 +270,13 @@ async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
   function drain() {if(typeof channel.drain!=='function')fail('NATIVE_EFFECT_FENCE_UNAVAILABLE');const pending=channel.drain();if(!Array.isArray(pending)||pending.length>16)fail('FRAME_DENIED');for(const bytes of pending)cancel(wire.read(bytes));}
   function invalidate() {
     terminal=true;if(originalReservation)originalReservation.used=true;
-    if(!terminalRecorded){terminalRecorded=true;try{firstTerminalAt=sample()[1];}catch{}}
+    if(!terminalRecorded){
+      terminalRecorded=true;
+      // The reported terminal instant also fixes the local absolute end. A
+      // later cleanup sample can spend this budget, never start it again.
+      try{firstTerminalAt=sample()[1];cleanup.remaining(firstTerminalAt+60000);}
+      catch{cleanup.revokeWait();}
+    }
   }
   async function stop(ms) {
     invalidate();let uncertain=false;
@@ -289,7 +295,8 @@ async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
   async function failed(cause,requestSequence=0) {
     const code=object(cause)&&['FRAME_DENIED','AUTHORITY_LOST','CLOCK','CANCELLED','EXPIRED','NATIVE_EFFECT_FENCE_UNAVAILABLE','LAUNCH_FAILED','CLEANUP_UNCERTAIN','CHANNEL_EOF'].includes(cause.code)?cause.code:'LAUNCH_FAILED';
     const error=Object.assign(new Error(code,{cause}),{code});
-    invalidate();if(error.code==='CHANNEL_EOF')cleanup.revokeWait();else cleanup.remaining();
+    if(error.code==='CHANNEL_EOF')cleanup.revokeWait();
+    invalidate();cleanup.remaining();
     // Failure reporting is best effort; it cannot precede ownership retention
     // or let a second clock exception bypass compensation.
     error.cleanup=privateHandle({stopOwned:stop});
