@@ -80,6 +80,15 @@ class V1RoleTests(unittest.TestCase):
         self.assertEqual(roles.stop_owned(100)['status'],'STOPPED')
         self.assertEqual(set(k.stopped),{201,202,203,204})
 
+    def test_v1_task13_poll_observes_only_the_retained_original_result_endpoint(self):
+        calls=[];result=object();owned=c.NativeOwned(201,RUN,'BROWSER',object(),result)
+        bindings=types.SimpleNamespace(select=lambda reads,writes,errors,timeout:
+            (calls.append((reads,writes,errors,timeout)) or ([result],[],[])))
+        self.assertIs(c.NativeKernelPort(bindings).poll_role(owned),True)
+        self.assertEqual(calls,[([result],[],[],0)])
+        bindings.select=lambda reads,writes,errors,timeout:([],[],[])
+        self.assertIs(c.NativeKernelPort(bindings).poll_role(owned),False)
+
     def test_v1_fixed_frames_reject_unknown_and_ancillary_data(self):
         for mutate in ('unknown','ancillary','gap','mac','depth','duplicate'):
             roles,k,budget,proof,writes,init=self.setup_roles()

@@ -7,6 +7,7 @@ function errorCode(error) { try { return failureCodes.has(error?.code) ? error.c
 const policies = new WeakMap(), proofs = new WeakMap(), decisions = new WeakMap(), claims = new WeakMap();
 const phases = { PREFLIGHT: 'P', AWAIT_CREDENTIAL: 'P', AUTHENTICATING: 'A', OBSERVE_BEFORE_RESTART: 'B', HOLD_FOR_RESTART: 'H', OBSERVE_AFTER_RESTART: 'C', LOGOUT: 'L', VERIFY_REVOCATION: 'V', FINALIZE: 'F', DONE: 'D', FAILED: 'X' };
 const factsKeys = ['requestId', 'sequence', 'rawTarget', 'origin', 'method', 'path', 'queryPairs', 'headers', 'phase', 'bodyProof'];
+const browserEvidenceKeys = ['runId', 'requestId', 'sequence', 'method', 'url', 'headers', 'byteLength', 'schema'];
 const snapshotKeys = ['runId', 'sequence', 'phase', 'redirectObserved', 'policyEpoch', 'gateEpoch', 'sessionEpoch', 'sessionIssued', 'sessionHandle', 'documentPath', 'homeTransition', 'homeArmedAt', 'holdStartedAt', 'expiresAt', 'preauth', 'maintenance', 'owner', 'readiness', 'restart', 'preauthResponse', 'marketResponse'];
 const bindingKeys = snapshotKeys;
 const safe = x => Number.isSafeInteger(x) && x >= 0 && !Object.is(x, -0);
@@ -67,11 +68,50 @@ function bodyProof(request, bytes, state) {
   proofs.set(proof, { state, request, captured, bytes, schema, digest: Buffer.isBuffer(bytes) ? digest(bytes) : null });
   return proof;
 }
+function browserBodyProof(request, evidence, captured, state) {
+  const proof = opaque();
+  proofs.set(proof, { state, request, captured: facts(request), evidence, browser: freeze({ ...captured,
+    headers: pairs(captured.headers) }) });
+  return proof;
+}
+function browserRequest(evidence, state) {
+  const supplied = state.context.inspectBrowserEvidence(evidence);
+  exactKeys(supplied, browserEvidenceKeys);
+  if (supplied.runId !== state.releaseFacts.runId || typeof supplied.requestId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(supplied.requestId) || !safe(supplied.sequence) || supplied.sequence === 0 ||
+      typeof supplied.method !== 'string' || !['GET', 'POST', 'OPTIONS'].includes(supplied.method) ||
+      typeof supplied.url !== 'string' || supplied.url.length > 4096 || !safe(supplied.byteLength) || supplied.byteLength > catalogue.body.loginMaxBytes ||
+      !['LOGIN_JSON', 'ABSENT'].includes(supplied.schema)) invalid();
+  const headers = pairs(supplied.headers);
+  let url;
+  try { url = new URL(supplied.url); } catch { invalid(); }
+  if (url.username || url.password || url.hash || url.origin + url.pathname + url.search !== supplied.url) invalid();
+  const origin = Object.values(state.releaseFacts.origins).find(value => value === url.origin);
+  if (!origin) invalid();
+  const rawTarget = supplied.url.slice(origin.length), pieces = rawTarget.split('?');
+  if (pieces.length > 2 || !canonicalPath(pieces[0])) invalid();
+  const queryPairs = pieces.length === 1 || pieces[1] === '' ? [] : pieces[1].split('&').map(item => {
+    const fields = item.split('='); if (fields.length !== 2) invalid(); return fields;
+  });
+  const snapshot = state.context.snapshot(Object.freeze({ requestId: supplied.requestId, sequence: supplied.sequence }));
+  if (!snapshot || typeof snapshot.phase !== 'string') invalid();
+  const request = { requestId: supplied.requestId, sequence: supplied.sequence, rawTarget, origin,
+    method: supplied.method, path: pieces[0], queryPairs, headers, phase: snapshot.phase, bodyProof: null };
+  const required = request.method === 'POST' && request.path === '/api/login' ? 'LOGIN_JSON' : 'ABSENT';
+  if (supplied.schema !== required || (required === 'ABSENT' && supplied.byteLength !== 0)) invalid();
+  request.bodyProof = browserBodyProof(request, evidence, supplied, state);
+  return Object.freeze(request);
+}
 function checkBody(request, captured, state) {
   const p = proofs.get(request.bodyProof);
-  if (!p || p.state !== state || p.request !== request || p.schema === 'INVALID' || !sameFacts({ ...p.captured, bodyProof: request.bodyProof }, captured) || digest(p.bytes) !== p.digest) invalid();
+  if (!p || p.state !== state || p.request !== request || !sameFacts({ ...p.captured, bodyProof: request.bodyProof }, captured)) invalid();
   const required = captured.method === 'POST' && captured.path === '/api/login' ? 'LOGIN_JSON' : 'ABSENT';
-  if (p.schema !== required) invalid();
+  if (p.evidence) {
+    let current;
+    try { current = state.context.inspectBrowserEvidence(p.evidence); } catch { invalid(); }
+    try { exactKeys(current, browserEvidenceKeys); } catch { invalid(); }
+    if (JSON.stringify(current) !== JSON.stringify(p.browser) || current.schema !== required) invalid();
+  } else if (p.schema === 'INVALID' || digest(p.bytes) !== p.digest || p.schema !== required) invalid();
 }
 function createPolicy(release, assets, context) {
   try {
@@ -98,6 +138,8 @@ function createPolicy(release, assets, context) {
       homeClosed: false, marketScopes: new Map(), invalidResponses: new WeakSet(), lastScope: null, lastMonotonic: started.monotonicMs };
     const policy = opaque(); policies.set(policy, state);
     context.bindBodyValidator((request, bytes) => bodyProof(request, bytes, state));
+    if (typeof context.inspectBrowserEvidence === 'function' && typeof context.bindBrowserEvidenceValidator === 'function')
+      context.bindBrowserEvidenceValidator(evidence => browserRequest(evidence, state));
     return policy;
   } catch (e) { invalid(errorCode(e)); }
 }

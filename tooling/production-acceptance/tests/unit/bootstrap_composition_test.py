@@ -566,15 +566,19 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             self.role_config=confinement_fixture.ConfinementTests().config(self.role_kernel)
             launches=tuple(c.prepare_role(role,c.RoleConfig(
                 self.role_config,c.role_fds(role,self.binding.runId))) for role in c.UIDS)
-            self.role_init={};self.role_queue=[];self.worker_sequence=0
+            self.role_init={};self.role_queue=[];self.worker_sequence=0;self.application_to_worker=[];self.browser_prepare_payload=None
             def write_role(owned,data):
                 value=json.loads(data[4:])
                 if 'kind' in value:self.role_init[owned.role]=value;return
-                self.worker_sequence+=1
                 payload=value['payload'];action=value['action']
-                if action=='PREPARE':result_action='PREPARED';result_payload=dict(
-                    requestSequence=value['sequence'],grantId=payload['grantId'],
-                    reservationId='6'*32,generation=1)
+                if action=='APP_CHUNK':
+                    self.application_to_worker.append(payload);return
+                self.worker_sequence+=1
+                if action=='PREPARE':
+                    self.browser_prepare_payload=payload
+                    result_action='PREPARED';result_payload=dict(
+                        requestSequence=value['sequence'],grantId=payload['grantId'],
+                        reservationId='6'*32,generation=1)
                 elif action=='COMMIT':result_action='REFRESH';result_payload=dict(
                     requestSequence=value['sequence'],**payload)
                 elif action=='CURRENT':
@@ -593,6 +597,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 self.role_queue.append(c._v1_encode(response))
             self.role_kernel.write_role=write_role
             self.role_kernel.read_role=lambda owned,remaining:self.role_queue.pop(0)
+            self.role_kernel.poll_role=lambda owned:bool(self.role_queue)
             run=t._PROXY.RunBinding(self.binding.runId,b'7'*32,190,1,
                 self.binding.manifestDigest,self.binding.configIdentity,
                 (('FRONTEND','https://frontend.example'),('BACKEND','https://backend.example')))
@@ -790,14 +795,39 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             proof=dict(proofDigest=composition.require_current().topology_digest,
                 generation=1,expiresAtMs=h.binding.expiresAtMs,
                 monotonicDeadlineMs=composition._activation_deadline())
+            browser_config={'version':1,'assetBundle':{'release':'public-signed-bytes'}}
             prepared=json.loads(composition.handle_controller(
-                request(2,'PREPARE_BROWSER',proof))[4:])['payload']['result']
+                request(2,'PREPARE_BROWSER',dict(**proof,browserConfig=browser_config)))[4:])['payload']['result']
+            self.assertEqual(h.browser_prepare_payload['browserConfig'],browser_config)
             result=json.loads(composition.handle_controller(request(
                 3,'COMMIT_BROWSER',dict(grantId=prepared['grantId'],generation=1)))[4:])
             self.assertEqual(result['payload']['result'],{'status':'ACTIVE','generation':1})
             self.assertEqual(composition._state,'BROWSER_COMMITTED')
             self.assertTrue(composition._browser_reservation._used)
             self.assertNotEqual(admitted.handoff,composition._proof.handoff)
+
+    def test_v1_task13_application_chunks_use_the_original_browser_pipe_only(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            composition.begin();preparation=composition.prepare_browser();composition.commit_browser(preparation)
+            controller=h.role_init['CONTROLLER'];row=next(value for value in controller['roles'] if value['role']=='BROWSER')
+            key=bytes.fromhex(controller['channelKeyHex'])
+            def request(sequence,action,payload):
+                value=dict(version=1,binding=h.binding.to_record(),sequence=sequence,**row,action=action,payload=payload)
+                value['mac']=hmac.new(key,b'acceptance:bootstrap-composition:v1\0CONTROLLER:TO_BOOTSTRAP\0'+c._v1_canonical(value),hashlib.sha256).hexdigest()
+                return c._v1_encode(value)
+            chunk=dict(streamSequence=1,messageSequence=1,chunkIndex=0,final=True,bytesHex=b'task13'.hex())
+            written=json.loads(composition.handle_controller(request(1,'APP_WRITE',chunk))[4:])['payload']['result']
+            self.assertEqual(written,{'acceptedStreamSequence':1});self.assertEqual(h.application_to_worker,[chunk])
+            h.worker_sequence+=1
+            worker=dict(version=1,binding=h.binding.to_record(),sequence=h.worker_sequence,**row,action='APP_CHUNK',payload=chunk)
+            worker['mac']=hmac.new(bytes.fromhex(h.role_init['BROWSER']['channelKeyHex']),
+                b'acceptance:bootstrap-composition:v1\0BROWSER:TO_BOOTSTRAP\0'+c._v1_canonical(worker),hashlib.sha256).hexdigest()
+            h.role_queue.append(c._v1_encode(worker))
+            polled=json.loads(composition.handle_controller(request(2,'APP_POLL',{}))[4:])['payload']['result']
+            self.assertEqual(polled,{'status':'CHUNK','chunk':chunk})
+            empty=json.loads(composition.handle_controller(request(3,'APP_POLL',{}))[4:])['payload']['result']
+            self.assertEqual(empty,{'status':'EMPTY'})
 
     def test_v1_browser_failure_and_expiry_never_revive_reserved_transition(self):
         h=self.Harness(self);composition,stack=h.build()

@@ -546,6 +546,8 @@ class OriginalRoleSet:
         self._send={'CONTROLLER':0,'BROWSER':0};self._receive={'CONTROLLER':0,'BROWSER':0}
         self._terminal=False;self._preparation=None;self._source=None;self._last=None;self._busy=set();self._stopped=set();self._event=None
         self._cleanup_lock=threading.RLock();self._stop_tokens={};self._clock_failed=False
+        self._application={name:dict(stream=0,message=0,index=0,size=0,open=False)
+                           for name in ('CONTROLLER','BROWSER')}
 
     @property
     def originals(self): return tuple(self._originals)
@@ -646,6 +648,25 @@ class OriginalRoleSet:
             self._clamp(f['failedAtMonotonicMs']+60000);_fail(f['code'])
         return value
 
+    def _application_chunk(self,value,direction):
+        _v1_exact(value,('streamSequence','messageSequence','chunkIndex','final','bytesHex'))
+        for key in ('streamSequence','messageSequence'):_v1_int(value[key])
+        _v1_int(value['chunkIndex'],0)
+        if (type(value['final']) is not bool or type(value['bytesHex']) is not str
+                or len(value['bytesHex'])>8192 or len(value['bytesHex'])%2
+                or re.fullmatch('[0-9a-f]*',value['bytesHex']) is None):_fail('FRAME_DENIED')
+        state=self._application[direction]
+        if value['streamSequence']!=state['stream']+1:_fail('FRAME_DENIED')
+        expected_message=state['message'] if state['open'] else state['message']+1
+        expected_index=state['index'] if state['open'] else 0
+        if value['messageSequence']!=expected_message or value['chunkIndex']!=expected_index:_fail('FRAME_DENIED')
+        size=state['size']+len(value['bytesHex'])//2
+        if size>16384:_fail('FRAME_DENIED')
+        state.update(stream=value['streamSequence'],message=value['messageSequence'],
+                     index=value['chunkIndex']+1,size=size,open=not value['final'])
+        if value['final']:state.update(index=0,size=0)
+        return value
+
     def audit(self,role,child_id=None,pipe_id=None):
         self._check()
         if role not in ('BROWSER','VERIFIER'): _fail('HANDOFF_DENIED')
@@ -654,14 +675,17 @@ class OriginalRoleSet:
         h=self._handoffs[role];_check(inspect_role(h.attestation.pid,kernel=self._config.kernel),h.launch,waiting=True)
         return dict(kind=role,runId=self.binding.runId,uid=UIDS[role],childId=row['childId'],pipeId=row['pipeId'],waiting=True,confined=True,attestationDigest=h.attestation.filter_digest)
 
-    def prepare_browser(self,proof):
+    def prepare_browser(self,proof,browser_config=None):
         try:
             proof=_v1_proof(proof);self._check(proof)
+            if browser_config is not None and type(browser_config) is not dict:_fail('FRAME_DENIED')
             if self._preparation is not None: _fail('AUTHORITY_LOST')
             self._preparation=BootstrapBrowserPreparation(self,proof,_COMPOSITION_SEAL)
             owner=self._preparation
             self._current(proof);self.audit('BROWSER')
-            seq=self._write('BROWSER','BROWSER','PREPARE',dict(grantId=owner._grant,**proof))
+            payload=dict(grantId=owner._grant,**proof)
+            if browser_config is not None:payload['browserConfig']=browser_config
+            seq=self._write('BROWSER','BROWSER','PREPARE',payload)
             response=self._worker();p=response['payload'];_v1_exact(p,('requestSequence','grantId','reservationId','generation'))
             _v1_int(p['requestSequence']);_v1_int(p['generation'])
             if response['action']!='PREPARED' or p['requestSequence']!=seq or p['grantId']!=owner._grant or not _run(p['reservationId']) or type(p['generation']) is not int or p['generation']!=1: _fail('AUTHORITY_LOST')
@@ -753,7 +777,11 @@ class OriginalRoleSet:
         try:
             f=self._decode('CONTROLLER',data,ancillary,flags);role,action,p=f['role'],f['action'],f['payload']
             if action=='ADOPT':_v1_exact(p,());result=self.audit(role)
-            elif action=='PREPARE_BROWSER' and role=='BROWSER':result=dict(self.prepare_browser(p).to_prepare_result())
+            elif action=='PREPARE_BROWSER' and role=='BROWSER':
+                if type(p) is not dict:_fail('FRAME_DENIED')
+                browser_config=p.get('browserConfig')
+                proof=dict(p);proof.pop('browserConfig',None)
+                result=dict(self.prepare_browser(proof,browser_config).to_prepare_result())
             elif action=='COMMIT_BROWSER' and role=='BROWSER':
                 _v1_exact(p,('grantId','generation'))
                 _v1_int(p['generation'])
@@ -773,6 +801,23 @@ class OriginalRoleSet:
                 if p['generation']!=1 or self._preparation is None:_fail('AUTHORITY_LOST')
                 result=dict(proofDigest=self._preparation._proof['proofDigest'],eventCheckpoint=self._current(self._preparation._proof))
             elif action=='PROXY_CURRENT' and role=='PROXY':_fail('NATIVE_PROXY_RUNTIME_UNAVAILABLE')
+            elif action=='APP_WRITE' and role=='BROWSER':
+                if self._preparation is None or not self._preparation._committed:_fail('AUTHORITY_LOST')
+                self._application_chunk(p,'CONTROLLER')
+                self._write('BROWSER','BROWSER','APP_CHUNK',p)
+                result=dict(acceptedStreamSequence=p['streamSequence'])
+            elif action=='APP_POLL' and role=='BROWSER':
+                _v1_exact(p,())
+                if self._preparation is None or not self._preparation._committed:_fail('AUTHORITY_LOST')
+                self._check(self._preparation._proof)
+                ready=self._config.kernel.poll_role(self._handoffs['BROWSER']._owned)
+                if type(ready) is not bool:_fail('FRAME_DENIED')
+                if not ready:result=dict(status='EMPTY')
+                else:
+                    value=self._decode('BROWSER',self._read_worker(0))
+                    if value['action']!='APP_CHUNK':_fail('FRAME_DENIED')
+                    self._application_chunk(value['payload'],'BROWSER')
+                    result=dict(status='CHUNK',chunk=value['payload'])
             else:_fail('FRAME_DENIED')
             return self._frame('CONTROLLER',role,'RESULT',dict(requestSequence=f['sequence'],result=result))
         except Exception as error:
@@ -1326,6 +1371,13 @@ class NativeKernelPort:
         count=struct.unpack('>I',header)[0]
         if not 0<count<=16384: _fail('FRAME_DENIED')
         return header+self._read_exact(owned.result,count,max(0,int((end-self.b.monotonic())*1000)),eof_code='CHANNEL_EOF')
+
+    def poll_role(self,owned):
+        if type(owned) is not NativeOwned or owned.result is None:_fail('HANDOFF_DENIED')
+        try:ready,_,_=self.b.select([owned.result],[],[],0)
+        except Exception:_fail('CHANNEL_EOF')
+        if type(ready) is not list or any(endpoint is not owned.result and endpoint!=owned.result for endpoint in ready):_fail('CHANNEL_EOF')
+        return bool(ready)
 
     def spawn_waiting(self,launch,entry):
         if type(launch) is not RoleLaunch or launch._seal is not _SEAL: _fail('ROLE_DENIED')

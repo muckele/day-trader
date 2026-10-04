@@ -68,6 +68,15 @@ test('exit_handle_bound_to_run_and_owned_child', async () => {
   assert.deepEqual(await h.stopOwned(100), { status: 'STOPPED', runId: RUN });
   assert.equal(f.count(), 1);
 });
+test('task13_private_application_pipe_keeps_original_identity_and_shared_cleanup_allowance', async () => {
+  const f=fixture();let allowance;
+  f.authority.cleanupBudget={remaining:()=>29};
+  f.authority.stopOwned=async(child,deadline)=>{allowance=deadline;return {status:'STOPPED',runId:RUN,child};};
+  const handle=await roles.adoptRole('BROWSER',f.handoff).activateOnce(f.grant);
+  assert.equal(handle.privatePipe,f.pipe);
+  assert.deepEqual(await handle.stopOwned(60000),{status:'STOPPED',runId:RUN});
+  assert.equal(allowance,29);
+});
 test('cross_run_role_uid_or_child_attestation_reject', () => {
   for (const drift of [{runId:'b'.repeat(32)},{uid:0},{confined:false},{waiting:false},{kind:'PROXY'},{child:null},{privatePipe:null}]) {
     assert.throws(() => fixture('BROWSER',drift), /HANDOFF_DENIED/);

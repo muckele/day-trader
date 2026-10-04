@@ -3,6 +3,18 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { fixture, deferred, B, C, A, createBudget, policyAPI } = require('./budget.test.cjs');
 const receipts = require('../../guest/receipts.cjs');
+const roles = require('../../guest/role-ports.cjs');
+const { createBrowserAdmissionPort, admitBrowserRequest } = require('../../guest/budget.cjs');
+
+function canonical(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}';
+  return JSON.stringify(value);
+}
+function applicationFrame(runId,payload) {
+  const body=Buffer.from(canonical({version:1,runId,sequence:1,type:'ROUTE',payload}),'ascii');
+  const prefix=Buffer.alloc(4);prefix.writeUInt32BE(body.length);return Buffer.concat([prefix,body]);
+}
 
 test('composition_valid_receipt_eligible_acknowledged_reserve_one_consume', async () => {
   const f = fixture(), b = f.budget(), req = f.request();
@@ -13,6 +25,26 @@ test('composition_valid_receipt_eligible_acknowledged_reserve_one_consume', asyn
     sequence: req.sequence, phase: B, routeId: 'performance', cost: { PAPER: 2, stock: 0 }, reservationId: f.state.runId + ':1' });
   assert.equal(b.consumePermit(permit, req, f.policy).kind, 'FAIL');
   assert.throws(() => JSON.stringify(permit), { code: 'PRIVACY_FAILED' });
+});
+test('composition_task8_browser_evidence_reaches_real_task2_task3_task4_admission_once',async()=>{
+  const runId='8'.repeat(32),privatePipe=Object.freeze({audit:()=>Object.freeze({version:1,kind:'TASK13_BROWSER_APPLICATION',runId,maxFrameBytes:16384})});
+  const child=Object.freeze({}),handoff=Object.freeze({}),grant=Object.freeze({});let waiting=true;
+  const authority={
+    inspectHandoff:value=>value===handoff?{kind:'BROWSER',runId,uid:10002,child,privatePipe,waiting,confined:true}:null,
+    inspectGrant:value=>value===grant?{kind:'BROWSER',runId,child,purpose:'CONFINEMENT_PROVED',session:null}:null,
+    async activate(){waiting=false;},async waitExit(){return {status:'EXITED',runId,child};},async stopOwned(){return {status:'STOPPED',runId,child};},
+  };
+  roles.bindRoleBootstrap(authority,runId).audit(handoff);
+  const f=fixture({phase:A,runId,configIdentity:'3'.repeat(64),inspectBrowserEvidence:roles.inspectBrowserRequestEvidence}),payload={
+    runId,requestId:'browser-1',sequence:1,method:'POST',url:f.frames.RELEASE_RECEIPT.payload.origins.BACKEND+'/api/login',
+    headers:[['content-type','application/json']],byteLength:45,schema:'LOGIN_JSON',
+  };
+  const evidence=roles.claimBrowserRequestEvidence(privatePipe,applicationFrame(runId,payload),payload);
+  const port=createBrowserAdmissionPort(f.budget(),f.policy,f.browserRequestFromEvidence);
+  const decision=await admitBrowserRequest(port,evidence);
+  assert.equal(decision.requestId,'browser-1');assert.equal(decision.decision,'CONTINUE');assert.equal(decision.admission.kind,'ADMITTED');
+  assert.deepEqual(f.intents.map(intent=>intent.cost),[{PAPER:0,stock:0}]);
+  await assert.rejects(admitBrowserRequest(port,evidence),{code:'REPLAY'});
 });
 test('composition_eligibility_alone_or_failed_journal_cannot_permit', async () => {
   const f = fixture(), b = f.budget(), req = f.request(), decision = policyAPI.admitRequest(req, f.policy);

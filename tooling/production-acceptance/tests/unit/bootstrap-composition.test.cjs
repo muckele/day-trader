@@ -62,7 +62,7 @@ function fixture(options={}) {
   const keyC=transcript?initC.channelKeyHex:'c3'.repeat(32),keyW=transcript?initW.channelKeyHex:'d4'.repeat(32);
   let workerBinding, reservation, workerOutcome, controllerCancellation,
     controllerSeq=0, workerSeq=0, workerRead, reservationId,prepareBytes;
-  const queue=[], pending=[];
+  const queue=[], pending=[],workerAppChunks=[];
   const original={command:{},result:{}};
   const workerFacts={...roleMap[1],binding:runBinding,channelKeyHex:keyW,...original};
   const controllerFacts={...roleMap[0],binding:runBinding,channelKeyHex:keyC,roles:roleMap,command:{},result:{}};
@@ -78,6 +78,7 @@ function fixture(options={}) {
       if(v.action==='PREPARED'){reservationId=v.payload.reservationId;hooks.prepared?.(f);}
       if(v.action==='REFRESH'){hooks.refresh?.(f);if(transcript){if(options.cancelAt==='REFRESH')await f.cancelFromController();else if(transcript.frames.browserCurrent)queue.push(recorded('browserCurrent'));hooks.current?.(f);}else{deliver('CURRENT',{requestSequence:v.sequence,grantId,reservationId,commitId,...proof,eventCheckpoint:checkpoint});hooks.current?.(f);}}
       if(v.action==='STARTED')hooks.started?.(f);
+      if(v.action==='APP_CHUNK')workerAppChunks.push(v.payload);
     },
     drain(){hooks.drain?.(f);return pending.splice(0);},
     effectFence(value){assert.equal(value.sourceIdentity,checkpoint.sourceIdentity);hooks.fence?.(f);return options.fence===false?null:checkpoint;},
@@ -89,10 +90,12 @@ function fixture(options={}) {
       let result,recorded;
       if(transcript){const names={ADOPT:'controllerAdopt',PREPARE_BROWSER:'controllerPrepare',COMMIT_BROWSER:'controllerCommit',CANCEL:'controllerCancel'};assert.deepEqual(bytes,Buffer.from(transcript.frames[names[v.action]],'hex'));}
       if(v.action==='ADOPT') {result={kind:v.role,runId:runBinding.runId,uid:v.role==='BROWSER'?10002:10003,childId:v.childId,pipeId:v.pipeId,waiting:true,confined:true,attestationDigest:'9'.repeat(64)};if(transcript)recorded=Buffer.from(transcript.frames.controllerAdoptResult,'hex');}
-      if(v.action==='PREPARE_BROWSER') {prepareBytes=transcript?Buffer.from(transcript.frames.browserPrepare,'hex'):deliver('PREPARE',{grantId,...proof});if(transcript)workerSeq=1;reservation=await workerBinding.prepare(prepareBytes);if(!transcript)queue.shift();result={grantId,...proof};hooks.result?.(result,f);if(transcript)recorded=Buffer.from(transcript.frames.controllerPrepareResult,'hex');}
+      if(v.action==='PREPARE_BROWSER') {const browserConfig=v.payload.browserConfig;prepareBytes=transcript?Buffer.from(transcript.frames.browserPrepare,'hex'):deliver('PREPARE',{grantId,...proof,...(browserConfig===undefined?{}:{browserConfig})});if(transcript)workerSeq=1;reservation=await workerBinding.prepare(prepareBytes);if(!transcript)queue.shift();result={grantId,...proof};hooks.result?.(result,f);if(transcript)recorded=Buffer.from(transcript.frames.controllerPrepareResult,'hex');}
       if(v.action==='COMMIT_BROWSER') {if(transcript)queue.push(Buffer.from(transcript.frames.browserCommit,'hex'));else deliver('COMMIT',{grantId,reservationId,commitId,generation:1});workerOutcome=await workerBinding.commitFixedBrowserLaunch(reservation,()=>{launches.push(1);const owner={stopOwned:async remaining=>{stops.push(['browser',remaining]);return {status:'STOPPED',runId:runBinding.runId};}};return hooks.launch?hooks.launch(f,owner):owner;});result={status:'ACTIVE',generation:1};if(transcript?.frames.controllerCommitResult)recorded=Buffer.from(transcript.frames.controllerCommitResult,'hex');}
       if(v.action==='STOP_OWNED'||v.action==='WAIT_EXIT'){stops.push([v.childId,v.payload.remainingMs]);result={status:options.stopTimeout?'TIMEOUT':'STOPPED',runId:runBinding.runId};}
       if(v.action==='CANCEL'){if(transcript){await workerBinding.cancel(Buffer.from(transcript.frames.browserCancel,'hex'));recorded=Buffer.from(transcript.frames.controllerCancelResult,'hex');}else f.cancel();result={status:'CANCELLED',generation:1};}
+      if(v.action==='APP_WRITE'){deliver('APP_CHUNK',v.payload);result={acceptedStreamSequence:v.payload.streamSequence};}
+      if(v.action==='APP_POLL')result=workerAppChunks.length?{status:'CHUNK',chunk:workerAppChunks.shift()}:{status:'EMPTY'};
       if(recorded){controllerSeq=JSON.parse(recorded.subarray(4)).sequence;controllerQueue.push(recorded);}
       else controllerQueue.push(make('CONTROLLER',keyC,++controllerSeq,'RESULT',{requestSequence:v.sequence,result},roleMap.find(r=>r.role===v.role)));
     }};
@@ -148,6 +151,23 @@ test('v1_worker_guard_returns_local_cleanup_owner',async()=>{
   const f=await fixture().init(),tx=await f.bound.prepareBrowser(f.proof),handle=await tx.port.activateOnce(tx.grant);
   assert.equal(f.launches.length,1);assert.equal(f.outcome.status,'STARTED');assert.equal(typeof f.outcome.browserOwner.stopOwned,'function');
   assert.notEqual(handle,f.outcome.browserOwner);assert.equal(typeof handle.privatePipe,'object');
+});
+test('v1_task13_application_bytes_are_chunked_over_original_authenticated_channels',async()=>{
+  const f=await fixture().init(),tx=await f.bound.prepareBrowser(f.proof),handle=await tx.port.activateOnce(tx.grant);
+  const controllerPipe=handle.privatePipe,workerPipe=f.outcome.applicationPipe;
+  assert.equal(controllerPipe.audit().kind,'TASK13_BROWSER_APPLICATION');
+  const fromWorker=Buffer.alloc(10000,0x57);await workerPipe.write(fromWorker);
+  assert.deepEqual(await controllerPipe.read(),fromWorker);
+  const fromController=Buffer.alloc(9000,0x43);await controllerPipe.write(fromController);
+  assert.deepEqual(await workerPipe.read(),fromController);
+  await assert.rejects(controllerPipe.write(Buffer.alloc(16385)),/FRAME_DENIED/);
+});
+test('v1_task13_signed_browser_configuration_uses_the_existing_prepare_channel',async()=>{
+  const f=await fixture().init(),config={version:1,assetBundle:{release:'public-signed-bytes'}};
+  const tx=await f.bound.prepareBrowser(f.proof,config);
+  assert.equal(JSON.stringify(f.workerBinding.inspectPreparedBrowserConfig(f.reservation)),JSON.stringify({assetBundle:config.assetBundle,version:1}));
+  await tx.port.activateOnce(tx.grant);
+  await assert.rejects(async()=>f.workerBinding.inspectPreparedBrowserConfig(f.reservation),/AUTHORITY_LOST/);
 });
 test('v1_native_effect_fence_unavailable_has_zero_launches',async()=>{
   const f=await fixture({fence:false}).init(),tx=await f.bound.prepareBrowser(f.proof);

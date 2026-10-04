@@ -3,6 +3,7 @@
 // API exists. The injected bootstrap authority is trusted same-process code;
 // worker-authored booleans or copied handles cannot establish provenance.
 const handoffs = new WeakMap(), usedGrants = new WeakSet(), ownedChildren = new WeakSet(), ownedPipes = new WeakSet();
+const browserApplicationPipes = new WeakMap(), browserRequestEvidence = new WeakMap();
 const kinds = Object.freeze({ BROWSER: 10002, VERIFIER: 10003 });
 function fail(code) { const e = new Error(code); e.code = code; throw e; }
 function object(v) { return v !== null && (typeof v === 'object' || typeof v === 'function'); }
@@ -31,6 +32,11 @@ function bindRoleBootstrap(authority, runId) {
     if (!factsValid(f, runId) || ownedChildren.has(f.child) || ownedPipes.has(f.privatePipe)) fail('HANDOFF_DENIED');
     const expected = Object.freeze({ kind:f.kind, runId, uid:f.uid, child:f.child, privatePipe:f.privatePipe,
       waiting:true, confined:true });
+    if(f.kind==='BROWSER'&&typeof f.privatePipe.audit==='function'){
+      const app=f.privatePipe.audit();
+      if(!app||app.kind!=='TASK13_BROWSER_APPLICATION'||app.version!==1||app.runId!==runId||app.maxFrameBytes!==16384)fail('HANDOFF_DENIED');
+      if(!browserApplicationPipes.has(f.privatePipe))browserApplicationPipes.set(f.privatePipe,{runId});
+    }
     ownedChildren.add(f.child); ownedPipes.add(f.privatePipe);
     handoffs.set(handoff,{authority,expected,adopted:false});
     return handoff;
@@ -84,6 +90,7 @@ function adoptRole(kind, handoff) {
       const e=new Error('ACTIVATION_DENIED',{cause});e.code='ACTIVATION_DENIED';throw e;
     }
     return privateHandle({privatePipe:r.expected.privatePipe,
+      cleanupRemaining(){const budget=r.authority.cleanupBudget;return budget?budget.remaining():120000;},
       waitExit:cleanup.waitExit, stopOwned:cleanup.stopOwned});
   }});
 }
@@ -141,6 +148,15 @@ function proofRecord(p) {
   for(const k of ['generation','expiresAtMs','monotonicDeadlineMs'])integer(p[k]);return immutable({...p});
 }
 function prepareResult(p) {exact(p,['grantId','proofDigest','generation','expiresAtMs','monotonicDeadlineMs']);hex(p.grantId);proofRecord({proofDigest:p.proofDigest,generation:p.generation,expiresAtMs:p.expiresAtMs,monotonicDeadlineMs:p.monotonicDeadlineMs});return p;}
+function preparedPayload(p) {
+  if(!p||typeof p!=='object'||Array.isArray(p))fail('FRAME_DENIED');
+  const keys=Reflect.ownKeys(p).sort().join(',');
+  if(!['expiresAtMs,generation,grantId,monotonicDeadlineMs,proofDigest','browserConfig,expiresAtMs,generation,grantId,monotonicDeadlineMs,proofDigest'].includes(keys))fail('FRAME_DENIED');
+  const proof=prepareResult({grantId:p.grantId,proofDigest:p.proofDigest,generation:p.generation,expiresAtMs:p.expiresAtMs,monotonicDeadlineMs:p.monotonicDeadlineMs});
+  if(!Object.hasOwn(p,'browserConfig'))return {proof,browserConfig:null};
+  if(!p.browserConfig||typeof p.browserConfig!=='object'||Array.isArray(p.browserConfig))fail('FRAME_DENIED');
+  return {proof,browserConfig:immutable(JSON.parse(canonical(p.browserConfig)))};
+}
 function checkpoint(v,binding,generation,original) {
   exact(v,['binding','generation','sequence','sourceIdentity','lostCount']);bindingRecord(v.binding);integer(v.generation);integer(v.sequence);integer(v.lostCount,0);hex(v.sourceIdentity);
   if(canonical(v.binding)!==canonical(binding)||v.generation!==generation||v.lostCount!==0)fail('AUTHORITY_LOST');
@@ -187,6 +203,52 @@ function cleanupBoundary(budget,sample) {
   }
   return {remaining,call,revokeWait,get deadline(){remaining();return end;}};
 }
+function browserApplicationPipe(runId,sendChunk,receiveChunk,isCurrent) {
+  let outgoingStream=0,outgoingMessage=0,incomingStream=0,incomingMessage=0,writing=false,reading=false;
+  const MAX_MESSAGE=16384,CHUNK=4096;
+  function chunk(value) {
+    exact(value,['streamSequence','messageSequence','chunkIndex','final','bytesHex']);
+    integer(value.streamSequence);integer(value.messageSequence);integer(value.chunkIndex,0);
+    if(typeof value.final!=='boolean'||typeof value.bytesHex!=='string'||value.bytesHex.length>CHUNK*2||
+        value.bytesHex.length%2||!/^[0-9a-f]*$/.test(value.bytesHex))fail('FRAME_DENIED');
+    return value;
+  }
+  const pipe={
+    audit(){return immutable({version:1,kind:'TASK13_BROWSER_APPLICATION',runId,maxFrameBytes:MAX_MESSAGE});},
+    async write(bytes){
+      if(writing||!Buffer.isBuffer(bytes)||bytes.length<1||bytes.length>MAX_MESSAGE)fail('FRAME_DENIED');
+      writing=true;const messageSequence=++outgoingMessage;
+      try{for(let offset=0,index=0;offset<bytes.length;offset+=CHUNK,index++){
+        isCurrent();const payload={streamSequence:++outgoingStream,messageSequence,chunkIndex:index,
+          final:offset+CHUNK>=bytes.length,bytesHex:bytes.subarray(offset,offset+CHUNK).toString('hex')};
+        await sendChunk(payload);isCurrent();
+      }}finally{writing=false;}
+    },
+    async read(){
+      if(reading)fail('FRAME_DENIED');reading=true;let parts=[],size=0,index=0,messageSequence=incomingMessage+1;
+      try{while(true){isCurrent();const value=chunk(await receiveChunk());isCurrent();
+        if(value.streamSequence!==incomingStream+1||value.messageSequence!==messageSequence||value.chunkIndex!==index)fail('FRAME_DENIED');
+        const bytes=Buffer.from(value.bytesHex,'hex');size+=bytes.length;if(size>MAX_MESSAGE)fail('FRAME_DENIED');
+        incomingStream++;index++;parts.push(bytes);if(value.final){incomingMessage++;return Buffer.concat(parts,size);}
+      }}finally{reading=false;}
+    }};
+  const handle=privateHandle(pipe);browserApplicationPipes.set(handle,{runId});return handle;
+}
+function claimBrowserRequestEvidence(pipe,bytes,payload) {
+  const state=browserApplicationPipes.get(pipe);
+  if(!state||!Buffer.isBuffer(bytes)||!payload||typeof payload!=='object')fail('IDENTITY_MISMATCH');
+  const frame=decode(bytes),keys=Reflect.ownKeys(frame).sort().join(',');
+  if(!['mac,payload,runId,sequence,type,version','payload,runId,sequence,type,version'].includes(keys)||
+      frame.version!==1||frame.runId!==state.runId||frame.type!=='ROUTE'||canonical(frame.payload)!==canonical(payload))fail('IDENTITY_MISMATCH');
+  exact(payload,['runId','requestId','sequence','method','url','headers','byteLength','schema']);
+  if(payload.runId!==state.runId||typeof payload.requestId!=='string'||!integer(payload.sequence)||
+      typeof payload.method!=='string'||typeof payload.url!=='string'||!Array.isArray(payload.headers)||
+      !integer(payload.byteLength,0)||!['LOGIN_JSON','ABSENT'].includes(payload.schema))fail('IDENTITY_MISMATCH');
+  const evidence=privateHandle({});browserRequestEvidence.set(evidence,immutable(JSON.parse(canonical(payload))));return evidence;
+}
+function inspectBrowserRequestEvidence(evidence) {
+  const value=browserRequestEvidence.get(evidence);return value?immutable(JSON.parse(canonical(value))):null;
+}
 function auditSnapshot(channel,role,binding,expected) {
   if(!channel||['audit','read','write'].some(k=>typeof channel[k]!=='function')||channels.has(channel))fail('CHANNEL_DENIED');
   const facts=channel.audit();if(!facts||facts.role!==role||!object(facts.command)||!object(facts.result)||facts.command===facts.result)fail('CHANNEL_DENIED');
@@ -226,6 +288,8 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
   const wire=await originalChannel(channel,'CONTROLLER',binding);let terminal=false,inflight=false,prepared=false,reading=false,cancelling=false;
   const pending=new Map();
   const local=new Map(),grants=new WeakMap(),stopped=new WeakSet();
+  let appTail=Promise.resolve();
+  function appOperation(operation){const result=appTail.then(operation);appTail=result.catch(()=>{});return result;}
   function current(p) {wire.check();const [wall,mono]=sample();if(terminal||wall>=binding.expiresAtMs||(p&&(p.generation!==1||wall>=p.expiresAtMs||mono>=p.monotonicDeadlineMs)))fail('AUTHORITY_LOST');}
   async function responses() {
     if(reading)return;reading=true;
@@ -256,17 +320,25 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
     async stopOwned(child,ms){const r=[...local.values()].find(r=>r.child===child);if(!r)fail('EXIT_DENIED');return {...await stop(r.kind,ms),child};},
     async waitExit(child,ms){const r=[...local.values()].find(r=>r.child===child);if(!r)fail('EXIT_DENIED');return {...await stop(r.kind,ms,'WAIT_EXIT'),child};}};
   const bootstrap=bindRoleBootstrap(authority,binding.runId), adopted=new Map();
+  const applicationPipe=browserApplicationPipe(binding.runId,
+    payload=>appOperation(async()=>{const result=await request('BROWSER','APP_WRITE',payload);exact(result,['acceptedStreamSequence']);if(result.acceptedStreamSequence!==payload.streamSequence)fail('FRAME_DENIED');}),
+    async()=>{while(true){const result=await appOperation(()=>request('BROWSER','APP_POLL',{}));
+      if(result&&result.status==='EMPTY'&&Reflect.ownKeys(result).length===1){await new Promise(resolve=>setTimeout(resolve,0));continue;}
+      exact(result,['status','chunk']);if(result.status!=='CHUNK')fail('FRAME_DENIED');return result.chunk;}},
+    ()=>{current();const entry=adopted.get('BROWSER');if(!entry?.r.active)fail('AUTHORITY_LOST');});
   async function adopt(kind) {
     if(!Object.hasOwn(kinds,kind)||adopted.has(kind))fail('HANDOFF_DENIED');current();adopted.set(kind,null);
     const result=await request(kind,'ADOPT',{}),row=wire.saved.roles.find(r=>r.role===kind);
     exact(result,['kind','runId','uid','childId','pipeId','waiting','confined','attestationDigest']);hex(result.attestationDigest,DIGEST);
     if(result.kind!==kind||result.runId!==binding.runId||result.uid!==kinds[kind]||result.childId!==row.childId||result.pipeId!==row.pipeId||result.waiting!==true||result.confined!==true)fail('HANDOFF_DENIED');
-    const handoff=privateHandle({}),r={kind,child:privateHandle({}),pipe:privateHandle({}),active:false};local.set(handoff,r);bootstrap.audit(handoff);const port=adoptRole(kind,handoff);adopted.set(kind,{port,r});return port;
+    const handoff=privateHandle({}),r={kind,child:privateHandle({}),pipe:kind==='BROWSER'?applicationPipe:privateHandle({}),active:false};local.set(handoff,r);bootstrap.audit(handoff);const port=adoptRole(kind,handoff);adopted.set(kind,{port,r});return port;
   }
-  return privateHandle({adopt,async prepareBrowser(value){
+  return privateHandle({adopt,async prepareBrowser(value,browserConfig){
     try{if(prepared)fail('ACTIVATION_DENIED');prepared=true;const p=proofRecord(value);current(p);
       if(!adopted.has('BROWSER'))await adopt('BROWSER');const entry=adopted.get('BROWSER');if(!entry)fail('HANDOFF_DENIED');
-      const result=prepareResult(await request('BROWSER','PREPARE_BROWSER',p));current(p);
+      let payload=p;
+      if(browserConfig!==undefined){if(!browserConfig||typeof browserConfig!=='object'||Array.isArray(browserConfig))fail('FRAME_DENIED');payload={...p,browserConfig:JSON.parse(canonical(browserConfig))};}
+      const result=prepareResult(await request('BROWSER','PREPARE_BROWSER',payload));current(p);
       if(['proofDigest','generation','expiresAtMs','monotonicDeadlineMs'].some(k=>result[k]!==p[k]))fail('AUTHORITY_LOST');
       const grant=privateHandle({});Object.assign(entry.r,{proof:p,grantId:result.grantId,used:false});grants.set(grant,entry.r);
       const tx=new ControllerBrowserTransaction(entry.port,grant,ms=>stop('BROWSER',ms),CONTROLLER_TRANSACTION_SEAL);transactions.set(tx,entry.r);return tx;
@@ -321,12 +393,19 @@ async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
     else if(requestSequence&&firstTerminalAt!==null&&!['FRAME_DENIED','CHANNEL_EOF'].includes(code))try{await cleanup.call(wire,()=>wire.write('BROWSER','FAILED',{requestSequence,generation:1,code:['CANCELLED','EXPIRED','AUTHORITY_LOST','CLEANUP_UNCERTAIN'].includes(error.code)?error.code:'LAUNCH_FAILED',failedAtMonotonicMs:firstTerminalAt}));}catch{}
     throw error;
   }
+  const applicationPipe=browserApplicationPipe(binding.runId,
+    payload=>wire.write('BROWSER','APP_CHUNK',payload),
+    async()=>{const frame=await wire.receive();if(frame.action!=='APP_CHUNK')fail('FRAME_DENIED');return frame.payload;},
+    ()=>{if(!active||terminal)fail('AUTHORITY_LOST');wire.check();});
   return privateHandle({async prepare(record){
-    try{if(preparing)fail('AUTHORITY_LOST');preparing=true;current();const f=wire.read(record);if(f.action!=='PREPARE')fail('FRAME_DENIED');const p=prepareResult(f.payload);current(p);
-      const reservation=new WorkerLaunchReservation(WORKER_RESERVATION_SEAL),r={binding,proof:p,reservationId:randomBytes(16).toString('hex'),used:false,effect:false};reservations.set(reservation,r);
+    try{if(preparing)fail('AUTHORITY_LOST');preparing=true;current();const f=wire.read(record);if(f.action!=='PREPARE')fail('FRAME_DENIED');const prepared=preparedPayload(f.payload),p=prepared.proof;current(p);
+      const reservation=new WorkerLaunchReservation(WORKER_RESERVATION_SEAL),r={binding,proof:p,browserConfig:prepared.browserConfig,reservationId:randomBytes(16).toString('hex'),used:false,effect:false};reservations.set(reservation,r);
       originalReservation=r;
       await wire.write('BROWSER','PREPARED',{requestSequence:f.sequence,grantId:p.grantId,reservationId:r.reservationId,generation:1});drain();current(p);return reservation;
     }catch(e){return failed(e);}
+  },inspectPreparedBrowserConfig(reservation){
+    const r=reservations.get(reservation);if(!r||r.binding!==binding||r.used)fail('AUTHORITY_LOST');
+    return r.browserConfig===null?null:immutable(JSON.parse(canonical(r.browserConfig)));
   },async commitFixedBrowserLaunch(reservation,launchPinnedBrowser){
     let requestSequence=0;
     try{const r=reservations.get(reservation);
@@ -349,8 +428,8 @@ async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
       try{const launched=launchPinnedBrowser();active=await launched;}finally{acquiring=false;}
       if(!object(active)||typeof active.stopOwned!=='function')fail('LAUNCH_FAILED');drain();current(r.proof);
       await wire.write('BROWSER','STARTED',{requestSequence:response.sequence,...p});drain();current(r.proof);
-      return privateHandle({status:'STARTED',browserOwner:active});
+      return privateHandle({status:'STARTED',browserOwner:active,applicationPipe});
     }catch(e){return failed(e,requestSequence);}
   },async cancel(record){try{cancel(wire.read(record));await cleanup.call(wire,acknowledgeCancel);return await stop(cleanup.remaining());}catch(e){return failed(e);}},stopOwned:stop});
 }
-module.exports = Object.freeze({bindRoleBootstrap,adoptRole,bindBootstrapComposition,bindBrowserWorkerChannel});
+module.exports = Object.freeze({bindRoleBootstrap,adoptRole,bindBootstrapComposition,bindBrowserWorkerChannel,claimBrowserRequestEvidence,inspectBrowserRequestEvidence});

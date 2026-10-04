@@ -2,7 +2,7 @@
 const crypto = require('node:crypto');
 const {decodeFrame,canonicalBytes,receiptSigningBytes} = require('./contracts.cjs');
 const kinds = ['RELEASE_RECEIPT','RESTART_RECEIPT','LEDGER_RECEIPT','MAINTENANCE_RECEIPT','DB_RECEIPT'];
-const admissionGuards = new WeakMap();
+const admissionGuards = new WeakMap(), browserBundles = new WeakMap(), browserConfigs = new WeakMap();
 const trusts = new WeakMap(), receipts = new WeakMap(), manifests = new WeakMap(), entries = new WeakMap();
 const hash = x => crypto.createHash('sha256').update(x).digest('hex');
 const safe = x => Number.isSafeInteger(x) && x >= 0;
@@ -101,6 +101,52 @@ function validateAssetResponse(entry,body,contentType) {
   if(body.length!==entry.size||hash(body)!==entry.hash||contentType!==entry.mime)fail('OBSERVATION_FAILED');
   return freeze({entryId:'frontend-asset:'+entry.path,hash:entry.hash,sizeMatch:true,hashMatch:true,mimeMatch:true});
 }
+function createBrowserAssetBundle(release,assets,trust,releaseBytes,assetBytes) {
+  const saved=receipts.get(release),state=trusts.get(trust),manifest=manifests.get(assets);
+  if(!saved||saved.trust!==trust||!state||saved.frame.kind!=='RELEASE_RECEIPT'||!manifest||manifest.release!==release||
+      !Buffer.isBuffer(releaseBytes)||!Buffer.isBuffer(assetBytes))fail();
+  const releaseFrame=decodeFrame(releaseBytes,'RELEASE_RECEIPT'),assetFrame=decodeFrame(assetBytes,'ASSET_MANIFEST');
+  if(!equal(releaseFrame,saved.frame)||hash(canonicalBytes(assetFrame))!==manifest.digest||assetFrame.runId!==saved.frame.runId||
+      !equal(assetFrame.payload.entries,assets.entries))fail();
+  const bundle=freeze({version:1,verifiedAt:sampleTime(state),releaseReceiptHex:releaseBytes.toString('hex'),assetManifestHex:assetBytes.toString('hex'),
+    releasePublicKeyHex:state.keys.RELEASE_RECEIPT,maxAgeMs:state.maxAgeMs,deadline:state.deadline});
+  browserBundles.set(bundle,{release,assets,trust});return bundle;
+}
+function importBrowserAssetBundle(candidate,now) {
+  try {
+    if(!candidate||typeof candidate!=='object'||Array.isArray(candidate)||Reflect.ownKeys(candidate).length!==7||
+        !['version','verifiedAt','releaseReceiptHex','assetManifestHex','releasePublicKeyHex','maxAgeMs','deadline'].every(k=>Object.hasOwn(candidate,k))||candidate.version!==1||
+        !safe(candidate.verifiedAt)||typeof candidate.releaseReceiptHex!=='string'||typeof candidate.assetManifestHex!=='string'||
+        !/^[0-9a-f]{64}$/.test(candidate.releasePublicKeyHex)||!safe(candidate.maxAgeMs)||candidate.maxAgeMs<1||!safe(candidate.deadline)||candidate.deadline<1||
+        now!==undefined&&typeof now!=='function')fail();
+    const releaseFrame=decodeFrame(Buffer.from(candidate.releaseReceiptHex,'hex'),'RELEASE_RECEIPT'),raw=Buffer.from(candidate.releasePublicKeyHex,'hex');
+    if(releaseFrame.payload.keyId!==hash(raw)||!crypto.verify(null,receiptSigningBytes(releaseFrame),crypto.createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),raw]),format:'der',type:'spki'}),Buffer.from(releaseFrame.payload.signature,'hex')))fail('SIGNATURE_INVALID');
+    const trust=opaque('TRUST_CONTEXT'),state={expected:{RELEASE_RECEIPT:freeze(bindings(releaseFrame))},keys:{RELEASE_RECEIPT:candidate.releasePublicKeyHex},
+      notBefore:{RELEASE_RECEIPT:0},publicKeys:{RELEASE_RECEIPT:crypto.createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),raw]),format:'der',type:'spki'})},
+      now:now??(()=>candidate.verifiedAt),maxAgeMs:candidate.maxAgeMs,deadline:candidate.deadline,consumedNonces:new Set(),consumedReceipts:new Set(),lastNow:null};
+    trusts.set(trust,state);validate(releaseFrame,state);state.consumedReceipts.add(hash(receiptSigningBytes(releaseFrame)));
+    const release=opaque('RELEASE_RECEIPT');receipts.set(release,{frame:releaseFrame,trust});
+    const assets=verifyAssets(Buffer.from(candidate.assetManifestHex,'hex'),release);
+    return Object.freeze({trust,release,assets});
+  } catch(error) { fail(error?.code); }
+}
+function createBrowserControllerConfig(release,assets,trust,bundle,candidate,compositionBinding) {
+  const r=inspectReceipt(release,'RELEASE_RECEIPT',trust),a=inspectAssets(assets,release),saved=browserBundles.get(bundle);
+  if(!r||!a||!saved||saved.release!==release||saved.assets!==assets||saved.trust!==trust||!candidate||
+      typeof candidate!=='object'||Array.isArray(candidate)||Reflect.ownKeys(candidate).length!==2||
+      !Object.hasOwn(candidate,'runtime')||!Object.hasOwn(candidate,'paths')||!compositionBinding||typeof compositionBinding!=='object'||
+      Array.isArray(compositionBinding)||Reflect.ownKeys(compositionBinding).sort().join(',')!=='configIdentity,epoch,expiresAtMs,manifestDigest,rolePolicyDigest,runId,version'||
+      compositionBinding.version!==1||compositionBinding.runId!==r.runId||compositionBinding.configIdentity!==r.configIdentity||
+      compositionBinding.expiresAtMs!==r.expiresAt||!/^[0-9a-f]{64}$/.test(compositionBinding.manifestDigest)||
+      !/^[0-9a-f]{64}$/.test(compositionBinding.rolePolicyDigest)||!Number.isSafeInteger(compositionBinding.epoch)||compositionBinding.epoch<1)fail();
+  const value=freeze({runBinding:{runId:r.runId,manifestIdentity:compositionBinding.manifestDigest,configIdentity:r.configIdentity,
+      expiresAt:compositionBinding.expiresAtMs,origins:copy(r.origins)},runtime:copy(candidate.runtime),paths:copy(candidate.paths),
+    assetEntries:copy(a.entries),assetBundle:copy(bundle)});
+  const handle=opaque('BROWSER_CONFIG');browserConfigs.set(handle,value);return handle;
+}
+function inspectBrowserControllerConfig(handle) {
+  const value=browserConfigs.get(handle);if(!value)fail();return value;
+}
 // This guard is only for the real budget/policy composition. Its receipt frames,
 // original trusts and asset/release binding never leave the private module maps.
 function createAdmissionReceiptGuard(ledger,trust,release,assets,maintenance,restart=null) {
@@ -144,4 +190,4 @@ function createReceiptAdapters(trust) {
     verifyGate:(kind,handle,binding)=>{const receiptKind={maintenance:'MAINTENANCE_RECEIPT',restart:'RESTART_RECEIPT'}[kind];if(!receiptKind)return false;const r=inspectReceipt(handle,receiptKind,trust);return !!(r&&binding&&r.runId===binding.runId&&r.configIdentity===binding.configIdentity&&safe(binding.wallMs)&&binding.wallMs>=r.issuedAt&&binding.wallMs<r.expiresAt&&safe(binding.expiresAt)&&binding.wallMs<binding.expiresAt);}
   });
 }
-module.exports={createAdmissionReceiptGuard,sampleAdmissionReceiptGuard,validateAdmissionReceiptGuard,createTrustContext,verifyReceipt,inspectReceipt,verifyAssets,inspectAssets,validateAssetResponse,createReceiptAdapters};
+module.exports={createAdmissionReceiptGuard,sampleAdmissionReceiptGuard,validateAdmissionReceiptGuard,createTrustContext,verifyReceipt,inspectReceipt,verifyAssets,inspectAssets,validateAssetResponse,createBrowserAssetBundle,importBrowserAssetBundle,createBrowserControllerConfig,inspectBrowserControllerConfig,createReceiptAdapters};

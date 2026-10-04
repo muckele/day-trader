@@ -3,7 +3,7 @@ const { inspectReceipt } = require('./receipts.cjs');
 const { admitRequest, claimEligibility, revalidateBudgetEligibility } = require('./route-policy.cjs');
 const { decodeFrame } = require('./contracts.cjs');
 const catalogue = require('../contracts/routes.json');
-const permits = new WeakMap(), usedLedgers = new WeakSet(), usedRuns = new Set();
+const permits = new WeakMap(), budgets = new WeakSet(), browserPorts = new WeakMap(), usedLedgers = new WeakSet(), usedRuns = new Set();
 const crypto = require('node:crypto');
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const phaseLetters = Object.freeze({ PREFLIGHT: 'P', AWAIT_CREDENTIAL: 'P', AUTHENTICATING: 'A',
@@ -209,6 +209,31 @@ function createBudget(receipt, ports) {
     return frozen(summary);
   }
   const budget = Object.freeze(Object.defineProperty({ reserve, authorize, consumePermit, settle, finalize }, 'toJSON', { value: () => fail('PRIVACY_FAILED') }));
+  budgets.add(budget);
   return budget;
 }
-module.exports = { createBudget };
+function createBrowserAdmissionPort(budget, policy, requestFromEvidence) {
+  if (!budgets.has(budget) || !policy || typeof policy !== 'object' || typeof requestFromEvidence !== 'function') fail('IDENTITY_MISMATCH');
+  const port = opaque('BROWSER_ADMISSION_PORT');
+  browserPorts.set(port, { budget, policy, requestFromEvidence, used: new WeakSet(), busy: false, failed: false });
+  return port;
+}
+async function admitBrowserRequest(port, evidence) {
+  const state = browserPorts.get(port);
+  if (!state || !evidence || typeof evidence !== 'object') fail('IDENTITY_MISMATCH');
+  if (state.failed || state.busy || state.used.has(evidence)) fail('REPLAY');
+  state.used.add(evidence); state.busy = true;
+  try {
+    const request = state.requestFromEvidence(evidence);
+    const permit = await state.budget.authorize(request, state.policy);
+    if (permit?.kind === 'ABORT_EXPECTED' || permit?.kind === 'REPLAY_PRIVATE')
+      return frozen({ requestId: request.requestId, decision: 'ABORT', reason: permit.kind });
+    const admission = state.budget.consumePermit(permit, request, state.policy);
+    if (admission.kind !== 'ADMITTED') fail(admission.code ?? 'ROUTE_DENIED');
+    return frozen({ requestId: request.requestId, decision: 'CONTINUE', admission });
+  } catch (error) {
+    state.failed = true;
+    fail(error?.code && typeof error.code === 'string' ? error.code : 'INTERNAL_FAILURE');
+  } finally { state.busy = false; }
+}
+module.exports = { createBudget, createBrowserAdmissionPort, admitBrowserRequest };

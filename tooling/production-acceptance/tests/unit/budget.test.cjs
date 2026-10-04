@@ -8,7 +8,7 @@ let fixtureNumber = 0;
 const receipts = require('../../guest/receipts.cjs');
 const contracts = require('../../guest/contracts.cjs');
 const policyAPI = require('../../guest/route-policy.cjs');
-const { createBudget } = require('../../guest/budget.cjs');
+const { createBudget, createBrowserAdmissionPort, admitBrowserRequest } = require('../../guest/budget.cjs');
 const kinds = ['RELEASE_RECEIPT', 'RESTART_RECEIPT', 'LEDGER_RECEIPT', 'MAINTENANCE_RECEIPT', 'DB_RECEIPT'];
 const vectors = JSON.parse(fs.readFileSync(require.resolve('../../contracts/vectors.json')));
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -21,16 +21,18 @@ function deferred() {
 }
 // All receipt bindings are prepared by this synthetic authority before candidates exist.
 // Only journal/ledger durability and observed browser facts are private fake boundaries.
-function fixture({ phase = B, journal, ledgerMutation, expiries = {}, configIdentity, runId = crypto.randomBytes(16).toString('hex') } = {}) {
+function fixture({ phase = B, journal, ledgerMutation, expiries = {}, configIdentity,
+  runId = crypto.randomBytes(16).toString('hex'), assetPath = '/static/app.js',
+  assetBody: suppliedAssetBody, inspectBrowserEvidence } = {}) {
   const pair = crypto.generateKeyPairSync('ed25519');
   const raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32);
   const frames = Object.fromEntries(kinds.map(kind => [kind, JSON.parse(vectors.accepted.find(v => v.kind === kind).json)]));
   for (const frame of Object.values(frames)) frame.runId = runId;
   if (configIdentity) for (const frame of Object.values(frames)) if (Object.hasOwn(frame.payload, 'configIdentity')) frame.payload.configIdentity = configIdentity;
   const time = { monotonicMs: 1000, wallMs: 160 };
-  const assetBody = Buffer.from('offline synthetic asset');
+  const assetBody = suppliedAssetBody ? Buffer.from(suppliedAssetBody) : Buffer.from('offline synthetic asset');
   const assetFrame = JSON.parse(vectors.accepted.find(v => v.name === 'asset_manifest').json); assetFrame.runId = runId;
-  assetFrame.payload.entries = [{ path: '/static/app.js', hash: hash(assetBody), size: assetBody.length, mime: 'application/javascript' }];
+  assetFrame.payload.entries = [{ path: assetPath, hash: hash(assetBody), size: assetBody.length, mime: 'application/javascript' }];
   const assetBytes = contracts.canonicalBytes(contracts.decodeFrame(Buffer.from(JSON.stringify(assetFrame)), 'ASSET_MANIFEST'));
   frames.RELEASE_RECEIPT.payload.assetManifestDigest = hash(assetBytes);
   // Independent historical values are intentionally different from imported hosted 6/19.
@@ -61,7 +63,8 @@ function fixture({ phase = B, journal, ledgerMutation, expiries = {}, configIden
     return bytes;
   }
   const handle = kind => receipts.verifyReceipt(sign(frames[kind]), kind, trust);
-  const release = handle('RELEASE_RECEIPT'), assets = receipts.verifyAssets(assetBytes, release), ledger = handle('LEDGER_RECEIPT');
+  const releaseBytes=sign(frames.RELEASE_RECEIPT);
+  const release = receipts.verifyReceipt(releaseBytes,'RELEASE_RECEIPT',trust), assets = receipts.verifyAssets(assetBytes, release), ledger = handle('LEDGER_RECEIPT');
   const maintenance = handle('MAINTENANCE_RECEIPT'), restart = handle('RESTART_RECEIPT');
   const adapters = receipts.createReceiptAdapters(trust);
   const observed = new WeakMap();
@@ -72,7 +75,8 @@ function fixture({ phase = B, journal, ledgerMutation, expiries = {}, configIden
     preauth: brand('preauth'), maintenance, owner: brand('owner'), readiness: brand('readiness'), restart,
     preauthResponse: null, marketResponse: null };
   if (state.sessionIssued) state.sessionHandle = brand('session');
-  let postAdapters, bodyValidator, next = 0;
+  let postAdapters, bodyValidator, browserValidator, next = 0;
+  const browserEvidence = new WeakMap();
   const context = { clock: () => ({ ...time }), snapshot: request => ({ ...state, sequence: request?.sequence ?? 1 }),
     verifyRelease: adapters.verifyRelease, verifyAssets: adapters.verifyAssets,
     verifyGate: (kind, object, binding) => {
@@ -82,7 +86,9 @@ function fixture({ phase = B, journal, ledgerMutation, expiries = {}, configIden
       // these WeakMap identities explicitly stand in for actual worker observations.
       return observed.get(object)?.kind === kind && binding.runId === state.runId;
     },
-    responseFacts: object => observed.get(object), bindBodyValidator: fn => { bodyValidator = fn; } };
+    responseFacts: object => observed.get(object), bindBodyValidator: fn => { bodyValidator = fn; },
+    inspectBrowserEvidence: object => inspectBrowserEvidence ? inspectBrowserEvidence(object) : browserEvidence.get(object) ?? null,
+    bindBrowserEvidenceValidator: fn => { browserValidator = fn; } };
   const policy = policyAPI.createPolicy(release, assets, context);
   const intents = [], durable = { PAPER: 14, stock: 0, unavailable: true }, acknowledgements = new WeakMap();
   const ports = { trust,
@@ -110,6 +116,15 @@ function fixture({ phase = B, journal, ledgerMutation, expiries = {}, configIden
     req.bodyProof = bodyValidator(req, bytes);
     return req;
   }
+  function browserRequest(path = '/api/robotrader/performance', extra = {}) {
+    const id = ++next, query = extra.query ?? (path === '/api/robotrader/performance' ? '?environment=paper' : '');
+    const evidence = Object.freeze({});
+    browserEvidence.set(evidence, Object.freeze({ runId: state.runId, requestId: 'browser-' + id, sequence: id,
+      method: extra.method ?? 'GET', url: frames.RELEASE_RECEIPT.payload.origins.BACKEND + path + query,
+      headers: extra.headers ?? [], byteLength: extra.byteLength ?? 0, schema: extra.schema ?? 'ABSENT',
+    }));
+    return { evidence, request: () => browserValidator(evidence) };
+  }
   function postRestart() {
     const postExpected = clone(expected); postExpected.MAINTENANCE_RECEIPT.sequence = 2;
     const notBefore = Object.fromEntries(kinds.map(kind => [kind, kind === 'MAINTENANCE_RECEIPT' ? 150 : 0]));
@@ -125,7 +140,9 @@ function fixture({ phase = B, journal, ledgerMutation, expiries = {}, configIden
     acknowledgements.set(ack, { kind: 'ACCOUNTING', digest: ack.recordDigest }); return ack;
   }
   return { trust, ledger, release, assets, maintenance, restart, adapters, state, time, context, policy, ports, intents, durable,
-    request, brand, postRestart, accountingAck, body: (req, bytes) => bodyValidator(req, bytes), frames, options, sign,
+    request, browserRequest, browserRequestFromEvidence: evidence => browserValidator(evidence),
+    brand, postRestart, accountingAck, body: (req, bytes) => bodyValidator(req, bytes), frames, options, sign,
+    releaseBytes, assetBytes, assetBody,
     budget: () => createBudget(ledger, ports) };
 }
 module.exports = { fixture, deferred, B, C, A, createBudget, policyAPI };
@@ -133,6 +150,17 @@ module.exports = { fixture, deferred, B, C, A, createBudget, policyAPI };
 // The composition suite imports only the fixture. Direct --test execution runs every
 // unit test here once, without duplicate test registration in the importing process.
 if (require.main === module) {
+  test('browser_admission_port_requires_real_budget_policy_proof_and_consumes_once', async () => {
+    const f = fixture(), b = f.budget(), incoming = f.browserRequest();
+    const port = createBrowserAdmissionPort(b, f.policy, incoming.request);
+    const decision = await admitBrowserRequest(port, incoming.evidence);
+    assert.equal(decision.decision, 'CONTINUE');
+    assert.equal(decision.requestId, 'browser-1');
+    assert.equal(decision.admission.kind, 'ADMITTED');
+    await assert.rejects(admitBrowserRequest(port, incoming.evidence), { code: 'REPLAY' });
+    await assert.rejects(admitBrowserRequest({ admit: async () => ({ decision: 'CONTINUE' }) }, incoming.evidence),
+      { code: 'IDENTITY_MISMATCH' });
+  });
   test('reservation_before_forward', async () => {
     const started = deferred(), ack = deferred(), f = fixture({ journal: intent => { started.resolve(intent); return ack.promise; } }), budget = f.budget();
     const req = f.request(); let issued = false;

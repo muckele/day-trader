@@ -35,8 +35,9 @@ const rows = [
 ];
 const phase = { P, A, B, C, L, V };
 function fixture(initialPhase = B) {
-  let bodyValidator, next = 0, initialMarketRequest = null;
+  let bodyValidator, browserValidator, next = 0, initialMarketRequest = null;
   const brands = new WeakMap();
+  const browserEvidence = new WeakMap();
   const brand = (kind, metadata = {}) => { const handle = Object.freeze({}); brands.set(handle, { kind, ...metadata }); return handle; };
   const release = brand('release'), assets = brand('assets');
   const state = { runId: RUN, phase: initialPhase, redirectObserved: false, policyEpoch: 1, gateEpoch: 1, sessionEpoch: 1,
@@ -54,6 +55,8 @@ function fixture(initialPhase = B) {
     verifyGate: (kind, handle, binding) => brands.get(handle)?.kind === kind && binding.runId === RUN,
     responseFacts: handle => brands.get(handle),
     bindBodyValidator: fn => { bodyValidator = fn; },
+    inspectBrowserEvidence: handle => browserEvidence.get(handle) ?? null,
+    bindBrowserEvidenceValidator: fn => { browserValidator = fn; },
   };
   const policy = createPolicy(release, assets, context);
   function request(path = '/api/robotrader/settings', options = {}) {
@@ -75,7 +78,17 @@ function fixture(initialPhase = B) {
       asOf: time.wallMs, status: kind === 'preauthResponse' ? 401 : 200,
       source: 'PAPER', marketState: 'OPEN', schemaValid: true, ...metadata });
   }
-  return { policy, state, time, context, request, body: (r, bytes) => bodyValidator(r, bytes), response, brand };
+  function browserRequest(path = '/api/robotrader/settings', options = {}) {
+    const id = ++next, query = options.query ?? '';
+    const evidence = Object.freeze({});
+    browserEvidence.set(evidence, Object.freeze({ runId: RUN, requestId: 'browser-' + id, sequence: id,
+      method: options.method ?? 'GET', url: (options.origin ?? BACK) + path + query,
+      headers: options.headers ?? [], byteLength: options.byteLength ?? 0,
+      schema: options.schema ?? 'ABSENT' }));
+    return { evidence, request: browserValidator(evidence) };
+  }
+  return { policy, state, time, context, request, browserRequest,
+    body: (r, bytes) => bodyValidator(r, bytes), response, brand };
 }
 function eligible(f, path, options) { const r = f.request(path, options); const d = admitRequest(r, f.policy); assert.equal(d.kind, 'ELIGIBLE'); return { r, d }; }
 function denied(f, path, options) { assert.equal(admitRequest(f.request(path, options), f.policy).kind, 'FAIL'); }
@@ -370,4 +383,19 @@ test('final_clock_future_market_timestamp_is_invalid_evidence', () => {
     const checkReads = crossingClock(f, { monotonicMs: 100000, wallMs: 1000000 }, { monotonicMs: 100001, wallMs: 999999 });
     assert.deepEqual(admitRequest(timer ? market(f) : f.request(), f.policy), { kind: 'FAIL', code: 'OBSERVATION_FAILED' }); checkReads();
   }
+});
+
+test('authenticated_browser_evidence_mints_module_local_body_proof_bound_to_exact_request', () => {
+  const f = fixture(A);
+  const login = f.browserRequest('/api/login', { method: 'POST',
+    headers: [['content-type', 'application/json']], byteLength: 45,
+    schema: 'LOGIN_JSON' });
+  assert.equal(admitRequest(login.request, f.policy).kind, 'ELIGIBLE');
+  assert.throws(() => JSON.stringify(login.request.bodyProof), { code: 'PRIVACY_FAILED' });
+
+  const copied = { ...login.request, requestId: 'browser-copy' };
+  assert.equal(admitRequest(copied, f.policy).kind, 'FAIL');
+  const plain = f.request('/api/me');
+  plain.bodyProof = { schema: 'ABSENT', bodyDigest: '0'.repeat(64) };
+  assert.equal(admitRequest(plain, f.policy).kind, 'FAIL');
 });

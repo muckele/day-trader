@@ -111,6 +111,25 @@ for(const v of negatives)test(v.name,()=>v.name.startsWith('altered_message_')?a
 test('replay_denied_all_kinds_and_nonce_once',()=>{for(const kind of kinds){const t=trust();const f=bytes(sign(frames[kind]));api.verifyReceipt(f,kind,t);assert.throws(()=>api.verifyReceipt(f,kind,t),Error);}});
 test('forged_copied_and_expired_handles_denied_at_later_use',()=>{let now=160;const t=api.createTrustContext({...clone(options),now:()=>now});const h=verified('RELEASE_RECEIPT',t);assert.equal(api.inspectReceipt({},'RELEASE_RECEIPT',t),null);assert.equal(api.inspectReceipt({...h},'RELEASE_RECEIPT',t),null);assert.throws(()=>JSON.stringify(h),Error);now=200;assert.equal(api.inspectReceipt(h,'RELEASE_RECEIPT',t),null);});
 test('assets_are_bound_and_response_is_exact_private_proof',()=>{const t=trust(),r=verified('RELEASE_RECEIPT',t),a=api.verifyAssets(assetBytes,r);assert.equal(api.inspectAssets(a,r).digest,hash(assetBytes));assert.equal(api.inspectAssets({...a},r),null);const e=a.entries[0];const p=api.validateAssetResponse(e,assetBody,e.mime);assert.deepEqual(Object.keys(p).sort(),['entryId','hash','hashMatch','mimeMatch','sizeMatch'].sort());assert.equal(p.hashMatch,true);assert.throws(()=>api.validateAssetResponse({...e},assetBody,e.mime),Error);});
+test('browser_bundle_reverifies_in_independent_module_context_and_mints_local_entries',()=>{
+ const controllerTrust=trust(),releaseBytes=bytes(sign(frames.RELEASE_RECEIPT));
+ const release=api.verifyReceipt(releaseBytes,'RELEASE_RECEIPT',controllerTrust),assets=api.verifyAssets(assetBytes,release);
+ const bundle=api.createBrowserAssetBundle(release,assets,controllerTrust,releaseBytes,assetBytes);
+ const receiptPath=require.resolve('../../guest/receipts.cjs');delete require.cache[receiptPath];const workerApi=require(receiptPath);
+ const imported=workerApi.importBrowserAssetBundle(JSON.parse(JSON.stringify(bundle)),()=>160);
+ assert.equal(workerApi.validateAssetResponse(imported.assets.entries[0],assetBody,'application/javascript').hashMatch,true);
+ assert.throws(()=>workerApi.validateAssetResponse(assets.entries[0],assetBody,'application/javascript'),Error);
+ const composition={version:1,runId:frames.RELEASE_RECEIPT.runId,manifestDigest:'b'.repeat(64),configIdentity:frames.RELEASE_RECEIPT.payload.configIdentity,rolePolicyDigest:'d'.repeat(64),epoch:1,expiresAtMs:frames.RELEASE_RECEIPT.payload.expiresAt};
+ const config=api.createBrowserControllerConfig(release,assets,controllerTrust,bundle,{runtime:{node:'pinned'},paths:{profile:'/run/acceptance/browser/profile'}},composition);
+ const inspected=api.inspectBrowserControllerConfig(config);
+ assert.equal(inspected.runBinding.runId,frames.RELEASE_RECEIPT.runId);
+ assert.equal(inspected.runBinding.manifestIdentity,composition.manifestDigest);
+ assert.equal(inspected.assetEntries[0].path,'/static/app.js');
+ assert.throws(()=>api.inspectBrowserControllerConfig({...config}),Error);
+ assert.throws(()=>api.createBrowserControllerConfig(release,assets,controllerTrust,bundle,{runtime:{node:'pinned'},paths:{profile:'/run/acceptance/browser/profile'}},{...composition,manifestDigest:'e'.repeat(64),extra:true}),Error);
+ const altered=JSON.parse(JSON.stringify(bundle));altered.assetManifestHex=Buffer.from('{}').toString('hex');
+ assert.throws(()=>api.importBrowserAssetBundle(altered,()=>160),Error);
+});
 test('asset_bytes_size_mime_hash_mismatch_denied',()=>{const t=trust(),a=api.verifyAssets(assetBytes,verified('RELEASE_RECEIPT',t));const e=a.entries[0];for(const [body,mime]of [[Buffer.from('wrong'),e.mime],[Buffer.alloc(e.size),e.mime],[assetBody,'text/plain'],[null,e.mime]])assert.throws(()=>api.validateAssetResponse(e,body,mime),Error);});
 test('missing_asset_manifest_or_response_unavailable_denied',()=>{const t=trust(),r=verified('RELEASE_RECEIPT',t);assert.throws(()=>api.verifyAssets(null,r),Error);const f=clone(assetFrame);f.payload.entries=[];assert.throws(()=>api.verifyAssets(bytes(f),r),Error);assert.throws(()=>api.verifyAssets(assetBytes,{...r}),Error);});
 test('asset_release_expiry_and_binding_revalidated',()=>{let now=160;const t=api.createTrustContext({...clone(options),now:()=>now}),r=verified('RELEASE_RECEIPT',t),a=api.verifyAssets(assetBytes,r);now=200;assert.equal(api.inspectAssets(a,r),null);assert.throws(()=>api.validateAssetResponse(a.entries[0],assetBody,a.entries[0].mime),Error);});
