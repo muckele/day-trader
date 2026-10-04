@@ -33,11 +33,40 @@ private final class BootstrapLifecycleFake: BootstrapLifecyclePort, BootstrapOwn
         if let beginError { throw beginError }
         return returnedOwner ?? self
     }
-    var bounds:[Int] = [], onStop:(@Sendable () -> Void)?, uncertain=false
+    var bounds:[Int] = [], onStop:(@Sendable () -> Void)?, uncertain=false, throwingStops=0
     func stopOwned(deadline:Int) throws -> BootstrapStopOutcome {
-        stops += 1; bounds.append(deadline); onStop?(); return uncertain ? .uncertain:.stopped
+        stops += 1; bounds.append(deadline); onStop?()
+        if throwingStops > 0 { throwingStops -= 1; throw VMFailure.stop }
+        return uncertain ? .uncertain:.stopped
     }
     func triggerDrift() { drift?() }
+}
+
+private final class BootstrapLateResource: @unchecked Sendable {
+    private let lock=NSLock()
+    private var acquired=false
+    var live:Bool { lock.withLock { acquired } }
+    func acquire() { lock.withLock { acquired=true } }
+    func stop() { lock.withLock { acquired=false } }
+}
+
+private final class BootstrapBlockingLifecycle: BootstrapLifecyclePort, BootstrapOwnedLifecycle, @unchecked Sendable {
+    let entered=DispatchSemaphore(value:0), release=DispatchSemaphore(value:0), finished=DispatchSemaphore(value:0)
+    let late=BootstrapLateResource()
+    private let lock=NSLock()
+    private var active=0, _stops=0, _maximumConcurrent=0
+    var stops:Int { lock.withLock { _stops } }
+    var maximumConcurrent:Int { lock.withLock { _maximumConcurrent } }
+    func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws -> any BootstrapOwnedLifecycle {
+        onDrift(); late.acquire(); return self
+    }
+    func stopOwned(deadline:Int) throws -> BootstrapStopOutcome {
+        lock.withLock { active += 1; _stops += 1; _maximumConcurrent=max(_maximumConcurrent,active) }
+        late.stop(); entered.signal(); release.wait()
+        lock.withLock { active -= 1 }
+        finished.signal()
+        return .stopped
+    }
 }
 
 private final class BootstrapRoleHandleFake: BootstrapActivationTransaction, @unchecked Sendable {
@@ -315,7 +344,8 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
     }
 
     private func offlineComposition(_ run:RunConfiguration, probe:BootstrapProbeFake,
-                                    lifecycle:BootstrapLifecycleFake, clock:BootstrapTestClock,
+                                    lifecycle:any BootstrapLifecyclePort & BootstrapOwnedLifecycle,
+                                    clock:BootstrapTestClock,
                                     originals:[[String:Any]],
                                     population:OfflineBootstrapPopulationAuthority? = nil,
                                     events:OfflineBootstrapEventOwner? = nil) throws -> BootstrapCompositionV1 {
@@ -358,6 +388,97 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         #expect(lifecycle.stops == 1)
     }
 
+    @Test func v1_review_late_original_lifecycle_acquisition_invalidates_provisional_stop() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows()
+        let lifecycle=BootstrapLifecycleFake(), late=BootstrapLateResource()
+        lifecycle.onStop={ late.stop() }
+        lifecycle.onBegin={ lifecycle.triggerDrift(); late.acquire() }
+        let composition=try offlineComposition(run,
+            probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
+            lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals)
+        var typed=false, terminal=false
+        do { _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition) }
+        catch is BootstrapCleanupFailure { typed=true }
+        catch let error as VMFailure { terminal=error == .terminal }
+        #expect(!late.live || typed)
+        #expect(!terminal || !late.live)
+        #expect(lifecycle.stops == 2)
+    }
+
+    @Test func v1_review_late_substituted_lifecycle_is_retained_with_original() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows()
+        let lifecycle=BootstrapLifecycleFake(), substitute=BootstrapLifecycleFake()
+        let originalLate=BootstrapLateResource(), substituteLate=BootstrapLateResource()
+        lifecycle.onStop={ originalLate.stop() }; substitute.onStop={ substituteLate.stop() }
+        lifecycle.returnedOwner=substitute
+        lifecycle.onBegin={ lifecycle.triggerDrift(); originalLate.acquire(); substituteLate.acquire() }
+        let composition=try offlineComposition(run,
+            probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
+            lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals)
+        #expect(throws:VMFailure.terminal) {
+            _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition)
+        }
+        #expect(!originalLate.live); #expect(!substituteLate.live)
+        #expect(lifecycle.stops == 2); #expect(substitute.stops == 1)
+    }
+
+    @Test func v1_review_late_acquisition_after_uncertain_or_throwing_stop_is_typed() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows()
+        for throwsStop in [false,true] {
+            let lifecycle=BootstrapLifecycleFake(), late=BootstrapLateResource()
+            lifecycle.uncertain = !throwsStop; lifecycle.throwingStops = throwsStop ? 1:0
+            lifecycle.onStop={ late.stop() }
+            lifecycle.onBegin={ lifecycle.triggerDrift(); late.acquire() }
+            let composition=try offlineComposition(run,
+                probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
+                lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals)
+            var cleanup:(any BootstrapCleanupOwner)?
+            do { _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition) }
+            catch let error as BootstrapCleanupFailure { cleanup=error.cleanup }
+            #expect(cleanup?.cleanupUncertain == true)
+            #expect(!late.live)
+            #expect(lifecycle.stops == 2)
+        }
+    }
+
+    @Test func v1_review_late_acquisition_with_zero_shared_budget_retains_typed_original() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows()
+        let lifecycle=BootstrapLifecycleFake(), late=BootstrapLateResource()
+        let clock=BootstrapTestClock()
+        lifecycle.onStop={ late.stop(); clock.replace([.init(wall:100,monotonic:60010)]) }
+        lifecycle.onBegin={ lifecycle.triggerDrift(); late.acquire() }
+        let composition=try offlineComposition(run,
+            probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
+            lifecycle:lifecycle,clock:clock,originals:originals)
+        var cleanup:(any BootstrapCleanupOwner)?
+        do { _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition) }
+        catch let error as BootstrapCleanupFailure { cleanup=error.cleanup }
+        #expect(cleanup?.cleanupUncertain == true)
+        #expect(late.live)
+        #expect(lifecycle.stops == 1)
+    }
+
+    @Test func v1_review_pending_lifecycle_acquisition_is_observable_as_cleanup_uncertainty() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows()
+        let lifecycle=BootstrapBlockingLifecycle()
+        let clock=BootstrapTestClock([.init(wall:100,monotonic:10),.init(wall:100,monotonic:10)]
+            + Array(repeating:.init(wall:100,monotonic:10),count:50)
+            + [.init(wall:100,monotonic:60010)])
+        let composition=try offlineComposition(run,
+            probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
+            lifecycle:lifecycle,clock:clock,originals:originals)
+        var cleanup:(any BootstrapCleanupOwner)?
+        do { _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition) }
+        catch let error as BootstrapCleanupFailure { cleanup=error.cleanup }
+        #expect(lifecycle.entered.wait(timeout:.now() + 1) == .success)
+        #expect(cleanup?.cleanupUncertain == true)
+        #expect(lifecycle.stops == 1)
+        #expect(lifecycle.maximumConcurrent == 1)
+        #expect(lifecycle.late.live)
+        lifecycle.release.signal()
+        #expect(lifecycle.finished.wait(timeout:.now() + 1) == .success)
+    }
+
     @Test func v1_review_replayed_or_decreased_event_checkpoint_is_denied() throws {
         let run=try BootstrapRunFixture().run, originals=runtimeRows()
         func data(_ sequence:Int,_ eventSequence:Int) throws -> Data {
@@ -397,7 +518,8 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
                 probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
                 lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals)
             #expect(throws:VMFailure.terminal) { _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition) }
-            #expect(lifecycle.stops == 1)
+            // The first receipt was provisional while begin was unsettled.
+            #expect(lifecycle.stops == 2)
         }
         do {
             let lifecycle=BootstrapLifecycleFake(), substitute=BootstrapLifecycleFake()

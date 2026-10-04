@@ -179,6 +179,55 @@ private final class BootstrapCleanupBudget: @unchecked Sendable {
         }
     }
 }
+private final class BootstrapLifecycleStopSlot: @unchecked Sendable {
+    private let condition=NSCondition()
+    private var running=false, started=false, serial=0
+    private func reserve(_ budget:BootstrapCleanupBudget) -> Int? {
+        while true {
+            condition.lock()
+            if !running {
+                running=true; started=false; serial += 1
+                let token=serial; condition.unlock(); return token
+            }
+            condition.unlock()
+            let allowance=budget.remaining()
+            guard allowance > 0 else { return nil }
+            condition.lock()
+            if running { _=condition.wait(until:Date(timeIntervalSinceNow:Double(min(allowance,10))/1000)) }
+            condition.unlock()
+        }
+    }
+    private func begin(_ token:Int) -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        guard running, serial == token else { return false }
+        started=true; return true
+    }
+    private func finish(_ token:Int) {
+        condition.lock()
+        if running, serial == token { running=false; started=false; condition.broadcast() }
+        condition.unlock()
+    }
+    private func releaseIfUnstarted(_ token:Int) {
+        condition.lock()
+        if running, serial == token, !started { running=false; condition.broadcast() }
+        condition.unlock()
+    }
+    func stop(_ owner:any BootstrapOwnedLifecycle,budget:BootstrapCleanupBudget) throws -> BootstrapStopOutcome {
+        guard let token=reserve(budget) else { return .uncertain }
+        do {
+            let outcome=try budget.stop { [self] deadline in
+                guard begin(token) else { return .uncertain }
+                defer { finish(token) }
+                return try owner.stopOwned(deadline:deadline)
+            }
+            releaseIfUnstarted(token)
+            return outcome
+        } catch {
+            releaseIfUnstarted(token)
+            throw error
+        }
+    }
+}
 protocol BootstrapCleanupOwner: AnyObject, Sendable { var cleanupUncertain:Bool { get } }
 struct BootstrapCleanupFailure: Error, Sendable {
     let cleanup:any BootstrapCleanupOwner
@@ -579,13 +628,15 @@ public final class BootstrapQualification: BootstrapCleanupOwner, @unchecked Sen
     private var proof:AdmissionProof, lastClock:ClockSample, failed = false, activated = false
     private var generation = 0, busy:UUID?, lifecycles:[any BootstrapOwnedLifecycle] = []
     private var retiredLifecycles=Set<ObjectIdentifier>()
+    private var lifecycleInFlight=Set<ObjectIdentifier>(), stoppedLifecycleInFlight=Set<ObjectIdentifier>()
+    private var lifecycleStopSlots:[ObjectIdentifier:BootstrapLifecycleStopSlot] = [:]
     private var roles:[any BootstrapActivationTransaction] = []
     private var retired=Set<ObjectIdentifier>(), inFlight=Set<ObjectIdentifier>(), stoppedInFlight=Set<ObjectIdentifier>()
     private var pendingRoles=Set<ObjectIdentifier>(), pendingLifecycles = 0
     private let cleanupBudget:BootstrapCleanupBudget
     private var _cleanupUncertain = false
     private var hasUnresolvedCleanup:Bool {
-        _cleanupUncertain || !pendingRoles.isEmpty || pendingLifecycles > 0 ||
+        _cleanupUncertain || !pendingRoles.isEmpty || pendingLifecycles > 0 || !lifecycleInFlight.isEmpty ||
             (failed && (!inFlight.isEmpty || roles.contains { !retired.contains(ObjectIdentifier($0)) }))
     }
     var cleanupUncertain:Bool { lock.withLock { hasUnresolvedCleanup } }
@@ -625,7 +676,7 @@ public final class BootstrapQualification: BootstrapCleanupOwner, @unchecked Sen
         }
     }
     fileprivate func latch() {
-        let owned = lock.withLock { () -> ([any BootstrapOwnedLifecycle],[any BootstrapActivationTransaction]) in
+        let owned = lock.withLock { () -> ([(any BootstrapOwnedLifecycle,BootstrapLifecycleStopSlot)],[any BootstrapActivationTransaction]) in
             failed = true; generation += 1; busy = nil
             let pending=roles.filter { !retired.contains(ObjectIdentifier($0)) && !pendingRoles.contains(ObjectIdentifier($0)) }
             for owner in pending {
@@ -634,9 +685,16 @@ public final class BootstrapQualification: BootstrapCleanupOwner, @unchecked Sen
                 if inFlight.contains(id) { stoppedInFlight.insert(id) }
             }
             let lifecyclePending=lifecycles.filter { !retiredLifecycles.contains(ObjectIdentifier($0)) }
-            lifecyclePending.forEach { retiredLifecycles.insert(ObjectIdentifier($0)) }
+            let lifecycleStops=lifecyclePending.map { owner -> (any BootstrapOwnedLifecycle,BootstrapLifecycleStopSlot) in
+                let id=ObjectIdentifier(owner)
+                retiredLifecycles.insert(id)
+                if lifecycleInFlight.contains(id) { stoppedLifecycleInFlight.insert(id) }
+                let slot=lifecycleStopSlots[id] ?? BootstrapLifecycleStopSlot()
+                lifecycleStopSlots[id]=slot
+                return (owner,slot)
+            }
             pendingLifecycles += lifecyclePending.count
-            return (lifecyclePending,pending)
+            return (lifecycleStops,pending)
         }
         var pending=owned.1
         while !pending.isEmpty {
@@ -660,9 +718,9 @@ public final class BootstrapQualification: BootstrapCleanupOwner, @unchecked Sen
                 return next
             }
         }
-        for owner in owned.0.reversed() {
+        for (owner,slot) in owned.0.reversed() {
             do {
-                if try cleanupBudget.stop({ try owner.stopOwned(deadline:$0) }) != .stopped {
+                if try slot.stop(owner,budget:cleanupBudget) != .stopped {
                     lock.withLock { _cleanupUncertain=true; unresolvedLifecycles.append(owner) }
                 }
             } catch {
@@ -791,19 +849,46 @@ public final class BootstrapQualification: BootstrapCleanupOwner, @unchecked Sen
     fileprivate func installLifecycle(_ handle:any BootstrapOwnedLifecycle) throws {
         let accepted = lock.withLock { () -> Bool in
             guard !lifecycles.contains(where:{ $0 === handle }) else { return !failed }
-            lifecycles.append(handle); return !failed
+            lifecycles.append(handle)
+            lifecycleStopSlots[ObjectIdentifier(handle)]=BootstrapLifecycleStopSlot()
+            return !failed
         }
         if !accepted { latch(); throw VMFailure.terminal }
     }
+    fileprivate func beginLifecycleAcquisition(_ original:any BootstrapOwnedLifecycle) throws {
+        try lock.withLock {
+            let id=ObjectIdentifier(original)
+            guard !failed, lifecycles.contains(where:{ $0 === original }) else { throw VMFailure.terminal }
+            lifecycleInFlight.insert(id)
+        }
+    }
+    fileprivate func lifecycleAcquisitionFailed(_ original:any BootstrapOwnedLifecycle) {
+        let relatch=lock.withLock { () -> Bool in
+            let id=ObjectIdentifier(original)
+            lifecycleInFlight.remove(id)
+            if stoppedLifecycleInFlight.remove(id) != nil { retiredLifecycles.remove(id) }
+            return failed
+        }
+        if relatch { latch() }
+    }
     fileprivate func lifecycleAcquired(_ original:any BootstrapOwnedLifecycle,
                                        returned:any BootstrapOwnedLifecycle) throws {
-        if returned !== original {
-            try installLifecycle(returned)
+        let relatch=lock.withLock { () -> Bool in
+            let originalID=ObjectIdentifier(original)
+            if returned !== original, !lifecycles.contains(where:{ $0 === returned }) {
+                lifecycles.append(returned)
+                lifecycleStopSlots[ObjectIdentifier(returned)]=BootstrapLifecycleStopSlot()
+            }
+            lifecycleInFlight.remove(originalID)
+            if stoppedLifecycleInFlight.remove(originalID) != nil { retiredLifecycles.remove(originalID) }
+            return failed || returned !== original
+        }
+        if relatch {
+            latch()
+            if cleanupUncertain { throw BootstrapCleanupFailure(cleanup:self) }
             throw VMFailure.terminal
         }
-        try lock.withLock {
-            guard !failed, lifecycles.contains(where:{ $0 === original }) else { throw VMFailure.terminal }
-        }
+        try lock.withLock { guard lifecycles.contains(where:{ $0 === original }) else { throw VMFailure.terminal } }
     }
     fileprivate func topologyDrifted() {
         latch()
@@ -1011,7 +1096,14 @@ enum OfflineVMHost {
                 lastClock:after,composition:composition,cleanupBudget:budget)
             qualification=owner
             try pending.transfer(to:owner)
-            let lifecycleHandle=try composition.lifecycle.begin(handoff:handoff,onDrift:{ owner.topologyDrifted() })
+            try owner.beginLifecycleAcquisition(composition.lifecycle)
+            let lifecycleHandle:any BootstrapOwnedLifecycle
+            do {
+                lifecycleHandle=try composition.lifecycle.begin(handoff:handoff,onDrift:{ owner.topologyDrifted() })
+            } catch {
+                owner.lifecycleAcquisitionFailed(composition.lifecycle)
+                throw error
+            }
             try owner.lifecycleAcquired(composition.lifecycle,returned:lifecycleHandle)
             let final=try clock.sample(); _=try authority.check(final); try composition.recheck(run)
             let postRecheck=try clock.sample(); _=try authority.check(postRecheck)
