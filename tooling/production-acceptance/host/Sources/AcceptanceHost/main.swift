@@ -6,14 +6,13 @@ import Darwin
 do {
     let arguments = Array(CommandLine.arguments.dropFirst())
     if let invocation = try HostDispatch.bootstrapInvocation(arguments) {
-        // This is the bounded production composition entry. It cannot open the
-        // supplied paths or start a VM until signed/native authority constructs
-        // the fixed probe, observation, owned lifecycle/Task8 activation ports,
-        // and an independently qualified inventory of executable member bytes.
-        // The accepted appliance has no approved browser-worker member mapping.
-        // Task8 has no compatible current-authority activation/helper contract,
-        // and Task9 exports no retained config/transport runtime owner. Task10
-        // explicitly rejects those unsupported compositions before effects.
+        // This is the bounded production entry on a Darwin/arm64 host for a
+        // Linux/aarch64 guest. It cannot open the supplied paths or start a VM
+        // until signed/entitled native construction supplies the original host
+        // channels, immutable executable-member population, guest descriptor
+        // provenance, event-delivery fence and worker effect-boundary fence.
+        // The offline v1 composition exercises the same evidence consumer but
+        // deliberately carries none of that native source authority.
         _ = try VMHost.bootstrapCheck(invocation:invocation)
     }
     let command = try HostDispatch.parse(arguments)

@@ -118,6 +118,14 @@ private func resign(_ payload:[String:Any], capability:Data) throws -> Data {
     return try canonical(["mac":mac,"payload":payload,"version":1])
 }
 
+private func resignV2(_ payload:[String:Any], capability:Data) throws -> Data {
+    let bytes = try canonical(payload)
+    let domain = Data("acceptance:bootstrap-composition:v1\0".utf8)
+    let mac = HMAC<SHA256>.authenticationCode(for:domain + bytes,using:SymmetricKey(data:capability))
+        .map { String(format:"%02x",$0) }.joined()
+    return try canonical(["mac":mac,"payload":payload,"version":2])
+}
+
 private let pythonProgramPins:[String:String] = Dictionary(uniqueKeysWithValues:[
     "/opt/acceptance/guest/browser-worker.cjs","/opt/acceptance/guest/controller.cjs",
     "/opt/acceptance/guest/proxy.py","/opt/acceptance/guest/verifier.cjs",
@@ -215,6 +223,219 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
                 "lifecycle":index == 0 || index == 3 ? "SERVICE":"WAITING","inheritedFDs":[0,1,2,3,4],"currentFDs":fds]
         }
     }
+
+    private func compositionHandoff(_ run:RunConfiguration, originals:[[String:Any]], sequence:Int = 1,
+                                    epoch:Int = 1, generation:Int = 1,
+                                    wall:Int = 100, monotonic:Int = 10,
+                                    mutate:(([String:Any]) -> [String:Any])? = nil) throws -> Data {
+        let path = try #require(ProcessInfo.processInfo.environment["BOOTSTRAP_V1_HANDOFF_INPUT"])
+        let data = try Data(contentsOf:URL(fileURLWithPath:path))
+        let envelope = try #require(try JSONSerialization.jsonObject(with:data) as? [String:Any])
+        var payload = try #require(envelope["payload"] as? [String:Any])
+        payload["runId"] = run.binding.runID
+        payload["manifestIdentity"] = run.appliance.manifest.digest
+        payload["configIdentity"] = run.binding.configIdentity
+        payload["expiresAt"] = run.binding.expiresAt
+        payload["sequence"] = sequence
+        payload["observedWall"] = wall
+        payload["observedMonotonic"] = monotonic
+        var proxy = payload["proxy"] as! [String:Any]
+        proxy["runId"] = run.binding.runID
+        proxy["manifestIdentity"] = run.appliance.manifest.digest
+        proxy["configIdentity"] = run.binding.configIdentity
+        proxy["expiresAt"] = run.binding.expiresAt
+        payload["proxy"] = proxy
+        var roles = payload["roles"] as! [[String:Any]]
+        for index in roles.indices {
+            roles[index]["runId"] = run.binding.runID
+            var fds = roles[index]["fds"] as! [[String:Any]]
+            for fdIndex in fds.indices { fds[fdIndex]["runId"] = run.binding.runID }
+            roles[index]["fds"] = fds
+            var programs = roles[index]["programs"] as! [[String:Any]]
+            for programIndex in programs.indices {
+                programs[programIndex]["sha256"] = pythonProgramPins[programs[programIndex]["path"] as! String]!
+            }
+            roles[index]["programs"] = programs
+        }
+        payload["roles"] = roles
+        var composition = payload["composition"] as! [String:Any]
+        var binding = composition["binding"] as! [String:Any]
+        binding["runId"] = run.binding.runID
+        binding["manifestDigest"] = run.appliance.manifest.digest
+        binding["configIdentity"] = run.binding.configIdentity
+        binding["rolePolicyDigest"] = String(repeating:"d",count:64)
+        binding["expiresAtMs"] = run.binding.expiresAt
+        binding["epoch"] = epoch
+        composition["binding"] = binding
+        composition["probeEpochDigest"] = String(repeating:"e",count:64)
+        composition["fixtureInventoryDigest"] = String(repeating:"f",count:64)
+        composition["proxyRuntimeId"] = String(repeating:"b",count:32)
+        var checkpoint = composition["eventCheckpoint"] as! [String:Any]
+        checkpoint["binding"] = binding
+        checkpoint["generation"] = generation
+        checkpoint["sourceIdentity"] = String(repeating:"a",count:32)
+        composition["eventCheckpoint"] = checkpoint
+        composition["roleRuntime"] = originals
+        payload["composition"] = composition
+        return try resignV2(mutate?(payload) ?? payload,capability:run.capability)
+    }
+
+    private func offlineComposition(_ run:RunConfiguration, probe:BootstrapProbeFake,
+                                    lifecycle:BootstrapLifecycleFake, clock:BootstrapTestClock,
+                                    originals:[[String:Any]]) throws -> BootstrapCompositionV1 {
+        try OfflineVMHost.composeBootstrapV1(run:run,probe:probe,lifecycle:lifecycle,
+            executables:executableAuthority(run),clock:clock,originalRoleRuntime:originals,
+            rolePolicyDigest:String(repeating:"d",count:64),epoch:1,generation:1,
+            probeEpochDigest:String(repeating:"e",count:64),fixtureInventoryDigest:String(repeating:"f",count:64),
+            eventSourceID:String(repeating:"a",count:32),proxyRuntimeID:String(repeating:"b",count:32))
+    }
+
+    @Test func v1_guest_handoff_matches_original_host_run_and_inventory() throws {
+        let fixturePath = try #require(ProcessInfo.processInfo.environment["BOOTSTRAP_V1_HANDOFF_INPUT"])
+        let exact = try Data(contentsOf:URL(fileURLWithPath:fixturePath))
+        let envelope = try #require(try JSONSerialization.jsonObject(with:exact) as? [String:Any])
+        let payload = try #require(envelope["payload"] as? [String:Any])
+        let evidence = try #require(payload["composition"] as? [String:Any])
+        let binding = try #require(evidence["binding"] as? [String:Any])
+        let exactOriginals = try #require(evidence["roleRuntime"] as? [[String:Any]])
+        let checkpoint = try #require(evidence["eventCheckpoint"] as? [String:Any])
+        let roles = try #require(payload["roles"] as? [[String:Any]])
+        let pins = Dictionary(uniqueKeysWithValues:(roles[0]["programs"] as! [[String:Any]]).map {
+            ($0["path"] as! String,$0["sha256"] as! String) })
+        let expectation = BootstrapCompositionExpectation(rolePolicyDigest:binding["rolePolicyDigest"] as! String,
+            epoch:binding["epoch"] as! Int,generation:checkpoint["generation"] as! Int,
+            probeEpochDigest:evidence["probeEpochDigest"] as! String,
+            fixtureInventoryDigest:evidence["fixtureInventoryDigest"] as! String,
+            eventSourceID:checkpoint["sourceIdentity"] as! String,
+            proxyRuntimeID:evidence["proxyRuntimeId"] as! String,originalRoleRuntime:exactOriginals)
+        let exactCapability=Data(repeating:UInt8(ascii:"7"),count:32)
+        let exactAuthority=try BootstrapExecutableAuthority.offlineLiteral(pins:pins)
+        #expect(throws:Never.self) {
+            _ = try BootstrapHandoff.verify(data:exact,expectedRunID:payload["runId"] as! String,
+                manifestIdentity:payload["manifestIdentity"] as! String,
+                configIdentity:payload["configIdentity"] as! String,expiresAt:payload["expiresAt"] as! Int,
+                capability:exactCapability,executables:exactAuthority,composition:expectation)
+        }
+        let mutations:[([String:Any]) -> [String:Any]] = [
+            { value in var x=value, c=x["composition"] as! [String:Any], b=c["binding"] as! [String:Any]; b["epoch"]=true; c["binding"]=b; x["composition"]=c; return x },
+            { value in var x=value, c=x["composition"] as! [String:Any], e=c["eventCheckpoint"] as! [String:Any]; e["generation"]=2; c["eventCheckpoint"]=e; x["composition"]=c; return x },
+            { value in var x=value, c=x["composition"] as! [String:Any]; c["unknown"]=0; x["composition"]=c; return x },
+            { value in var x=value, c=x["composition"] as! [String:Any], r=c["roleRuntime"] as! [[String:Any]]; r[0]["inheritedFDs"]=[0,1,2,3,true]; c["roleRuntime"]=r; x["composition"]=c; return x },
+        ]
+        for mutation in mutations {
+            let vector=try resignV2(mutation(payload),capability:exactCapability)
+            #expect(throws:VMFailure.admissionUnavailable) {
+                _ = try BootstrapHandoff.verify(data:vector,expectedRunID:payload["runId"] as! String,
+                    manifestIdentity:payload["manifestIdentity"] as! String,
+                    configIdentity:payload["configIdentity"] as! String,expiresAt:payload["expiresAt"] as! Int,
+                    capability:exactCapability,executables:exactAuthority,composition:expectation)
+            }
+        }
+        var noncanonical=exact; noncanonical.append(0x0a)
+        #expect(throws:VMFailure.admissionUnavailable) { _ = try BootstrapHandoff.verify(data:noncanonical,
+            expectedRunID:payload["runId"] as! String,manifestIdentity:payload["manifestIdentity"] as! String,
+            configIdentity:payload["configIdentity"] as! String,expiresAt:payload["expiresAt"] as! Int,
+            capability:exactCapability,executables:exactAuthority,composition:expectation) }
+        var badMAC=envelope; badMAC["mac"]=String(repeating:"0",count:64)
+        #expect(throws:VMFailure.admissionUnavailable) { _ = try BootstrapHandoff.verify(data:try canonical(badMAC),
+            expectedRunID:payload["runId"] as! String,manifestIdentity:payload["manifestIdentity"] as! String,
+            configIdentity:payload["configIdentity"] as! String,expiresAt:payload["expiresAt"] as! Int,
+            capability:exactCapability,executables:exactAuthority,composition:expectation) }
+        let run = try BootstrapRunFixture().run, originals = runtimeRows()
+        let probe = BootstrapProbeFake([try compositionHandoff(run,originals:originals)])
+        let lifecycle = BootstrapLifecycleFake(), clock = BootstrapTestClock()
+        let composition = try offlineComposition(run,probe:probe,lifecycle:lifecycle,clock:clock,originals:originals)
+        let qualification = try OfflineVMHost.bootstrapCheck(run:run,composition:composition)
+        let proof = try qualification.currentProofWithoutActivation()
+        #expect(proof.runID == run.binding.runID)
+        #expect(proof.manifestIdentity == run.appliance.manifest.digest)
+        #expect(lifecycle.starts == 1)
+        #expect(throws:VMFailure.admissionUnavailable) { _ = try OfflineVMHost.bootstrapCheck(run:run,composition:composition) }
+        #expect(probe.requested.count == 1); #expect(lifecycle.starts == 1)
+    }
+
+    @Test func v1_wrong_epoch_generation_runtime_or_fixture_denied() throws {
+        let run = try BootstrapRunFixture().run, originals = runtimeRows()
+        let mutations:[([String:Any]) -> [String:Any]] = [
+            { value in var x=value; var c=x["composition"] as! [String:Any]; var b=c["binding"] as! [String:Any]; b["epoch"]=2; c["binding"]=b; x["composition"]=c; return x },
+            { value in var x=value; var c=x["composition"] as! [String:Any]; var e=c["eventCheckpoint"] as! [String:Any]; e["generation"]=2; c["eventCheckpoint"]=e; x["composition"]=c; return x },
+            { value in var x=value; var c=x["composition"] as! [String:Any]; c["fixtureInventoryDigest"]=String(repeating:"0",count:64); x["composition"]=c; return x },
+            { value in var x=value; var c=x["composition"] as! [String:Any]; var r=c["roleRuntime"] as! [[String:Any]]; r[0]["childId"]=String(repeating:"0",count:32); c["roleRuntime"]=r; x["composition"]=c; return x },
+        ]
+        for mutation in mutations {
+            let probe = BootstrapProbeFake([try compositionHandoff(run,originals:originals,mutate:mutation)])
+            let lifecycle=BootstrapLifecycleFake(), clock=BootstrapTestClock()
+            let composition=try offlineComposition(run,probe:probe,lifecycle:lifecycle,clock:clock,originals:originals)
+            #expect(throws:VMFailure.admissionUnavailable) { _ = try OfflineVMHost.bootstrapCheck(run:run,composition:composition) }
+        }
+    }
+
+    @Test func v1_current_descriptor_provenance_and_lifecycle_required() throws {
+        let run = try BootstrapRunFixture().run, originals = runtimeRows()
+        for variant in 0...2 {
+            let data = try compositionHandoff(run,originals:originals) { value in
+                var x=value, c=x["composition"] as! [String:Any], rows=c["roleRuntime"] as! [[String:Any]]
+                if variant == 0 { rows[3]["lifecycle"]="WAITING" }
+                if variant == 1 { rows[3]["childId"]=String(repeating:"e",count:32) }
+                if variant == 2 { var fds=rows[3]["currentFDs"] as! [[String:Any]]; fds[5]["ownerId"]=String(repeating:"e",count:32); rows[3]["currentFDs"]=fds }
+                c["roleRuntime"]=rows; x["composition"]=c; return x
+            }
+            let probe=BootstrapProbeFake([data]), lifecycle=BootstrapLifecycleFake(), clock=BootstrapTestClock()
+            let composition=try offlineComposition(run,probe:probe,lifecycle:lifecycle,clock:clock,originals:originals)
+            #expect(throws:VMFailure.admissionUnavailable) { _ = try OfflineVMHost.bootstrapCheck(run:run,composition:composition) }
+        }
+    }
+
+    @Test func v1_initial_event_owner_precedes_snapshot() throws {
+        let run = try BootstrapRunFixture().run, originals = runtimeRows(), lifecycle=BootstrapLifecycleFake()
+        let probe=BootstrapProbeFake([try compositionHandoff(run,originals:originals)]), clock=BootstrapTestClock()
+        let composition=try offlineComposition(run,probe:probe,lifecycle:lifecycle,clock:clock,originals:originals)
+        probe.onCapture = { #expect(composition.eventOwnerInstalledBeforeCapture) }
+        _ = try OfflineVMHost.bootstrapCheck(run:run,composition:composition)
+    }
+
+    @Test func v1_late_capture_cleanup_remains_typed() throws {
+        let run = try BootstrapRunFixture().run, originals = runtimeRows()
+        let foreignProbe=BootstrapProbeFake([try compositionHandoff(run,originals:originals)])
+        let foreign=try OfflineVMHost.bootstrapCheck(run:run,composition:offlineComposition(run,
+            probe:foreignProbe,lifecycle:BootstrapLifecycleFake(),clock:BootstrapTestClock(),originals:originals))
+        let initial=BootstrapProbeFake([try compositionHandoff(run,originals:originals),
+                                        try compositionHandoff(run,originals:originals,sequence:2)])
+        let q=try OfflineVMHost.bootstrapCheck(run:run,composition:offlineComposition(run,
+            probe:initial,lifecycle:BootstrapLifecycleFake(),clock:BootstrapTestClock(),originals:originals))
+        initial.onCapture = { throw BootstrapCleanupFailure(cleanup:foreign) }
+        #expect(throws:BootstrapCleanupFailure.self) { _ = try q.requireBrowserAdmission() }
+        #expect(q.cleanupUncertain)
+    }
+
+    @Test func v1_effect_boundary_grant_expiry_cancel_denied() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows(), lifecycle=BootstrapLifecycleFake()
+        let probe=BootstrapProbeFake([try compositionHandoff(run,originals:originals),try compositionHandoff(run,originals:originals,sequence:2)])
+        let clock=BootstrapTestClock(Array(repeating:.init(wall:100,monotonic:10),count:12))
+        let q=try OfflineVMHost.bootstrapCheck(run:run,composition:offlineComposition(run,probe:probe,lifecycle:lifecycle,clock:clock,originals:originals))
+        let activation=BootstrapActivationFake(); activation.handle.callback={ lifecycle.triggerDrift() }
+        #expect(throws:VMFailure.self) { try q.activateBrowser(activation) }
+        #expect(activation.handle.calls == 0)
+        #expect(activation.handle.stops >= 1)
+    }
+
+    @Test func v1_native_descriptor_or_delivery_fence_unavailable_stays_denied() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows(), lifecycle=BootstrapLifecycleFake(), clock=BootstrapTestClock()
+        let probe=BootstrapProbeFake([try compositionHandoff(run,originals:originals)])
+        let composition=try offlineComposition(run,probe:probe,lifecycle:lifecycle,clock:clock,originals:originals)
+        #expect(throws:VMFailure.admissionUnavailable) { _ = try VMHost.bootstrapCheck(run:run,composition:composition) }
+        #expect(probe.requested.isEmpty); #expect(lifecycle.starts == 0)
+    }
+
+    @Test func v1_cli_missing_native_prerequisites_has_zero_effects() throws {
+        var effects=0
+        let command=try HostDispatch.parse(["bootstrap-check","--manifest","/signed/m","--release","/signed/r"])
+        #expect(throws:VMFailure.unavailable) { _ = try HostDispatch.execute(command) { _,_,_,_,_ in effects += 1; return [] } }
+        #expect(effects == 0)
+        let invocation=try #require(try HostDispatch.bootstrapInvocation(["bootstrap-check","--manifest","/signed/m","--release","/signed/r"]))
+        #expect(throws:VMFailure.admissionUnavailable) { _ = try VMHost.bootstrapCheck(invocation:invocation) }
+        #expect(effects == 0)
+    }
     @Test func v1_current_role_inventory_is_not_inherited_fd_list() throws {
         let rows = runtimeRows()
         #expect(throws:Never.self) { try BootstrapHandoff.validateRoleRuntimeV1(rows,originals:rows,generation:1) }
@@ -264,10 +485,9 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
     }
     @Test func v1_service_role_facts_preserve_legacy_waiting_and_confinement_checks() throws {
         let payload = try pythonFixture(), originals = runtimeRows(), runID = payload["runId"] as! String
-        var roles = payload["roles"] as! [[String:Any]]
-        roles[0]["waiting"] = false; roles[3]["waiting"] = false
+        let roles = payload["roles"] as! [[String:Any]]
         #expect(throws:Never.self) { try BootstrapHandoff.validateRolesV2(roles,runID:runID,programPins:pythonProgramPins,runtime:originals,originals:originals,generation:1) }
-        for (key,value) in [("waiting",true as Any),("noNewPrivs",0),("seccomp",0),("uids",[0,0,0])] {
+        for (key,value) in [("waiting",false as Any),("noNewPrivs",0),("seccomp",0),("uids",[0,0,0])] {
             var changed = roles; changed[3][key] = value
             #expect(throws:VMFailure.admissionUnavailable) { try BootstrapHandoff.validateRolesV2(changed,runID:runID,programPins:pythonProgramPins,runtime:originals,originals:originals,generation:1) }
         }
@@ -576,8 +796,9 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
     @Test func native_entry_remains_fail_closed_and_composition_selection_is_bounded() throws {
         let run = try BootstrapRunFixture().run
         #expect(throws:VMFailure.admissionUnavailable) { _ = try VMHost.bootstrapCheck(run:run) }
-        _ = try NativeBootstrapComposition.select(manifestPath:"/signed/manifest.json",releasePath:"/signed/release.json",platform:"linux",machine:"arm64")
-        #expect(throws:VMFailure.admissionUnavailable) { _ = try NativeBootstrapComposition.select(manifestPath:"",releasePath:"x",platform:"linux",machine:"arm64") }
+        _ = try NativeBootstrapComposition.select(manifestPath:"/signed/manifest.json",releasePath:"/signed/release.json",platform:"darwin",machine:"arm64")
+        #expect(throws:VMFailure.admissionUnavailable) { _ = try NativeBootstrapComposition.select(manifestPath:"",releasePath:"x",platform:"darwin",machine:"arm64") }
+        #expect(throws:VMFailure.admissionUnavailable) { _ = try NativeBootstrapComposition.select(manifestPath:"/signed/m",releasePath:"/signed/r",platform:"linux",machine:"aarch64") }
         let arguments = ["bootstrap-check","--manifest","/signed/m","--release","/signed/r"]
         #expect(try HostDispatch.parse(arguments) == .bootstrapCheck)
         let invocation = try #require(try HostDispatch.bootstrapInvocation(arguments))
