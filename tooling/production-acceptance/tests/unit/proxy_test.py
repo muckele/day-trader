@@ -966,7 +966,9 @@ class CompositionHarness:
                 self.data, self.sent = [], bytearray()
                 harness.endpoints.append(self)
             def fileno(self): return self.fd
-            def setblocking(self, value): pass
+            def setblocking(self, value):
+                if value: harness.live[self.fd][2] &= ~2048
+                else: harness.live[self.fd][2] |= 2048
             def bind(self, address):
                 harness.events.append('bind')
                 if harness.fail_bind: raise OSError('inert bind')
@@ -976,7 +978,8 @@ class CompositionHarness:
                 if harness.clients:
                     client = harness.clients.pop(0)
                     if type(client) is list:
-                        endpoint = Endpoint(); endpoint.data = client; client = endpoint
+                        endpoint = Endpoint(); harness.live[endpoint.fd][2] &= ~2048
+                        endpoint.data = client; client = endpoint
                     return client, ('127.0.0.1', 41000)
                 raise BlockingIOError()
             def connect_ex(self, address): return errno.EINPROGRESS
@@ -1412,7 +1415,9 @@ class ProxyCompositionTests(unittest.TestCase):
     def test_v1_live_loop_current_lists_accepted_and_vsock_originals(self):
         h=CompositionHarness(self,sink=lambda h,owner:h.clients.append([REQUEST]))
         h.run();self.ready(h)
-        current=next(f for f in h.frames if f['kind']=='PROXY_CURRENT')['payload']['observation']
+        currents=[f for f in h.frames if f['kind']=='PROXY_CURRENT']
+        self.assertEqual(len(currents),1)
+        current=currents[0]['payload']['observation']
         self.assertEqual([r['kind'] for r in current['currentFDs']][-2:],
                          ['PROXY_ACCEPTED_STREAM','PROXY_VSOCK_STREAM'])
         self.assertEqual(h.frames[-1]['payload']['cleanupStatus'],'PROVEN')
@@ -1460,6 +1465,141 @@ class ProxyCompositionTests(unittest.TestCase):
         self.assertEqual(h.frames[-1]['payload']['code'],'CLEANUP_UNCERTAIN')
         self.assertEqual(attempts,[4000])
         self.assertEqual(h.fd_closes,[3,4])
+
+    def test_v1_r1_inventory_drift_cannot_redirect_cleanup(self):
+        for target in ('listener','sockets','transport','stream','connector'):
+            with self.subTest(target=target):
+                originals=[]; substitutes=[]
+                def sink(h,owner):
+                    def substitute(endpoint):
+                        return types.SimpleNamespace(fileno=endpoint.fileno,
+                            close=lambda:substitutes.append(target))
+                    if target=='listener':
+                        originals.append(owner._listener.socket)
+                        owner._listener.inventory=None
+                        owner._listener.socket=substitute(originals[-1])
+                    elif target=='sockets':
+                        originals.extend((owner._listener.socket,owner._sockets.stop_selector))
+                        owner._sockets.inventory=None
+                        owner._sockets.listener=types.SimpleNamespace(close=lambda:substitutes.append(target))
+                        owner._sockets.stop_selector=substitute(originals[-1])
+                    else:
+                        stream=owner._transport.open(2,4050,owner._config.binding)
+                        originals.extend((stream.socket,stream.connector))
+                        if target=='transport':
+                            owner._transport.inventory=None
+                            owner._transport.streams=[types.SimpleNamespace(close=lambda:substitutes.append(target))]
+                        else:
+                            stream.inventory=None
+                            if target=='stream':stream.socket=substitute(originals[0])
+                            else:stream.connector=substitute(originals[1])
+                    with self.assertRaises(proxy.ProxyError):owner.observe_current(h.nominal_binding)
+                h=CompositionHarness(self,sink=sink).run();self.ready(h)
+                self.assertEqual(substitutes,[])
+                self.assertTrue(all(e.closes==1 and e.fileno()==-1 for e in originals))
+                self.assertEqual(h.frames[-1]['payload']['cleanupStatus'],'PROVEN')
+
+    def test_v1_r1_proven_cleanup_requires_retired_original_obligations(self):
+        h=CompositionHarness(self)
+        def sink(h,owner):
+            endpoint=owner._listener.socket
+            # A broken effect boundary returns normally without closing. A
+            # mutable inventory pointer must not suppress independent proof.
+            endpoint.close=lambda:None
+            owner._listener.inventory=None
+        h.on_ready=sink;h.run();self.ready(h)
+        self.assertEqual(h.frames[-1]['payload']['cleanupStatus'],'UNCERTAIN')
+        self.assertEqual(h.frames[-1]['payload']['code'],'CLEANUP_UNCERTAIN')
+        self.assertIn(h.endpoints[0].fd,h.live)
+
+    def delayed_client(self):
+        h=CompositionHarness(self).run();h.clock.wall,h.clock.mono=100,10
+        delay={'wall':0,'mono':0}; callbacks=[]
+        def provenance(child,pipe):
+            callbacks.append((child,pipe))
+            h.clock.wall+=delay['wall'];h.clock.mono+=delay['mono']
+            return child is h.child and pipe is h.pipe
+        policy=proxy.qualify_composition_proxy(h.nominal_binding,
+            child=h.child,pipe=h.pipe,child_id='2'*32,pipe_id='3'*32,
+            channel_key=h.key,admission_policy=h.policy.admission_policy,
+            cleanup_budget=h.budget,provenance_validator=provenance)
+        return h,proxy.ProxyCompositionClient(policy,h.clock),delay,callbacks
+
+    def test_v1_r2_final_client_guard_follows_provenance(self):
+        for stage in ('READY','REQUEST','CURRENT'):
+            for change in ('wall','mono'):
+                with self.subTest(stage=stage,change=change):
+                    h,client,delay,_=self.delayed_client()
+                    if stage!='READY':client.accept_frame(h.frame(h.frames[0]))
+                    if stage=='CURRENT':client.current('4'*32,1)
+                    delay[change]=90 if change=='wall' else 101
+                    # Request publication has no previous round-trip deadline;
+                    # monotonic progress is legal, and its send time must be fresh.
+                    if stage=='REQUEST' and change=='mono':
+                        client.current('4'*32,1)
+                        self.assertEqual(client._pending[3],111)
+                    else:
+                        with self.assertRaises(proxy.ProxyError):
+                            if stage=='REQUEST':client.current('4'*32,1)
+                            else:client.accept_frame(h.frame(h.frames[0 if stage=='READY' else 1]))
+                        deadline=h.budget.deadline
+                        delay['wall']=delay['mono']=0
+                        with self.assertRaises(proxy.ProxyError):client.current('5'*32,1)
+                        self.assertEqual(h.budget.deadline,deadline)
+
+    def test_v1_r3_eof_clamps_even_after_expiry_clock_failure_or_terminal(self):
+        for failure in ('expired','backward','throwing','terminal'):
+            with self.subTest(failure=failure):
+                h,client,_,callbacks=self.delayed_client()
+                client.accept_frame(h.frame(h.frames[0]));client.current('4'*32,1)
+                h.budget.deadline=60010
+                if failure=='expired':h.clock.wall=190
+                elif failure=='backward':h.clock.mono=9
+                elif failure=='throwing':h.clock.sample=lambda:(_ for _ in ()).throw(OSError('inert clock'))
+                else:
+                    with self.assertRaises(proxy.ProxyError):client.accept_frame(b'bad')
+                count=len(callbacks)
+                with self.assertRaises(proxy.ProxyError):client.accept_frame(b'')
+                self.assertEqual(h.budget.deadline,0)
+                self.assertEqual(h.budget.remaining(),0)
+                self.assertEqual(len(callbacks),count)
+                with self.assertRaises(proxy.ProxyError):client.accept_frame(b'')
+                self.assertEqual(h.budget.deadline,0)
+
+    def test_v1_r4_accepted_flags_finalize_only_owned_nonblocking_transition(self):
+        for mutation in ('none','inode','flags','substitute','later-flags','refinalize'):
+            with self.subTest(mutation=mutation):
+                registered=[]
+                def sink(h,owner):
+                    endpoint=h.Endpoint();h.live[endpoint.fd][2]=524288
+                    def setblocking(value):
+                        row=owner._context._inventory.rows[endpoint.fd]
+                        self.assertEqual(row['flags'],524288)
+                        registered.append(row['ownerId'])
+                        self.assertIs(value,False)
+                        h.live[endpoint.fd][2]|=2048
+                        if mutation=='inode':h.live[endpoint.fd][1]+=1
+                        if mutation=='flags':h.live[endpoint.fd][2]|=1024
+                        if mutation=='substitute':
+                            stream=owner._context._inventory.endpoints[id(endpoint)][1]
+                            stream.socket=types.SimpleNamespace(fileno=endpoint.fileno,
+                                close=lambda:self.fail('substitute must not be closed'))
+                    endpoint.setblocking=setblocking;endpoint.data=[REQUEST];h.clients.append(endpoint)
+                    if mutation in ('later-flags','refinalize'):
+                        def command():
+                            if mutation=='later-flags':h.live[endpoint.fd][2]|=1024
+                            else:owner._context._inventory.finalize_nonblocking(endpoint)
+                            return h.command('PROXY_CURRENT')
+                        h.pending_commands=[command]
+                h=CompositionHarness(self,sink=sink).run();self.ready(h)
+                self.assertEqual(len(registered),1)
+                currents=[f for f in h.frames if f['kind']=='PROXY_CURRENT']
+                if mutation=='none':
+                    self.assertEqual(len(currents),1)
+                    row=next(r for r in currents[0]['payload']['observation']['currentFDs'] if r['kind']=='PROXY_ACCEPTED_STREAM')
+                    self.assertEqual((row['ownerId'],row['flags']),(registered[0],524288|2048))
+                else:self.assertEqual(currents,[])
+                self.assertTrue(all(e.closes==1 for e in h.endpoints))
 
 
 if __name__ == '__main__': unittest.main()

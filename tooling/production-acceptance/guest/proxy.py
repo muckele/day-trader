@@ -748,11 +748,15 @@ def qualify_composition_proxy(binding, *, child, pipe, child_id, pipe_id,
     return policy
 
 
+_NATIVE_INVENTORIES = weakref.WeakKeyDictionary()
+
+
 class _RuntimeDescriptors:
     """Finite original acquisition ledger; never accepts caller-supplied FD rows."""
     def __init__(self, os_module):
         self.os, self.rows, self.endpoints = os_module, {}, {}
         self.unresolved_reads = []
+        self.pending_nonblocking = set()
 
     def capture_inherited(self):
         for fd in range(5):
@@ -797,6 +801,23 @@ class _RuntimeDescriptors:
         # Retain the original before reading any fallible descriptor facts.
         self.endpoints[ id(endpoint) ] = (endpoint, owner, attribute, fd)
         self._add(fd, kind)
+        if kind == 'PROXY_ACCEPTED_STREAM':
+            self.pending_nonblocking.add(id(endpoint))
+
+    def finalize_nonblocking(self, endpoint):
+        original = self.endpoints.get(id(endpoint))
+        if (id(endpoint) not in self.pending_nonblocking or original is None
+                or original[0] is not endpoint):
+            raise ProxyError('CHANNEL_DENIED')
+        _, owner, attribute, fd = original
+        row = self.rows[fd]
+        # Only this initial Linux O_NONBLOCK transition may change captured
+        # facts. Keep the original acquisition identity, never relearn drift.
+        if (getattr(owner, attribute) is not endpoint or endpoint.fileno() != fd
+                or self._facts(fd) != (row['device'], row['inode'], row['flags'] | 2048)):
+            raise ProxyError('CHANNEL_DENIED')
+        row['flags'] |= 2048
+        self.pending_nonblocking.remove(id(endpoint))
 
     def retire(self, endpoint):
         original = self.endpoints.get(id(endpoint))
@@ -806,11 +827,13 @@ class _RuntimeDescriptors:
         if endpoint.fileno() != -1 or str(fd) in self.os.listdir('/proc/self/fd'):
             raise ProxyError('CLEANUP_UNCERTAIN')
         self.endpoints.pop(id(endpoint)); self.rows.pop(fd, None)
+        self.pending_nonblocking.discard(id(endpoint))
 
     def current(self):
-        if self.unresolved_reads: raise ProxyError('CLEANUP_UNCERTAIN')
+        if self.unresolved_reads or self.pending_nonblocking: raise ProxyError('CLEANUP_UNCERTAIN')
         for endpoint, owner, attribute, fd in self.endpoints.values():
             if (getattr(owner, attribute) is not endpoint or endpoint.fileno() != fd
+                    or owner.inventory is not self or _NATIVE_INVENTORIES.get(owner) is not self
                     or getattr(owner, 'closing', False) or getattr(owner, 'cleanup_uncertain', False)):
                 raise ProxyError('CLEANUP_UNCERTAIN')
         listed = self.os.listdir('/proc/self/fd')
@@ -877,6 +900,9 @@ class ProxyRuntimeOwner:
                     or (transport.host_cid,transport.service,transport.connect_timeout_ms) != (2,4050,config.idle_timeout_ms)
                     or listener.module is not smodule
                     or listener.endpoint != (_LISTEN_ADDRESS, _LISTEN_PORT)
+                    or any(owner.inventory is not context._inventory
+                           or _NATIVE_INVENTORIES.get(owner) is not context._inventory
+                           for owner in (sockets, transport, listener))
                     or tuple(map(id, transport.streams)) != tuple(map(id, transport._owned_streams))
                     or tuple(map(id, listener.streams)) != tuple(map(id, listener._owned_streams))
                     or transport.closed or transport.closing or listener.closed or listener.closing):
@@ -962,6 +988,7 @@ class ProxyCompositionContext:
         self._claimed = True; self._transport = transport
         _CONTEXT_ORIGINALS[self] = (*_CONTEXT_ORIGINALS[self][:-1], transport)
         transport.inventory = self._inventory
+        _NATIVE_INVENTORIES[transport] = self._inventory
 
     def _clamp(self, end):
         budget = _CONTEXT_ORIGINALS[self][0].cleanup_budget
@@ -1012,7 +1039,8 @@ class ProxyCompositionContext:
             cleaned = _cleanup_resources((sockets, transport), passes=passes)
             # A failed close of a proc reader is retained uncertainty. Never
             # retry an integer descriptor that the kernel may already recycle.
-            return cleaned and not inventory.unresolved_reads
+            return (cleaned and not inventory.unresolved_reads and not inventory.endpoints
+                    and not any(fd >= 5 for fd in inventory.rows))
         finally:
             self._cleanup_lock.release()
 
@@ -1154,6 +1182,9 @@ def _observation_record(value, binding, status):
     return value
 
 
+_CLIENT_ORIGINALS = weakref.WeakKeyDictionary()
+
+
 class ProxyCompositionClient:
     """Bootstrap-side finite correlation. Returned records are data, not owners.
 
@@ -1167,24 +1198,45 @@ class ProxyCompositionClient:
         self._sent = self._received = self._observation = 0
         self._pending = self._runtime = None
         self._requests, self._terminal, self._last = set(), False, None
+        _CLIENT_ORIGINALS[self] = (policy, clock)
 
-    def _check(self):
+    def _state(self):
+        return (self._sent, self._received, self._observation, self._pending,
+                self._runtime, frozenset(self._requests))
+
+    def _guard(self, expected):
+        """Final clock/state check; never invokes the provenance callback."""
         if self._terminal: raise ProxyError('TERMINAL')
-        now = _sample(self._clock)
-        if (self._last is not None and any(a<b for a,b in zip(now,self._last))) or now[0] >= self._policy.binding.expiresAtMs:
+        policy, clock = _CLIENT_ORIGINALS[self]
+        if self._policy is not policy or self._clock is not clock:
+            raise ProxyError('TERMINAL')
+        now = _sample(clock)
+        if (self._terminal or self._policy is not policy or self._clock is not clock
+                or self._state() != expected):
+            raise ProxyError('TERMINAL')
+        if (self._last is not None and any(a<b for a,b in zip(now,self._last))) or now[0] >= policy.binding.expiresAtMs:
             raise ProxyError('EXPIRED')
         self._last = now
-        if self._policy.provenance_validator(self._policy.child, self._policy.pipe) is not True:
-            raise ProxyError('CHANNEL_DENIED')
         return now[1]
 
+    def _check(self, expected):
+        self._guard(expected)
+        policy = _CLIENT_ORIGINALS[self][0]
+        if policy.provenance_validator(policy.child, policy.pipe) is not True:
+            raise ProxyError('CHANNEL_DENIED')
+        return self._guard(expected)
+
     def _fail(self, immediate=False, end=None):
-        budget = self._policy.cleanup_budget
-        if immediate: end = 0
+        policy, clock = _CLIENT_ORIGINALS[self]
+        budget = policy.cleanup_budget
+        if immediate:
+            self._terminal = True
+            budget.deadline = 0
+            return
         if not self._terminal:
             self._terminal = True
             try:
-                mono = _sample(self._clock)[1]
+                mono = _sample(clock)[1]
                 first_end = mono+60000
                 if first_end > _MAX_SAFE_INTEGER: first_end = 0
                 end = first_end if end is None else min(end, first_end)
@@ -1196,7 +1248,8 @@ class ProxyCompositionClient:
 
     def _request(self, kind, request_id, value):
         try:
-            mono = self._check()
+            expected = self._state()
+            self._check(expected)
             if (self._runtime is None or self._pending is not None
                     or type(request_id) is not str or _HEX32_RE.fullmatch(request_id) is None
                     or request_id in self._requests or len(self._requests) >= 4096
@@ -1207,13 +1260,14 @@ class ProxyCompositionClient:
             else:
                 if not _plain_integer(value, 0, _MAX_SAFE_INTEGER): raise ProxyError('CHANNEL_DENIED')
                 payload = dict(requestId=request_id, cleanupEndsAtMonotonicMs=value)
-            self._sent += 1; self._requests.add(request_id)
-            self._pending = (kind, request_id, self._sent, mono)
             p = self._policy
             frame = dict(version=2, kind=kind, binding=p.binding.to_record(), childId=p.child_id,
-                         pipeId=p.pipe_id, sequence=self._sent, payload=payload)
+                         pipeId=p.pipe_id, sequence=self._sent+1, payload=payload)
             frame['mac'] = hmac.new(p.channel_key, _COMPOSITION_DOMAIN+b'FROM_BOOTSTRAP\0'+_canonical(frame), hashlib.sha256).hexdigest()
             body = _canonical(frame)
+            mono = self._guard(expected)
+            self._sent += 1; self._requests.add(request_id)
+            self._pending = (kind, request_id, self._sent, mono)
             return len(body).to_bytes(2,'big')+body
         except Exception:
             self._fail(); raise ProxyError('CHANNEL_DENIED') from None
@@ -1225,9 +1279,14 @@ class ProxyCompositionClient:
         return self._request('PROXY_STOP', request_id, cleanup_ends_at_monotonic_ms)
 
     def accept_frame(self, wire):
+        # Physical EOF revokes authority even if expiry/clock/terminal checks
+        # would fail first. It requires neither a clock nor provenance callback.
+        if type(wire) is bytes and wire == b'':
+            self._fail(immediate=True)
+            raise ProxyError('CHANNEL_DENIED')
         try:
-            mono = self._check()
-            if wire == b'': self._fail(immediate=True); raise ProxyError('CHANNEL_DENIED')
+            state = self._state()
+            mono = self._check(state)
             if type(wire) is not bytes or len(wire)<3 or not 1<=int.from_bytes(wire[:2],'big')<=16384 or len(wire)!=2+int.from_bytes(wire[:2],'big'):
                 raise ProxyError('CHANNEL_DENIED')
             f = _document(wire[2:], 16384)
@@ -1254,6 +1313,7 @@ class ProxyCompositionClient:
                         or payload['cleanupStatus'] not in ('PROVEN','UNCERTAIN')
                         or not _plain_integer(payload['failedAtMonotonicMs'],0,mono)):
                     raise ProxyError('CHANNEL_DENIED')
+                self._guard(state)
                 self._fail(end=min(_MAX_SAFE_INTEGER, payload['failedAtMonotonicMs']+60000))
                 return dict(payload)
             if kind == 'PROXY_READY':
@@ -1271,6 +1331,9 @@ class ProxyCompositionClient:
                 start = self._pending[3]
                 if observed['runtimeId'] != self._runtime or mono-start>100: raise ProxyError('CHANNEL_DENIED')
             else: raise ProxyError('CHANNEL_DENIED')
+            mono = self._guard(state)
+            if kind == 'PROXY_READY': start = max(0, mono-100)
+            elif mono-start > 100: raise ProxyError('CHANNEL_DENIED')
             if not start <= observed['observedAtMonotonicMs'] <= mono or observed['sequence'] <= self._observation:
                 raise ProxyError('CHANNEL_DENIED')
             self._received = f['sequence']; self._runtime = observed['runtimeId']
@@ -1507,6 +1570,7 @@ def _decode_bootstrap(data, clock, sockets, composition_policy=None):
         _admit_native_config(config, composition.admission_policy)
         sockets.composition = ProxyCompositionContext(composition, config, sockets, _COMPOSITION_SEAL)
         sockets.inventory = sockets.composition._inventory
+        _NATIVE_INVENTORIES[sockets] = sockets.inventory
         sockets.inventory.capture_inherited()
     return config
 
@@ -1539,6 +1603,7 @@ class NativeStream:
         self.closed = False
         self.inventory = inventory
         self.cleanup_uncertain = False
+        if inventory is not None: _NATIVE_INVENTORIES[self] = inventory
 
     def attach_connector(self, connector):
         if self.connector is not None or self.closing:
@@ -1546,10 +1611,15 @@ class NativeStream:
         self.connector = connector
         self._owned_connector = connector
         self.connector_closed = False
-        if self.inventory is not None:
-            self.inventory.acquire(connector, 'PROXY_CONNECT_SELECTOR', self, 'connector')
+        inventory = _NATIVE_INVENTORIES.get(self)
+        if inventory is not None:
+            inventory.acquire(connector, 'PROXY_CONNECT_SELECTOR', self, 'connector')
 
     def _connected(self):
+        inventory = _NATIVE_INVENTORIES.get(self)
+        if inventory is not None and (self.inventory is not inventory
+                or self.socket is not self._owned_socket or self.connector is not self._owned_connector):
+            raise OSError('stream ownership')
         if self.connector is None:
             return True
         if not self.connector.select(0):
@@ -1559,8 +1629,8 @@ class NativeStream:
             raise OSError(error, 'vsock connect')
         try:
             self.connector.close()
-            if self.inventory is not None:
-                self.inventory.retire(self.connector)
+            if inventory is not None:
+                inventory.retire(self.connector)
         except Exception:
             self.cleanup_uncertain = True
             raise OSError('connector cleanup') from None
@@ -1606,13 +1676,14 @@ class NativeStream:
             return
         self.closing = True
         error = None
-        connector = self._owned_connector if self.inventory is not None else self.connector
-        endpoint = self._owned_socket if self.inventory is not None else self.socket
+        inventory = _NATIVE_INVENTORIES.get(self)
+        connector = self._owned_connector if inventory is not None else self.connector
+        endpoint = self._owned_socket if inventory is not None else self.socket
         if not self.connector_closed and connector is not None:
             try:
                 connector.close()
-                if self.inventory is not None:
-                    self.inventory.retire(connector)
+                if inventory is not None:
+                    inventory.retire(connector)
                 self.connector_closed = True
                 self.connector = None
                 self._owned_connector = None
@@ -1621,8 +1692,8 @@ class NativeStream:
         if not self.socket_closed:
             try:
                 endpoint.close()
-                if self.inventory is not None:
-                    self.inventory.retire(endpoint)
+                if inventory is not None:
+                    inventory.retire(endpoint)
                 self.socket_closed = True
             except Exception as failure:
                 if error is None:
@@ -1645,21 +1716,27 @@ class NativeListener:
         self.closing = False
         self.closed = False
         self.inventory = inventory
+        if inventory is not None: _NATIVE_INVENTORIES[self] = inventory
 
     def accept(self):
         if self.closed or self.closing:
             raise OSError('listener')
+        inventory = _NATIVE_INVENTORIES.get(self)
+        if inventory is not None and (self.inventory is not inventory or self.socket is not self._owned_socket):
+            raise OSError('listener ownership')
         try:
             endpoint, _ = self.socket.accept()
         except BlockingIOError:
             return None
-        stream = NativeStream(endpoint, self.module, inventory=self.inventory)
+        stream = NativeStream(endpoint, self.module, inventory=inventory)
         self.streams.append(stream)
         self._owned_streams.append(stream)
         try:
-            if self.inventory is not None:
-                self.inventory.acquire(endpoint, 'PROXY_ACCEPTED_STREAM', stream, 'socket')
+            if inventory is not None:
+                inventory.acquire(endpoint, 'PROXY_ACCEPTED_STREAM', stream, 'socket')
             endpoint.setblocking(False)
+            if inventory is not None:
+                inventory.finalize_nonblocking(endpoint)
             return stream
         except Exception:
             try:
@@ -1674,7 +1751,8 @@ class NativeListener:
             return
         self.closing = True
         error = None
-        streams = self._owned_streams if self.inventory is not None else self.streams
+        inventory = _NATIVE_INVENTORIES.get(self)
+        streams = self._owned_streams if inventory is not None else self.streams
         for stream in streams:
             key = id(stream)
             if key in self.closed_streams:
@@ -1687,10 +1765,10 @@ class NativeListener:
                     error = failure
         if not self.socket_closed:
             try:
-                endpoint = self._owned_socket if self.inventory is not None else self.socket
+                endpoint = self._owned_socket if inventory is not None else self.socket
                 endpoint.close()
-                if self.inventory is not None:
-                    self.inventory.retire(endpoint)
+                if inventory is not None:
+                    inventory.retire(endpoint)
                 self.socket_closed = True
             except Exception as failure:
                 if error is None:
@@ -1724,16 +1802,17 @@ class NativeSockets:
         self.command_started = None
 
     def listen(self, address, port, backlog):
+        inventory = _NATIVE_INVENTORIES.get(self)
         if (address, port, backlog) != ('127.0.0.1', 3128, 16) or self.listener is not None or self.closing:
             raise ProxyError('LISTENER_DENIED')
         kind = self.module.SOCK_STREAM | self.module.SOCK_NONBLOCK | self.module.SOCK_CLOEXEC
         endpoint = self.module.socket(self.module.AF_INET, kind, 0)
-        self.listener = NativeListener(endpoint, self.module, self.inventory)
+        self.listener = NativeListener(endpoint, self.module, inventory)
         self._owned_listener = self.listener
         self.listener_closed = False
         try:
-            if self.inventory is not None:
-                self.inventory.acquire(endpoint, 'PROXY_LISTENER', self.listener, 'socket')
+            if inventory is not None:
+                inventory.acquire(endpoint, 'PROXY_LISTENER', self.listener, 'socket')
             endpoint.setblocking(False)
             endpoint.bind(('127.0.0.1', 3128))
             endpoint.listen(16)
@@ -1773,22 +1852,23 @@ class NativeSockets:
         return False
 
     def _ensure_selector(self):
+        inventory = _NATIVE_INVENTORIES.get(self)
         if self.stop_selector is None:
             selector = self.selectors.DefaultSelector()
             self.stop_selector = selector
             self._owned_stop_selector = selector
             self.stop_selector_closed = False
             try:
-                if self.inventory is not None:
-                    self.inventory.acquire(selector, 'PROXY_STOP_SELECTOR', self, 'stop_selector')
+                if inventory is not None:
+                    inventory.acquire(selector, 'PROXY_STOP_SELECTOR', self, 'stop_selector')
                 selector.register(self.stop_fd, self.selectors.EVENT_READ)
                 if self.composition is not None:
                     selector.register(4, self.selectors.EVENT_WRITE)
             except Exception:
                 try:
                     selector.close()
-                    if self.inventory is not None:
-                        self.inventory.retire(selector)
+                    if inventory is not None:
+                        inventory.retire(selector)
                     self.stop_selector_closed = True
                     self.stop_selector = None
                     self._owned_stop_selector = None
@@ -1840,8 +1920,9 @@ class NativeSockets:
             return
         self.closing = True
         error = None
-        listener = self._owned_listener if self.inventory is not None else self.listener
-        selector = self._owned_stop_selector if self.inventory is not None else self.stop_selector
+        inventory = _NATIVE_INVENTORIES.get(self)
+        listener = self._owned_listener if inventory is not None else self.listener
+        selector = self._owned_stop_selector if inventory is not None else self.stop_selector
         if listener is not None and not self.listener_closed:
             try:
                 listener.close()
@@ -1851,8 +1932,8 @@ class NativeSockets:
         if not self.stop_selector_closed and selector is not None:
             try:
                 selector.close()
-                if self.inventory is not None:
-                    self.inventory.retire(selector)
+                if inventory is not None:
+                    inventory.retire(selector)
                 self.stop_selector_closed = True
                 self.stop_selector = None
                 self._owned_stop_selector = None
@@ -1897,18 +1978,19 @@ class NativeVsockTransport:
             raise OSError('transport')
 
     def open(self, cid, service, binding):
+        inventory = _NATIVE_INVENTORIES.get(self)
         if (cid, service) != (2, 4050) or not _same_binding(self.binding, binding):
             raise ProxyError('TRANSPORT_DENIED')
         if self.closed or self.closing or not self.claimed:
             raise OSError('transport')
         kind = self.module.SOCK_STREAM | self.module.SOCK_NONBLOCK | self.module.SOCK_CLOEXEC
         endpoint = self.module.socket(self.module.AF_VSOCK, kind, 0)
-        stream = NativeStream(endpoint, self.module, inventory=self.inventory)
+        stream = NativeStream(endpoint, self.module, inventory=inventory)
         self.streams.append(stream)
         self._owned_streams.append(stream)
         try:
-            if self.inventory is not None:
-                self.inventory.acquire(endpoint, 'PROXY_VSOCK_STREAM', stream, 'socket')
+            if inventory is not None:
+                inventory.acquire(endpoint, 'PROXY_VSOCK_STREAM', stream, 'socket')
             endpoint.setblocking(False)
             result = endpoint.connect_ex((2, 4050))
             pending = {errno.EINPROGRESS, errno.EALREADY, errno.EWOULDBLOCK}
@@ -1935,7 +2017,8 @@ class NativeVsockTransport:
             return
         self.closing = True
         error = None
-        streams = self._owned_streams if self.inventory is not None else self.streams
+        inventory = _NATIVE_INVENTORIES.get(self)
+        streams = self._owned_streams if inventory is not None else self.streams
         for stream in streams:
             key = id(stream)
             if key in self.closed_streams:
