@@ -857,11 +857,50 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             stopped=tuple(h.role_finite.stopped)
             for operation in (composition.require_current,composition.prepare_browser,
                     lambda:composition.commit_browser(preparation),
-                    lambda:composition.handle_controller(c._v1_encode(request))):
+                    lambda:composition.handle_controller(c._v1_encode(request)),
+                    composition.begin):
                 with self.assertRaises(Exception):operation()
+                self.assertEqual(composition._state,'CANCELLED')
             self.assertEqual(tuple(h.role_finite.stopped),stopped)
             self.assertEqual(composition.stop_owned(0)['status'],'STOPPED')
             self.assertEqual(tuple(h.role_finite.stopped),stopped)
+
+    def test_v1_rejected_restart_terminalizes_admitted_and_committed_once(self):
+        for committed in (False,True):
+            with self.subTest(committed=committed):
+                h=self.Harness(self);composition,stack=h.build()
+                with stack:
+                    first=composition.begin();preparation=reservation=None
+                    if committed:
+                        preparation=composition.prepare_browser()
+                        reservation=composition._browser_reservation
+                        self.assertEqual(composition.commit_browser(preparation),
+                                         {'status':'ACTIVE','generation':1})
+                        self.assertEqual(composition._state,'BROWSER_COMMITTED')
+                    with self.assertRaisesRegex(t.TopologyError,'^TOPOLOGY_FAILED$'):
+                        composition.begin()
+                    self.assertTrue(composition._terminal)
+                    self.assertEqual(composition._state,'FAILED')
+                    self.assertEqual(composition._generation,2)
+                    self.assertIsNone(composition._proof)
+                    self.assertIsNone(composition._handoff)
+                    self.assertIsNone(composition._browser_preparation)
+                    self.assertIsNone(composition._browser_reservation)
+                    if committed:
+                        self.assertTrue(preparation._used);self.assertTrue(reservation._used)
+                    self.assertIsNot(first,composition._proof)
+                    stopped=tuple(h.role_finite.stopped)
+                    self.assertEqual(len(stopped),4)
+                    operations=(composition.begin,composition.require_current,
+                        composition.prepare_browser,
+                        lambda:composition.commit_browser(preparation),
+                        lambda:composition.handle_controller(b'bad'))
+                    for operation in operations:
+                        with self.assertRaises(Exception):operation()
+                        self.assertEqual(composition._generation,2)
+                        self.assertEqual(tuple(h.role_finite.stopped),stopped)
+                    self.assertEqual(composition.stop_owned(0)['status'],'STOPPED')
+                    self.assertEqual(tuple(h.role_finite.stopped),stopped)
 
     def test_v1_all_probe_families_exit_before_persistent_roles(self):
         h=self.Harness(self);composition,stack=h.build()

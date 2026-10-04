@@ -2446,8 +2446,9 @@ class BootstrapComposition:
                 self._cleanup_chain.append(owner)
 
     def _invalidate_terminal(self, state):
-        if not self._terminal:
-            self._generation += 1
+        if self._terminal:
+            return
+        self._generation += 1
         preparation, reservation = (
             self._browser_preparation, self._browser_reservation)
         if type(preparation) is _CONFINEMENT.BootstrapBrowserPreparation:
@@ -2583,8 +2584,8 @@ class BootstrapComposition:
             _canonical(payload).decode('ascii'), wire)
 
     def begin(self) -> AdmissionProof:
-        if self._state != 'NEW' or self._terminal: _fail('TOPOLOGY_FAILED')
         try:
+            if self._state != 'NEW' or self._terminal: _fail('TOPOLOGY_FAILED')
             self._state = 'PROBING'
             self._probe_epoch = _PROBES.qualify_probe_epoch(
                 self.binding, self._fixtures, self._budget)
