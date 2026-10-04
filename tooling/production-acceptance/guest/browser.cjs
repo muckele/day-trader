@@ -7,12 +7,12 @@ const { admitBrowserRequest } = require('./budget.cjs');
 const { claimBrowserRequestEvidence } = require('./role-ports.cjs');
 
 const RUNTIME_PINS = deepFreeze(JSON.parse(JSON.stringify(runtime)));
-const ALLOWED_ACTIONS = new Set(['LOGIN_FIELDS']);
+const ALLOWED_ACTIONS = new Set(['LOGIN_SESSION', 'SESSION_OBSERVATION']);
 const FIXED_PATHS = Object.freeze({
   profile: '/run/acceptance/browser/profile', support: '/run/acceptance/browser/support',
   cache: '/run/acceptance/browser/cache', shm: '/dev/shm',
 });
-const sessions = new WeakMap();
+const sessions = new WeakMap(), browserResults = new WeakMap();
 
 function fail(code, cause) { const error = new Error(code, cause ? { cause } : undefined); error.code = code; throw error; }
 function deepFreeze(value) { if (value && typeof value === 'object') { for (const item of Object.values(value)) deepFreeze(item); Object.freeze(value); } return value; }
@@ -116,6 +116,18 @@ function validateAssetProofs(payload, entries) {
     seen.add(proof.entryId);
   }
 }
+function actionPayload(action, payload) {
+  if (!exactObject(payload)) fail('ACTION_DENIED');
+  if (action === 'LOGIN_SESSION') {
+    if (Object.keys(payload).sort().join(',') !== 'ownerId,password,username' ||
+        typeof payload.ownerId !== 'string' || payload.ownerId.length < 1 || payload.ownerId.length > 256 || /[\0\r\n]/.test(payload.ownerId) ||
+        typeof payload.username !== 'string' || payload.username.length < 1 || payload.username.length > 512 || /[\0\r\n]/.test(payload.username) ||
+        typeof payload.password !== 'string' || payload.password.length < 1 || payload.password.length > 4096 || /[\0\r\n]/.test(payload.password)) fail('ACTION_DENIED');
+    return;
+  }
+  if (action === 'SESSION_OBSERVATION' && Reflect.ownKeys(payload).length === 0) return;
+  fail('ACTION_DENIED');
+}
 async function openBrowser(config, ports) {
   try { config = inspectBrowserControllerConfig(config); } catch (cause) { fail('CONFIG_INVALID', cause); }
   validateConfig(config);
@@ -139,7 +151,7 @@ async function openBrowser(config, ports) {
     try { await stopRole(); } catch {}
     throw cause;
   }
-  const pending = new Map();
+  const pending = new Map(), sessionToken = Object.freeze({});
   let nextId = 0, terminal = false, closeSignal, closeOperation;
   async function decideRoute(received) {
     const frame=received.frame;let evidence;
@@ -170,10 +182,20 @@ async function openBrowser(config, ports) {
         const received = await wire.read(), frame = received.frame;
         if (frame.type === 'ROUTE') {
           await decideRoute(received);
+        } else if (frame.type === 'FILLED') {
+          exact(frame.payload, ['actionId', 'status']);
+          if (!safe(frame.payload.actionId) || frame.payload.status !== 'FILLED') fail('FRAME_DENIED');
+          const slot = pending.get(frame.payload.actionId);
+          if (!slot || slot.action !== 'LOGIN_SESSION' || slot.filled) fail('FRAME_DENIED');
+          slot.filled = true; slot.payload.password = ''; slot.payload = null; slot.onFilled();
         } else if (frame.type === 'RESULT') {
-          exact(frame.payload, ['actionId', 'status']); if (!safe(frame.payload.actionId) || frame.payload.status !== 'DONE') fail('FRAME_DENIED');
+          exact(frame.payload, ['actionId', 'status', 'fingerprint']);
+          if (!safe(frame.payload.actionId) || !['SESSION_BOUND','SESSION_OBSERVED'].includes(frame.payload.status) || !/^[0-9a-f]{64}$/.test(frame.payload.fingerprint)) fail('FRAME_DENIED');
           const slot = pending.get(frame.payload.actionId); if (!slot) fail('FRAME_DENIED');
-          pending.delete(frame.payload.actionId); slot.resolve(privateHandle({ actionId: frame.payload.actionId, status: frame.payload.status }));
+          if (slot.action === 'LOGIN_SESSION' && (!slot.filled || frame.payload.status !== 'SESSION_BOUND') ||
+              slot.action === 'SESSION_OBSERVATION' && frame.payload.status !== 'SESSION_OBSERVED') fail('FRAME_DENIED');
+          const result=privateHandle({});browserResults.set(result,{sessionToken,kind:frame.payload.status,fingerprint:frame.payload.fingerprint});
+          pending.delete(frame.payload.actionId); slot.resolve(result);
         } else if (frame.type === 'ERROR') {
           const keys = exactObject(frame.payload) ? Object.keys(frame.payload).sort().join(',') : '';
           if (!['code', 'actionId,code'].includes(keys) || typeof frame.payload.code !== 'string' || frame.payload.code.length < 1 || frame.payload.code.length > 128 ||
@@ -192,14 +214,19 @@ async function openBrowser(config, ports) {
   }
   pump();
   const session = privateHandle({
-    async perform(action, payload) {
-      if (terminal || closeOperation || pending.size !== 0 || !ALLOWED_ACTIONS.has(action) || !exactObject(payload) || Object.keys(payload).sort().join(',') !== 'password,username' ||
-          typeof payload.username !== 'string' || typeof payload.password !== 'string' || payload.username.length < 1 || payload.username.length > 512 ||
-          payload.password.length < 1 || payload.password.length > 512) fail('ACTION_DENIED');
+    async perform(action, payload, onFilled) {
+      if (terminal || closeOperation || pending.size !== 0 || !ALLOWED_ACTIONS.has(action)) fail('ACTION_DENIED');
+      actionPayload(action, payload);
+      if (action === 'LOGIN_SESSION' ? arguments.length !== 3 || typeof onFilled !== 'function' : arguments.length !== 2) fail('ACTION_DENIED');
       const actionId = ++nextId;
-      const result = new Promise((resolve, reject) => pending.set(actionId, { resolve, reject }));
+      const result = new Promise((resolve, reject) => pending.set(actionId, { action, filled:false, onFilled, payload, resolve, reject }));
       try { await wire.write('ACTION', { actionId, action, payload }); } catch (cause) { pending.delete(actionId); throw cause; }
       return result;
+    },
+    inspectResult(result) {
+      const saved=browserResults.get(result);
+      if(!saved||saved.sessionToken!==sessionToken)fail('SESSION_INVALID');
+      return Object.freeze({kind:saved.kind,fingerprint:saved.fingerprint});
     },
     async close() {
       if (closeOperation) return closeOperation;

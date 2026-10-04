@@ -198,6 +198,16 @@ function fakePlaywright(options = {}) {
     getByRole(role, options) {
       return { click: async () => { calls.selectors.push(['role', role, options]); } };
     },
+    async waitForResponse(predicate) {
+      const ownerId=typeof options.ownerId==='function'?options.ownerId():options.ownerId;
+      const ownerUsername=typeof options.ownerUsername==='function'?options.ownerUsername():options.ownerUsername;
+      for(const status of options.meStatuses||[200]){
+        const response={url:()=>BACKEND+'/api/me',status:()=>status,request:()=>({method:()=> 'GET'}),json:async()=>status===200?({user:{id:ownerId||'owner-id',username:ownerUsername||'synthetic-owner'}}):({message:'Unauthorized'})};
+        const accepted=predicate(response);calls.responseCandidates=[...(calls.responseCandidates||[]),{status,accepted}];if(accepted)return response;
+      }
+      throw new Error('synthetic response sequence exhausted');
+    },
+    async reload() { calls.events.push('reload'); return { ok: () => true }; },
     async close() { calls.popupCloses++; },
   };
   context = {
@@ -210,7 +220,8 @@ function fakePlaywright(options = {}) {
       if (contextHandlers.page) await contextHandlers.page(page);
       return page;
     },
-    async cookies() { return [{ name: 'daytrader_session', value: 'private-cookie', domain: 'backend.example.test', path: '/', secure: true, httpOnly: true, sameSite: 'None' }]; },
+    async cookies() { const override=typeof options.cookie==='function'?options.cookie():options.cookie;
+      return [Object.assign({ name: 'daytrader_session', value: 'private-cookie', domain: 'backend.example.test', path: '/', secure: true, httpOnly: true, sameSite: 'None' },override||{})]; },
     async close() { calls.contextCloses++; if(options.contextCloseFailure)throw new Error('synthetic context close failure'); },
   };
   const browser = {
@@ -626,13 +637,84 @@ test('fixed_actions_only_and_private_results', async () => {
   await assert.rejects(h.session.perform('EVALUATE', { expression: '1+1' }), { code: 'ACTION_DENIED' });
   await assert.rejects(h.session.perform('OBSERVE_VIEW', { view: '/arbitrary-url' }), { code: 'ACTION_DENIED' });
   await assert.rejects(h.session.perform('LOGIN_FIELDS', { username: 'owner', password: 'secret', extra: true }), { code: 'ACTION_DENIED' });
-  await assert.rejects(h.session.perform('LOGIN_FIELDS', { username: 'x'.repeat(513), password: 'secret' }), { code: 'ACTION_DENIED' });
-  const result = await h.session.perform('LOGIN_FIELDS', { username: 'synthetic-owner', password: 'synthetic-password' });
+  await assert.rejects(h.session.perform('LOGIN_SESSION', { ownerId:'owner-id',username: 'x'.repeat(513), password: 'secret' }), { code: 'ACTION_DENIED' });
+  const result = await h.session.perform('LOGIN_SESSION', { ownerId:'owner-id',username: 'synthetic-owner', password: 'synthetic-password' },()=>{});
   assert.throws(() => JSON.stringify(result), { code: 'PRIVATE_HANDLE' });
-  assert.deepEqual(h.fake.calls.selectors.slice(-2).map(row => row.slice(0, 2)), [
-    ['placeholder', 'Username'], ['placeholder', 'Password'],
+  assert.deepEqual(h.session.inspectResult(result).kind, 'SESSION_BOUND');
+  assert.deepEqual(h.fake.calls.selectors.slice(-3).map(row => row.slice(0, 2)), [
+    ['placeholder', 'Username'], ['placeholder', 'Password'], ['role','button'],
   ]);
   await closeHarness(h);
+});
+
+test('task14_login_click_owner_cookie_and_private_fingerprint', async () => {
+  const h = await startHarness();
+  await assert.rejects(h.session.perform('LOGIN_FIELDS', { username: 'synthetic-owner', password: 'synthetic-password' }), { code: 'ACTION_DENIED' });
+  const result = await h.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+  },()=>{});
+  const inspected=h.session.inspectResult(result);
+  assert.equal(inspected.kind, 'SESSION_BOUND');
+  assert.match(inspected.fingerprint, /^[0-9a-f]{64}$/);
+  assert.throws(() => JSON.stringify(result), { code: 'PRIVATE_HANDLE' });
+  assert.deepEqual(h.fake.calls.selectors.slice(-3).map(row => row.slice(0, 2)), [
+    ['placeholder', 'Username'], ['placeholder', 'Password'], ['role', 'button'],
+  ]);
+  const frames = Buffer.concat(h.links.logs.map(row => row.bytes)).toString();
+  assert.equal(frames.includes('private-cookie'), false);
+  await closeHarness(h);
+});
+
+test('task14_delayed_preauth_401_cannot_win_post_login_me_waiter', async () => {
+  const h = await startHarness({ fake: { meStatuses: [401, 200] } });
+  const result = await h.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+  },()=>{});
+  assert.equal(h.session.inspectResult(result).kind, 'SESSION_BOUND');
+  assert.deepEqual(h.fake.calls.responseCandidates, [
+    { status: 401, accepted: false }, { status: 200, accepted: true },
+  ]);
+  await closeHarness(h);
+});
+
+test('task14_wrong_owner_and_cookie_widening_fail_closed', async () => {
+  const wrongOwner = await startHarness({ fake: { ownerId: 'different-owner' } });
+  await assert.rejects(wrongOwner.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+  },()=>{}), { code: 'OWNER_MISMATCH' });
+  for (const cookie of [
+    { secure: false }, { httpOnly: false }, { sameSite: 'Lax' }, { path: '/api' },
+    { domain: '.backend.example.test' }, { domain: 'frontend.example.test' },
+  ]) {
+    const h = await startHarness({ fake: { cookie } });
+    await assert.rejects(h.session.perform('LOGIN_SESSION', {
+      ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+    },()=>{}), { code: 'COOKIE_INVALID' });
+  }
+});
+
+test('task14_second_login_fails_and_continuity_uses_worker_local_cookie', async () => {
+  let value = 'private-cookie';
+  const h = await startHarness({ fake: { cookie: () => ({ value }) } });
+  const before = await h.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+  },()=>{});
+  await assert.rejects(h.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'second-password',
+  },()=>{}), { code: 'LOGIN_ALREADY_ATTEMPTED' });
+  assert.equal(h.fake.calls.contexts.length, 1);
+  assert.equal(Buffer.concat(h.links.logs.map(row => row.bytes)).toString().includes('private-cookie'), false);
+  // The second login intentionally terminates this worker. A fresh synthetic
+  // run proves continuity comparison without adding a retry path.
+  const continuous = await startHarness({ fake: { cookie: () => ({ value }) } });
+  const first = await continuous.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+  },()=>{});
+  value = 'replacement-cookie';
+  const after = await continuous.session.perform('SESSION_OBSERVATION', {});
+  assert.notEqual(continuous.session.inspectResult(first).fingerprint, continuous.session.inspectResult(after).fingerprint);
+  assert.equal(continuous.fake.calls.events.includes('reload'), true);
+  await closeHarness(continuous);
 });
 
 test('authenticated_route_decision_keeps_body_private_and_never_overrides', async () => {
@@ -683,7 +765,7 @@ test('held_admission_serializes_controller_action_before_route_decision', async 
     continue:async()=>{disposition='CONTINUE';},abort:async()=>{disposition='ABORT';}});
   await entered;
   const releaseWrite=h.links.controller.holdNextWrite();
-  const action=h.session.perform('LOGIN_FIELDS',{username:'synthetic-owner',password:'synthetic-password'});
+  const action=h.session.perform('LOGIN_SESSION',{ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password'},()=>{});
   await new Promise(resolve=>setImmediate(resolve));
   releaseJournal();await new Promise(resolve=>setImmediate(resolve));releaseWrite();
   await Promise.all([route,action]);assert.ok(['CONTINUE','ABORT'].includes(disposition));
@@ -711,8 +793,8 @@ test('invalid_or_oversize_login_body_aborts_without_controller_admission', async
 
 test('only_one_action_may_be_in_flight', async () => {
   const h = await startHarness();
-  const first = h.session.perform('LOGIN_FIELDS', { username: 'first', password: 'secret' });
-  await assert.rejects(h.session.perform('LOGIN_FIELDS', { username: 'second', password: 'secret' }), { code: 'ACTION_DENIED' });
+  const first = h.session.perform('LOGIN_SESSION', { ownerId:'owner-id',username: 'synthetic-owner', password: 'secret' },()=>{});
+  await assert.rejects(h.session.perform('LOGIN_SESSION', { ownerId:'owner-id',username: 'synthetic-owner', password: 'secret' },()=>{}), { code: 'ACTION_DENIED' });
   await first;
   await closeHarness(h);
 });
@@ -723,7 +805,7 @@ test('malformed_authenticated_channel_input_stops_original_role', async () => {
   await h.links.worker.write(Buffer.concat([prefix, body]));
   for (let attempt = 0; attempt < 10 && h.stops() === 0; attempt++) await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.stops(), 1);
-  await assert.rejects(h.session.perform('LOGIN_FIELDS', { username: 'user', password: 'secret' }), { code: 'ACTION_DENIED' });
+  await assert.rejects(h.session.perform('LOGIN_SESSION', { ownerId:'owner-id',username: 'user', password: 'secret' },()=>{}), { code: 'ACTION_DENIED' });
 });
 
 test('tampered_runtime_pipe_or_body_fails_closed', async () => {

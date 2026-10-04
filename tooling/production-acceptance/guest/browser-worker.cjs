@@ -1,6 +1,6 @@
 'use strict';
 
-const { createHash, createHmac, timingSafeEqual } = require('node:crypto');
+const { createHash, createHmac, randomBytes, timingSafeEqual } = require('node:crypto');
 const { chromium } = require('playwright');
 const { validateAssetResponse, importBrowserAssetBundle } = require('./receipts.cjs');
 const { bindBrowserWorkerChannel } = require('./role-ports.cjs');
@@ -17,6 +17,36 @@ function exact(value, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Reflect.ownKeys(value).length !== keys.length || keys.some(key => !Object.hasOwn(value, key))) fail('FRAME_DENIED');
 }
 function safe(value, minimum = 1) { return Number.isSafeInteger(value) && !Object.is(value, -0) && value >= minimum; }
+function sessionAction(action,payload) {
+  if(!payload||typeof payload!=='object'||Array.isArray(payload))fail('ACTION_DENIED');
+  if(action==='LOGIN_SESSION'){
+    exact(payload,['ownerId','password','username']);
+    if(typeof payload.ownerId!=='string'||payload.ownerId.length<1||payload.ownerId.length>256||/[\0\r\n]/.test(payload.ownerId)||
+       typeof payload.username!=='string'||payload.username.length<1||payload.username.length>512||/[\0\r\n]/.test(payload.username)||
+       typeof payload.password!=='string'||payload.password.length<1||payload.password.length>4096||/[\0\r\n]/.test(payload.password))fail('ACTION_DENIED');
+    return;
+  }
+  if(action==='SESSION_OBSERVATION'&&Reflect.ownKeys(payload).length===0)return;
+  fail('ACTION_DENIED');
+}
+function meResponse(response,origin) {
+  try {const url=new URL(response.url()),request=typeof response.request==='function'?response.request():null;
+    return url.origin===origin&&url.pathname==='/api/me'&&!url.search&&!url.hash&&typeof response.status==='function'&&response.status()===200&&
+      (!request||typeof request.method!=='function'||request.method()==='GET');}
+  catch{return false;}
+}
+async function sessionSnapshot(context,response,backend,expectedOwner,key) {
+  if(!response||typeof response.status!=='function'||response.status()!==200||typeof response.json!=='function')fail('OWNER_MISMATCH');
+  let body;try{body=await response.json();}catch{fail('OWNER_MISMATCH');}
+  if(!body||typeof body!=='object'||Array.isArray(body)||!body.user||typeof body.user!=='object'||Array.isArray(body.user)||
+      body.user.id!==expectedOwner.id||body.user.username!==expectedOwner.username)fail('OWNER_MISMATCH');
+  const url=new URL(backend),cookies=await context.cookies([backend]),matches=cookies.filter(cookie=>cookie&&cookie.name==='daytrader_session');
+  if(matches.length!==1)fail('COOKIE_INVALID');const cookie=matches[0];
+  if(typeof cookie.value!=='string'||cookie.value.length<1||cookie.value.length>4096||cookie.domain!==url.hostname||cookie.domain.startsWith('.')||
+      cookie.path!=='/'||cookie.secure!==true||cookie.httpOnly!==true||cookie.sameSite!=='None')fail('COOKIE_INVALID');
+  const fingerprint=createHmac('sha256',key).update('acceptance:session-cookie:v1\0','ascii').update(cookie.value,'utf8').digest('hex');
+  return Object.freeze({fingerprint});
+}
 async function bounded(promise,milliseconds) {
   if(!Number.isSafeInteger(milliseconds)||milliseconds<0)fail('CLEANUP_UNCERTAIN');
   let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('CLEANUP_UNCERTAIN'),{code:'CLEANUP_UNCERTAIN'})),milliseconds);timer.unref?.();})]);}
@@ -295,7 +325,8 @@ async function runBrowserWorker(pipe, config) {
     if (!outcome || outcome.status !== 'STARTED' || !launched) fail('LAUNCH_FAILED');state=launched;
     wire=rpc(outcome.applicationPipe,auditApplication(outcome.applicationPipe,topology.runId));
     inspectFamily(pipe);
-    const decisions=new Map();launched.decisions=decisions;let ready=false,commandFailure;
+    const decisions=new Map();launched.decisions=decisions;let ready=false,commandFailure,loginSpent=false,boundSession=null;
+    const sessionKey=randomBytes(32);
     const commandLoop=(async()=>{try{while(true){
       const frame=await wire.read();
       if(frame.type==='DECISION'){
@@ -305,11 +336,26 @@ async function runBrowserWorker(pipe, config) {
       }
       if(frame.type==='ACTION'){
         exact(frame.payload,['actionId','action','payload']);const {actionId,action,payload}=frame.payload;
-        if(!ready||!Number.isSafeInteger(actionId)||action!=='LOGIN_FIELDS'||!payload||Object.keys(payload).sort().join(',')!=='password,username'||
-            typeof payload.username!=='string'||typeof payload.password!=='string'||payload.username.length<1||payload.username.length>512||
-            payload.password.length<1||payload.password.length>512){await wire.write('ERROR',{actionId,code:'ACTION_DENIED'});continue;}
-        await state.page.getByPlaceholder('Username').fill(payload.username);await state.page.getByPlaceholder('Password').fill(payload.password);
-        await wire.write('RESULT',{actionId,status:'DONE'});continue;
+        if(!ready||!Number.isSafeInteger(actionId)){await wire.write('ERROR',{actionId,code:'ACTION_DENIED'});continue;}
+        sessionAction(action,payload);
+        if(action==='LOGIN_SESSION'){
+          if(loginSpent)fail('LOGIN_ALREADY_ATTEMPTED');loginSpent=true;
+          const expectedOwner=Object.freeze({id:payload.ownerId,username:payload.username});
+          const response=state.page.waitForResponse(value=>meResponse(value,config.runBinding.origins.BACKEND),{timeout:10000});
+          let password=payload.password;
+          try{await state.page.getByPlaceholder('Username').fill(payload.username);await state.page.getByPlaceholder('Password').fill(password);}
+          finally{password=null;payload.password='';}
+          await wire.write('FILLED',{actionId,status:'FILLED'});
+          await state.page.getByRole('button',{name:'Log In',exact:true}).click();
+          boundSession=await sessionSnapshot(state.context,await response,config.runBinding.origins.BACKEND,expectedOwner,sessionKey);
+          boundSession=Object.freeze({...boundSession,expectedOwner});
+          await wire.write('RESULT',{actionId,status:'SESSION_BOUND',fingerprint:boundSession.fingerprint});continue;
+        }
+        if(!boundSession)fail('SESSION_INVALID');
+        const response=state.page.waitForResponse(value=>meResponse(value,config.runBinding.origins.BACKEND),{timeout:10000});
+        await state.page.reload({waitUntil:'domcontentloaded'});
+        const observed=await sessionSnapshot(state.context,await response,config.runBinding.origins.BACKEND,boundSession.expectedOwner,sessionKey);
+        await wire.write('RESULT',{actionId,status:'SESSION_OBSERVED',fingerprint:observed.fingerprint});continue;
       }
       if(frame.type==='CLOSE'){exact(frame.payload,[]);const result=await state.owner.stopOwned();await wire.write('EXIT',{status:result.status,runId:result.runId});
         return Object.freeze({status:'EXITED',runId:topology.runId});}
