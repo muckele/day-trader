@@ -914,6 +914,105 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     self.assertEqual(composition.stop_owned(0)['status'],'STOPPED')
                     self.assertEqual(tuple(h.role_finite.stopped),stopped)
 
+    def test_v1_stop_during_every_acquisition_never_publishes_or_advances(self):
+        for boundary in ('probe','roles','proxy','event','capture','publication'):
+            with self.subTest(boundary=boundary):
+                h=self.Harness(self);composition,stack=h.build();receipts=[]
+                def stop():receipts.append(composition.stop_owned(60000))
+                if boundary=='probe':
+                    original=h.probe_channel.observe
+                    def observe(*args):
+                        if not receipts:stop()
+                        return original(*args)
+                    h.probe_channel.observe=observe
+                elif boundary=='roles':
+                    original=h.role_kernel.spawn_waiting
+                    def spawn(*args):
+                        if not receipts:stop()
+                        return original(*args)
+                    h.role_kernel.spawn_waiting=spawn
+                elif boundary=='proxy':
+                    original=composition._proxy_entry
+                    def activate(*args):
+                        owner=original(*args);stop();return owner
+                    composition._proxy_entry=activate
+                elif boundary=='event':
+                    original=t.LinuxBootstrapEventSource.install
+                    def install(*args):
+                        owner=original(*args);stop();return owner
+                    stack.enter_context(mock.patch.object(
+                        t.LinuxBootstrapEventSource,'install',side_effect=install))
+                elif boundary=='capture':
+                    original=h.host.observe
+                    def observe(*args):stop();return original(*args)
+                    h.host.observe=observe
+                else:
+                    original=t._validate_composition_payload
+                    def validate(*args):
+                        value=original(*args);stop();return value
+                    stack.enter_context(mock.patch.object(
+                        t,'_validate_composition_payload',side_effect=validate))
+                result=error=None
+                with stack:
+                    try:result=composition.begin()
+                    except Exception as caught:error=caught
+                    self.assertEqual(receipts,[{'status':'TIMEOUT','runId':h.binding.runId}])
+                    self.assertIsNone(result);self.assertIsNotNone(error)
+                    self.assertTrue(composition._terminal)
+                    self.assertEqual(composition._state,'STOPPED')
+                    self.assertEqual(composition._generation,2)
+                    self.assertIsNone(composition._proof);self.assertIsNone(composition._handoff)
+                    self.assertEqual(composition.stop_owned(60000)['status'],'STOPPED')
+                    self.assertTrue(all(owner.closed for owner in h.event_native.opened))
+                    generation=composition._generation
+                    for operation in (composition.begin,composition.require_current,
+                                      composition.prepare_browser):
+                        with self.assertRaises(Exception):operation()
+                        self.assertEqual(composition._generation,generation)
+                if boundary=='probe':self.assertNotIn('roles',h.timeline)
+                if boundary=='roles':self.assertNotIn('proxy',h.timeline)
+                if boundary=='proxy':
+                    self.assertFalse(any(type(value) is tuple and
+                        value[0]=='event-retain' for value in h.timeline))
+                if boundary=='event':
+                    self.assertFalse(any(type(value) is tuple and
+                        value[0]=='open' for value in h.timeline))
+
+    def test_v1_late_cleanup_authority_is_serialized_and_never_cached_away(self):
+        for mode in ('substitute','throw','reentry','exhausted'):
+            with self.subTest(mode=mode):
+                h=self.Harness(self);composition,stack=h.build();receipts=[]
+                class LateOwner:
+                    def __init__(self):self.calls=self.active=self.maximum=0
+                    def stop_owned(owner,remaining):
+                        owner.calls+=1;owner.active+=1
+                        owner.maximum=max(owner.maximum,owner.active)
+                        try:
+                            if mode=='reentry' and owner.calls==1:
+                                receipts.append(composition.stop_owned(remaining))
+                            return {'status':'TIMEOUT' if mode=='exhausted' else 'STOPPED',
+                                    'runId':h.binding.runId}
+                        finally:owner.active-=1
+                late=LateOwner()
+                def activate(*args):
+                    receipts.append(composition.stop_owned(60000))
+                    if mode=='exhausted':h.clock.mono+=60001
+                    if mode=='throw':
+                        error=t.TopologyError('LATE_FAILURE');error.cleanup=late;raise error
+                    return late
+                composition._proxy_entry=activate
+                with stack,self.assertRaises(Exception):composition.begin()
+                self.assertEqual(receipts[0],{'status':'TIMEOUT','runId':h.binding.runId})
+                self.assertEqual(late.maximum,1)
+                self.assertGreaterEqual(late.calls,1)
+                final=composition.stop_owned(60000)
+                self.assertEqual(final['status'],
+                                 'TIMEOUT' if mode=='exhausted' else 'STOPPED')
+                self.assertIsNone(composition._proof);self.assertIsNone(composition._handoff)
+                self.assertEqual(composition._generation,2)
+                if mode=='reentry':
+                    self.assertIn({'status':'TIMEOUT','runId':h.binding.runId},receipts[1:])
+
     def test_v1_all_probe_families_exit_before_persistent_roles(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack: composition.begin()

@@ -2438,29 +2438,82 @@ class BootstrapComposition:
         self._generation, self._sequence = 1, 0
         self._terminal, self._cleanup_status = False, None
         self._last_clock = None
+        self._lock = threading.RLock()
+        self._pending_acquisitions = {}
+        self._retired_cleanup, self._pending_cleanup = set(), set()
+        self._cleanup_uncertain = set()
+        self._cleanup_running = False
+        self._observations_retired = False
         _BOOTSTRAP_COMPOSITIONS.add(self)
 
     def _retain_cleanup(self, owner):
-        if (owner is not None and callable(getattr(owner, 'stop_owned', None))
-                and not any(owner is retained for retained in self._cleanup_chain)):
+        if owner is None or not callable(getattr(owner, 'stop_owned', None)):
+            return
+        with self._lock:
+            if any(owner is retained for retained in self._cleanup_chain):
+                return
             wrapped = getattr(owner, '_roles', None)
-            if not any(wrapped is retained for retained in self._cleanup_chain):
-                self._cleanup_chain.append(owner)
+            if any(wrapped is retained for retained in self._cleanup_chain):
+                return
+            self._cleanup_chain.append(owner)
+            if self._terminal: self._cleanup_status = None
+
+    def _reserve_acquisition(self, name):
+        with self._lock:
+            if self._terminal: _fail('TOPOLOGY_FAILED')
+            token = (self._generation, object())
+            self._pending_acquisitions[token] = name
+            if name == 'capture': self._observations_retired = False
+            return token
+
+    def _checkpoint(self, token):
+        with self._lock:
+            if self._terminal or self._generation != token[0]:
+                _fail('TOPOLOGY_FAILED')
+
+    def _settle_acquisition(self, token, value=None, error=None):
+        self._retain_cleanup(value)
+        self._retain_cleanup(getattr(error, 'cleanup', None))
+        with self._lock:
+            name = self._pending_acquisitions.pop(token, None)
+            if name is None: _fail('TOPOLOGY_FAILED')
+            terminal = self._terminal or self._generation != token[0]
+            if terminal:
+                self._cleanup_status = None
+                if name == 'capture': self._observations_retired = False
+        if terminal: self._cleanup_retained()
+
+    def _acquire(self, name, operation):
+        token = self._reserve_acquisition(name)
+        try: value = operation()
+        except BaseException as error:
+            self._settle_acquisition(token, error=error)
+            raise
+        self._settle_acquisition(token, value=value)
+        self._checkpoint(token)
+        return token, value
+
+    def _publish(self, token, **values):
+        with self._lock:
+            if self._terminal or self._generation != token[0]:
+                _fail('TOPOLOGY_FAILED')
+            for key, value in values.items(): setattr(self, key, value)
 
     def _invalidate_terminal(self, state):
-        if self._terminal:
-            return
-        self._generation += 1
-        preparation, reservation = (
-            self._browser_preparation, self._browser_reservation)
-        if type(preparation) is _CONFINEMENT.BootstrapBrowserPreparation:
-            preparation._used = True
-        if type(reservation) is BrowserTransitionReservation:
-            reservation._used = True
-        self._terminal = True; self._state = state
-        self._proof = self._handoff = None
-        self._browser_preparation = self._browser_reservation = None
-        self._proxy_runtime_id = self._event_source_id = None
+        with self._lock:
+            if self._terminal: return
+            self._generation += 1
+            preparation, reservation = (
+                self._browser_preparation, self._browser_reservation)
+            if type(preparation) is _CONFINEMENT.BootstrapBrowserPreparation:
+                preparation._used = True
+            if type(reservation) is BrowserTransitionReservation:
+                reservation._used = True
+            self._terminal = True; self._state = state
+            self._proof = self._handoff = None
+            self._browser_preparation = self._browser_reservation = None
+            self._proxy_runtime_id = self._event_source_id = None
+            self._cleanup_status = None
 
     def _failed(self, error):
         self._retain_cleanup(getattr(error, 'cleanup', None))
@@ -2482,10 +2535,7 @@ class BootstrapComposition:
     def _activate_proxy(self):
         operation = (self._proxy_entry if callable(self._proxy_entry) else
                      self._proxy_entry.activate_original)
-        owner = operation(self._roles, self.binding, self._budget)
-        if not isinstance(owner, _PROXY.ProxyRuntimeOwner):
-            _fail('PROXY_RUNTIME_UNAVAILABLE')
-        return owner
+        return operation(self._roles, self.binding, self._budget)
 
     def _bind_runtime_owners(self):
         for role in _CONFINEMENT.UIDS:
@@ -2507,9 +2557,11 @@ class BootstrapComposition:
                 proxy_handoff._kernel.register_runtime_descriptor(
                     proxy_handoff, self._proxy_owner, endpoint, row['kind'], 1)
 
-    def _read_topology(self):
-        raw = tuple(self._observations._read(path)
-                    for path in NATIVE_OBSERVATION_PATHS)
+    def _read_topology(self, token):
+        raw = []
+        for path in NATIVE_OBSERVATION_PATHS:
+            raw.append(self._observations._read(path)); self._checkpoint(token)
+        raw = tuple(raw)
         interfaces = _interfaces(raw[0])
         routes = _routes4(raw[1]) + _routes6(raw[2])
         dns = _dns(raw[3])
@@ -2519,20 +2571,24 @@ class BootstrapComposition:
                      + _network_rows(raw[7], 'UDP', 6))
         return interfaces, routes, dns, tuple(listeners), _abstract(raw[8])
 
-    def _capture(self):
+    def _capture(self, token):
         before = self._event_owner.barrier()
-        self._clock(); self._expected.appliance_recheck()
-        topology = self._read_topology()
+        self._checkpoint(token); self._clock(); self._checkpoint(token)
+        self._expected.appliance_recheck(); self._checkpoint(token)
+        topology = self._read_topology(token)
         devices = self._host_devices.observe(self._expected)
+        self._checkpoint(token)
         handoffs = tuple(self._roles._handoffs[role] for role in _CONFINEMENT.UIDS)
         runtime_owners = {role:(self._proxy_owner if role == 'PROXY' else self._roles)
                           for role in _CONFINEMENT.UIDS}
         runtime = observe_current_roles(handoffs, runtime_owners,
                                         self._proxy_owner, self.binding)
+        self._checkpoint(token)
         proxy_record = self._proxy_owner.observe_current(self.binding).to_record()
-        observed = self._clock()
+        self._checkpoint(token); observed = self._clock(); self._checkpoint(token)
         after = self._event_owner.barrier()
-        final = self._clock(); self._expected.appliance_recheck()
+        self._checkpoint(token); final = self._clock(); self._checkpoint(token)
+        self._expected.appliance_recheck(); self._checkpoint(token)
         if (before.binding is not self.binding or after.binding is not self.binding
                 or before.sourceIdentity != after.sourceIdentity
                 or after.sequence <= before.sequence
@@ -2541,6 +2597,7 @@ class BootstrapComposition:
             _fail('EVENT_DRIFT')
         self._probe_epoch.require_current(
             self.binding, self._probe_epoch.fixture_inventory_digest, final[0])
+        self._checkpoint(token)
         self._sequence += 1
         probes = tuple(ProbeResult(name, attempted, outcome, count)
                        for name, attempted, outcome, count
@@ -2563,9 +2620,10 @@ class BootstrapComposition:
             proxyRuntimeId=proxy_record['runtimeId'],
             roleRuntime=[dict(row) for row in runtime])
         payload = dict(base, composition=composition)
-        self._proxy_runtime_id = proxy_record['runtimeId']
-        self._event_source_id = after.sourceIdentity
+        self._publish(token, _proxy_runtime_id=proxy_record['runtimeId'],
+                      _event_source_id=after.sourceIdentity)
         _validate_composition_payload(payload, self._expected, self.binding, self)
+        self._checkpoint(token)
         stable = json.loads(_canonical(payload))
         stable.pop('sequence'); stable.pop('observedWall'); stable.pop('observedMonotonic')
         stable['composition']['eventCheckpoint'].pop('sequence')
@@ -2576,38 +2634,63 @@ class BootstrapComposition:
                            'version':BOOTSTRAP_HANDOFF_VERSION}).decode('ascii')
         if len(wire.encode('ascii')) > BOOTSTRAP_HANDOFF_LIMIT:
             _fail('HANDOFF_DENIED')
-        self._handoff = BootstrapHandoffV1(payload, mac, wire, self,
-                                           _BOOTSTRAP_COMPOSITION_OWNER_SEAL)
+        handoff = BootstrapHandoffV1(payload, mac, wire, self,
+                                     _BOOTSTRAP_COMPOSITION_OWNER_SEAL)
         roles = _canonical(base['roles']); device_rows = _canonical(base['devices'])
-        return AdmissionProof(self.binding.runId, self.binding.manifestDigest,
+        proof = AdmissionProof(self.binding.runId, self.binding.manifestDigest,
             self.binding.configIdentity, hashlib.sha256(roles).hexdigest(),
             hashlib.sha256(device_rows).hexdigest(), proof_digest,
             self.binding.expiresAtMs, self._sequence,
             _canonical(payload).decode('ascii'), wire)
+        self._checkpoint(token)
+        return proof, handoff
+
+    def _capture_current(self):
+        token = self._reserve_acquisition('capture')
+        try: proof, handoff = self._capture(token)
+        except BaseException as error:
+            self._settle_acquisition(token, error=error)
+            raise
+        self._settle_acquisition(token)
+        self._publish(token, _proof=proof, _handoff=handoff)
+        return proof
 
     def begin(self) -> AdmissionProof:
         try:
-            if self._state != 'NEW' or self._terminal: _fail('TOPOLOGY_FAILED')
-            self._state = 'PROBING'
-            self._probe_epoch = _PROBES.qualify_probe_epoch(
-                self.binding, self._fixtures, self._budget)
-            if type(self._probe_epoch) is not _PROBES.CompletedProbeEpoch:
+            with self._lock:
+                if self._state != 'NEW' or self._terminal: _fail('TOPOLOGY_FAILED')
+                self._state = 'PROBING'
+            token, probe_epoch = self._acquire('probe', lambda:
+                _PROBES.qualify_probe_epoch(self.binding, self._fixtures, self._budget))
+            if type(probe_epoch) is not _PROBES.CompletedProbeEpoch:
                 _fail('PROBE_EPOCH_DENIED')
-            self._state = 'PROBES_EXITED'
-            self._roles = _CONFINEMENT.bind_original_roles(
-                self._role_config, self.binding, self._budget)
-            self._retain_cleanup(self._roles)
-            self._state = 'ROLES_WAITING'
-            self._proxy_owner = self._activate_proxy()
-            self._retain_cleanup(self._proxy_owner); self._state = 'PROXY_READY'
-            self._bind_runtime_owners()
-            self._event_owner = LinuxBootstrapEventSource.install(
-                self.binding, self._events, self._budget)
-            self._retain_cleanup(self._event_owner)
-            self._state = 'WATCHING'
-            self._roles.bind_current_source(_CompositionCurrentSource(self))
-            self._proof = self._capture(); self._state = 'ADMITTED'
-            return self._proof
+            self._publish(token, _probe_epoch=probe_epoch, _state='PROBES_EXITED')
+            token, roles = self._acquire('roles', lambda:
+                _CONFINEMENT.bind_original_roles(
+                    self._role_config, self.binding, self._budget))
+            if type(roles) is not _CONFINEMENT.OriginalRoleSet:
+                _fail('AUTHORITY_LOST')
+            self._publish(token, _roles=roles, _state='ROLES_WAITING')
+            token, proxy_owner = self._acquire('proxy', self._activate_proxy)
+            if not isinstance(proxy_owner, _PROXY.ProxyRuntimeOwner):
+                _fail('PROXY_RUNTIME_UNAVAILABLE')
+            self._publish(token, _proxy_owner=proxy_owner, _state='PROXY_READY')
+            token, _ = self._acquire('runtime', self._bind_runtime_owners)
+            self._checkpoint(token)
+            token, event_owner = self._acquire('event', lambda:
+                LinuxBootstrapEventSource.install(
+                    self.binding, self._events, self._budget))
+            if type(event_owner) is not BootstrapEventOwner:
+                _fail('EVENT_SOURCE_TERMINAL')
+            self._publish(token, _event_owner=event_owner, _state='WATCHING')
+            token, _ = self._acquire('current-source', lambda:
+                self._roles.bind_current_source(_CompositionCurrentSource(self)))
+            self._checkpoint(token)
+            proof = self._capture_current()
+            with self._lock:
+                if self._terminal: _fail('TOPOLOGY_FAILED')
+                self._state = 'ADMITTED'
+                return proof
         except Exception as error:
             self._failed(error)
             raise
@@ -2616,7 +2699,7 @@ class BootstrapComposition:
         if self._state not in ('ADMITTED','BROWSER_COMMITTED') or self._terminal:
             _fail('TOPOLOGY_FAILED')
         try:
-            self._proof = self._capture(); return self._proof
+            return self._capture_current()
         except Exception as error:
             self._failed(error)
             raise
@@ -2722,25 +2805,69 @@ class BootstrapComposition:
             self._failed(error)
             raise
 
+    def _cleanup_retained(self):
+        with self._lock:
+            if self._cleanup_running: return False
+            self._cleanup_running = True
+        attempted = set()
+        try:
+            while True:
+                with self._lock:
+                    pending = [owner for owner in reversed(self._cleanup_chain)
+                        if id(owner) not in self._retired_cleanup
+                        and id(owner) not in self._pending_cleanup
+                        and id(owner) not in attempted]
+                    if pending:
+                        owner = pending[0]
+                        attempted.add(id(owner)); self._pending_cleanup.add(id(owner))
+                    else: owner = None
+                if owner is None: break
+                stopped = False
+                try:
+                    allowance = self._budget.remaining()
+                    receipt = owner.stop_owned(allowance)
+                    stopped = (type(receipt) is dict
+                        and receipt.get('status') in ('STOPPED','EXITED')
+                        and receipt.get('runId',receipt.get('run_id')) == self.binding.runId)
+                except Exception: stopped = False
+                finally:
+                    with self._lock:
+                        self._pending_cleanup.discard(id(owner))
+                        if stopped:
+                            self._retired_cleanup.add(id(owner))
+                            self._cleanup_uncertain.discard(id(owner))
+                        else: self._cleanup_uncertain.add(id(owner))
+            observations_ok = self._observations_retired
+            if not observations_ok:
+                try:
+                    self._observations.cleanup_unresolved(); observations_ok = True
+                except Exception: observations_ok = False
+                with self._lock:
+                    self._observations_retired = observations_ok
+            with self._lock:
+                complete = (not self._pending_acquisitions
+                    and not self._pending_cleanup and not self._cleanup_uncertain
+                    and self._observations_retired
+                    and all(id(owner) in self._retired_cleanup
+                            for owner in self._cleanup_chain))
+                self._cleanup_status = 'STOPPED' if complete else 'TIMEOUT'
+                return complete
+        finally:
+            with self._lock: self._cleanup_running = False
+
     def stop_owned(self, remaining_ms):
         if type(remaining_ms) is not int or not 0 <= remaining_ms <= 60000:
             _fail('CLEANUP_UNCERTAIN')
-        self._terminal = True
-        if self._cleanup_status is not None:
-            return {'status':self._cleanup_status,'runId':self.binding.runId}
-        failed = False
-        for owner in reversed(self._cleanup_chain):
-            try:
-                allowance = min(remaining_ms, self._budget.remaining())
-                receipt = owner.stop_owned(allowance)
-                if (type(receipt) is not dict
-                        or receipt.get('status') not in ('STOPPED','EXITED')):
-                    failed = True
-            except Exception: failed = True
-        try: self._observations.cleanup_unresolved()
-        except Exception: failed = True
-        self._cleanup_status = 'TIMEOUT' if failed else 'STOPPED'
-        return {'status':self._cleanup_status,'runId':self.binding.runId}
+        self._invalidate_terminal('STOPPED')
+        # Freeze the one shared end before any external stop callback. Reentry
+        # observes provisional TIMEOUT; it never launches an overlapping stop.
+        try: self._budget.remaining()
+        except Exception: pass
+        complete = self._cleanup_retained()
+        with self._lock:
+            status = 'STOPPED' if complete else 'TIMEOUT'
+            self._cleanup_status = status
+        return {'status':status,'runId':self.binding.runId}
 
 
 def compose_bootstrap_v1(*, binding, expected, role_config, fixtures,
