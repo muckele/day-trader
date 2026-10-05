@@ -7,7 +7,7 @@ const { admitBrowserRequest } = require('./budget.cjs');
 const { claimBrowserRequestEvidence } = require('./role-ports.cjs');
 
 const RUNTIME_PINS = deepFreeze(JSON.parse(JSON.stringify(runtime)));
-const ALLOWED_ACTIONS = new Set(['LOGIN_SESSION', 'SESSION_OBSERVATION']);
+const ALLOWED_ACTIONS = new Set(['LOGIN_SESSION', 'SESSION_OBSERVATION', 'OBSERVE_VIEW']);
 const FIXED_PATHS = Object.freeze({
   profile: '/run/acceptance/browser/profile', support: '/run/acceptance/browser/support',
   cache: '/run/acceptance/browser/cache', shm: '/dev/shm',
@@ -126,6 +126,13 @@ function actionPayload(action, payload) {
     return;
   }
   if (action === 'SESSION_OBSERVATION' && Reflect.ownKeys(payload).length === 0) return;
+  if (action === 'OBSERVE_VIEW') {
+    if (Object.keys(payload).sort().join(',') !== 'phase,view' ||
+        !['OBSERVE_BEFORE_RESTART', 'OBSERVE_AFTER_RESTART'].includes(payload.phase) ||
+        !['ROBO', 'PORTFOLIO', 'ACTIVITY'].includes(payload.view) ||
+        payload.phase === 'OBSERVE_AFTER_RESTART' && payload.view !== 'ROBO') fail('ACTION_DENIED');
+    return;
+  }
   fail('ACTION_DENIED');
 }
 async function openBrowser(config, ports) {
@@ -189,12 +196,28 @@ async function openBrowser(config, ports) {
           if (!slot || slot.action !== 'LOGIN_SESSION' || slot.filled) fail('FRAME_DENIED');
           slot.filled = true; slot.payload.password = ''; slot.payload = null; slot.onFilled();
         } else if (frame.type === 'RESULT') {
-          exact(frame.payload, ['actionId', 'status', 'fingerprint']);
-          if (!safe(frame.payload.actionId) || !['SESSION_BOUND','SESSION_OBSERVED'].includes(frame.payload.status) || !/^[0-9a-f]{64}$/.test(frame.payload.fingerprint)) fail('FRAME_DENIED');
+          const sessionResult = ['SESSION_BOUND', 'SESSION_OBSERVED'].includes(frame.payload?.status);
+          exact(frame.payload, sessionResult ? ['actionId', 'status', 'fingerprint'] :
+            ['actionId', 'status', 'view', 'phase', 'schemaValidation', 'renderedData', 'validEmptyState', 'noError', 'fresh', 'source', 'brokerError', 'routeCount', 'renderedCount', 'fingerprint', 'readinessValidation']);
+          if (!safe(frame.payload.actionId) || sessionResult && !/^[0-9a-f]{64}$/.test(frame.payload.fingerprint)) fail('FRAME_DENIED');
           const slot = pending.get(frame.payload.actionId); if (!slot) fail('FRAME_DENIED');
           if (slot.action === 'LOGIN_SESSION' && (!slot.filled || frame.payload.status !== 'SESSION_BOUND') ||
-              slot.action === 'SESSION_OBSERVATION' && frame.payload.status !== 'SESSION_OBSERVED') fail('FRAME_DENIED');
-          const result=privateHandle({});browserResults.set(result,{sessionToken,kind:frame.payload.status,fingerprint:frame.payload.fingerprint});
+              slot.action === 'SESSION_OBSERVATION' && frame.payload.status !== 'SESSION_OBSERVED' ||
+              slot.action === 'OBSERVE_VIEW' && (frame.payload.status !== 'VIEW_OBSERVED' || frame.payload.view !== slot.payload.view || frame.payload.phase !== slot.payload.phase)) fail('FRAME_DENIED');
+          if (!sessionResult && (typeof frame.payload.schemaValidation !== 'boolean' || typeof frame.payload.renderedData !== 'boolean' ||
+              typeof frame.payload.validEmptyState !== 'boolean' || typeof frame.payload.noError !== 'boolean' || typeof frame.payload.fresh !== 'boolean' ||
+              typeof frame.payload.source !== 'string' || typeof frame.payload.brokerError !== 'boolean' ||
+              !/^[0-9a-f]{64}$/.test(frame.payload.fingerprint) || typeof frame.payload.readinessValidation !== 'boolean' ||
+              !Number.isSafeInteger(frame.payload.routeCount) || frame.payload.routeCount < 0 ||
+              !Number.isSafeInteger(frame.payload.renderedCount) || frame.payload.renderedCount < 0)) fail('FRAME_DENIED');
+          const saved=sessionResult?{sessionToken,kind:frame.payload.status,fingerprint:frame.payload.fingerprint}:
+            {sessionToken,kind:frame.payload.status,view:frame.payload.view,phase:frame.payload.phase,
+              schemaValidation:frame.payload.schemaValidation,renderedData:frame.payload.renderedData,
+              validEmptyState:frame.payload.validEmptyState,noError:frame.payload.noError,fresh:frame.payload.fresh,
+              source:frame.payload.source,brokerError:frame.payload.brokerError,routeCount:frame.payload.routeCount,
+              renderedCount:frame.payload.renderedCount,fingerprint:frame.payload.fingerprint,
+              readinessValidation:frame.payload.readinessValidation,runId:facts.runId,configIdentity:config.runBinding.configIdentity};
+          const result=privateHandle({});browserResults.set(result,saved);
           pending.delete(frame.payload.actionId); slot.resolve(result);
         } else if (frame.type === 'ERROR') {
           const keys = exactObject(frame.payload) ? Object.keys(frame.payload).sort().join(',') : '';
@@ -214,6 +237,11 @@ async function openBrowser(config, ports) {
   }
   pump();
   const session = privateHandle({
+    assertBinding(binding) {
+      if (!exactObject(binding) || Object.keys(binding).sort().join(',') !== 'configIdentity,runId' ||
+          binding.runId !== facts.runId || binding.configIdentity !== config.runBinding.configIdentity) fail('IDENTITY_MISMATCH');
+      return true;
+    },
     async perform(action, payload, onFilled) {
       if (terminal || closeOperation || pending.size !== 0 || !ALLOWED_ACTIONS.has(action)) fail('ACTION_DENIED');
       actionPayload(action, payload);
@@ -226,7 +254,8 @@ async function openBrowser(config, ports) {
     inspectResult(result) {
       const saved=browserResults.get(result);
       if(!saved||saved.sessionToken!==sessionToken)fail('SESSION_INVALID');
-      return Object.freeze({kind:saved.kind,fingerprint:saved.fingerprint});
+      const {sessionToken: ignored, ...value}=saved;
+      return Object.freeze(value);
     },
     async close() {
       if (closeOperation) return closeOperation;

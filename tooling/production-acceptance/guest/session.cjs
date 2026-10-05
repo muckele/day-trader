@@ -26,8 +26,10 @@ function sessionResult(browserSession, value, kind) {
   if (typeof browserSession.inspectResult !== 'function') fail('SESSION_INVALID');
   let inspected;
   try { inspected = browserSession.inspectResult(value); } catch (cause) { fail('SESSION_INVALID', cause); }
-  if (!inspected || typeof inspected !== 'object' || Array.isArray(inspected) || Object.keys(inspected).sort().join(',') !== 'fingerprint,kind' ||
-      inspected.kind !== kind || typeof inspected.fingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(inspected.fingerprint)) fail('SESSION_INVALID');
+  const allowedKinds = Array.isArray(kind) ? kind : [kind];
+  if (!inspected || typeof inspected !== 'object' || Array.isArray(inspected) || !allowedKinds.includes(inspected.kind) ||
+      typeof inspected.fingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(inspected.fingerprint) ||
+      inspected.kind !== 'VIEW_OBSERVED' && Object.keys(inspected).sort().join(',') !== 'fingerprint,kind') fail('SESSION_INVALID');
   return inspected.fingerprint;
 }
 
@@ -68,7 +70,7 @@ async function loginOnce(browserSession, credential, owner) {
 function assertContinuity(before, after) {
   const saved = privateSessions.get(before);
   if (!saved) fail('SESSION_INVALID');
-  const fingerprint = sessionResult(saved.browserSession, after, 'SESSION_OBSERVED');
+  const fingerprint = sessionResult(saved.browserSession, after, ['SESSION_OBSERVED', 'VIEW_OBSERVED']);
   const left = Buffer.from(saved.fingerprint, 'hex'), right = Buffer.from(fingerprint, 'hex');
   if (!timingSafeEqual(left, right)) fail('SESSION_CHANGED');
   return Object.freeze({ status: 'CONTINUOUS' });

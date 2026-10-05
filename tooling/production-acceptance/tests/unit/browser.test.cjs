@@ -166,13 +166,90 @@ function fakePlaywright(options = {}) {
     assetBodies: 0, routeFetches: 0,
   };
   const contextHandlers = {};
-  let context;
+  let navigationCount = 0;
+  const observationBodies = {
+    '/api/robotrader/settings': { settings: { mode: 'paper', enabled: false, isEnabled: false, liveTradingExplicitlyEnabled: false } },
+    '/api/robotrader/decisions?environment=paper&limit=25': { decisions: [] },
+    '/api/robotrader/orders?environment=paper&limit=25': { orders: [] },
+    '/api/robotrader/performance?environment=paper': {
+      account: { id: 'paper-account', status: 'ACTIVE', cash: '100', equity: '100', buying_power: '100' },
+      summary: { decisions: 0, submittedOrders: 0, filledOrders: 0, rejectedDecisions: 0, lastRunAt: null },
+      positions: [], brokerError: null,
+    },
+    '/api/robotrader/audit?limit=25': { events: [] },
+    '/api/robotrader/health': { mongo: { connected: true, status: 'connected' },
+      alpaca: { paper: { connected: true, error: null, tradingBlocked: false, accountStatus: 'ACTIVE', buyingPower: 100 } },
+      scheduler: { phase1WorkerEnabled: false } },
+    '/api/robotrader/reconciliation-status?environment=paper': {
+      summary: { total: 0, pending: 0, discrepancies: 0, lastReconciledAt: null },
+      orders: [], latestDiscrepancies: [], historicalDiscrepancies: [],
+    },
+    '/api/paper-trades/account': { executionSource: 'alpaca-paper', broker: 'alpaca', accountId: 'paper-account',
+      cash: 100, equity: 100, positionsValue: 0, dailyPnl: 0, totalPnl: null, positions: [] },
+    '/api/paper-trades/equity': [],
+    '/api/paper-trades/orders': [],
+    '/api/paper-trades/trades': [],
+    '/api/robotrader/notifications': { events: [], executionSource: 'alpaca-paper' },
+    '/api/readiness': {
+      contractVersion: 2, profile: 'owner-paper-maintenance', runtimeReady: true, maintenanceReady: true,
+      checks: Object.fromEntries(['ownerConfiguration','authenticationConfiguration','databaseConnected','ownerIdentity','ownerSettings','persistence','paperMode','automationDisabled','schedulerSuppressed','paperDestination','paperBindingConfiguration','paperCredentialConfiguration'].map(name => [name, { status: 'pass' }])),
+      automation: { enabled: false, isEnabled: false, liveEnabled: false, schedulerSuppressed: true, activationAuthorized: false },
+    },
+    ...(options.observationBodies || {}),
+  };
+  let context,currentUrl=FRONTEND+'/';
+  function sectionRows(title) {
+    if(title==='Recent strategy decisions')return Math.min(observationBodies['/api/robotrader/decisions?environment=paper&limit=25'].decisions.length,10);
+    if(title==='RoboTrader orders')return Math.min(observationBodies['/api/robotrader/orders?environment=paper&limit=25'].orders.filter(row=>String(row.status).toLowerCase()!=='rejected').length,8);
+    if(title==='Current positions')return Math.min(observationBodies['/api/robotrader/performance?environment=paper'].positions.length,8);
+    if(title==='Recent RoboTrader events')return observationBodies['/api/robotrader/audit?limit=25'].events.length;
+    if(title==='Broker/local order match')return Math.min(observationBodies['/api/robotrader/reconciliation-status?environment=paper'].orders.length,4);
+    if(title==='Positions')return observationBodies['/api/paper-trades/account'].positions.length;
+    if(title==='Recent Activity')return observationBodies['/api/paper-trades/orders'].length+observationBodies['/api/paper-trades/trades'].length;
+    if(title==='Alpaca paper notification delivery')return observationBodies['/api/robotrader/notifications'].events.length;
+    return 0;
+  }
+  function chartPath() {
+    if(options.chartPath)return options.chartPath;
+    return observationBodies['/api/paper-trades/equity'].map((row,index)=>(index?'L':'M')+index+','+(-Number(row.equity))).join('');
+  }
+  function hidden(title,value) {
+    return options.hiddenText===value||options.hiddenSections?.includes(title);
+  }
+  function syntheticLocator(title,value) {
+    const locator={
+      async count(){if(options.missingText===value)return 0;return options.textCounts?.[value]??1;},
+      first(){return this;},
+      nth(){return this;},
+      async isVisible(){return !hidden(title,value);},
+      async waitFor(){if(hidden(title,value))throw new Error('hidden');},
+      locator(selector){return syntheticCard(title,selector);},
+      async getAttribute(name){return name==='d'&&!options.missingChart?chartPath():null;},
+    };return locator;
+  }
+  function syntheticCard(title,selector) {
+    return {
+      async count(){
+        if(selector==='path.recharts-line-curve')return options.missingChart?0:(observationBodies['/api/paper-trades/equity'].length?1:0);
+        if(selector==='tbody tr'||selector==='.rt-panel'||selector==='.mt-5.space-y-3 > .rt-panel')return options.sectionCounts?.[title]??sectionRows(title);
+        return 1;
+      },
+      first(){return this;},
+      nth(){return this;},
+      async isVisible(){return !options.hiddenRows?.includes(title);},
+      async waitFor(){if(options.hiddenRows?.includes(title))throw new Error('hidden');},
+      locator(next){return syntheticCard(title,next);},
+      getByText(value,query){calls.selectors.push(['text',value,query,title]);return syntheticLocator(title,value);},
+      async getAttribute(name){return name==='d'&&!options.missingChart?chartPath():null;},
+    };
+  }
   const page = {
     handlers: {},
     on(name, fn) { this.handlers[name] = fn; calls.events.push('page.on:' + name); },
     async goto(url, gotoOptions) {
       calls.events.push('goto:' + url);
       calls.goto = { url, options: gotoOptions };
+      navigationCount++;
       if (options.initialRoute) {
         let disposition;
         await calls.routeHandler({
@@ -182,28 +259,66 @@ function fakePlaywright(options = {}) {
         });
         calls.initialRouteDisposition = disposition;
       }
-      if (contextHandlers.response) {
+      if (options.routeOnObservation && navigationCount > 1 && (options.routeOnObservation !== 'first' || navigationCount === 2)) {
+        let disposition;
+        await calls.routeHandler({
+          request: () => ({ method: () => 'GET', url: () => url, headers: () => ({ accept: 'text/html' }), postDataBuffer: () => null }),
+          continue: async () => { disposition = 'CONTINUE'; }, abort: async () => { disposition = 'ABORT'; },
+        });
+        calls.observationRouteDispositions = [...(calls.observationRouteDispositions || []), disposition];
+        if(disposition==='ABORT')throw Object.assign(new Error('synthetic navigation aborted: '+url),{code:'ROUTE_DENIED'});
+      }
+      if (contextHandlers.response && navigationCount === 1) {
         await contextHandlers.response({
           url: () => (options.assetOrigin || FRONTEND) + '/static/js/main.js',
           body: async () => { calls.assetBodies++; return Buffer.from('abc'); },
           headers: () => ({ 'content-type': 'application/javascript' }),
         });
       }
-      return { ok: () => true };
+      currentUrl=url;return { ok: () => true };
     },
+    async evaluate(_callback,url) {
+      calls.events.push('evaluate:'+url);
+      if(options.routeOnObservation&&(!calls.observationRouteDispositions?.length||options.routeOnObservation!=='first')){
+        let disposition;
+        await calls.routeHandler({
+          request:()=>({method:()=> 'GET',url:()=>url,headers:()=>({accept:'application/json'}),postDataBuffer:()=>null}),
+          continue:async()=>{disposition='CONTINUE';},abort:async()=>{disposition='ABORT';},
+        });
+        calls.observationRouteDispositions=[...(calls.observationRouteDispositions||[]),disposition];
+        if(disposition==='ABORT')throw Object.assign(new Error('synthetic request aborted: '+url),{code:'ROUTE_DENIED'});
+      }
+    },
+    url(){return currentUrl;},
     async waitForLoadState() { calls.events.push('load'); },
     getByPlaceholder(name) {
       return { fill: async value => { calls.selectors.push(['placeholder', name, value]); } };
     },
-    getByRole(role, options) {
-      return { click: async () => { calls.selectors.push(['role', role, options]); } };
+    getByRole(role, query = {}) {
+      const locator={
+        click: async () => { calls.selectors.push(['role', role, query]);if(role==='link'){
+          const path={"Robo Trader":'/robo',Portfolio:'/portfolio',Activity:'/activity'}[query.name];if(path)currentUrl=FRONTEND+path;} },
+        isVisible: async () => options.hiddenHeading !== true,
+        count: async () => role === 'alert' ? (options.alertCount || 0) : role === 'status' ? (options.statusCount || 0) : 1,
+        async waitFor(){if(options.hiddenHeading)throw new Error('hidden');},
+        first(){return this;},
+      };return locator;
     },
+    getByText(value, query) {
+      calls.selectors.push(['text', value, query]);
+      return syntheticLocator(value,value);
+    },
+    locator(selector) { calls.selectors.push(['locator', selector]);return syntheticCard('',selector); },
     async waitForResponse(predicate) {
       const ownerId=typeof options.ownerId==='function'?options.ownerId():options.ownerId;
       const ownerUsername=typeof options.ownerUsername==='function'?options.ownerUsername():options.ownerUsername;
       for(const status of options.meStatuses||[200]){
         const response={url:()=>BACKEND+'/api/me',status:()=>status,request:()=>({method:()=> 'GET'}),json:async()=>status===200?({user:{id:ownerId||'owner-id',username:ownerUsername||'synthetic-owner'}}):({message:'Unauthorized'})};
         const accepted=predicate(response);calls.responseCandidates=[...(calls.responseCandidates||[]),{status,accepted}];if(accepted)return response;
+      }
+      for(const [target,body] of Object.entries(observationBodies)){
+        const response={url:()=>BACKEND+target,status:()=>200,request:()=>({method:()=> 'GET'}),json:async()=>structuredClone(body)};
+        if(predicate(response))return response;
       }
       throw new Error('synthetic response sequence exhausted');
     },
@@ -713,7 +828,7 @@ test('task14_second_login_fails_and_continuity_uses_worker_local_cookie', async 
   value = 'replacement-cookie';
   const after = await continuous.session.perform('SESSION_OBSERVATION', {});
   assert.notEqual(continuous.session.inspectResult(first).fingerprint, continuous.session.inspectResult(after).fingerprint);
-  assert.equal(continuous.fake.calls.events.includes('reload'), true);
+  assert.equal(continuous.fake.calls.events.includes('reload'), false);
   await closeHarness(continuous);
 });
 
@@ -829,4 +944,206 @@ test('tampered_runtime_pipe_or_body_fails_closed', async () => {
   await Promise.all([gate, h.fake.calls.routeHandler({ request: () => request, continue: async () => { continues++; }, abort: async () => { aborts++; } })]);
   assert.equal(continues, 0); assert.equal(aborts, 1);
   await closeHarness(h);
+});
+
+test('task15_observe_view_action_is_fixed_and_nominal', async () => {
+  const h = await startHarness();
+  assert.equal(h.session.assertBinding({ runId: h.runId, configIdentity: '3'.repeat(64) }), true);
+  assert.throws(() => h.session.assertBinding({ runId: '0'.repeat(32), configIdentity: '3'.repeat(64) }), { code: 'IDENTITY_MISMATCH' });
+  await h.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+  }, () => {});
+  await assert.rejects(h.session.perform('OBSERVE_VIEW', {
+    phase: 'OBSERVE_BEFORE_RESTART', view: 'SETTINGS',
+  }), { code: 'ACTION_DENIED' });
+  await assert.rejects(h.session.perform('OBSERVE_VIEW', {
+    phase: 'OBSERVE_AFTER_RESTART', view: 'PORTFOLIO',
+  }), { code: 'ACTION_DENIED' });
+  const result = await h.session.perform('OBSERVE_VIEW', {
+    phase: 'OBSERVE_BEFORE_RESTART', view: 'ROBO',
+  });
+  const inspected = h.session.inspectResult(result);
+  assert.equal(inspected.kind, 'VIEW_OBSERVED');
+  assert.equal(inspected.view, 'ROBO');
+  assert.equal(inspected.routeCount, 7);
+  await closeHarness(h);
+});
+
+test('task15_secondary_views_use_spa_links_without_extra_document_or_owner_load', async () => {
+  const h=await startHarness();
+  await h.session.perform('LOGIN_SESSION',{
+    ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password',
+  },()=>{});
+  await h.session.perform('OBSERVE_VIEW',{phase:'OBSERVE_BEFORE_RESTART',view:'ROBO'});
+  const afterRobo=h.fake.calls.events.filter(event=>event.startsWith('goto:')).length;
+  await h.session.perform('OBSERVE_VIEW',{phase:'OBSERVE_BEFORE_RESTART',view:'PORTFOLIO'});
+  await h.session.perform('OBSERVE_VIEW',{phase:'OBSERVE_BEFORE_RESTART',view:'ACTIVITY'});
+  assert.equal(h.fake.calls.events.filter(event=>event.startsWith('goto:')).length,afterRobo);
+  assert.deepEqual(h.fake.calls.selectors.filter(row=>row[0]==='role'&&row[1]==='link').map(row=>row[2].name),['Robo Trader','Portfolio','Activity']);
+  await closeHarness(h);
+});
+
+test('task15_activity_rows_without_exact_paper_source_fail_closed', async () => {
+  const h = await startHarness({ fake: { observationBodies: {
+    '/api/paper-trades/orders': [{ symbol: 'AAPL' }],
+  } } });
+  await h.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+  }, () => {});
+  await assert.rejects(h.session.perform('OBSERVE_VIEW', {
+    phase: 'OBSERVE_BEFORE_RESTART', view: 'ACTIVITY',
+  }), { code: 'OBSERVATION_FAILED' });
+
+  const wrongNotifications = await startHarness({ fake: { observationBodies: {
+    '/api/robotrader/notifications': { events: [], executionSource: 'local-simulation' },
+  } } });
+  await wrongNotifications.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+  }, () => {});
+  await assert.rejects(wrongNotifications.session.perform('OBSERVE_VIEW', {
+    phase: 'OBSERVE_BEFORE_RESTART', view: 'ACTIVITY',
+  }), { code: 'OBSERVATION_FAILED' });
+});
+
+test('task15_changed_cookie_fails_before_readiness_or_view_navigation', async () => {
+  let value='private-cookie';const h=await startHarness({fake:{cookie:()=>({value})}});
+  await h.session.perform('LOGIN_SESSION', {
+    ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password',
+  },()=>{});
+  const before=h.fake.calls.events.filter(event=>event.startsWith('goto:')).length;value='replacement-cookie';
+  await assert.rejects(h.session.perform('OBSERVE_VIEW', {
+    phase:'OBSERVE_BEFORE_RESTART',view:'ROBO',
+  }),{code:'SESSION_CHANGED'});
+  assert.equal(h.fake.calls.events.filter(event=>event.startsWith('goto:')).length,before);
+  assert.equal(h.fake.calls.events.filter(event=>event.startsWith('evaluate:')).length,0);
+});
+
+test('task15_observation_navigation_keeps_route_decision_loop_live', async () => {
+  const h = await startHarness({ fake: { routeOnObservation: 'first' } });
+  await h.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+  }, () => {});
+  const action = h.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'ROBO' });
+  const outcome = await Promise.race([
+    action.then(() => 'DONE',error=>'ERROR:'+error.code),
+    new Promise(resolve => setTimeout(() => resolve('BLOCKED'), 100)),
+  ]);
+  assert.equal(outcome, 'ERROR:ROUTE_DENIED');
+  assert.equal(h.fake.calls.observationRouteDispositions.length, 1);
+  assert.deepEqual(h.fake.calls.observationRouteDispositions, ['ABORT']);
+});
+
+test('task15_rendered_counts_require_each_visible_row_and_portfolio_chart', async () => {
+  const bodies = {
+    '/api/paper-trades/orders': [
+      { _id:'order-1',symbol:'AAPL',side:'buy',qty:1,status:'open',orderType:'market',filledQty:0,fillPrice:null,
+        createdAt:'2026-10-04T00:00:00.000Z',broker:'alpaca',executionSource:'alpaca-paper' },
+      { _id:'order-2',symbol:'AAPL',side:'buy',qty:1,status:'open',orderType:'market',filledQty:0,fillPrice:null,
+        createdAt:'2026-10-04T00:01:00.000Z',broker:'alpaca',executionSource:'alpaca-paper' },
+    ],
+  };
+  const missingRow = await startHarness({ fake: { observationBodies: bodies, textCounts: { AAPL: 1 } } });
+  await missingRow.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+  }, () => {});
+  await assert.rejects(missingRow.session.perform('OBSERVE_VIEW', {
+    phase: 'OBSERVE_BEFORE_RESTART', view: 'ACTIVITY',
+  }), { code: 'OBSERVATION_FAILED' });
+
+  const visibleRows = await startHarness({ fake: { observationBodies: bodies, textCounts: { AAPL: 2 } } });
+  await visibleRows.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+  }, () => {});
+  const visible = await visibleRows.session.perform('OBSERVE_VIEW', {
+    phase: 'OBSERVE_BEFORE_RESTART', view: 'ACTIVITY',
+  });
+  assert.equal(visibleRows.session.inspectResult(visible).renderedCount, 2);
+  await closeHarness(visibleRows);
+
+  const missingChart = await startHarness({ fake: { missingChart: true, observationBodies: {
+    '/api/paper-trades/equity': [{ timestamp: '2026-10-04T00:00:00.000Z', equity: 100,
+      broker: 'alpaca', executionSource: 'alpaca-paper' }],
+  } } });
+  await missingChart.session.perform('LOGIN_SESSION', {
+    ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+  }, () => {});
+  await assert.rejects(missingChart.session.perform('OBSERVE_VIEW', {
+    phase: 'OBSERVE_BEFORE_RESTART', view: 'PORTFOLIO',
+  }), { code: 'OBSERVATION_FAILED' });
+
+  const inconsistentChart = await startHarness({ fake: { chartPath:'M0,-100L1,-50',observationBodies: {
+    '/api/paper-trades/equity': [
+      { timestamp:'2026-10-04T00:00:00.000Z',equity:100,broker:'alpaca',executionSource:'alpaca-paper' },
+      { timestamp:'2026-10-04T00:01:00.000Z',equity:200,broker:'alpaca',executionSource:'alpaca-paper' },
+    ],
+  } } });
+  await inconsistentChart.session.perform('LOGIN_SESSION', {
+    ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password',
+  },()=>{});
+  await assert.rejects(inconsistentChart.session.perform('OBSERVE_VIEW', {
+    phase:'OBSERVE_BEFORE_RESTART',view:'PORTFOLIO',
+  }),{code:'OBSERVATION_FAILED'});
+
+  const distortedChart = await startHarness({ fake: { chartPath:'M0,100L1,99L2,0',observationBodies: {
+    '/api/paper-trades/equity': [
+      { timestamp:'2026-10-04T00:00:00.000Z',equity:100,broker:'alpaca',executionSource:'alpaca-paper' },
+      { timestamp:'2026-10-04T00:01:00.000Z',equity:200,broker:'alpaca',executionSource:'alpaca-paper' },
+      { timestamp:'2026-10-04T00:02:00.000Z',equity:300,broker:'alpaca',executionSource:'alpaca-paper' },
+    ],
+  } } });
+  await distortedChart.session.perform('LOGIN_SESSION', {
+    ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password',
+  },()=>{});
+  await assert.rejects(distortedChart.session.perform('OBSERVE_VIEW', {
+    phase:'OBSERVE_BEFORE_RESTART',view:'PORTFOLIO',
+  }),{code:'OBSERVATION_FAILED'});
+
+  const hiddenEmptyState = await startHarness({ fake: { hiddenText:'No open positions yet.' } });
+  await hiddenEmptyState.session.perform('LOGIN_SESSION', {
+    ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password',
+  },()=>{});
+  await assert.rejects(hiddenEmptyState.session.perform('OBSERVE_VIEW', {
+    phase:'OBSERVE_BEFORE_RESTART',view:'PORTFOLIO',
+  }),{code:'OBSERVATION_FAILED'});
+});
+
+test('task15_robo_render_proof_matches_frontend_filters_limits_and_order_labels', async () => {
+  const instant='2026-10-04T00:00:00.000Z';
+  const decisions=Array.from({length:11},(_,index)=>({_id:'decision-'+index,environment:'paper',symbol:'D'+index,
+    status:'approved',confidenceScore:80,rewardRiskRatio:null,reasoningSummary:null,decidedAt:instant}));
+  const orders=Array.from({length:10},(_,index)=>({_id:'order-'+index,environment:'paper',executionSource:'alpaca-paper',
+    broker:'alpaca',symbol:'O'+index,side:'buy',status:index===0?'rejected':'open',orderType:'market',timeInForce:'day',
+    clientOrderId:null,externalOrderId:null}));
+  const positions=Array.from({length:9},(_,index)=>({symbol:'P'+index,qty:'1',market_value:'100',side:'long'}));
+  const reconciliation=Array.from({length:5},(_,index)=>({_id:'recon-'+index,environment:'paper',symbol:'R'+index,side:'buy',
+    status:'open',reconciliationStatus:'matched',discrepancy:null,lastReconciledAt:instant,updatedAt:instant,createdAt:instant}));
+  const h=await startHarness({fake:{observationBodies:{
+    '/api/robotrader/decisions?environment=paper&limit=25':{decisions},
+    '/api/robotrader/orders?environment=paper&limit=25':{orders},
+    '/api/robotrader/performance?environment=paper':{account:{id:'paper-account',status:'ACTIVE',cash:'100',equity:'100',buying_power:'100'},
+      summary:{decisions:11,submittedOrders:9,filledOrders:0,rejectedDecisions:0,lastRunAt:null},positions,brokerError:null},
+    '/api/robotrader/reconciliation-status?environment=paper':{summary:{total:5,pending:0,discrepancies:0,lastReconciledAt:instant},
+      orders:reconciliation,latestDiscrepancies:[],historicalDiscrepancies:[]},
+  }}});
+  await h.session.perform('LOGIN_SESSION',{ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password'},()=>{});
+  const result=await h.session.perform('OBSERVE_VIEW',{phase:'OBSERVE_BEFORE_RESTART',view:'ROBO'});
+  assert.equal(h.session.inspectResult(result).renderedCount,30);
+  assert.equal(h.fake.calls.selectors.some(row=>row[0]==='text'&&row[1]==='BUY O1'&&row[2].exact===true),true);
+  await closeHarness(h);
+});
+
+test('task15_malformed_portfolio_history_and_missing_activity_row_identity_fail', async () => {
+  for (const observationBodies of [
+    { '/api/paper-trades/equity': [{}] },
+    { '/api/paper-trades/orders': [{ broker: 'alpaca', executionSource: 'alpaca-paper' }] },
+  ]) {
+    const h = await startHarness({ fake: { observationBodies } });
+    await h.session.perform('LOGIN_SESSION', {
+      ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
+    }, () => {});
+    const view = Object.hasOwn(observationBodies, '/api/paper-trades/equity') ? 'PORTFOLIO' : 'ACTIVITY';
+    await assert.rejects(h.session.perform('OBSERVE_VIEW', {
+      phase: 'OBSERVE_BEFORE_RESTART', view,
+    }), { code: 'OBSERVATION_FAILED' });
+  }
 });

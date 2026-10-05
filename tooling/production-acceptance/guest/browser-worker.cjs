@@ -27,6 +27,13 @@ function sessionAction(action,payload) {
     return;
   }
   if(action==='SESSION_OBSERVATION'&&Reflect.ownKeys(payload).length===0)return;
+  if(action==='OBSERVE_VIEW'){
+    exact(payload,['phase','view']);
+    if(!['OBSERVE_BEFORE_RESTART','OBSERVE_AFTER_RESTART'].includes(payload.phase)||
+       !['ROBO','PORTFOLIO','ACTIVITY'].includes(payload.view)||
+       payload.phase==='OBSERVE_AFTER_RESTART'&&payload.view!=='ROBO')fail('ACTION_DENIED');
+    return;
+  }
   fail('ACTION_DENIED');
 }
 function meResponse(response,origin) {
@@ -40,12 +47,228 @@ async function sessionSnapshot(context,response,backend,expectedOwner,key) {
   let body;try{body=await response.json();}catch{fail('OWNER_MISMATCH');}
   if(!body||typeof body!=='object'||Array.isArray(body)||!body.user||typeof body.user!=='object'||Array.isArray(body.user)||
       body.user.id!==expectedOwner.id||body.user.username!==expectedOwner.username)fail('OWNER_MISMATCH');
+  return sessionFingerprint(context,backend,key);
+}
+async function sessionFingerprint(context,backend,key) {
   const url=new URL(backend),cookies=await context.cookies([backend]),matches=cookies.filter(cookie=>cookie&&cookie.name==='daytrader_session');
   if(matches.length!==1)fail('COOKIE_INVALID');const cookie=matches[0];
   if(typeof cookie.value!=='string'||cookie.value.length<1||cookie.value.length>4096||cookie.domain!==url.hostname||cookie.domain.startsWith('.')||
       cookie.path!=='/'||cookie.secure!==true||cookie.httpOnly!==true||cookie.sameSite!=='None')fail('COOKIE_INVALID');
   const fingerprint=createHmac('sha256',key).update('acceptance:session-cookie:v1\0','ascii').update(cookie.value,'utf8').digest('hex');
   return Object.freeze({fingerprint});
+}
+const VIEW_SPECS=Object.freeze({
+  ROBO:Object.freeze({path:'/robo',nav:'Robo Trader',heading:'RoboTrader',routes:Object.freeze([
+    ['/api/robotrader/settings',[]],['/api/robotrader/decisions',[['environment','paper'],['limit','25']]],
+    ['/api/robotrader/orders',[['environment','paper'],['limit','25']]],['/api/robotrader/performance',[['environment','paper']]],
+    ['/api/robotrader/audit',[['limit','25']]],['/api/robotrader/health',[]],
+    ['/api/robotrader/reconciliation-status',[['environment','paper']]],
+  ])}),
+  PORTFOLIO:Object.freeze({path:'/portfolio',nav:'Portfolio',heading:'Alpaca Paper',routes:Object.freeze([
+    ['/api/paper-trades/account',[]],['/api/paper-trades/equity',[]],
+  ])}),
+  ACTIVITY:Object.freeze({path:'/activity',nav:'Activity',heading:'Orders & Trades',routes:Object.freeze([
+    ['/api/paper-trades/orders',[]],['/api/paper-trades/trades',[]],['/api/robotrader/notifications',[]],
+  ])}),
+});
+const READINESS_CHECKS=Object.freeze(['ownerConfiguration','authenticationConfiguration','databaseConnected','ownerIdentity','ownerSettings','persistence','paperMode','automationDisabled','schedulerSuppressed','paperDestination','paperBindingConfiguration','paperCredentialConfiguration']);
+function plain(value){return value!==null&&typeof value==='object'&&!Array.isArray(value);}
+function finite(value){return typeof value==='number'&&Number.isFinite(value);}
+function textValue(value){return typeof value==='string'&&value.length>0;}
+function optionalText(value){return value===null||value===undefined||textValue(value);}
+function numeric(value){return finite(value)||typeof value==='string'&&value.trim()!==''&&Number.isFinite(Number(value));}
+function optionalNumeric(value){return value===null||value===undefined||numeric(value);}
+function instant(value){return textValue(value)&&Number.isFinite(Date.parse(value));}
+function optionalInstant(value){return value===null||value===undefined||instant(value);}
+function count(value){return Number.isSafeInteger(value)&&value>=0;}
+function queryPairs(url){return [...url.searchParams.entries()].sort((a,b)=>a[0].localeCompare(b[0])||a[1].localeCompare(b[1]));}
+function viewResponse(response,backend,path,query){
+  try{const url=new URL(response.url()),request=typeof response.request==='function'?response.request():null;
+    return url.origin===backend&&url.pathname===path&&!url.hash&&equal(queryPairs(url),query)&&
+      typeof response.status==='function'&&response.status()===200&&(!request||typeof request.method!=='function'||request.method()==='GET');}
+  catch{return false;}
+}
+function sourceRows(rows,kind){
+  if(!Array.isArray(rows))return false;
+  return rows.every(row=>{
+    if(!plain(row)||row.executionSource!=='alpaca-paper'||row.broker!=='alpaca'||!textValue(row._id)||!textValue(row.symbol)||
+       !textValue(row.side)||!numeric(row.qty))return false;
+    if(kind==='order')return textValue(row.status)&&textValue(row.orderType)&&numeric(row.filledQty)&&optionalNumeric(row.fillPrice)&&
+      [row.filledAt,row.updatedAt,row.createdAt].some(instant);
+    return instant(row.filledAt)&&numeric(row.price)&&optionalNumeric(row.realizedPnl);
+  });
+}
+function validReadiness(body){
+  if(!plain(body)||body.contractVersion!==2||body.profile!=='owner-paper-maintenance'||body.runtimeReady!==true||body.maintenanceReady!==true||
+     !plain(body.checks)||Object.keys(body.checks).sort().join(',')!==[...READINESS_CHECKS].sort().join(',')||
+     !plain(body.automation)||Object.keys(body.automation).sort().join(',')!=='activationAuthorized,enabled,isEnabled,liveEnabled,schedulerSuppressed')return false;
+  if(READINESS_CHECKS.some(name=>!plain(body.checks[name])||body.checks[name].status!=='pass'))return false;
+  return body.automation.enabled===false&&body.automation.isEnabled===false&&body.automation.liveEnabled===false&&
+    body.automation.schedulerSuppressed===true&&body.automation.activationAuthorized===false;
+}
+function rowIdentities(rows,field){
+  if(!Array.isArray(rows))fail('OBSERVATION_FAILED');
+  const values=[];for(const row of rows){if(!plain(row)||typeof row[field]!=='string'||!row[field])fail('OBSERVATION_FAILED');values.push(row[field]);}return values;
+}
+function roboOrderLabels(rows){
+  if(!Array.isArray(rows))fail('OBSERVATION_FAILED');
+  return rows.map(row=>{
+    if(!plain(row)||!textValue(row._id)||row.environment!=='paper'||row.executionSource!=='alpaca-paper'||row.broker!=='alpaca'||!textValue(row.symbol)||
+       !textValue(row.side)||!textValue(row.status)||!textValue(row.orderType)||!textValue(row.timeInForce)||
+       !optionalText(row.clientOrderId)||!optionalText(row.externalOrderId))fail('OBSERVATION_FAILED');
+    return row.side.toUpperCase()+' '+row.symbol;
+  });
+}
+function reconciliationSymbols(rows){
+  if(!Array.isArray(rows))fail('OBSERVATION_FAILED');
+  return rows.map(row=>{
+    if(!plain(row)||!textValue(row._id)||row.environment!=='paper'||!textValue(row.symbol)||!textValue(row.side)||!textValue(row.status)||
+       !textValue(row.reconciliationStatus)||
+       !optionalInstant(row.lastReconciledAt)||!instant(row.updatedAt)||!instant(row.createdAt)||
+       row.discrepancy!==null&&row.discrepancy!==undefined&&!textValue(row.discrepancy))fail('OBSERVATION_FAILED');
+    return row.symbol;
+  });
+}
+function validateViewBodies(view,bodies){
+  if(view==='ROBO'){
+    const [settings,decisions,orders,performance,audit,health,reconciliation]=bodies;
+    const configured=settings?.settings;
+    if(!plain(configured)||configured.mode!=='paper'||configured.liveTradingExplicitlyEnabled!==false||configured.enabled!==false||configured.isEnabled!==false||
+       !Array.isArray(decisions?.decisions)||decisions.decisions.some(row=>!plain(row)||!textValue(row._id)||row.environment!=='paper'||!textValue(row.symbol)||
+         !textValue(row.status)||!numeric(row.confidenceScore)||!optionalNumeric(row.rewardRiskRatio)||!optionalText(row.reasoningSummary)||!instant(row.decidedAt))||
+       !Array.isArray(orders?.orders)||!plain(performance)||!plain(performance.account)||!plain(performance.summary)||
+       !textValue(performance.account.id)||!textValue(performance.account.status)||!numeric(performance.account.cash)||
+       !numeric(performance.account.equity)||!numeric(performance.account.buying_power)||
+       !Array.isArray(performance.positions)||performance.positions.some(row=>!plain(row)||!textValue(row.symbol)||!numeric(row.qty)||
+         !numeric(row.market_value)||!textValue(row.side))||performance.brokerError!==null||
+       ![performance.summary.decisions,performance.summary.submittedOrders,performance.summary.filledOrders,performance.summary.rejectedDecisions].every(count)||
+       !optionalInstant(performance.summary.lastRunAt)||!Array.isArray(audit?.events)||
+       audit.events.some(row=>!plain(row)||!textValue(row._id)||!textValue(row.eventType)||!instant(row.createdAt))||
+       health?.mongo?.connected!==true||!textValue(health.mongo.status)||health?.alpaca?.paper?.connected!==true||
+       health.alpaca.paper.error!==null||health.alpaca.paper.tradingBlocked!==false||!textValue(health.alpaca.paper.accountStatus)||
+       !numeric(health.alpaca.paper.buyingPower)||health?.scheduler?.phase1WorkerEnabled!==false||
+       !plain(reconciliation)||!plain(reconciliation.summary)||!count(reconciliation.summary.total)||!count(reconciliation.summary.pending)||
+       !count(reconciliation.summary.discrepancies)||!optionalInstant(reconciliation.summary.lastReconciledAt)||
+       !Array.isArray(reconciliation.orders)||!Array.isArray(reconciliation.latestDiscrepancies)||
+       !Array.isArray(reconciliation.historicalDiscrepancies))fail('OBSERVATION_FAILED');
+    const orderLabels=roboOrderLabels(orders.orders),reconciliationLabels=reconciliationSymbols(reconciliation.orders);
+    const visibleOrderIndexes=orders.orders.map((row,index)=>({row,index})).filter(({row})=>String(row.status).toLowerCase()!=='rejected').slice(0,8);
+    const visibleDecisions=decisions.decisions.slice(0,10),visiblePositions=performance.positions.slice(0,8),visibleAudit=audit.events;
+    const visibleReconciliation=reconciliation.orders.slice(0,4);
+    return {sections:[
+      {title:'Recent strategy decisions',rows:visibleDecisions,samples:rowIdentities(visibleDecisions,'symbol'),empty:'No decisions saved yet.',selector:'tbody tr'},
+      {title:'RoboTrader orders',rows:visibleOrderIndexes,samples:visibleOrderIndexes.map(({index})=>orderLabels[index]),empty:'No RoboTrader orders submitted yet.',selector:'tbody tr'},
+      {title:'Current positions',rows:visiblePositions,samples:rowIdentities(visiblePositions,'symbol'),empty:'No positions returned.',selector:'tbody tr'},
+      {title:'Recent RoboTrader events',rows:visibleAudit,samples:rowIdentities(visibleAudit,'eventType'),empty:'No RoboTrader audit entries yet.',selector:'.rt-panel'},
+      {title:'Broker/local order match',rows:visibleReconciliation,samples:reconciliationLabels.slice(0,4),empty:'No current RoboTrader orders need reconciliation.',selector:'.mt-5.space-y-3 > .rt-panel'},
+    ]};
+  }
+  if(view==='PORTFOLIO'){
+    const [account,equity]=bodies;
+    if(!plain(account)||account.executionSource!=='alpaca-paper'||account.broker!=='alpaca'||typeof account.accountId!=='string'||!account.accountId||
+       !finite(account.cash)||!finite(account.equity)||!finite(account.positionsValue)||!finite(account.dailyPnl)||
+       !optionalNumeric(account.totalPnl)||!Array.isArray(account.positions)||account.positions.some(row=>!plain(row)||row.executionSource!=='alpaca-paper'||
+         row.broker!=='alpaca'||!textValue(row.symbol)||!numeric(row.qty)||!numeric(row.avgCost)||!numeric(row.marketPrice)||
+         !numeric(row.unrealizedPnl)||!optionalNumeric(row.unrealizedPnlPct))||!Array.isArray(equity)||
+       equity.some(row=>!plain(row)||row.executionSource!=='alpaca-paper'||row.broker!=='alpaca'||!instant(row.timestamp)||
+         !finite(row.equity)||!optionalNumeric(row.dailyPnl)))fail('OBSERVATION_FAILED');
+    return {accountValues:[['Equity',account.equity],["Today's P/L",account.dailyPnl],['All-time P/L',account.totalPnl],['Cash',account.cash]],sections:[
+      {title:'Positions',rows:account.positions,samples:rowIdentities(account.positions,'symbol'),empty:'No open positions yet.',selector:'tbody tr'},
+      {title:'Equity Curve',rows:equity,samples:null,empty:'No equity history yet.',selector:'chart'},
+    ]};
+  }
+  const [orders,trades,notifications]=bodies;
+  if(!sourceRows(orders,'order')||!sourceRows(trades,'trade')||!plain(notifications)||notifications.executionSource!=='alpaca-paper'||
+     !Array.isArray(notifications.events)||notifications.events.some(row=>!plain(row)||!textValue(row._id)||!textValue(row.subject)||
+       !textValue(row.state)||!count(row.attempts)||!instant(row.createdAt)||!optionalInstant(row.nextAttemptAt)||!optionalInstant(row.providerAcceptedAt)))fail('OBSERVATION_FAILED');
+  const activity=[...orders,...trades];
+  return {sections:[
+    {title:'Recent Activity',rows:activity,samples:rowIdentities(activity,'symbol'),empty:'No activity yet.',selector:'.rt-panel'},
+    {title:'Alpaca paper notification delivery',rows:notifications.events,samples:rowIdentities(notifications.events,'subject'),empty:'No Alpaca paper notification events yet.',selector:'.rt-panel'},
+  ]};
+}
+async function locatorCount(locator){return locator&&typeof locator.count==='function'?locator.count():0;}
+async function waitCount(locator,predicate){for(let attempt=0;attempt<200;attempt++){const value=await locatorCount(locator);if(predicate(value))return value;
+    await new Promise(resolve=>setTimeout(resolve,25));}fail('OBSERVATION_FAILED');}
+async function waitVisible(locator){if(locator&&typeof locator.waitFor==='function')try{await locator.waitFor({state:'visible',timeout:5000});}catch{fail('OBSERVATION_FAILED');}
+  if(!locator||typeof locator.isVisible!=='function'||await locator.isVisible()!==true)fail('OBSERVATION_FAILED');}
+async function visibleMatches(locator,expected,predicate=value=>value>=expected){await waitCount(locator,predicate);
+  for(let index=0;index<expected;index++){const selected=typeof locator.nth==='function'?locator.nth(index):index===0?locator:null;await waitVisible(selected);}}
+async function sectionCard(page,title){const anchor=page.getByText(title,{exact:true});await visibleMatches(anchor,1);
+  const selected=typeof anchor.first==='function'?anchor.first():anchor;
+  if(typeof selected.locator!=='function')fail('OBSERVATION_FAILED');
+  return selected.locator('xpath=ancestor::*[contains(concat(" ",normalize-space(@class)," ")," rh-card ")][1]');}
+function money(value){return value===null||value===undefined||value===''||!Number.isFinite(Number(value))?'--':'$'+Number(value).toFixed(2);}
+function curvePoints(path){
+  if(!textValue(path))fail('OBSERVATION_FAILED');const points=[];
+  for(const chunk of path.match(/[MLC][^MLCZ]*/gi)||[]){const values=(chunk.slice(1).match(/-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?/gi)||[]).map(Number);
+    if(values.some(value=>!Number.isFinite(value)))fail('OBSERVATION_FAILED');
+    if(/^[ML]/i.test(chunk)){if(values.length!==2)fail('OBSERVATION_FAILED');points.push([values[0],values[1]]);}
+    else {if(values.length<6||values.length%6!==0)fail('OBSERVATION_FAILED');for(let index=0;index<values.length;index+=6)points.push([values[index+4],values[index+5]]);}
+  }
+  return points;
+}
+function assertCurveHistory(path,rows){const points=curvePoints(path);if(points.length!==rows.length)fail('OBSERVATION_FAILED');
+  for(let index=1;index<points.length;index++)if(points[index][0]<=points[index-1][0])fail('OBSERVATION_FAILED');
+  const equities=rows.map(row=>row.equity),dataMin=Math.min(...equities),dataMax=Math.max(...equities);
+  const ys=points.map(point=>point[1]),pixelMin=Math.min(...ys),pixelMax=Math.max(...ys);
+  if(dataMax===dataMin){if(pixelMax-pixelMin>0.01)fail('OBSERVATION_FAILED');return;}
+  if(pixelMax===pixelMin)fail('OBSERVATION_FAILED');
+  for(let index=0;index<rows.length;index++){
+    const expected=(equities[index]-dataMin)/(dataMax-dataMin),rendered=(pixelMax-ys[index])/(pixelMax-pixelMin);
+    if(Math.abs(expected-rendered)>0.02)fail('OBSERVATION_FAILED');
+  }}
+async function fixedGet(page,url){if(typeof page.evaluate!=='function')fail('OBSERVATION_FAILED');
+  await page.evaluate(async target=>{const response=await fetch(target,{method:'GET',credentials:'include',redirect:'error',headers:{accept:'application/json'}});
+    if(!response.ok)throw new Error('FIXED_GET_FAILED');await response.arrayBuffer();},url);}
+async function observeFixedView(page,context,backend,frontend,phase,view,boundSession,sessionKey){
+  const spec=VIEW_SPECS[view];if(!spec)fail('ACTION_DENIED');
+  const beforeSession=await sessionFingerprint(context,backend,sessionKey);
+  if(beforeSession.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
+  let readinessValidation=false;
+  if(view==='ROBO'){
+    const readinessPending=page.waitForResponse(response=>viewResponse(response,backend,'/api/readiness',[]),{timeout:10000});
+    await fixedGet(page,backend+'/api/readiness');
+    const readinessResponse=await readinessPending;let readinessBody;try{readinessBody=await readinessResponse.json();}catch{fail('READINESS_FAILED');}
+    if(!validReadiness(readinessBody))fail('READINESS_FAILED');readinessValidation=true;
+    const ownerPending=page.waitForResponse(value=>meResponse(value,backend),{timeout:10000});await fixedGet(page,backend+'/api/me');
+    const ownerSession=await sessionSnapshot(context,await ownerPending,backend,boundSession.expectedOwner,sessionKey);
+    if(ownerSession.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
+  }
+  const pending=spec.routes.map(([path,query])=>page.waitForResponse(response=>viewResponse(response,backend,path,query),{timeout:10000}));
+  const links=page.getByRole('link',{name:spec.nav,exact:true}),link=typeof links.first==='function'?links.first():links;
+  if(!link||typeof link.click!=='function')fail('OBSERVATION_FAILED');await link.click();
+  if(typeof page.url==='function'){let current;try{current=new URL(page.url());}catch{fail('OBSERVATION_FAILED');}
+    if(current.origin!==frontend||current.pathname!==spec.path||current.search||current.hash)fail('OBSERVATION_FAILED');}
+  const responses=await Promise.all(pending),bodies=[];
+  for(const response of responses){let body;try{body=await response.json();}catch{fail('OBSERVATION_FAILED');}bodies.push(body);}
+  const validated=validateViewBodies(view,bodies);
+  const heading=page.getByRole('heading',{name:spec.heading,exact:true});await waitVisible(heading);
+  await waitCount(page.getByRole('alert'),value=>value===0);await waitCount(page.getByRole('status'),value=>value===0);
+  let domRows=0;
+  for(const section of validated.sections){
+    const card=await sectionCard(page,section.title),rows=section.rows,samples=section.samples;
+    if(rows.length===0){await visibleMatches(card.getByText(section.empty,{exact:true}),1);
+      if(section.selector==='chart')await waitCount(card.locator('path.recharts-line-curve'),value=>value===0);
+      else if(section.selector)await waitCount(card.locator(section.selector),value=>value===0);continue;}
+    if(section.selector==='chart'){
+      const curve=card.locator('path.recharts-line-curve');await visibleMatches(curve,1);
+      const selected=typeof curve.first==='function'?curve.first():curve,d=typeof selected.getAttribute==='function'?await selected.getAttribute('d'):null;
+      assertCurveHistory(d,rows);domRows+=rows.length;continue;
+    }
+    if(samples.length!==rows.length)fail('OBSERVATION_FAILED');
+    const requiredText=new Map();for(const sample of samples)requiredText.set(sample,(requiredText.get(sample)||0)+1);
+    for(const [sample,expected] of requiredText)await visibleMatches(card.getByText(sample,{exact:true}),expected);
+    if(section.selector){const rowLocator=card.locator(section.selector);await visibleMatches(rowLocator,rows.length,value=>value===rows.length);}
+    domRows+=rows.length;
+  }
+  for(const [label,value] of validated.accountValues||[]){const card=await sectionCard(page,label);
+    await visibleMatches(card.getByText(money(value),{exact:true}),1);}
+  const session=await sessionFingerprint(context,backend,sessionKey);
+  if(session.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
+  return Object.freeze({status:'VIEW_OBSERVED',view,phase,schemaValidation:true,renderedData:domRows>0,
+    validEmptyState:domRows===0,noError:true,fresh:true,source:'alpaca-paper',brokerError:false,
+    routeCount:spec.routes.length,renderedCount:domRows,fingerprint:session.fingerprint,readinessValidation});
 }
 async function bounded(promise,milliseconds) {
   if(!Number.isSafeInteger(milliseconds)||milliseconds<0)fail('CLEANUP_UNCERTAIN');
@@ -325,10 +548,42 @@ async function runBrowserWorker(pipe, config) {
     if (!outcome || outcome.status !== 'STARTED' || !launched) fail('LAUNCH_FAILED');state=launched;
     wire=rpc(outcome.applicationPipe,auditApplication(outcome.applicationPipe,topology.runId));
     inspectFamily(pipe);
-    const decisions=new Map();launched.decisions=decisions;let ready=false,commandFailure,loginSpent=false,boundSession=null;
+    const decisions=new Map();launched.decisions=decisions;let ready=false,commandFailure,loginSpent=false,boundSession=null,activeAction=null;
     const sessionKey=randomBytes(32);
+    let rejectActionFailure;
+    const actionFailure=new Promise((_,reject)=>{rejectActionFailure=reject;});actionFailure.catch(()=>{});
+    async function executeAction(actionId,action,payload){
+      if(action==='LOGIN_SESSION'){
+        if(loginSpent)fail('LOGIN_ALREADY_ATTEMPTED');loginSpent=true;
+        const expectedOwner=Object.freeze({id:payload.ownerId,username:payload.username});
+        const response=state.page.waitForResponse(value=>meResponse(value,config.runBinding.origins.BACKEND),{timeout:10000});
+        let password=payload.password;
+        try{await state.page.getByPlaceholder('Username').fill(payload.username);await state.page.getByPlaceholder('Password').fill(password);}
+        finally{password=null;payload.password='';}
+        await wire.write('FILLED',{actionId,status:'FILLED'});
+        await state.page.getByRole('button',{name:'Log In',exact:true}).click();
+        boundSession=await sessionSnapshot(state.context,await response,config.runBinding.origins.BACKEND,expectedOwner,sessionKey);
+        boundSession=Object.freeze({...boundSession,expectedOwner});
+        await wire.write('RESULT',{actionId,status:'SESSION_BOUND',fingerprint:boundSession.fingerprint});return;
+      }
+      if(!boundSession)fail('SESSION_INVALID');
+      if(action==='OBSERVE_VIEW'){
+        const observed=await observeFixedView(state.page,state.context,config.runBinding.origins.BACKEND,
+          config.runBinding.origins.FRONTEND,payload.phase,payload.view,boundSession,sessionKey);
+        await wire.write('RESULT',{actionId,...observed});return;
+      }
+      const observed=await sessionFingerprint(state.context,config.runBinding.origins.BACKEND,sessionKey);
+      await wire.write('RESULT',{actionId,status:'SESSION_OBSERVED',fingerprint:observed.fingerprint});
+    }
+    function dispatchAction(actionId,action,payload){
+      const operation=executeAction(actionId,action,payload);activeAction=operation;
+      operation.then(()=>{if(activeAction===operation)activeAction=null;},cause=>{
+        (async()=>{try{await wire.write('ERROR',{actionId,code:cause?.code||'BROWSER_FAILED'});}
+          finally{rejectActionFailure(cause);}})().catch(()=>{});
+      });
+    }
     const commandLoop=(async()=>{try{while(true){
-      const frame=await wire.read();
+      const frame=await Promise.race([wire.read(),actionFailure]);
       if(frame.type==='DECISION'){
         exact(frame.payload,['requestId','decision']);
         if(typeof frame.payload.requestId!=='string'||!['CONTINUE','ABORT'].includes(frame.payload.decision))fail('FRAME_DENIED');
@@ -336,28 +591,11 @@ async function runBrowserWorker(pipe, config) {
       }
       if(frame.type==='ACTION'){
         exact(frame.payload,['actionId','action','payload']);const {actionId,action,payload}=frame.payload;
-        if(!ready||!Number.isSafeInteger(actionId)){await wire.write('ERROR',{actionId,code:'ACTION_DENIED'});continue;}
-        sessionAction(action,payload);
-        if(action==='LOGIN_SESSION'){
-          if(loginSpent)fail('LOGIN_ALREADY_ATTEMPTED');loginSpent=true;
-          const expectedOwner=Object.freeze({id:payload.ownerId,username:payload.username});
-          const response=state.page.waitForResponse(value=>meResponse(value,config.runBinding.origins.BACKEND),{timeout:10000});
-          let password=payload.password;
-          try{await state.page.getByPlaceholder('Username').fill(payload.username);await state.page.getByPlaceholder('Password').fill(password);}
-          finally{password=null;payload.password='';}
-          await wire.write('FILLED',{actionId,status:'FILLED'});
-          await state.page.getByRole('button',{name:'Log In',exact:true}).click();
-          boundSession=await sessionSnapshot(state.context,await response,config.runBinding.origins.BACKEND,expectedOwner,sessionKey);
-          boundSession=Object.freeze({...boundSession,expectedOwner});
-          await wire.write('RESULT',{actionId,status:'SESSION_BOUND',fingerprint:boundSession.fingerprint});continue;
-        }
-        if(!boundSession)fail('SESSION_INVALID');
-        const response=state.page.waitForResponse(value=>meResponse(value,config.runBinding.origins.BACKEND),{timeout:10000});
-        await state.page.reload({waitUntil:'domcontentloaded'});
-        const observed=await sessionSnapshot(state.context,await response,config.runBinding.origins.BACKEND,boundSession.expectedOwner,sessionKey);
-        await wire.write('RESULT',{actionId,status:'SESSION_OBSERVED',fingerprint:observed.fingerprint});continue;
+        if(!ready||!safe(actionId)||activeAction){await wire.write('ERROR',{actionId,code:'ACTION_DENIED'});continue;}
+        try{sessionAction(action,payload);}catch(cause){await wire.write('ERROR',{actionId,code:cause?.code||'ACTION_DENIED'});continue;}
+        dispatchAction(actionId,action,payload);continue;
       }
-      if(frame.type==='CLOSE'){exact(frame.payload,[]);const result=await state.owner.stopOwned();await wire.write('EXIT',{status:result.status,runId:result.runId});
+      if(frame.type==='CLOSE'){exact(frame.payload,[]);if(activeAction)fail('ACTION_DENIED');const result=await state.owner.stopOwned();await wire.write('EXIT',{status:result.status,runId:result.runId});
         return Object.freeze({status:'EXITED',runId:topology.runId});}
       fail('FRAME_DENIED');
     }}catch(cause){commandFailure=cause;for(const slot of decisions.values())slot.reject(cause);decisions.clear();throw cause;}})();
