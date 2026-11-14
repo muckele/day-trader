@@ -7,11 +7,14 @@ Owner-only Alpaca **PAPER** trading application. Day Trader is the product and o
 ## Read first — precedence order
 
 1. Latest explicit owner direction in the current conversation.
-2. [docs/Day_Trader_Agentic_MVP_Master_Brief.md](docs/Day_Trader_Agentic_MVP_Master_Brief.md) — product vision, trust boundaries, Phases 0–8 roadmap with release gates, release definitions. The authoritative roadmap.
-3. Day Trader status handoff, reconciled 2026-10-28 UTC — `~/Downloads/Day-Trader-—-Current-Status,-MVP-and-Implementation-Handoff-—-2026-10-27.txt`. Kept outside this public repo because it contains private ChatGPT links. Summarized below.
-4. Four-Project Master Source (2026-10-27), section "3. Day Trader" — `~/Downloads/CLAUDE-CODE-MASTER-SOURCE-2026-10-27.md` (identical `.txt` copy alongside). Covers other projects too, so it stays outside the repo.
-5. Current operating docs: [mvp-scope](docs/mvp-scope.md), [mvp-runbook](docs/mvp-runbook.md), [startup-readiness](docs/startup-readiness.md), [PF001-static-assets](docs/PF001-static-assets.md), [fractional-execution-safety](docs/fractional-execution-safety.md), [runtime-setup](docs/runtime-setup.md).
-6. Historical records (do not treat as current instructions): `docs/mvp-request.txt`, `docs/mvp-phase2-request.txt`, `docs/mvp-phase3-request.txt`, `docs/mvp-plan.md`, `docs/superpowers/plans/`, and everything under `docs/evidence/` (immutable historical observations, not reusable acceptance gates).
+2. [docs/Day_Trader_Agentic_MVP_Master_Brief.md](docs/Day_Trader_Agentic_MVP_Master_Brief.md) — product vision, trust boundaries, Phases 0–8 roadmap with release gates, release definitions. The authoritative roadmap (ChatGPT source `00`).
+3. Day Trader status handoff, reconciled 2026-10-28 UTC — `~/Downloads/Day-Trader-—-Current-Status,-MVP-and-Implementation-Handoff-—-2026-10-27.txt`. Summarized below.
+4. Four-Project Master Source (2026-10-27), section "3. Day Trader" — `~/Downloads/CLAUDE-CODE-MASTER-SOURCE-2026-10-27.md`.
+5. ChatGPT project sources `01`–`06` (2026-09-21/22), verified copies in `~/day-trader-evidence/project-sources/2026-09-22/` with a SHA-256 `MANIFEST.txt`. `01` = current state and working model; `02` = Fly deployment prep; `03` = frontend/backend compatibility; `04` = C1 race-safe disable; `05` = PF-001 closeout; `06` = historical decisions and source manifest. They describe state as of Sept 22; later evidence below supersedes them where it conflicts.
+6. Current operating docs: [mvp-scope](docs/mvp-scope.md), [mvp-runbook](docs/mvp-runbook.md), [startup-readiness](docs/startup-readiness.md), [PF001-static-assets](docs/PF001-static-assets.md), [fractional-execution-safety](docs/fractional-execution-safety.md), [runtime-setup](docs/runtime-setup.md).
+7. Historical records (do not treat as current instructions): `docs/mvp-request.txt`, `docs/mvp-phase2-request.txt`, `docs/mvp-phase3-request.txt`, `docs/mvp-plan.md`, `docs/superpowers/plans/`, and everything under `docs/evidence/` (immutable historical observations, not reusable acceptance gates).
+
+Items 3–5 stay outside this **public** repository because they contain private ChatGPT links, production identifiers or other projects' details.
 
 ### Evidence contract
 
@@ -31,19 +34,32 @@ Do not confuse this with the broader **agentic paper MVP** (roadmap Phases 0–3
 | Branch | Head | Notes |
 |---|---|---|
 | `main` | `8e557f6` (2026-05-28) | Old baseline. Not the release-candidate line. |
-| `codex/owner-paper-mvp` | `852fb22` (2026-09-22) | Owner-paper MVP line: PF-001 fix (`44bc06f`) plus startup-readiness contract v2. CI passed at run 35755989443 (per master source) — not proof of deployment. |
-| `codex/production-acceptance-m1` | `31a513e` (2026-10-04) | **Local only — not on GitHub.** 88 commits on top of `852fb22`: production acceptance controller (design in `docs/PRODUCTION_ACCEPTANCE_CONTROLLER_DESIGN.md`, plan in `docs/superpowers/plans/2026-09-30-production-acceptance-controller.md`, both on that branch). |
+| `codex/owner-paper-mvp` | `852fb22` + docs commits | Release-candidate line: PF-001 fix (`44bc06f`) plus startup-readiness contract v2 (`852fb22`, STARTUP_READINESS_CLOSEOUT_VERIFIED; hosted run 35755989443). |
+| `codex/production-acceptance-m1` | `31a513e` (2026-10-04) | Production acceptance controller, 88 commits on top of `852fb22`. Pushed to GitHub 2026-11-14. Design and plan: `docs/PRODUCTION_ACCEPTANCE_CONTROLLER_DESIGN.md`, `docs/superpowers/plans/2026-09-30-production-acceptance-controller.md` on that branch. |
 | `codex/hosted-acceptance-tooling` | `916d2ad` (2026-09-30) | Hosted acceptance tooling pilot. |
 | `codex/sprint1-policy-approval` | local `15a2de3`, origin `058f962` | Local is 6 commits ahead of GitHub. Worktree: `~/Documents/Codex Agentic Trading/day-trader-sprint1`. |
 | `codex-mongo-storage-retention` | `4b34251` (2026-06-13) | Mongo retention safeguards. |
 
-### Owner-paper release candidate (records dated 2026-09-22; not freshly confirmed)
+### Release candidate for `852fb22` (not published, not deployed)
 
+- Backend local config ID `sha256:193d59b401d2683d4cd6bcc3095ab07c953d74cff485c6271e8f54f5c05b213e`; frontend local config ID `sha256:1ba97a5ea82b474ffd2f7c1cc61b95ae0714b8cf0fdee013a52af143843a3a5b`. Both linux/amd64. These are local image IDs, not registry manifest digests.
+- The older backend `sha256:c01dbbd2…` (built from `8f81a74`, cited in sources `01`/`02`/`05` and the handoff) is **historical only** — `852fb22` changed backend files.
+- The test-URL frontend image `sha256:850fee48…` from source `03` must never be promoted.
 - **PF-001** (missing static assets served the SPA shell) is VERIFIED CLOSED at `44bc06f`. Not an open defect.
-- Qualified local images: backend `sha256:c01dbbd2842c40457462f3f5621b6857049daf5796542bc681c10d2f13daa61f`, frontend `sha256:1ba97a5ea82b474ffd2f7c1cc61b95ae0714b8cf0fdee013a52af143843a3a5b`. Neither was published or deployed during PF-001 closeout.
-- Historical Fly baseline: backend v38 / frontend v17. Frontend v17 is incompatible with the new backend, so a **coordinated backend + frontend release** is required, not backend-only promotion.
-- Known debt: `npm audit` showed 0 Critical / 28 High / 15 Moderate / 14 Low in that snapshot. Scout image scans do not waive it.
-- Production/deployment is unverified. Fly configs are file declarations, not observed live state.
+- Frontend v17 is incompatible with the candidate backend (manual orders lack the stable idempotency key; Portfolio and fill history crash on missing/null P&L; no coordinated close). A **coordinated backend + frontend release** is required, never backend-only.
+- Known debt and limits: `npm audit` 0 Critical / 28 High / 15 Moderate / 14 Low; backend image 8 Low CVEs (glibc/gcc); frontend image 1 Medium / 2 Low (pcre2); disallowed-origin requests return HTTP 500; browsers blocking the `SameSite=None; Secure` cross-site cookie are unsupported; duplicate production users / User uniqueness remain deferred maintenance (`USER_UNIQUENESS_DEFERRED`).
+
+### Production (last observed read-only 2026-09-23; recheck before relying on it)
+
+- Backend Fly v38 (one machine running), frontend Fly v17 (machines stopped). Unchanged by every release attempt so far.
+- **Running v38 does not have effective scheduler suppression.** `ROBO_SCHEDULER_DISABLED=true` is staged, not applied. Safety currently rests on account settings: the legacy/test account "C1" was race-safely disabled on 2026-09-21 (source `04`), and the owner account's settings are PAPER with all enablement flags false.
+- Ten Fly secrets are staged (`OWNER_USER_ID`, `ALPACA_EXPECTED_PAPER_ACCOUNT_ID`, `ROBO_SCHEDULER_DISABLED`, `ROBO_EMAIL_PROVIDER`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `ROBO_NOTIFICATION_RECIPIENT`). Their current values have not been re-proven. **Any Fly machine start or update applies staged secrets** — never start, update or restart Fly machines without explicit authorization.
+- Rollback: the exact v38 image is retrievable, but rollback is classified ROLLBACK_REQUIRES_DATA_GUARD — maintenance-only, quiescent, scheduler suppressed, never with unresolved canonical/broker work.
+
+### Release attempts (evidence in `~/day-trader-evidence/releases/`)
+
+- **2026-09-22 coordinated release — COORDINATED_RELEASE_BLOCKED** before maintenance. Nothing published, deployed or mutated. Blockers: secure normal-owner login not confirmed; staged secret values not re-proven; maintenance/backup/restore/deploy command plan unapproved (independent reviewer returned HOLD). A read-only snapshot transaction proved backup *capability*, not a backup.
+- **2026-09-23 automated resume — still BLOCKED.** Blockers: no qualified production HTTPS forwarding mode; no reviewed private real-credential intake; no production session hold and post-restart readiness phase; required operational routes and genuine static-error probes absent. The production acceptance controller on `codex/production-acceptance-m1` is the follow-on work for these blockers.
 
 ### Production acceptance controller (`codex/production-acceptance-m1`)
 
@@ -52,16 +68,16 @@ From the status handoff, plus local evidence checked on 2026-11-14:
 - **M1** offline verified. **M2** accepted with a narrow historical evidence exception at `55c115a` — do not reopen or generalize it. **M3** offline verified at `67cb78f` (2026-10-02); compiled host/broker never executed.
 - **M4:** the handoff records it as BLOCKED on a pinned AArch64 Linux ABI-reference bundle and says the proposed acquisition was not established. **Local evidence shows more happened:** a pinned bundle (Linux 6.8, glibc 2.39, Arm `abi-aa` commit) was acquired 2026-10-02 at `~/day-trader-references/m4-linux-aarch64-20261002T173700Z`; that first attempt is recorded as failed, followed by an owner-authorized offline byte-reuse repair at `~/day-trader-references/m4-linux-aarch64-offline-repair-20261002T181543Z`. Commits whose messages match plan Tasks 8–10 (guest confinement, CONNECT proxy, topology gate) follow the same day.
 - Commits on 2026-10-03/04 match plan Tasks 11–15 and 18, plus a "bootstrap composition v1" amendment. The only committed review record is Task 13 (`.superpowers/sdd/.../task13-compatibility-amendment/report.md`): independent review ACCEPT, offline only, at `763b329`. Review status of the later commits (`b401be1`..`31a513e`) is unrecorded.
-- The M4 gate evidence (owner authorization, ABI coverage, exception disposition) lived in the deleted `/private/tmp/day-trader-standin-exit` worktree and is lost; only its SHA-256 hashes survive in the repair bundle's `manifest.json`.
+- The M4 gate evidence (owner authorization, ABI coverage, exception disposition) lived in the deleted `/private/tmp/day-trader-standin-exit` worktree and is lost; only its SHA-256 hashes survive in the repair bundle's `manifest.json`. A ChatGPT retrieval on 2026-11-14 could not recover the original Oct 2 M3 closeout, M4 blocked report or remedy messages either (`Day_Trader_M3_M4_Original_Message_Retrieval.md` in the project-sources folder). The local bundles and commits are the only remaining record.
 - Runtime distribution remains `HOLD_PENDING_RUNTIME_QUALIFICATION`. No browser, VM, signing, network, credential, production or trading action has been performed by this work.
-- Local run evidence outside the repo: `~/day-trader-evidence/` (pf001-closeout, startup-readiness-closeout, releases, acceptance-infrastructure, production-acceptance-tooling).
+- Other local run evidence: `~/day-trader-evidence/` (pf001-closeout, startup-readiness-closeout, acceptance-infrastructure, production-acceptance-tooling).
 
-### Next sequence when Day Trader resumes (from the handoff)
+### Next sequence when Day Trader resumes
 
-1. Reconcile the local `m1` branch, ledger and evidence against the dated identities above. Do not reset to `main` or repeat completed M1–M3 work.
+1. Reconcile `codex/production-acceptance-m1` (ledger, commits, evidence) against the identities above. Do not reset to `main` or repeat completed M1–M3 work.
 2. Settle the M4 record using the local evidence above. If more reference work is needed, the blocker is the pinned ABI bundle and its narrow authority — not a new compiler install and not PF-001.
 3. Finish only approved offline work; reuse committed M2/M3 interfaces; separate implementers from reviewers. Injected kernel/topology tests are never real confinement receipts.
-4. Production release is a separate consequential gate: fresh quiescence, verified backup/restore, owner/account/scheduler safety, data-guarded rollback, exact qualified-image publication with registry digest match, coordinated backend/frontend deploy, deployed owner-flow acceptance with the scheduler still suppressed.
+4. Clear the Sept 22/23 release blockers, then the production release gate: fresh quiescence, verified backup/restore, re-proven staged values, owner/account/scheduler safety, data-guarded rollback, exact image publication with registry digest match, coordinated backend/frontend deploy by digest, deployed owner-flow acceptance with the scheduler still suppressed.
 5. Only after separate scheduler authorization: bounded PAPER soak. Live trading stays off.
 
 ## Stack and layout
@@ -71,7 +87,7 @@ JavaScript only. Not TypeScript, not Next.js, not Prisma/PostgreSQL.
 - `backend/` — Node/Express 5.1, Mongoose 8.13, nodemailer. Entry `backend/server.js`; deterministic execution gate `backend/executionGate.js`; broker, risk and reconciliation under `backend/paper/`, `backend/robotrader/`, `backend/services/`, `backend/routes/`. Unit tests in `backend/tests/`, Mongo integration suites in `backend/integration/`. Legacy `backend/aiEngine.js` returns free-form model rationale; trace reachability before changing it.
 - `frontend/` — React 19.1 (react-scripts 5), react-router 6.30, Recharts, styled-components. Served by pinned nginx (`frontend/nginx.conf`).
 - Runtime pin: Node 24.21.0 / npm 11.19.0 (`.nvmrc`, `engines`).
-- Images: `backend/Dockerfile` (scratch runtime, uid 1000, port 8080); `frontend/Dockerfile` (nginx 1.30.4 Alpine, port 8080). Fly apps `day-trader-backend` / `day-trader-frontend` in `ord`.
+- Images: `backend/Dockerfile` (scratch runtime, uid 1000, port 8080); `frontend/Dockerfile` (nginx 1.30.4 Alpine, port 8080). Fly apps `day-trader-backend` / `day-trader-frontend` in `ord`; production images are linux/amd64.
 - CI: `.github/workflows/mvp.yml`. Release verifier: `scripts/verify-mvp.mjs`. Acceptance harness: `scripts/acceptance/`.
 - Supported owner browser: standard HTTPS browser that allows the required `SameSite=None; Secure` cross-site session cookie. Same-site/custom-domain architecture is future work.
 
@@ -87,36 +103,30 @@ npm run build --prefix frontend
 
 Full verification needs Docker, Playwright Chromium, and a disposable Mongo replica set on loopback port 27189. Follow "Deterministic verification" in [docs/mvp-runbook.md](docs/mvp-runbook.md), then run `node scripts/verify-mvp.mjs`. Never point tests at an existing database.
 
-**Do not run casually** — these touch real services, databases or the broker: `npm run verify:local`, `restart:check`, `smoke:api`, `alpaca:check`, `mongo:check`, `mongo:audit`, `mongo:compact`, any `fly` deploy, and any production preflight script. Establish isolated targets and get explicit owner authorization first.
+**Do not run casually** — these touch real services, databases or the broker: `npm run verify:local`, `restart:check`, `smoke:api`, `alpaca:check`, `mongo:check`, `mongo:audit`, `mongo:compact`, any `fly` deploy, machine start/update/restart or secrets command, and any production preflight script. Establish isolated targets and get explicit owner authorization first.
 
 ## Hard safety rules
 
 - Owner-only Alpaca PAPER. No live trading, customer funds, shorting, margin, options, futures, crypto, leveraged/inverse ETFs, autonomous funding, or overnight automation.
-- Keep `ROBO_SCHEDULER_DISABLED=true`. Scheduler activation is a separately authorized milestone.
+- Keep `ROBO_SCHEDULER_DISABLED=true` in every candidate. Scheduler activation is a separately authorized milestone.
 - Every order-producing path (UI, routes, scheduler, model tools, retries, adapters) converges on the canonical authorization/execution boundary and one ledger. No raw broker writes from an LLM.
 - Ambiguous submission stays explicitly unresolved and is reconciled before any resend. Never fail an uncertain order over to a different broker.
 - Model failure halts new model-dependent risk, not reconciliation or protective management.
 - Separate explicit owner authorization is required for each of: deploys/restarts, applying production secrets, DB writes, broker writes or cancellations, external SMTP, scheduler/RoboTrader activation, destructive actions, pushing, and material scope/security changes. Never run `User.syncIndexes()` or uniqueness migrations at startup.
-- Never commit secrets or credential values, including into `docs/evidence/`. This repository is **public**.
+- Never commit secrets, credential values or production identifiers, including into `docs/evidence/`. This repository is **public**.
 - No profitability claims. Paper results are never presented as live results.
 
-## Sources still unavailable locally
+## Source availability
 
-The handoff names seven canonical ChatGPT project sources. Only the first is in this repo:
+All seven canonical ChatGPT sources are now available: `00` in this repo, `01`–`06` in `~/day-trader-evidence/project-sources/2026-09-22/`. Per the export manifest, `01`, `04` and `05` are exact copies; `02`, `03` and `06` match except for one appended trailing newline. Source `04` links to evidence under `/private/tmp/day-trader-c1-disable/`, which no longer exists.
 
-1. `00_Day_Trader_Agentic_MVP_Master_Brief.md` — in repo as `docs/Day_Trader_Agentic_MVP_Master_Brief.md`.
-2. `01_Day_Trader_Current_State_and_Codex_Working_Model_2026-09-22.md`
-3. `02_Fly_Deployment_Preparation_READY_2026-09-22.md`
-4. `03_Frontend_Backend_Compatibility_READY_2026-09-22.md`
-5. `04_C1_Race_Safe_Disable_VERIFIED_2026-09-21.md`
-6. `05_PF001_Frontend_Closeout_VERIFIED_2026-09-22.md`
-7. Historical Decisions & Project Source Manifest.
+Still unavailable: the original Oct 2 ChatGPT messages for the M3 closeout, M4 blocked report and proposed remedy (retrieval attempted 2026-11-14). Do not reconstruct them from memory.
 
-Items 2–7 live only in the owner's ChatGPT "Day Trader" project. Label them unavailable; do not reconstruct their contents from memory. The September 22, 2026 ChatGPT task prompts (startup-readiness closeout; coordinated PAPER release v1 and v2) are in `~/Downloads/` only — historical, consumed authorizations; do not replay them.
+The September 22, 2026 ChatGPT task prompts (startup-readiness closeout; coordinated PAPER release v1 and v2) are in `~/Downloads/` only — historical, consumed authorizations; do not replay them.
 
 ## Working conventions
 
 - Run `git status` first and preserve unrelated or uncommitted work.
 - Work from `codex/owner-paper-mvp` unless told otherwise. Do not commit to `main`.
-- Use outcome-sized isolated milestones, focused tests, and independent review of exact candidates.
+- Use outcome-sized isolated milestones, focused tests, and independent review of exact candidates. Use isolated worktrees for long-running work, and keep ledgers somewhere durable (not `/private/tmp`, which macOS clears).
 - Report changes in this shape: goal / current owner requirement; repo, branch, exact commit; implemented files; exact command and environment; observed result; what it proves; what remains unproved; concrete blocker and next authorized action.
