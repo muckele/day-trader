@@ -29,6 +29,8 @@ The immediate goal is the **owner-only deployed PAPER MVP**, then a short PAPER 
 
 Do not confuse this with the broader **agentic paper MVP** (roadmap Phases 0–3), the owner-live canary (Phase 5), or the paid product (Phase 7).
 
+**Release path (owner decision, 2026-11-14): Path A.** Finish the production acceptance controller on `codex/production-acceptance-m1` and use it for deployed acceptance. Owner-performed acceptance (Path B) was considered and not chosen. Staged plan, task status and approval points: [docs/mvp-release-plan.md](docs/mvp-release-plan.md). The plan is not an authorization.
+
 ## Current state — snapshot taken 2026-11-14 (recheck before relying on it)
 
 | Branch | Head | Notes |
@@ -73,6 +75,8 @@ From the status handoff, plus local evidence checked on 2026-11-14:
 - Other local run evidence: `~/day-trader-evidence/` (pf001-closeout, startup-readiness-closeout, acceptance-infrastructure, production-acceptance-tooling).
 
 ### Next sequence when Day Trader resumes
+
+Expanded into Stages 0–7 in [docs/mvp-release-plan.md](docs/mvp-release-plan.md).
 
 1. Reconcile `codex/production-acceptance-m1` (ledger, commits, evidence) against the identities above. Do not reset to `main` or repeat completed M1–M3 work.
 2. Settle the M4 record using the local evidence above. If more reference work is needed, the blocker is the pinned ABI bundle and its narrow authority — not a new compiler install and not PF-001.
