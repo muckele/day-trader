@@ -39,7 +39,8 @@ Do not confuse this with the broader **agentic paper MVP** (roadmap Phases 0–3
 | `codex/owner-paper-mvp` | `852fb22` + docs commits | Release-candidate line: PF-001 fix (`44bc06f`) plus startup-readiness contract v2 (`852fb22`, STARTUP_READINESS_CLOSEOUT_VERIFIED; hosted run 35755989443). |
 | `codex/production-acceptance-m1` | `31a513e` (2026-10-04) | Production acceptance controller, 88 commits on top of `852fb22`. Pushed to GitHub 2026-11-14. Design and plan: `docs/PRODUCTION_ACCEPTANCE_CONTROLLER_DESIGN.md`, `docs/superpowers/plans/2026-09-30-production-acceptance-controller.md` on that branch. |
 | `codex/hosted-acceptance-tooling` | `916d2ad` (2026-09-30) | Hosted acceptance tooling pilot. |
-| `codex/sprint1-policy-approval` | `15a2de3` (2026-08-14) | Pushed to GitHub 2026-11-14 (was 6 commits ahead). Worktree: `~/Documents/Codex Agentic Trading/day-trader-sprint1`. |
+| `codex/sprint1-policy-approval` | `15a2de3` (2026-08-14) | Pushed to GitHub 2026-11-14 (was 6 commits ahead). Worktree: `~/Documents/Codex Agentic Trading/day-trader-sprint1`. That folder is iCloud-synced and macOS can evict its files; its uncommitted changes are preserved on `codex/sprint1-uncommitted-2026-07`. |
+| `codex/sprint1-uncommitted-2026-07` | `ba322b9` (2026-11-15) | Snapshot of 35 files of uncommitted Jul 19–Aug 14 work (controlled-live readiness services, tests, design docs) recovered from the sprint1 worktree, where 31 existed only in iCloud. Saved exactly as found, built on `15a2de3`. Unreviewed, untested, not a release candidate. Pushed 2026-11-15. |
 | `codex-mongo-storage-retention` | `4b34251` (2026-06-13) | Mongo retention safeguards. |
 
 ### Release candidate for `852fb22` (not published, not deployed)
