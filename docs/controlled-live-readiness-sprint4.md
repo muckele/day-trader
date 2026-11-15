@@ -23,7 +23,11 @@ A live submission requires all of the following at the time of submission:
 
 Failure of the Sprint 4 guard changes the intent to `policy_blocked`, rejects the decision, creates a `robotrader_controlled_live_blocked` audit event, creates a critical operational alert, revokes any approved/active canary record, and makes no broker call. Any other critical Sprint 3 operational alert also revokes the current canary record.
 
-The legacy Robo engine may continue using the Alpaca paper endpoint for paper acceptance testing, but it now rejects any non-paper Alpaca endpoint with `CONTROLLED_LIVE_WORKER_REQUIRED`. Live execution is available only through the canonical Sprint 1–4 worker path.
+The legacy Robo engine no longer submits directly to any Alpaca endpoint, including
+Alpaca paper. Selecting its legacy `alpaca` backend fails closed with
+`LEGACY_ALPACA_EXECUTION_DISABLED`; Alpaca execution is available only through the
+canonical controlled worker paths with durable submission-state and reconciliation
+controls.
 
 ## Approval and activation
 

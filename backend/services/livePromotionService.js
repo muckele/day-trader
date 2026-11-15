@@ -69,6 +69,9 @@ async function buildLivePromotionAssessment({ userId, now = new Date(), env = pr
     hashCanonicalEvidence(item.dossierSnapshot || {}).hash === item.dossierHash
   ));
   const strategyIds = [...new Set(dossiers.map(item => String(item.order?.strategyId || '')).filter(Boolean))];
+  const parameterVersionIds = [...new Set(
+    dossiers.map(item => String(item.order?.parameterVersionId || '')).filter(Boolean)
+  )];
   const policyVersions = [...new Set(dossiers.map(item => String(item.order?.policyVersion || '')).filter(Boolean))];
   const accountIds = [...new Set(dossiers.map(item => String(item.order?.accountId || '')).filter(Boolean))];
   const allowedSymbols = [...new Set(dossiers.map(item => normalizeSymbol(item.order?.symbol)).filter(Boolean))].sort();
@@ -80,6 +83,7 @@ async function buildLivePromotionAssessment({ userId, now = new Date(), env = pr
   const strategyEvidence = await strategyEvidenceBuilder({
     accountId: accountIds.length === 1 ? accountIds[0] : null,
     strategyId: strategyIds.length === 1 ? strategyIds[0] : null,
+    expectedParameterVersionId: parameterVersionIds.length === 1 ? parameterVersionIds[0] : null,
     symbols: allowedSymbols,
     dossiers,
     now
@@ -88,6 +92,7 @@ async function buildLivePromotionAssessment({ userId, now = new Date(), env = pr
   const executionDiscrepancy = await discrepancyBuilder({
     accountId: accountIds.length === 1 ? accountIds[0] : null,
     strategyId: strategyIds.length === 1 ? strategyIds[0] : null,
+    parameterVersionId: parameterVersionIds.length === 1 ? parameterVersionIds[0] : null,
     symbols: allowedSymbols,
     dossiers,
     now
@@ -143,9 +148,11 @@ async function buildLivePromotionAssessment({ userId, now = new Date(), env = pr
     ),
     gate(
       'strategy_consistent',
-      'One strategy across the cohort',
-      strategyIds.length === 1,
-      strategyIds.length === 1 ? strategyIds[0] : `${strategyIds.length} strategies found`
+      'One strategy and parameter version across the cohort',
+      strategyIds.length === 1 && parameterVersionIds.length === 1,
+      strategyIds.length === 1 && parameterVersionIds.length === 1
+        ? `${strategyIds[0]} · parameter version ${parameterVersionIds[0]}`
+        : `${strategyIds.length} strategies and ${parameterVersionIds.length} parameter versions found`
     ),
     gate(
       'account_consistent',
@@ -193,6 +200,7 @@ async function buildLivePromotionAssessment({ userId, now = new Date(), env = pr
     stage: 'repeat_canary',
     dossierHashes: cohort.map(item => item.dossierHash),
     strategyId: strategyIds.length === 1 ? strategyIds[0] : null,
+    parameterVersionId: parameterVersionIds.length === 1 ? parameterVersionIds[0] : null,
     executionPolicyVersion: policyVersions.length === 1 ? policyVersions[0] : null,
     strategyEvidenceFingerprint: strategyEvidence.fingerprint,
     executionDiscrepancyFingerprint: executionDiscrepancy.fingerprint,
@@ -214,6 +222,7 @@ async function buildLivePromotionAssessment({ userId, now = new Date(), env = pr
     distinctDays,
     allowedSymbols,
     strategyId: strategyIds.length === 1 ? strategyIds[0] : null,
+    parameterVersionId: parameterVersionIds.length === 1 ? parameterVersionIds[0] : null,
     executionPolicyVersion: policyVersions.length === 1 ? policyVersions[0] : null,
     strategyEvidence,
     executionDiscrepancy,

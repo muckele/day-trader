@@ -50,8 +50,11 @@ const {
 const {
   READINESS_CONFIRMATION_TEXT,
   buildReadinessAssessment,
+  createOperationalAlertFromAudit,
+  deliverCriticalAlert,
   recordReadinessEvidence
 } = require('../services/roboReadinessService');
+const { buildPreLiveEvidenceAssessment } = require('../services/preLiveEvidenceService');
 const {
   HARD_LIMITS,
   LIVE_ACTIVATION_CONFIRMATION,
@@ -121,10 +124,20 @@ async function getCurrentUser(req) {
 
 function handleRouteError(err, res, next) {
   if (err?.status) {
-    return res.status(err.status).json({
-      message: err.message,
-      code: err.code || 'REQUEST_REJECTED'
-    });
+    const payload = { message: err.message, code: err.code || 'REQUEST_REJECTED' };
+    if (err.assessment) {
+      payload.assessment = {
+        passed: err.assessment.passed,
+        assessedAt: err.assessment.assessedAt,
+        expiresAt: err.assessment.expiresAt,
+        symbols: err.assessment.symbols,
+        strategyId: err.assessment.strategyId,
+        parameterVersionId: err.assessment.parameterVersionId,
+        gates: err.assessment.gates,
+        fingerprint: err.assessment.fingerprint
+      };
+    }
+    return res.status(err.status).json(payload);
   }
   return next(err);
 }
@@ -1167,6 +1180,84 @@ router.get('/operational-alerts', async (req, res, next) => {
   }
 });
 
+function requireStagingAlertDrill() {
+  if (String(process.env.ROBOTRADER_DEPLOYMENT_ENV || '').toLowerCase() !== 'staging') {
+    const err = new Error('Operational-alert delivery drills are available only in isolated staging.');
+    err.status = 403;
+    throw err;
+  }
+}
+
+router.post('/operational-alerts/test-critical', sensitiveRateLimit({ max: 5 }), async (req, res, next) => {
+  try {
+    requireStagingAlertDrill();
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: 'User not found.' });
+    requireBrokerOperator(getBrokerOperatorUser(req, user));
+    if (req.body?.confirmation !== 'Send one staging critical-alert drill.') {
+      return res.status(400).json({ message: 'Exact staging alert-drill confirmation is required.' });
+    }
+    const testRunId = new mongoose.Types.ObjectId().toString();
+    const payload = {
+      environment: 'paper',
+      reason: 'Synthetic staging critical-alert delivery drill; no broker failure occurred.',
+      testOnly: true,
+      testRunId
+    };
+    await RoboAuditLog.create({
+      userId: user._id,
+      eventType: 'robotrader_broker_error',
+      payload
+    });
+    const alert = await createOperationalAlertFromAudit({
+      userId: user._id,
+      eventType: 'robotrader_broker_error',
+      payload,
+      now: new Date()
+    });
+    res.status(201).json({ alert, testRunId });
+  } catch (err) {
+    handleRouteError(err, res, next);
+  }
+});
+
+router.post('/operational-alerts/:alertId/retry-delivery', sensitiveRateLimit({ max: 10 }), async (req, res, next) => {
+  try {
+    requireStagingAlertDrill();
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: 'User not found.' });
+    requireBrokerOperator(getBrokerOperatorUser(req, user));
+    if (!mongoose.Types.ObjectId.isValid(req.params.alertId)) {
+      return res.status(400).json({ message: 'Invalid operational alert id.' });
+    }
+    if (req.body?.confirmation !== 'Retry this staging alert delivery.') {
+      return res.status(400).json({ message: 'Exact staging alert-retry confirmation is required.' });
+    }
+    const alert = await RoboOperationalAlert.findOne({
+      _id: req.params.alertId,
+      userId: user._id,
+      severity: 'critical',
+      active: true,
+      'payload.testOnly': true
+    });
+    if (!alert) return res.status(404).json({ message: 'Active staging test alert not found.' });
+    await deliverCriticalAlert(alert, 'critical', new Date());
+    await RoboAuditLog.create({
+      userId: user._id,
+      eventType: 'robotrader_operational_alert_delivery_retried',
+      payload: {
+        alertId: String(alert._id),
+        status: alert.notification?.status || null,
+        attempts: alert.notification?.attempts || 0,
+        testRunId: alert.payload?.testRunId || null
+      }
+    });
+    res.json({ alert });
+  } catch (err) {
+    handleRouteError(err, res, next);
+  }
+});
+
 router.post('/operational-alerts/:alertId/:action', sensitiveRateLimit({ max: 20 }), async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
@@ -1240,13 +1331,33 @@ router.get('/live-activation', async (req, res, next) => {
     if (!user) return res.status(401).json({ message: 'User not found.' });
     await enforceControlledLiveWatchdog({ userId: user._id, now: new Date() });
     const activation = await RoboLiveActivation.findOne({ userId: user._id }).lean();
-    const readiness = await buildReadinessAssessment({ userId: user._id, now: new Date() });
+    const now = new Date();
+    const settings = await getMappedSettingsForUser(user._id);
+    const intendedSymbols = activation?.allowedSymbols?.length
+      ? activation.allowedSymbols
+      : settings.allowedSymbols;
+    const [readiness, preLiveEvidence] = await Promise.all([
+      buildReadinessAssessment({ userId: user._id, now }),
+      buildPreLiveEvidenceAssessment({ userId: user._id, allowedSymbols: intendedSymbols, now })
+    ]);
     res.json({
       activation,
       readiness: {
         status: readiness.status,
         technicalReady: readiness.technicalReady,
         safeguards: readiness.safeguards
+      },
+      preLiveEvidence: {
+        passed: preLiveEvidence.passed,
+        assessedAt: preLiveEvidence.assessedAt,
+        expiresAt: preLiveEvidence.expiresAt,
+        symbols: preLiveEvidence.symbols,
+        strategyId: preLiveEvidence.strategyId,
+        parameterVersionId: preLiveEvidence.parameterVersionId,
+        gates: preLiveEvidence.gates,
+        fingerprint: preLiveEvidence.fingerprint,
+        paperExecution: preLiveEvidence.paperAssessment?.perSymbol || [],
+        strategyGates: preLiveEvidence.strategyAssessment?.gates || []
       },
       hardLimits: HARD_LIMITS,
       confirmations: {
@@ -1282,6 +1393,7 @@ router.post('/live-activation/approve', sensitiveRateLimit({ max: 5 }), async (r
       payload: {
         activationId: String(activation._id),
         readinessFingerprint: activation.readinessFingerprint,
+        preLiveEvidenceFingerprint: activation.preLiveEvidenceFingerprint,
         limits: activation.limits,
         allowedSymbols: activation.allowedSymbols,
         approvalExpiresAt: activation.approvalExpiresAt

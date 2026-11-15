@@ -111,6 +111,52 @@ test('strategy evidence fails closed for stale coverage, weak metrics, parameter
   assert.equal(assessment.gates.find(item => item.key === 'execution_drift').passed, false);
 });
 
+test('initial pre-funds strategy evidence requires walk-forward quality but not live slippage', async () => {
+  const assessment = await buildStrategyValidationAssessment({
+    accountId: 'user:matt',
+    strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    symbols: ['AAPL'],
+    dossiers: [],
+    requireCanarySlippage: false,
+    now: new Date('2026-07-10T00:00:00.000Z')
+  }, {
+    StrategyRun: {
+      find: () => queryResult([{
+        _id: 'run-aapl',
+        symbol: 'AAPL',
+        parameterVersionId: 'params-1',
+        completedAt: new Date('2026-07-01T00:00:00.000Z'),
+        metrics: {
+          tradeCount: 40,
+          winRate: 55,
+          avgR: 0.3,
+          maxDrawdown: 5,
+          windowCount: 4,
+          positiveWindowRatePct: 75
+        }
+      }])
+    },
+    StrategyParameterVersion: {
+      findOne: () => ({
+        lean: async () => ({
+          _id: 'params-1',
+          version: 1,
+          parameterHash: 'parameter-hash-1',
+          parameters: {},
+          createdAt: new Date('2026-06-30T00:00:00.000Z')
+        })
+      })
+    }
+  });
+
+  assert.equal(assessment.passed, true);
+  assert.equal(assessment.gates.find(gate => gate.key === 'execution_drift').passed, true);
+  assert.match(
+    assessment.gates.find(gate => gate.key === 'execution_drift').detail,
+    /initial pre-funds/
+  );
+});
+
 test('realized slippage is direction-aware and fails when reference evidence is missing', () => {
   assert.equal(extractRealizedSlippageBps(dossier(100.25)), 25);
   assert.equal(extractRealizedSlippageBps({

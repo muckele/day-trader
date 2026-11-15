@@ -115,6 +115,7 @@ Phase 1 RoboTrader adds a richer server-side automation layer without removing t
 - Controlled live-readiness Sprint 7 adds three-canary cohort verification, dossier-integrity and protection gates, a 24-hour cooling period, fingerprint-bound single-use repeat-canary promotion, cohort symbol/strategy restrictions, and promotion rollback without increasing any hard trading limit. See `../docs/controlled-live-readiness-sprint7.md`.
 - Controlled live-readiness Sprint 8 binds promotion to recent per-symbol backtests of the exact Robo strategy and one parameter version, applies minimum sample/average-R/drawdown gates, measures realized canary execution drift, and automatically expires promotion when its strategy evidence becomes stale. See `../docs/controlled-live-readiness-sprint8.md`.
 - Controlled live-readiness Sprint 9 integrates persisted rolling walk-forward validation and a paper-versus-live execution discrepancy report into the promotion fingerprint. See `../docs/controlled-live-readiness-sprint9.md`.
+- Pre-live hardening binds first-canary approval to current shadow, walk-forward, and comparable paper-fill evidence; adds single-operator and external-alert delivery gates; separates liveness from readiness; and includes local fake-broker and browser safety tests. See `../docs/robotrader-prelive-test-plan.md`.
 
 API endpoints:
 
@@ -134,9 +135,9 @@ API endpoints:
 - `GET /api/robotrader/approval-queue`
 - `POST /api/robotrader/intents/:intentId/authorize`
 - `POST /api/robotrader/intents/:intentId/submit`
-- `POST /api/robotrader/intents/:intentId/revoke`
 - `POST /api/robotrader/paper-intents/:intentId/submit` (Paper MVP exact frozen
   intent; requires the single operator and `Idempotency-Key`)
+- `POST /api/robotrader/intents/:intentId/revoke`
 - `GET /api/robotrader/exposure?environment=paper|shadow|live`
 - `GET /api/robotrader/orders`
 - `POST /api/robotrader/orders/:orderId/cancel`
@@ -176,12 +177,12 @@ Core:
 - `APCA_DATA_URL`
 - `APCA_DATA_FEED` (recommended: `iex`)
 - `APP_PAPER_TRADES_SYNC_TO_ALPACA` (`true` to submit app paper trades to Alpaca paper before recording the local paper ledger)
-- `PAPER_TRADING_ENABLED` (default `true`)
 - When Alpaca paper synchronization is enabled, both paper-order POST routes require
   an opaque `Idempotency-Key` header. The key is persisted with a canonical request
   fingerprint; retrying the same request returns the original attempt, while reusing
   the key for different economic order fields returns HTTP `409`
   `IDEMPOTENCY_CONFLICT`.
+- `PAPER_TRADING_ENABLED` (default `true`)
 - `LIVE_TRADING_ENABLED` (default `false`)
 - `SHORT_SELLING_ENABLED` (default `false`)
 - `MARGIN_TRADING_ENABLED` (default `false`)
@@ -219,7 +220,7 @@ Robo Trader:
 - `ROBOTRADER_DECISION_RETENTION_DAYS` (default `3`; cleanup age for old RoboTrader decisions that are not linked to submitted/filled orders)
 - `ROBOTRADER_DECISION_CLEANUP_BATCH_SIZE` (default `1000`; max stale decisions evaluated per cleanup page)
 - `ROBOTRADER_DECISION_CLEANUP_MAX_SCAN` (default `100x` batch size; max stale decisions scanned per cleanup pass)
-- `ROBOTRADER_AUDIT_LOG_RETENTION_DAYS` (default `7`; cleanup age for RoboTrader audit logs)
+- `ROBOTRADER_AUDIT_LOG_RETENTION_DAYS` (default `90`; audit TTL and cleanup age, aligned with the controlled-live evidence window)
 - `ROBO_CIRCUIT_FAILURE_THRESHOLD` (default `3`; consecutive failures before pause)
 - `ROBO_CIRCUIT_COOLDOWN_MINUTES` (default `60`; pause duration after threshold hit)
 - `ROBO_MIN_MINUTES_BETWEEN_EXECUTIONS` (default `0`; set `>0` to enforce cooldown between Robo executions)
@@ -257,6 +258,8 @@ Mongo storage maintenance:
   and `/ready`; set these from the exact committed source during deployment)
 - `APCA_LIVE_BASE_URL`, `APCA_LIVE_API_KEY_ID`, `APCA_LIVE_API_SECRET_KEY` (explicit live credentials; scheduled live reconciliation will not run without them, and live mode remains disabled unless user settings explicitly opt in)
 - `ROBOTRADER_OPERATOR_USERNAMES`, `ROBOTRADER_OPERATOR_USER_IDS` (comma-separated allowlists for deployment-wide Alpaca account reads, unattributed reconciliation records, and broker position closes; empty means no user has operator access)
+- `ROBOTRADER_ALERT_WEBHOOK_URL` (HTTPS receiver for critical operational alerts; required by controlled-live readiness)
+- `ROBOTRADER_ALERT_WEBHOOK_BEARER_TOKEN` (required bearer credential for the alert receiver in production and staging deployments)
 - `ROBOTRADER_SCHEDULER_STALE_MS` (default `180000`; `/ready` fails after the scheduler exceeds this age)
 - `ROBOTRADER_RECONCILIATION_STALE_MS` (default `720000`; `/ready` fails after successful reconciliation exceeds this age)
 - `RUNTIME_READINESS_STARTUP_GRACE_MS` (default `20000`; bounded readiness grace while the first scheduler/reconciliation tick starts)
@@ -280,6 +283,7 @@ Notes:
 - For reliable local development, prefer a local MongoDB instance and reserve Atlas for integration/staging.
 - Direct mutual funds and direct bond instruments are typically not available through this Alpaca equity/crypto routing path; use tradable ETF proxies (for example `AGG`, `BND`, `TLT`, `LQD`, `HYG`).
 - Institutional-grade trading controls introduced in Phase 1 are exposed under `GET /api/trading-system/status` and documented in `../docs/`.
+- Controlled-live operational evidence is exposed through the authenticated, account-scoped `GET /api/trading-system/operational-evidence?days=90&limit=200` endpoint. It returns strategy scorecards, comparable paper-fill coverage, exposure history, and the joined control blotter documented in `../docs/controlled-live-evidence-dashboard.md`.
 - Atlas connectivity failures with `querySrv` often indicate DNS/network restrictions or an invalid cluster hostname. In Atlas:
   - verify the cluster host in the connection string
   - add your current public IP to Network Access (or temporary `0.0.0.0/0` for testing)

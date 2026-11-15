@@ -4,6 +4,7 @@ const {
   READINESS_CONFIRMATION_TEXT,
   REQUIRED_EVIDENCE,
   createOperationalAlertFromAudit,
+  deliverPendingOperationalAlerts,
   evaluateReadiness,
   recordReadinessEvidence
 } = require('../services/roboReadinessService');
@@ -28,6 +29,66 @@ test('readiness remains fail-closed without observation and operator evidence', 
   assert.equal(result.gates.find(gate => gate.key === 'operator_runbook_reviewed').passed, false);
 });
 
+test('failed critical-alert deliveries are retried from the durable alert record', async () => {
+  const now = new Date('2026-07-10T00:10:00.000Z');
+  let saved = false;
+  const alert = {
+    severity: 'critical',
+    notification: { status: 'failed', attempts: 1, lastAttemptAt: new Date('2026-07-10T00:00:00.000Z') },
+    save: async () => { saved = true; }
+  };
+  const result = await deliverPendingOperationalAlerts({
+    now,
+    env: {
+      NODE_ENV: 'production',
+      ROBOTRADER_ALERT_WEBHOOK_URL: 'https://alerts.example.test/hook',
+      ROBOTRADER_ALERT_WEBHOOK_BEARER_TOKEN: 'test-token'
+    }
+  }, {
+    RoboOperationalAlert: {
+      find: () => ({
+        sort: () => ({ limit: async () => [alert] })
+      })
+    },
+    notifyOperationalAlert: async () => ({ delivered: true, status: 'sent', detail: 'Delivered.' })
+  });
+  assert.equal(result.attempted, 1);
+  assert.equal(result.delivered, 1);
+  assert.equal(alert.notification.status, 'sent');
+  assert.equal(saved, true);
+});
+
+test('legacy critical alerts without notification state are included in retry delivery', async () => {
+  let capturedQuery = null;
+  const alert = {
+    severity: 'critical',
+    save: async () => null
+  };
+  const result = await deliverPendingOperationalAlerts({
+    now: new Date('2026-07-10T00:10:00.000Z'),
+    env: {
+      NODE_ENV: 'production',
+      ROBOTRADER_ALERT_WEBHOOK_URL: 'https://alerts.example.test/hook',
+      ROBOTRADER_ALERT_WEBHOOK_BEARER_TOKEN: 'test-token'
+    }
+  }, {
+    RoboOperationalAlert: {
+      find: query => {
+        capturedQuery = query;
+        return { sort: () => ({ limit: async () => [alert] }) };
+      }
+    },
+    notifyOperationalAlert: async () => ({ delivered: true, status: 'sent', detail: 'Delivered.' })
+  });
+
+  assert.equal(result.delivered, 1);
+  assert.equal(
+    capturedQuery.$and[0].$or.some(item => item['notification.status']?.$exists === false),
+    true
+  );
+  assert.equal(alert.notification.status, 'sent');
+});
+
 test('readiness reaches go-no-go review only when every technical and evidence gate passes', () => {
   const now = new Date('2026-07-10T00:00:00.000Z');
   const evidence = REQUIRED_EVIDENCE.map(item => ({
@@ -41,6 +102,10 @@ test('readiness reaches go-no-go review only when every technical and evidence g
     evidence,
     activeCriticalAlerts: 0,
     reconciliationIssues: 0,
+    brokerOperatorConfigured: true,
+    brokerOperatorDetail: 'Exactly one broker-operator identifier is configured.',
+    operationalAlertDeliveryConfigured: true,
+    operationalAlertDeliveryDetail: 'Operational-alert webhook is configured.',
     now
   });
 
@@ -55,6 +120,7 @@ test('critical audit events create durable operational alerts', async () => {
   let activationRevoked = false;
   let promotionRevoked = false;
   let settingsInvalidated = false;
+  let notificationSent = false;
   const Model = {
     findOne: async () => null,
     create: async payload => {
@@ -86,6 +152,10 @@ test('critical audit events create durable operational alerts', async () => {
         settingsInvalidated = update.$inc?.controlGeneration === 1;
         return { modifiedCount: 1 };
       }
+    },
+    notifyOperationalAlert: async alertPayload => {
+      notificationSent = alertPayload.severity === 'critical';
+      return { delivered: true, status: 'sent', detail: 'Delivered.' };
     }
   });
 
@@ -95,6 +165,7 @@ test('critical audit events create durable operational alerts', async () => {
   assert.equal(activationRevoked, true);
   assert.equal(promotionRevoked, true);
   assert.equal(settingsInvalidated, true);
+  assert.equal(notificationSent, true);
 });
 
 test('readiness evidence requires exact confirmation and verified emergency drills', async () => {

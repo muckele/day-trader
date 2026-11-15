@@ -51,6 +51,7 @@ function buildDossier(index, overrides = {}) {
       side: 'buy',
       assetClass: 'stocks',
       strategyId: 'trend-pullback',
+      parameterVersionId: 'params-1',
       policyVersion: 'controlled-live-readiness-v2',
       orderClass: 'bracket',
       stopLoss: { stopPrice: 95 },

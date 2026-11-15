@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   buildExecutionDiscrepancyAssessment,
+  buildPaperExecutionReadinessAssessment,
   fillLatencyMs,
   fillRatio
 } = require('../services/executionDiscrepancyService');
@@ -21,6 +22,7 @@ function order(index, { environment = 'paper', symbol = 'AAPL', fillPrice = 100.
     _id: `${environment}-${symbol}-${index}`,
     accountId: 'user:matt',
     strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    parameterVersionId: 'parameter-version-1',
     environment,
     symbol,
     side: 'buy',
@@ -30,7 +32,13 @@ function order(index, { environment = 'paper', symbol = 'AAPL', fillPrice = 100.
     status,
     submittedAt,
     filledAt: status === 'filled' ? new Date(submittedAt.getTime() + latencyMs) : null,
-    executionQuality: { metrics: { quote: { price: 100 } } },
+    executionQuality: { metrics: { quote: {
+      price: 100,
+      timestamp: submittedAt,
+      source: 'alpaca',
+      isMock: false,
+      trustedLiveSource: true
+    } } },
     createdAt: submittedAt
   };
 }
@@ -47,6 +55,7 @@ test('paper-versus-live discrepancy passes with adequate comparable fills and bo
   const assessment = await buildExecutionDiscrepancyAssessment({
     accountId: 'user:matt',
     strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    parameterVersionId: 'parameter-version-1',
     symbols: ['AAPL', 'MSFT'],
     dossiers: [
       dossierFromOrder(order(70, { environment: 'live', symbol: 'AAPL', fillPrice: 100.1, latencyMs: 1500 })),
@@ -63,6 +72,79 @@ test('paper-versus-live discrepancy passes with adequate comparable fills and bo
   assert.equal(assessment.gates.every(item => item.passed), true);
 });
 
+test('pre-live paper evidence passes without requiring a funded live fill', async () => {
+  const paperOrders = Array.from(
+    { length: 20 },
+    (_, index) => order(index, { symbol: 'AAPL', fillPrice: 100.05 })
+  );
+  const assessment = await buildPaperExecutionReadinessAssessment({
+    accountId: 'user:matt',
+    strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    parameterVersionId: 'parameter-version-1',
+    symbols: ['AAPL'],
+    now: new Date('2026-07-10T00:00:00.000Z')
+  }, {
+    RoboTradeOrder: { find: () => queryResult(paperOrders) }
+  });
+
+  assert.equal(assessment.passed, true);
+  assert.equal(assessment.perSymbol[0].comparableFills, 20);
+  assert.equal(assessment.gates.every(gate => gate.passed), true);
+  assert.match(assessment.fingerprint, /^[a-f0-9]{64}$/);
+});
+
+test('pre-live paper fingerprint is bound to the exact underlying order cohort', async () => {
+  const firstOrders = Array.from(
+    { length: 20 },
+    (_, index) => order(index, { symbol: 'AAPL', fillPrice: 100.05 })
+  );
+  const replacementOrders = firstOrders.map(item => ({ ...item }));
+  replacementOrders[0]._id = 'replacement-order-with-identical-aggregates';
+  const input = {
+    accountId: 'user:matt',
+    strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    parameterVersionId: 'parameter-version-1',
+    symbols: ['AAPL'],
+    now: new Date('2026-07-10T00:00:00.000Z')
+  };
+
+  const first = await buildPaperExecutionReadinessAssessment(input, {
+    RoboTradeOrder: { find: () => queryResult(firstOrders) }
+  });
+  const replacement = await buildPaperExecutionReadinessAssessment(input, {
+    RoboTradeOrder: { find: () => queryResult(replacementOrders) }
+  });
+
+  assert.equal(first.perSymbol[0].meanSlippageBps, replacement.perSymbol[0].meanSlippageBps);
+  assert.equal(first.perSymbol[0].paperRejectionRatePct, replacement.perSymbol[0].paperRejectionRatePct);
+  assert.notEqual(first.fingerprint, replacement.fingerprint);
+});
+
+test('pre-live paper evidence excludes untrusted quotes and fails when the exact cohort has a live fill', async () => {
+  const paperOrders = Array.from(
+    { length: 20 },
+    (_, index) => order(index, { symbol: 'AAPL', fillPrice: 100.05 })
+  );
+  paperOrders[0].executionQuality.metrics.quote.trustedLiveSource = false;
+  const liveFill = order(50, { environment: 'live', symbol: 'AAPL', fillPrice: 100.06 });
+  const assessment = await buildPaperExecutionReadinessAssessment({
+    accountId: 'user:matt',
+    strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    parameterVersionId: 'parameter-version-1',
+    symbols: ['AAPL'],
+    now: new Date('2026-07-10T00:00:00.000Z')
+  }, {
+    RoboTradeOrder: {
+      find: query => queryResult(query.environment === 'live' ? [liveFill] : paperOrders)
+    }
+  });
+
+  assert.equal(assessment.passed, false);
+  assert.equal(assessment.perSymbol[0].comparableFills, 19);
+  assert.equal(assessment.liveFillCount, 1);
+  assert.equal(assessment.gates.find(gate => gate.key === 'pre_funds_no_live_fills').passed, false);
+});
+
 test('paper-versus-live discrepancy fails closed on poor coverage, rejects, partial fills, or drift', async () => {
   const paperOrders = [
     ...Array.from({ length: 5 }, (_, index) => order(index)),
@@ -74,6 +156,7 @@ test('paper-versus-live discrepancy fails closed on poor coverage, rejects, part
   const assessment = await buildExecutionDiscrepancyAssessment({
     accountId: 'user:matt',
     strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    parameterVersionId: 'parameter-version-1',
     symbols: ['AAPL'],
     dossiers: [dossierFromOrder(partialLive)],
     now: new Date('2026-07-10T00:00:00.000Z')
@@ -104,6 +187,7 @@ test('a healthy high-volume symbol cannot dilute another symbol rejection rate',
   const assessment = await buildExecutionDiscrepancyAssessment({
     accountId: 'user:matt',
     strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    parameterVersionId: 'parameter-version-1',
     symbols: ['AAPL', 'MSFT'],
     dossiers: [
       dossierFromOrder(order(700, { environment: 'live', symbol: 'AAPL' })),

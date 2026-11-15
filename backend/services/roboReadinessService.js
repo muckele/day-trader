@@ -8,6 +8,11 @@ const RoboSettings = require('../models/RoboSettings');
 const { getOrCreateRoboTraderSettings, mapSettings } = require('../robotrader/settingsService');
 const { getAlpacaConfigForMode } = require('../robotrader/alpacaBroker');
 const { isPaperTradingEndpoint } = require('./alpacaTradingClient');
+const { getBrokerOperatorConfiguration } = require('./brokerOperatorService');
+const {
+  getOperationalAlertDeliveryConfiguration,
+  notifyOperationalAlert
+} = require('./operationalAlertNotifier');
 
 const READINESS_CONFIRMATION_TEXT = 'I completed this readiness check.';
 const REQUIRED_EVIDENCE = Object.freeze([
@@ -89,6 +94,59 @@ async function invalidateControlledLiveForCriticalAlert(userId, severity, now, d
   await Promise.all(updates);
 }
 
+async function deliverCriticalAlert(alert, severity, now, deps = {}) {
+  if (severity !== 'critical' || !alert) return;
+  try {
+    const notify = deps.notifyOperationalAlert || notifyOperationalAlert;
+    const result = await notify(alert, { env: deps.env || process.env });
+    if (!alert.notification) alert.notification = {};
+    alert.notification.status = result.status;
+    alert.notification.attempts = Number(alert.notification.attempts || 0) + (result.status === 'disabled' ? 0 : 1);
+    alert.notification.lastAttemptAt = result.status === 'disabled' ? null : now;
+    alert.notification.lastDeliveredAt = result.delivered ? now : (alert.notification.lastDeliveredAt || null);
+    alert.notification.detail = result.detail;
+    if (typeof alert.save === 'function') await alert.save();
+  } catch (err) {
+    console.error('Operational-alert delivery state could not be recorded:', err?.message || err);
+  }
+}
+
+async function deliverPendingOperationalAlerts({ now = new Date(), env = process.env } = {}, deps = {}) {
+  const configuration = getOperationalAlertDeliveryConfiguration(env);
+  if (!configuration.configured) return { configured: false, attempted: 0, delivered: 0 };
+  const Model = deps.RoboOperationalAlert || RoboOperationalAlert;
+  const retryCutoff = new Date(now.getTime() - 5 * 60 * 1000);
+  const query = Model.find({
+    severity: 'critical',
+    status: { $in: ['open', 'acknowledged'] },
+    $and: [
+      {
+        $or: [
+          { 'notification.status': { $in: ['failed', 'disabled'] } },
+          { 'notification.status': { $exists: false } }
+        ]
+      },
+      {
+        $or: [
+          { 'notification.lastAttemptAt': null },
+          { 'notification.lastAttemptAt': { $exists: false } },
+          { 'notification.lastAttemptAt': { $lte: retryCutoff } }
+        ]
+      }
+    ]
+  }).sort({ 'notification.lastAttemptAt': 1 }).limit(10);
+  const alerts = await query;
+  let delivered = 0;
+  for (const alert of alerts) {
+    await deliverCriticalAlert(alert, 'critical', now, {
+      ...deps,
+      env
+    });
+    if (alert.notification?.status === 'sent') delivered += 1;
+  }
+  return { configured: true, attempted: alerts.length, delivered };
+}
+
 async function createOperationalAlertFromAudit({ userId, eventType, payload = {}, now = new Date() }, deps = {}) {
   const rule = ALERT_RULES[eventType];
   const Model = deps.RoboOperationalAlert || RoboOperationalAlert;
@@ -104,6 +162,7 @@ async function createOperationalAlertFromAudit({ userId, eventType, payload = {}
     existing.payload = payload;
     await existing.save();
     await invalidateControlledLiveForCriticalAlert(userId, severity, now, deps);
+    await deliverCriticalAlert(existing, severity, now, deps);
     return existing;
   }
   try {
@@ -121,6 +180,7 @@ async function createOperationalAlertFromAudit({ userId, eventType, payload = {}
       lastOccurredAt: now
     });
     await invalidateControlledLiveForCriticalAlert(userId, severity, now, deps);
+    await deliverCriticalAlert(created, severity, now, deps);
     return created;
   } catch (err) {
     if (err?.code !== 11000) throw err;
@@ -133,6 +193,7 @@ async function createOperationalAlertFromAudit({ userId, eventType, payload = {}
     raced.payload = payload;
     await raced.save();
     await invalidateControlledLiveForCriticalAlert(userId, severity, now, deps);
+    await deliverCriticalAlert(raced, severity, now, deps);
     return raced;
   }
 }
@@ -147,7 +208,11 @@ function evaluateReadiness({
   minShadowRuns = 20,
   minShadowDays = 7,
   liveCredentialsConfigured = false,
-  deploymentLiveFlag = false
+  deploymentLiveFlag = false,
+  brokerOperatorConfigured = false,
+  brokerOperatorDetail = 'No broker operator is configured.',
+  operationalAlertDeliveryConfigured = false,
+  operationalAlertDeliveryDetail = 'No operational-alert delivery channel is configured.'
 } = {}) {
   const validEvidence = new Map(
     evidence.filter(item => item.status === 'complete' && new Date(item.expiresAt) > now)
@@ -157,6 +222,18 @@ function evaluateReadiness({
   const distinctDays = new Set(snapshotDates.map(date => date.toISOString().slice(0, 10))).size;
   const shadowBreaches = shadowSnapshots.filter(item => item.breached).length;
   const gates = [
+    {
+      key: 'single_broker_operator',
+      label: 'Exactly one broker operator is configured',
+      passed: brokerOperatorConfigured,
+      detail: brokerOperatorDetail
+    },
+    {
+      key: 'operational_alert_delivery',
+      label: 'Critical operational alerts have an external delivery channel',
+      passed: operationalAlertDeliveryConfigured,
+      detail: operationalAlertDeliveryDetail
+    },
     {
       key: 'shadow_observation',
       label: 'Sustained shadow-live observation',
@@ -217,6 +294,8 @@ async function buildReadinessAssessment({ userId, now = new Date(), env = proces
   const minShadowRuns = readinessNumber(env.ROBOTRADER_READINESS_MIN_SHADOW_RUNS, 20);
   const minShadowDays = readinessNumber(env.ROBOTRADER_READINESS_MIN_SHADOW_DAYS, 7);
   const windowDays = readinessNumber(env.ROBOTRADER_READINESS_WINDOW_DAYS, 30);
+  const operatorConfiguration = getBrokerOperatorConfiguration(env);
+  const alertDeliveryConfiguration = getOperationalAlertDeliveryConfiguration(env);
   const cutoff = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
   const settingsDoc = await Settings(userId);
   const [shadowSnapshots, activeCriticalAlerts, reconciliationIssues, evidence] = await Promise.all([
@@ -241,7 +320,11 @@ async function buildReadinessAssessment({ userId, now = new Date(), env = proces
     minShadowRuns,
     minShadowDays,
     liveCredentialsConfigured: hasLiveAlpacaConfig(env),
-    deploymentLiveFlag: String(env.LIVE_TRADING_ENABLED || '').toLowerCase() === 'true'
+    deploymentLiveFlag: String(env.LIVE_TRADING_ENABLED || '').toLowerCase() === 'true',
+    brokerOperatorConfigured: operatorConfiguration.configured,
+    brokerOperatorDetail: operatorConfiguration.detail,
+    operationalAlertDeliveryConfigured: alertDeliveryConfiguration.configured,
+    operationalAlertDeliveryDetail: alertDeliveryConfiguration.detail
   });
 }
 
@@ -284,6 +367,8 @@ module.exports = {
   REQUIRED_EVIDENCE,
   buildReadinessAssessment,
   createOperationalAlertFromAudit,
+  deliverCriticalAlert,
+  deliverPendingOperationalAlerts,
   evaluateReadiness,
   recordReadinessEvidence
 };

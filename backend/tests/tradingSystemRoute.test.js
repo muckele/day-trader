@@ -96,3 +96,24 @@ test('trading-system execution route returns summary, orders, and fills', async 
     assert.equal(res.body.warning, 'DATA_UNAVAILABLE');
   }
 });
+
+test('trading-system operational-evidence route returns scorecards, exposure, and blotter', async () => {
+  const handler = getHandler('/operational-evidence');
+  const res = createMockRes();
+  let nextErr = null;
+
+  await handler({ query: { days: '30', limit: '25' } }, res, err => {
+    nextErr = err;
+  });
+
+  assert.equal(nextErr, null);
+  assert.equal(res.statusCode, 200);
+  assert.ok(Array.isArray(res.body.strategyScorecards));
+  assert.ok(Array.isArray(res.body.exposure.series));
+  assert.ok(Array.isArray(res.body.blotter.rows));
+  assert.ok(Array.isArray(res.body.paperCoverage));
+  assert.equal(typeof res.body.lookbackDays, 'number');
+  if (res.body.warning) {
+    assert.equal(res.body.warning, 'DATA_UNAVAILABLE');
+  }
+});

@@ -15,7 +15,14 @@ const roboOperationalAlertSchema = new mongoose.Schema({
   lastOccurredAt: { type: Date, default: Date.now, index: true },
   acknowledgedAt: { type: Date, default: null },
   resolvedAt: { type: Date, default: null },
-  payload: { type: mongoose.Schema.Types.Mixed, default: {} }
+  payload: { type: mongoose.Schema.Types.Mixed, default: {} },
+  notification: {
+    status: { type: String, enum: ['disabled', 'pending', 'sent', 'failed'], default: 'disabled' },
+    attempts: { type: Number, default: 0, min: 0 },
+    lastAttemptAt: { type: Date, default: null },
+    lastDeliveredAt: { type: Date, default: null },
+    detail: { type: String, default: null }
+  }
 }, { timestamps: true });
 
 roboOperationalAlertSchema.index({ userId: 1, status: 1, severity: 1, lastOccurredAt: -1 });

@@ -5,6 +5,7 @@ const { getFeatureFlagsSnapshot } = require('../services/featureFlagService');
 const { getRiskLimitsSnapshot } = require('../services/riskConfigService');
 const { listStrategies } = require('../services/strategyRegistry');
 const { listRecentExecution } = require('../services/executionTelemetryService');
+const { getOperationalEvidence } = require('../services/operationalEvidenceService');
 const {
   listRecentParameterVersions,
   listRecentStrategyRuns
@@ -99,6 +100,23 @@ router.get('/execution', async (req, res, next) => {
       orders,
       fills,
       summary: buildExecutionSummary(orders, fills),
+      ...(getDataWarning() || {})
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/operational-evidence', async (req, res, next) => {
+  try {
+    const accountId = getRequestAccountId(req);
+    const evidence = await getOperationalEvidence({
+      accountId,
+      days: req.query.days,
+      limit: req.query.limit
+    });
+    res.json({
+      ...evidence,
       ...(getDataWarning() || {})
     });
   } catch (err) {

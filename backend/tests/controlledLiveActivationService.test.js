@@ -28,6 +28,28 @@ const liveEnv = {
   APCA_LIVE_API_SECRET_KEY: 'explicit-live-secret',
   APCA_LIVE_BASE_URL: 'https://api.alpaca.markets'
 };
+const PRE_LIVE_FINGERPRINT = 'pre-live-fingerprint';
+
+function passingPreLiveEvidence() {
+  return {
+    policyVersion: 'pre-live-evidence-v1',
+    passed: true,
+    assessedAt: new Date('2026-07-10T00:00:00.000Z'),
+    accountId: 'user:test',
+    strategyId: 'ROBO_TREND_FOLLOWING_V1',
+    symbols: ['AAPL'],
+    selectedShadow: [],
+    gates: [],
+    fingerprint: PRE_LIVE_FINGERPRINT
+  };
+}
+
+function withPreLiveEvidence(deps = {}) {
+  return {
+    buildPreLiveEvidenceAssessment: async () => passingPreLiveEvidence(),
+    ...deps
+  };
+}
 
 function readyAssessment() {
   return {
@@ -68,16 +90,39 @@ test('controlled-live approval is bound to a passing readiness fingerprint', asy
     limits: { maxOrderNotionalUsd: 25 },
     allowedSymbols: ['aapl'],
     now: new Date('2026-07-10T00:00:00.000Z')
-  }, {
+  }, withPreLiveEvidence({
     RoboLiveActivation: Model,
     buildReadinessAssessment: async () => readyAssessment(),
     validateRepeatCanaryApproval: async () => ({ required: false, dossierCount: 0 })
-  });
+  }));
 
   assert.equal(activation.status, 'approved');
   assert.deepEqual(activation.allowedSymbols, ['AAPL']);
   assert.equal(activation.readinessFingerprint, buildReadinessFingerprint(readyAssessment()));
+  assert.equal(activation.preLiveEvidenceFingerprint, PRE_LIVE_FINGERPRINT);
   assert.equal(update.limits.maxOrderNotionalUsd, 25);
+});
+
+test('controlled-live approval rejects incomplete pre-live evidence before funds can be enabled', async () => {
+  await assert.rejects(
+    approveControlledLive({
+      userId: 'user-1',
+      confirmation: LIVE_APPROVAL_CONFIRMATION,
+      allowedSymbols: ['AAPL'],
+      now: new Date('2026-07-10T00:00:00.000Z')
+    }, {
+      RoboLiveActivation: { findOneAndUpdate: async () => assert.fail('activation must not be written') },
+      buildReadinessAssessment: async () => readyAssessment(),
+      buildPreLiveEvidenceAssessment: async () => ({
+        passed: false,
+        symbols: ['AAPL'],
+        gates: [{ key: 'paper_execution_evidence', passed: false }],
+        fingerprint: 'blocked'
+      }),
+      validateRepeatCanaryApproval: async () => ({ required: false, dossierCount: 0 })
+    }),
+    err => err.status === 409 && err.code === 'PRE_LIVE_EVIDENCE_REQUIRED'
+  );
 });
 
 test('controlled-live submission fails closed while the deployment flag is disabled', async () => {
@@ -94,6 +139,7 @@ test('controlled-live submission enforces activation, allowlist, order, and dail
   const activation = {
     _id: 'activation-1',
     readinessFingerprint: buildReadinessFingerprint(assessment),
+    preLiveEvidenceFingerprint: PRE_LIVE_FINGERPRINT,
     allowedSymbols: ['AAPL'],
     limits: {
       maxOrderNotionalUsd: 25,
@@ -107,11 +153,11 @@ test('controlled-live submission enforces activation, allowlist, order, and dail
     findOneAndUpdate: () => ({ lean: async () => ({ ...activation, attemptsUsed: 1 }) })
   };
   const emptyOrders = { find: () => ({ lean: async () => [] }) };
-  const deps = {
+  const deps = withPreLiveEvidence({
     RoboLiveActivation: Activation,
     RoboTradeOrder: emptyOrders,
     buildReadinessAssessment: async () => assessment
-  };
+  });
   const approved = await validateControlledLiveSubmission({
     userId: 'user-1',
     orderInput: { symbol: 'AAPL', qty: 1, orderType: 'limit', limitPrice: 25 },
@@ -148,6 +194,7 @@ test('promoted submission fails closed when bound strategy evidence is no longer
     _id: 'activation-1',
     promotionId: 'promotion-1',
     readinessFingerprint: buildReadinessFingerprint(assessment),
+    preLiveEvidenceFingerprint: PRE_LIVE_FINGERPRINT,
     allowedSymbols: ['AAPL'],
     limits: { maxOrderNotionalUsd: 25, maxDailyOrders: 1, maxDailyCumulativeNotionalUsd: 25 }
   };
@@ -156,13 +203,13 @@ test('promoted submission fails closed when bound strategy evidence is no longer
     orderInput: { symbol: 'AAPL', qty: 1, orderType: 'limit', limitPrice: 10 },
     now: new Date('2026-07-10T14:00:00.000Z'),
     env: liveEnv
-  }, {
+  }, withPreLiveEvidence({
     RoboLiveActivation: {
       find: () => ({ lean: async () => [] }),
       findOne: () => ({ lean: async () => activation })
     },
     RoboLivePromotion: { findOne: () => ({ lean: async () => null }) }
-  });
+  }));
   assert.equal(result.reasonCode, 'PROMOTED_STRATEGY_EVIDENCE_EXPIRED');
 });
 
@@ -172,6 +219,7 @@ test('promoted submission revalidates walk-forward and paper/live discrepancy fi
     _id: 'activation-1',
     promotionId: 'promotion-1',
     readinessFingerprint: buildReadinessFingerprint(assessment),
+    preLiveEvidenceFingerprint: PRE_LIVE_FINGERPRINT,
     allowedSymbols: ['AAPL'],
     limits: { maxOrderNotionalUsd: 25, maxDailyOrders: 1, maxDailyCumulativeNotionalUsd: 25 }
   };
@@ -180,7 +228,7 @@ test('promoted submission revalidates walk-forward and paper/live discrepancy fi
     orderInput: { symbol: 'AAPL', qty: 1, orderType: 'limit', limitPrice: 10 },
     now: new Date('2026-07-10T14:00:00.000Z'),
     env: liveEnv
-  }, {
+  }, withPreLiveEvidence({
     RoboLiveActivation: {
       find: () => ({ lean: async () => [] }),
       findOne: () => ({ lean: async () => activation })
@@ -194,7 +242,7 @@ test('promoted submission revalidates walk-forward and paper/live discrepancy fi
       eligible: true,
       assessmentFingerprint: 'changed-fingerprint'
     })
-  });
+  }));
   assert.equal(result.reasonCode, 'PROMOTED_EVIDENCE_CHANGED');
 });
 
@@ -203,6 +251,7 @@ test('the activation attempt slot is claimed atomically only at the broker bound
   const activation = {
     _id: 'activation-1',
     readinessFingerprint: buildReadinessFingerprint(assessment),
+    preLiveEvidenceFingerprint: PRE_LIVE_FINGERPRINT,
     allowedSymbols: ['AAPL'],
     limits: { maxOrderNotionalUsd: 25, maxDailyOrders: 1, maxDailyCumulativeNotionalUsd: 25 }
   };
@@ -211,7 +260,7 @@ test('the activation attempt slot is claimed atomically only at the broker bound
     orderInput: { symbol: 'AAPL', qty: 1, orderType: 'limit', limitPrice: 10 },
     now: new Date('2026-07-10T14:00:00.000Z'),
     env: liveEnv
-  }, {
+  }, withPreLiveEvidence({
     RoboLiveActivation: {
       find: () => ({ lean: async () => [] }),
       findOne: () => ({ lean: async () => activation }),
@@ -219,7 +268,7 @@ test('the activation attempt slot is claimed atomically only at the broker bound
     },
     RoboTradeOrder: { find: () => ({ lean: async () => [] }) },
     buildReadinessAssessment: async () => assessment
-  });
+  }));
   assert.equal(validation.approved, true);
   const blocked = await claimControlledLiveAttempt({
     activationId: activation._id,
@@ -233,6 +282,7 @@ test('the activation attempt slot is claimed atomically only at the broker bound
   assert.equal(blocked, null);
 
   let outcomeUpdate = null;
+  let settingsUpdate = null;
   await recordControlledLiveOutcome({
     activationId: 'activation-1',
     status: 'submission_uncertain',
@@ -241,12 +291,22 @@ test('the activation attempt slot is claimed atomically only at the broker bound
     RoboLiveActivation: {
       findOneAndUpdate: async (_query, update) => {
         outcomeUpdate = update.$set;
-        return update.$set;
+        return { userId: 'user-1', ...update.$set };
+      }
+    },
+    RoboSettings: {
+      updateOne: async (query, update) => {
+        settingsUpdate = { query, update };
+        return { matchedCount: 1 };
       }
     }
   });
   assert.equal(outcomeUpdate.status, 'revoked');
   assert.equal(outcomeUpdate.lifecycleStatus, 'failed');
+  assert.deepEqual(settingsUpdate.query, { userId: 'user-1' });
+  assert.equal(settingsUpdate.update.$set.enabled, false);
+  assert.equal(settingsUpdate.update.$set.isEnabled, false);
+  assert.equal(settingsUpdate.update.$inc.controlGeneration, 1);
 
   const record = {
     status: 'active',

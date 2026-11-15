@@ -53,8 +53,10 @@ function summarizeRun(run = {}) {
 async function buildStrategyValidationAssessment({
   accountId,
   strategyId,
+  expectedParameterVersionId = null,
   symbols = [],
   dossiers = [],
+  requireCanarySlippage = true,
   now = new Date()
 } = {}, deps = {}) {
   const Model = deps.StrategyRun || StrategyRun;
@@ -70,6 +72,7 @@ async function buildStrategyValidationAssessment({
       mode: 'simulation',
       status: 'completed',
       'summary.validationType': 'walk_forward',
+      ...(expectedParameterVersionId ? { parameterVersionId: expectedParameterVersionId } : {}),
       symbol: { $in: normalizedSymbols },
       completedAt: { $gte: cutoff }
     }).sort({ completedAt: -1 }).lean();
@@ -114,9 +117,11 @@ async function buildStrategyValidationAssessment({
   const meanSlippageBps = slippageComplete && slippage.length
     ? Number((slippage.reduce((sum, value) => sum + value, 0) / slippage.length).toFixed(2))
     : null;
-  const slippagePass = slippageComplete
-    && slippage.every(value => value <= MAX_CANARY_SLIPPAGE_BPS)
-    && meanSlippageBps <= MAX_MEAN_CANARY_SLIPPAGE_BPS;
+  const slippagePass = requireCanarySlippage
+    ? slippageComplete
+      && slippage.every(value => value <= MAX_CANARY_SLIPPAGE_BPS)
+      && meanSlippageBps <= MAX_MEAN_CANARY_SLIPPAGE_BPS
+    : true;
   const gates = [
     {
       key: 'backtest_coverage',
@@ -138,18 +143,22 @@ async function buildStrategyValidationAssessment({
     {
       key: 'execution_drift',
       passed: slippagePass,
-      detail: meanSlippageBps === null
-        ? 'Realized adverse slippage could not be computed for every canary.'
-        : `${meanSlippageBps} bps mean; ${Math.max(...slippage)} bps worst`
+      detail: !requireCanarySlippage
+        ? 'Canary slippage is not required for the initial pre-funds assessment.'
+        : meanSlippageBps === null
+          ? 'Realized adverse slippage could not be computed for every canary.'
+          : `${meanSlippageBps} bps mean; ${Math.max(...slippage)} bps worst`
     }
   ];
   const fingerprint = hashCanonicalEvidence({
     policyVersion: STRATEGY_EVIDENCE_POLICY_VERSION,
     accountId: accountId || null,
     strategyId: strategyId || null,
+    expectedParameterVersionId: expectedParameterVersionId ? String(expectedParameterVersionId) : null,
     symbols: normalizedSymbols,
     runs: summaries,
     parameterVersion: parameterSnapshot,
+    requireCanarySlippage,
     realizedSlippageBps: slippage
   }).hash;
   return {
@@ -161,7 +170,9 @@ async function buildStrategyValidationAssessment({
       : null,
     accountId: accountId || null,
     strategyId: strategyId || null,
+    expectedParameterVersionId: expectedParameterVersionId ? String(expectedParameterVersionId) : null,
     symbols: normalizedSymbols,
+    requireCanarySlippage,
     parameterVersionId: parameterSnapshot?.id || null,
     parameterVersion: parameterSnapshot,
     runs: summaries,

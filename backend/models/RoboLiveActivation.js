@@ -6,6 +6,8 @@ const roboLiveActivationSchema = new mongoose.Schema({
   promotionId: { type: mongoose.Schema.Types.ObjectId, ref: 'RoboLivePromotion', default: null, index: true },
   status: { type: String, enum: ['approved', 'active', 'revoked', 'expired'], required: true, index: true },
   readinessFingerprint: { type: String, required: true },
+  preLiveEvidenceFingerprint: { type: String, required: true },
+  preLiveEvidence: { type: mongoose.Schema.Types.Mixed, required: true },
   limits: { type: mongoose.Schema.Types.Mixed, required: true },
   allowedSymbols: { type: [String], required: true },
   approvedAt: { type: Date, required: true },

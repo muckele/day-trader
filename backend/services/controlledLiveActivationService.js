@@ -14,6 +14,7 @@ const { buildReadinessAssessment, createOperationalAlertFromAudit } = require('.
 const { getAlpacaConfigForMode } = require('../robotrader/alpacaBroker');
 const { isPaperTradingEndpoint } = require('./alpacaTradingClient');
 const { hashCanonicalEvidence } = require('./canaryEvidenceService');
+const { buildPreLiveEvidenceAssessment } = require('./preLiveEvidenceService');
 
 const LIVE_APPROVAL_CONFIRMATION = 'I approve a controlled live canary.';
 const LIVE_ACTIVATION_CONFIRMATION = 'Activate controlled live canary now.';
@@ -65,6 +66,38 @@ function buildReadinessFingerprint(assessment = {}) {
   return crypto.createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
 }
 
+function summarizePreLiveEvidence(assessment = {}) {
+  return {
+    policyVersion: assessment.policyVersion || null,
+    passed: assessment.passed === true,
+    assessedAt: assessment.assessedAt || null,
+    expiresAt: assessment.expiresAt || null,
+    accountId: assessment.accountId || null,
+    strategyId: assessment.strategyId || null,
+    parameterVersionId: assessment.parameterVersionId || null,
+    symbols: assessment.symbols || [],
+    selectedShadow: assessment.selectedShadow || [],
+    gates: assessment.gates || [],
+    strategyFingerprint: assessment.strategyAssessment?.fingerprint || null,
+    paperExecution: (assessment.paperAssessment?.perSymbol || []).map(item => ({
+      symbol: item.symbol,
+      totalOrders: item.totalOrders,
+      comparableFills: item.comparableFills,
+      paperRejectionRatePct: item.paperRejectionRatePct,
+      meanFillRatio: item.meanFillRatio,
+      meanSlippageBps: item.meanSlippageBps,
+      p95FillLatencyMs: item.p95FillLatencyMs,
+      passed: item.passed === true
+    })),
+    fingerprint: assessment.fingerprint || null
+  };
+}
+
+async function loadPreLiveEvidence({ userId, allowedSymbols, now }, deps = {}) {
+  const builder = deps.buildPreLiveEvidenceAssessment || buildPreLiveEvidenceAssessment;
+  return builder({ userId, allowedSymbols, now }, deps);
+}
+
 function hasExplicitLiveCredentials(env = process.env) {
   const config = getAlpacaConfigForMode('live', env);
   return Boolean(
@@ -112,6 +145,14 @@ async function approveControlledLive({ userId, confirmation, limits, allowedSymb
     err.status = 400;
     throw err;
   }
+  const preLiveEvidence = await loadPreLiveEvidence({ userId, allowedSymbols: symbols, now }, deps);
+  if (!preLiveEvidence?.passed || !preLiveEvidence.fingerprint) {
+    const err = new Error('Current shadow, walk-forward, and paper-execution evidence must pass before a live canary can be approved.');
+    err.status = 409;
+    err.code = 'PRE_LIVE_EVIDENCE_REQUIRED';
+    err.assessment = preLiveEvidence;
+    throw err;
+  }
   const validatePromotion = deps.validateRepeatCanaryApproval
     || require('./livePromotionService').validateRepeatCanaryApproval;
   const promotionValidation = await validatePromotion({ userId, allowedSymbols: symbols, now, env }, deps);
@@ -124,6 +165,8 @@ async function approveControlledLive({ userId, confirmation, limits, allowedSymb
       canaryId: crypto.randomUUID(),
       promotionId: promotionValidation?.promotion?._id || null,
       readinessFingerprint: buildReadinessFingerprint(assessment),
+      preLiveEvidenceFingerprint: preLiveEvidence.fingerprint,
+      preLiveEvidence: summarizePreLiveEvidence(preLiveEvidence),
       limits: normalizedLimits,
       allowedSymbols: symbols,
       approvedAt: now,
@@ -174,6 +217,21 @@ async function activateControlledLive({ userId, confirmation, now = new Date(), 
     err.status = 409;
     throw err;
   }
+  const preLiveEvidence = await loadPreLiveEvidence({
+    userId,
+    allowedSymbols: record.allowedSymbols,
+    now
+  }, deps);
+  if (
+    !preLiveEvidence?.passed
+    || !record.preLiveEvidenceFingerprint
+    || preLiveEvidence.fingerprint !== record.preLiveEvidenceFingerprint
+  ) {
+    const err = new Error('Pre-live strategy or paper-execution evidence changed after approval; approve a new controlled-live snapshot.');
+    err.status = 409;
+    err.code = 'PRE_LIVE_EVIDENCE_CHANGED';
+    throw err;
+  }
   record.status = 'active';
   record.activatedAt = now;
   record.activationExpiresAt = new Date(now.getTime() + record.limits.activationHours * 60 * 60 * 1000);
@@ -200,6 +258,21 @@ async function validateControlledLiveSubmission({ userId, orderInput, now = new 
     supervisionDeadlineAt: { $gt: now }
   }).lean();
   if (!activation) return fail('CONTROLLED_LIVE_NOT_ACTIVE', 'No current controlled-live activation exists.');
+  const preLiveEvidence = await loadPreLiveEvidence({
+    userId,
+    allowedSymbols: activation.allowedSymbols,
+    now
+  }, deps);
+  if (
+    !preLiveEvidence?.passed
+    || !activation.preLiveEvidenceFingerprint
+    || preLiveEvidence.fingerprint !== activation.preLiveEvidenceFingerprint
+  ) {
+    return fail(
+      'PRE_LIVE_EVIDENCE_CHANGED',
+      'The approved shadow, walk-forward, or paper-execution evidence is missing, blocked, or changed.'
+    );
+  }
   if (activation.promotionId) {
     const Promotion = deps.RoboLivePromotion || RoboLivePromotion;
     const promotion = await Promotion.findOne({
@@ -644,6 +717,7 @@ module.exports = {
   activateControlledLive,
   approveControlledLive,
   buildReadinessFingerprint,
+  summarizePreLiveEvidence,
   normalizeCanaryLimits,
   claimControlledLiveAttempt,
   expireControlledLiveActivations,

@@ -6,6 +6,7 @@ const { getAlpacaConfigForMode } = require('../robotrader/alpacaBroker');
 const { isPaperTradingEndpoint } = require('./alpacaTradingClient');
 const { enforceControlledLiveWatchdog } = require('./controlledLiveActivationService');
 const { enforceStrategyEvidenceDemotion, expireLivePromotions } = require('./livePromotionService');
+const { deliverPendingOperationalAlerts } = require('./roboReadinessService');
 const mongoState = require('../utils/mongoState');
 
 const schedulerState = {
@@ -160,6 +161,7 @@ function startRoboScheduler({
         await controlledLiveWatchdog({ now: new Date() });
         await livePromotionExpiry({ now: new Date() });
         await strategyEvidenceDemotion({ now: new Date() });
+        await deliverPendingOperationalAlerts({ now: new Date() });
       }
 
       if (shouldRunLegacyScheduler) {
