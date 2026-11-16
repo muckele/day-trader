@@ -4,6 +4,8 @@
 
 **Owner decision (2026-11-14):** reach the owner-only deployed PAPER MVP by **Path A**. That means finishing the production acceptance controller on `codex/production-acceptance-m1` and using it for deployed acceptance. Path B was considered and not chosen. In Path B the owner would perform login and deployed acceptance personally while an agent guides and records.
 
+**Reconfirmed (2026-11-16):** the 2026-11-14 choice came from a one-letter reply. On 2026-11-16 the owner saw a side-by-side comparison of both paths: Path A at about 3–5+ weeks with little owner time per release, and Path B at about 1–2 weeks with the owner logging in for each release. The owner chose to keep Path A.
+
 Day Trader stays paused behind Built & Kept and UCKELE Group (owner decision, 2026-10-27). This plan is written so work can restart cleanly. It does not restart the work.
 
 ## Ground rules
