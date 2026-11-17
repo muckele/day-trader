@@ -2146,7 +2146,7 @@ class TopologyTests(unittest.TestCase):
         for index, role in enumerate(confinement.UIDS):
             rows = [dict(fd=fd,
                 kind='NULL' if fd < 3 else 'COMMAND' if fd == 3 else 'RESULT',
-                device='1', inode=str(100 + index * 10 + fd), flags=0,
+                device='1', inode=str(100 + index * 10 + fd), flags=1 if fd == 4 else 0,
                 ownerId=('%x' % (index * 5 + fd + 1))[-1] * 32,
                 acquiredGeneration=1) for fd in range(5)]
             if role == 'PROXY':

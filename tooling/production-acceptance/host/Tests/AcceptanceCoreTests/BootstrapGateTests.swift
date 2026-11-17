@@ -647,7 +647,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
             fixtureInventoryDigest:evidence["fixtureInventoryDigest"] as! String,
             eventSourceID:checkpoint["sourceIdentity"] as! String,
             proxyRuntimeID:evidence["proxyRuntimeId"] as! String,originalRoleRuntime:exactOriginals)
-        let exactCapability=Data(repeating:UInt8(ascii:"7"),count:32)
+        let exactCapability=Data(repeating:7,count:32)
         let exactAuthority=try BootstrapExecutableAuthority.offlineLiteral(pins:pins)
         #expect(throws:Never.self) {
             _ = try BootstrapHandoff.verify(data:exact,expectedRunID:payload["runId"] as! String,
