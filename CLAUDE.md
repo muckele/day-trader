@@ -115,7 +115,22 @@ From the status handoff, plus local evidence checked on 2026-11-14:
       - event literals in `topology.py` (bind before the native event source is enabled);
       - the R13 layouts, the `.cjs` modules.
     - **Reconciliation:** D4's "update `parentCoverageSHA256`" was not done. The event reference keeps the lost parent hash, because its digest is pinned in four places.
-  - **Not started:** independent reviews (about 28.6k unreviewed lines across Tasks 8–15, 18 and the composition amendment), including the fresh whole-M4 offline review.
+  - **Independent review, done 2026-11-17** (`e6ad547`, records under `.superpowers/sdd/…/stage1-reviews/`). Seven opus reviewers covered Tasks 8–15, 18 and the composition amendment.
+    - Result: **7 REJECT** (composition part A rejected only its plan Task 5). **0 Critical, 47 Important**, about 58 Minor.
+    - Everything fails closed, so nothing can falsely qualify today.
+    - But much of it **cannot work in a real run** as written:
+      - host/guest clock comparison
+      - IPv6 route rejection
+      - credential wire format
+      - `/login` denied before the credential fill
+      - storage model versus the role layout
+      - a 60 s cleanup window that opens too early
+      - Chromium's CONNECT request rejected
+      - the seccomp filter likely blocks the Chromium sandbox
+    - Several probes and attestations would not detect a real failure. The vsock "authentication" compares the binding with itself; the M2 broker does the same.
+    - Design decisions are needed (summary §E).
+    - Re-estimate: 2–4+ weeks of remediation before Stage 2, for a Path A total of roughly 6–10+ weeks.
+  - **On hold pending owner decision:** the whole-M4 offline review and all fix work.
 
 ### Next sequence when Day Trader resumes
 
