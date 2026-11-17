@@ -97,7 +97,8 @@ def parse_member(text):
                 i += 1
                 body += ' ' + c2
                 s_raw.append(r2)
-            structs.append(dict(name=sm.group(1), body=body.split('}')[0], first=s_first, last=s_last,
+            inner, _, rest = body.partition('}')
+            structs.append(dict(name=sm.group(1), body=inner, tail=rest, first=s_first, last=s_last,
                                 decl='\n'.join(s_raw), stack=s_stack))
             continue
         if re.search(r'\benum\b[^;{]*\{', code) or enum_open:
@@ -137,7 +138,7 @@ def _tokenize(expr):
                 val = int(num, 8)
             else:
                 val = int(num)
-            toks.append(('num', val))
+            toks.append(('lnum' if 'l' in suf.lower() else 'num', val))
         elif m.group(3) is not None:
             toks.append(('id', m.group(3)))
         else:
@@ -149,8 +150,34 @@ _PREC = {'|': 1, '^': 2, '&': 3, '<<': 4, '>>': 4, '+': 5, '-': 5}
 
 
 class _Parser:
-    def __init__(self, toks, lookup):
-        self.t, self.p, self.lookup = toks, 0, lookup
+    def __init__(self, toks, lookup, width, signed):
+        self.t, self.p, self.lookup, self.signed = toks, 0, lookup, signed
+        self.lo, self.hi = (-(1 << (width - 1)), (1 << (width - 1)) - 1) if signed else (0, (1 << width) - 1)
+        # literals inside _UL(...)/_BITUL(...) are exempt; any identifier or short literal makes 32-bit shifts unsafe
+        self.all_long = True
+        for i, tok in enumerate(toks):
+            count = tok[0] == 'num' and toks[i - 1] in (('op', '<<'), ('op', '>>')) if i else False  # shift counts exempt
+            if (tok[0] == 'num' or (tok[0] == 'id' and tok[1] not in ('_UL', '_BITUL'))) and not count and not self._in_macro(i):
+                self.all_long = False
+
+    def _in_macro(self, idx):
+        # true when token idx lies inside the parentheses of a _UL/_BITUL call
+        for i, tok in enumerate(self.t):
+            if tok[0] == 'id' and tok[1] in ('_UL', '_BITUL') and self.t[i + 1:i + 2] == [('op', '(')]:
+                level, j = 0, i + 1
+                while j < len(self.t):
+                    level += (self.t[j] == ('op', '(')) - (self.t[j] == ('op', ')'))
+                    if level == 0:
+                        break
+                    j += 1
+                if i < idx <= j:
+                    return True
+        return False
+
+    def chk(self, v):
+        if not self.lo <= v <= self.hi:
+            _fail('EXPRESSION_UNSUPPORTED')
+        return v
 
     def peek(self):
         return self.t[self.p] if self.p < len(self.t) else (None, None)
@@ -181,17 +208,24 @@ class _Parser:
             right = self.binary(prec + 1)
             if op in ('<<', '>>') and not 0 <= right < 128:
                 _fail('EXPRESSION_UNSUPPORTED')
+            narrow_shift = op == '<<' and not self.all_long
             left = {'|': lambda: left | right, '^': lambda: left ^ right, '&': lambda: left & right,
                     '+': lambda: left + right, '-': lambda: left - right, '<<': lambda: left << right,
                     '>>': lambda: left >> right}[op]()
+            if narrow_shift and left >= 1 << 32:
+                _fail('EXPRESSION_UNSUPPORTED')
+            self.chk(left)
 
     def unary(self):
         kind, val = self.take()
-        if kind == 'num':
-            return val
-        if kind == 'op' and val in '-~' and val:
-            v = self.unary()
-            return -v if val == '-' else ~v
+        if kind in ('num', 'lnum'):
+            return self.chk(val)
+        if kind == 'op' and val == '~':
+            _fail('EXPRESSION_UNSUPPORTED')  # C promotion rules are not emulated: fail closed
+        if kind == 'op' and val == '-':
+            if not self.signed:
+                _fail('EXPRESSION_UNSUPPORTED')
+            return self.chk(-self.unary())
         if kind == 'op' and val == '(':
             v = self.binary(1)
             self.expect(')')
@@ -203,9 +237,11 @@ class _Parser:
                 self.expect('(')
                 n = self.binary(1)
                 self.expect(')')
+                if val == '_UL':
+                    return self.chk(n)
                 if not 0 <= n < 64:
                     _fail('EXPRESSION_UNSUPPORTED')
-                return 1 << n
+                return self.chk(1 << n)
             if self.peek() == ('op', '('):
                 _fail('EXPRESSION_UNSUPPORTED')
             return self.lookup(val)
@@ -213,11 +249,16 @@ class _Parser:
 
 
 # ---------------------------------------------------------------- archive and derivation
-def _read_members(archive, wanted):
+def _read_members(archive, wanted, expected_sha256):
     sha = hashlib.sha256()
-    with open(archive, 'rb') as f:
-        for chunk in iter(lambda: f.read(1 << 20), b''):
-            sha.update(chunk)
+    try:
+        with open(archive, 'rb') as f:
+            for chunk in iter(lambda: f.read(1 << 20), b''):
+                sha.update(chunk)
+    except OSError:
+        _fail('ARCHIVE_MISMATCH')
+    if sha.hexdigest() != expected_sha256:  # checked before the archive is ever decompressed
+        _fail('ARCHIVE_MISMATCH')
     found = {}
     try:
         with tarfile.open(archive, 'r|xz') as tar:
@@ -234,7 +275,7 @@ def _read_members(archive, wanted):
                 found[info.name] = data
     except (tarfile.TarError, EOFError, OSError):
         _fail('ARCHIVE_MISMATCH')
-    return sha.hexdigest(), found
+    return found
 
 
 def _check_inventory(inv):
@@ -268,6 +309,11 @@ def _pick(candidates, conditions):
 
 
 def _layout(struct, field):
+    if re.search(r'__attribute|__aligned|__packed|_Alignas|alignas', struct['body'] + ' ' + struct['tail']):
+        _fail('LAYOUT_UNSUPPORTED')
+    tail = struct['tail'].strip()
+    if not re.fullmatch(r'(?:[A-Za-z_]\w*\s*)?;.*', tail) or tail[tail.index(';') + 1:].strip():
+        _fail('LAYOUT_UNSUPPORTED')
     offset, align, fields = 0, 1, {}
     for decl in (d.strip() for d in struct['body'].split(';')):
         if not decl:
@@ -279,7 +325,7 @@ def _layout(struct, field):
         count = 1
         if m.group(3) is not None:
             try:
-                count = _Parser(_tokenize(m.group(3)), lambda n: _fail('LAYOUT_UNSUPPORTED')).parse()
+                count = _Parser(_tokenize(m.group(3)), lambda n: _fail('LAYOUT_UNSUPPORTED'), 64, False).parse()
             except AbiCoverageError:
                 _fail('LAYOUT_UNSUPPORTED')
             if count <= 0:
@@ -294,9 +340,7 @@ def _layout(struct, field):
 def derive(archive, inventory, *, archive_sha256):
     _check_inventory(inventory)
     entries = inventory['entries']
-    digest, raw = _read_members(Path(archive), {e['memberPath'] for e in entries})
-    if digest != archive_sha256:
-        _fail('ARCHIVE_MISMATCH')
+    raw = _read_members(Path(archive), {e['memberPath'] for e in entries}, archive_sha256)
     parsed, hashes = {}, {}
     for e in entries:
         if e['memberPath'] not in raw:
@@ -313,20 +357,20 @@ def derive(archive, inventory, *, archive_sha256):
         cands = [x for x in parsed[entry['memberPath']]['defs'] if x['name'] == entry['id'] and x['kind'] == entry['kind']]
         return _pick(cands, entry['conditions'])
 
-    def value_of(d, member, depth):
+    def value_of(d, member, depth, pin):
         if depth > MAX_DEPTH:
             _fail('EXPRESSION_UNSUPPORTED')
 
         def lookup(name):
             same = [x for x in parsed[member]['defs'] if x['name'] == name]
             if len(same) == 1:
-                return value_of(same[0], member, depth + 1)
+                return value_of(same[0], member, depth + 1, pin)
             inv = by_id.get(name)
             if inv is not None and inv['kind'] != 'layout' and (not same or inv['memberPath'] == member):
                 return value_of(_pick([x for x in parsed[inv['memberPath']]['defs'] if x['name'] == name and x['kind'] == inv['kind']],
-                                      inv['conditions']), inv['memberPath'], depth + 1)
+                                      inv['conditions']), inv['memberPath'], depth + 1, pin)
             _fail('SYMBOL_AMBIGUOUS' if same else 'SYMBOL_MISSING')
-        return _Parser(_tokenize(d['expr']), lookup).parse()
+        return _Parser(_tokenize(d['expr']), lookup, *pin).parse()
 
     records = []
     for e in entries:
@@ -344,7 +388,7 @@ def derive(archive, inventory, *, archive_sha256):
             first, last, decl = src['first'], src['last'], src['decl']
         else:
             src = find_def(e)
-            value = value_of(src, member, 0)
+            value = value_of(src, member, 0, (e['width'], e['signed']))
             first, last, decl = src['first'], src['last'], src['decl']
         lo, hi = (-(1 << (e['width'] - 1)), (1 << (e['width'] - 1)) - 1) if e['signed'] else (0, (1 << e['width']) - 1)
         if not lo <= value <= hi:
@@ -360,6 +404,7 @@ def derive(archive, inventory, *, archive_sha256):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('--archive', required=True)
+    ap.add_argument('--archive-sha256', required=True)
     ap.add_argument('--inventory', required=True)
     ap.add_argument('--output', required=True)
     args = ap.parse_args(argv)
@@ -368,11 +413,9 @@ def main(argv=None):
             inventory = json.loads(Path(args.inventory).read_text())
         except (OSError, ValueError):
             _fail('INVENTORY_INVALID')
-        try:
-            sha = hashlib.sha256(Path(args.archive).read_bytes()).hexdigest()
-        except OSError:
+        if not re.fullmatch(r'[0-9a-f]{64}', args.archive_sha256):
             _fail('ARCHIVE_MISMATCH')
-        out = derive(Path(args.archive), inventory, archive_sha256=sha)
+        out = derive(Path(args.archive), inventory, archive_sha256=args.archive_sha256)
         try:
             with open(args.output, 'x') as f:
                 f.write(json.dumps(out, sort_keys=True, indent=2, ensure_ascii=True) + '\n')

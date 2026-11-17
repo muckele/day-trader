@@ -77,7 +77,7 @@ class DeriverTests(unittest.TestCase):
     def test_expression_evaluator_suffixes_and_rejections(self):
         text = ('#define H 0x80000000U\n#define S (1UL << 3)\n#define BB _BITUL(31)\n#define X 1024\n#define Y (X + 6)\n'
                 '#define O 010\n#define N (-1 & 0xff)\n#define CAST ((int)1)\n#define SZ sizeof(int)\n')
-        ents = [entry(n) for n in ('H', 'S', 'BB', 'X', 'Y', 'O')] + [entry('N')]
+        ents = [entry(n) for n in ('H', 'S', 'BB', 'X', 'Y', 'O')] + [entry('N', signed=True)]
         out, _, _ = self.run_derive([(HDR, text)], ents)
         r = {x['id']: x['value'] for x in out['records']}
         self.assertEqual(r, {'H': 2147483648, 'S': 8, 'BB': 2147483648, 'X': 1024, 'Y': 1030, 'O': 8, 'N': 255})
@@ -122,6 +122,8 @@ class DeriverTests(unittest.TestCase):
     def test_archive_member_missing_duplicate_or_changed_denied(self):
         text = '#define A 1\n'
         self.assertEqual(self.code([(HDR, text)], [entry('A')], sha='0' * 64), 'ARCHIVE_MISMATCH')
+        # hash is checked before the tar is opened: a wrong-hash archive that would be MEMBER_DUPLICATE is ARCHIVE_MISMATCH
+        self.assertEqual(self.code([(HDR, text), (HDR, text)], [entry('A')], sha='0' * 64), 'ARCHIVE_MISMATCH')
         self.assertEqual(self.code([(HDR, text)], [entry('A', member='nope.h')]), 'MEMBER_MISSING')
         self.assertEqual(self.code([(HDR, text), (HDR, text)], [entry('A')]), 'MEMBER_DUPLICATE')
         self.assertEqual(self.code([(HDR, text)], [{'id': 'A'}]), 'INVENTORY_INVALID')
@@ -135,11 +137,38 @@ class DeriverTests(unittest.TestCase):
         inv = self.dir / 'inv.json'
         inv.write_text(json.dumps({'version': 1, 'entries': [entry('A')]}))
         dest = self.dir / 'out.json'
-        cmd = [sys.executable, '-B', str(ROOT / 'appliance/derive_abi_coverage.py'), '--archive', str(path), '--inventory', str(inv), '--output', str(dest)]
+        cmd = [sys.executable, '-B', str(ROOT / 'appliance/derive_abi_coverage.py'), '--archive', str(path), '--archive-sha256', sha, '--inventory', str(inv), '--output', str(dest)]
         self.assertEqual(subprocess.run(cmd, capture_output=True).returncode, 0)
         self.assertEqual(dest.read_bytes(), (json.dumps(out, sort_keys=True, indent=2, ensure_ascii=True) + '\n').encode())
         second = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(second.returncode, 2)
+        bad = subprocess.run(cmd[:6] + ['0' * 64] + cmd[7:-1] + [str(self.dir / 'o2.json')], capture_output=True, text=True)
+        self.assertEqual((bad.returncode, bad.stdout.strip()), (2, 'ARCHIVE_MISMATCH'))
+        self.assertFalse((self.dir / 'o2.json').exists())
+
+    def test_ul_and_bitul_macros(self):
+        out, _, _ = self.run_derive([(HDR, '#define U _UL(5)\n#define B _BITUL(5)\n')], [entry('U'), entry('B')])
+        self.assertEqual({x['id']: x['value'] for x in out['records']}, {'B': 32, 'U': 5})
+
+    def test_fail_closed_arithmetic(self):
+        text = ('#define NOT (~0U)\n#define WRAP (0xFFFFFFFFU << 4)\n#define NEG (-1)\n#define BIG (1UL << 40)\n'
+                '#define LONGS (0xFFFFFFFFUL << 4)\n#define OVER (0xFFFFFFFFUL + 1)\n')
+        self.assertEqual(self.code([(HDR, text)], [entry('NOT', signed=True, width=64)]), 'EXPRESSION_UNSUPPORTED')
+        self.assertEqual(self.code([(HDR, text)], [entry('WRAP', width=64)]), 'EXPRESSION_UNSUPPORTED')
+        self.assertEqual(self.code([(HDR, text)], [entry('NEG')]), 'EXPRESSION_UNSUPPORTED')
+        self.assertEqual(self.code([(HDR, text)], [entry('OVER')]), 'EXPRESSION_UNSUPPORTED')
+        out, _, _ = self.run_derive([(HDR, text)], [entry('NEG', signed=True), entry('BIG', width=64), entry('LONGS', width=64)])
+        self.assertEqual({x['id']: x['value'] for x in out['records']}, {'NEG': -1, 'BIG': 1 << 40, 'LONGS': 0xFFFFFFFF << 4})
+
+    def test_packed_or_aligned_struct_denied(self):
+        ent = [entry('S.size', kind='layout', struct='s', field=None)]
+        for text in ('struct s {\n\t__u8 a;\n\t__u32 b;\n} __attribute__((packed));\n',
+                     'struct s {\n\t__u8 a;\n} __aligned(8);\n',
+                     'struct s {\n\t__u8 a __attribute__((aligned(8)));\n};\n',
+                     'struct s {\n\t__u8 a;\n} __packed;\n'):
+            self.assertEqual(self.code([(HDR, text)], ent), 'LAYOUT_UNSUPPORTED', text)
+        out, _, _ = self.run_derive([(HDR, 'struct s {\n\t__u8 a;\n} sv;\n')], ent)
+        self.assertEqual(out['records'][0]['value'], 1)
 
 
 if __name__ == '__main__':
