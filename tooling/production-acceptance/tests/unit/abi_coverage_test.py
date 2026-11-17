@@ -1,4 +1,8 @@
-"""Synthetic in-memory tar.xz fixtures only; the real Linux archive is never read."""
+"""DeriverTests use synthetic in-memory tar.xz fixtures only.
+
+CoverageTests stream the pinned, retained Linux 6.8 archive through the deriver (never extracted). A missing or
+changed archive is a test error, never a skip. ORACLES come from the independently transcribed abi_oracles.py.
+"""
 import hashlib
 import importlib.util
 import io
@@ -18,6 +22,23 @@ spec.loader.exec_module(d)
 
 LOST = '7c8714c95a67d8a2e6c1b4c8b8481525a61976c81dfe2037c251add071ac9898'
 HDR = 'include/uapi/linux/x.h'
+
+ARCHIVE = Path('/Users/Matt/day-trader-references/m4-linux-aarch64-offline-repair-20261002T181543Z/linux-6.8.tar.xz')
+ARCHIVE_SHA = 'c969dea4e8bb6be991bbf7c010ba0e0a5643a3a8d8fb0a2aaa053406f1e965f3'
+INVENTORY = ROOT / 'appliance/abi-inventory.json'
+COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
+COVERAGE_V2_SHA = '271e5d7ae4621f81b058f9b29d656207bb12a77b3ecced94723b5bef0a651f84'
+EVENT_REFERENCE = ROOT / 'appliance/bootstrap-event-reference.json'
+EVENT_REFERENCE_SHA = 'a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d'
+ORACLES_PATH = Path(__file__).resolve().parent / 'abi_oracles.py'
+
+
+def load_oracles():
+    """ORACLES: dict[str, int], transcribed from header text by an agent independent of the deriver and inventory."""
+    oracle_spec = importlib.util.spec_from_file_location('abi_oracles', ORACLES_PATH)
+    module = importlib.util.module_from_spec(oracle_spec)
+    oracle_spec.loader.exec_module(module)
+    return module.ORACLES
 
 
 def make_tar(members):
@@ -169,6 +190,34 @@ class DeriverTests(unittest.TestCase):
             self.assertEqual(self.code([(HDR, text)], ent), 'LAYOUT_UNSUPPORTED', text)
         out, _, _ = self.run_derive([(HDR, 'struct s {\n\t__u8 a;\n} sv;\n')], ent)
         self.assertEqual(out['records'][0]['value'], 1)
+
+
+class CoverageTests(unittest.TestCase):
+    """The committed coverage v2 is a new derivation from the retained archive; it never claims to be the lost file."""
+
+    def committed(self):
+        return json.loads(COVERAGE_V2.read_bytes())
+
+    def test_committed_coverage_reproduces_from_retained_archive(self):
+        derived = d.derive(ARCHIVE, json.loads(INVENTORY.read_text()), archive_sha256=ARCHIVE_SHA)
+        canonical = (json.dumps(derived, sort_keys=True, indent=2, ensure_ascii=True) + '\n').encode()
+        committed = COVERAGE_V2.read_bytes()
+        self.assertEqual(canonical, committed)
+        self.assertEqual(hashlib.sha256(committed).hexdigest(), COVERAGE_V2_SHA)
+        self.assertEqual(derived['sourceArchiveSHA256'], ARCHIVE_SHA)
+
+    def test_coverage_values_match_independent_oracles(self):
+        oracles = load_oracles()
+        self.assertEqual({r['id']: r['value'] for r in self.committed()['records']}, oracles)
+
+    def test_coverage_supersedes_lost_coverage_without_claiming_it(self):
+        self.assertEqual(self.committed()['supersedesLostCoverageSHA256'], LOST)
+        self.assertRegex(COVERAGE_V2_SHA, '^[0-9a-f]{64}$')
+        self.assertNotEqual(COVERAGE_V2_SHA, LOST)
+        self.assertNotEqual(hashlib.sha256(COVERAGE_V2.read_bytes()).hexdigest(), LOST)
+
+    def test_event_reference_unchanged(self):
+        self.assertEqual(hashlib.sha256(EVENT_REFERENCE.read_bytes()).hexdigest(), EVENT_REFERENCE_SHA)
 
 
 if __name__ == '__main__':
