@@ -36,7 +36,10 @@ ORACLES_PATH = Path(__file__).resolve().parent / 'abi_oracles.py'
 
 
 def load_oracles():
-    """ORACLES: dict[str, int], transcribed from header text by an agent independent of the deriver and inventory."""
+    """ORACLES: dict[str, int], transcribed by hand from the header text by a separate agent that never saw the deriver
+    or the coverage. That agent was given each id's memberPath and conditions from the inventory, so the oracles
+    independently check the values, not the choice of header or branch; that choice was checked separately by the
+    task and final reviewers."""
     oracle_spec = importlib.util.spec_from_file_location('abi_oracles', ORACLES_PATH)
     module = importlib.util.module_from_spec(oracle_spec)
     oracle_spec.loader.exec_module(module)
@@ -502,8 +505,11 @@ def _function(tree, name):
 class CodeBindingTests(unittest.TestCase):
     """Binds the Linux ABI literals of the guest Python modules (confinement.py, proxy.py, storage.py, topology.py;
     intake.py and protocol.py carry none) to the committed coverage v2, or to an explicit POLICY_LITERALS entry.
-    Event constants already pinned by appliance/bootstrap-event-reference.json are left to bootstrap_reference_test,
-    except syscall numbers (ruling R14).
+    bootstrap_reference_test checks the committed event reference JSON against the Linux headers. The event-constant
+    literals in guest/topology.py are NOT bound to that reference by any test (recorded known gap, rulings R17/R18);
+    examples: the audit rule action (AUDIT_ALWAYS) at topology.py:189, the route kind at :723, and _ROUTE_GROUPS at
+    :173. Syscall numbers are bound here (ruling R14), and of the audit rule only its arch value is bound here
+    (test_topology_audit_rule_syscall_list_matches_named_symbols).
 
     Known uncovered ABI surface (ruling R13), deliberately NOT tested here: the capset structs (only divisibility of
     bytearray(24) by _LINUX_CAPABILITY_U32S_3 is checked; the 12-byte element size is not derivable), struct
@@ -954,6 +960,21 @@ class CodeBindingTests(unittest.TestCase):
         self.assertIsInstance(loops[0].iter, ast.Tuple)
         got = tuple(_eval_int(e) for e in loops[0].iter.elts)
         self.assertEqual(got, tuple(self.resolve(n) for n in AUDITED_SYSCALLS))
+        # the rule's arch value: values[0] in `fields[0], values[0], operators[0] = ...`
+        assigns = [n for n in ast.walk(fn[0]) if isinstance(n, ast.Assign)
+                   and ast.unparse(n.targets[0]) == '(fields[0], values[0], operators[0])']
+        self.assertEqual(len(assigns), 1)
+        self.assertIsInstance(assigns[0].value, ast.Tuple)
+        self.assertEqual(len(assigns[0].value.elts), 3)
+        self.assertEqual(_eval_int(assigns[0].value.elts[1]), self.resolve('AUDIT_ARCH_AARCH64'))
+
+    def test_confinement_seccomp_install_flags_match_named_symbol(self):
+        """exec_role: kernel.install_seccomp(launch.filter, <flags>) passes exactly SECCOMP_FILTER_FLAG_TSYNC."""
+        calls = [n for n in self.nodes('confinement.py', 'exec_role', ast.Call)
+                 if isinstance(n.func, ast.Attribute) and n.func.attr == 'install_seccomp']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0].args), 2)
+        self.assertEqual(_eval_int(calls[0].args[1]), self.resolve('SECCOMP_FILTER_FLAG_TSYNC'))
 
     def test_topology_ip_table_families_and_kinds_match_named_symbols(self):
         classes = self.nodes('topology.py', 'Task10NativeAttempts', ast.ClassDef)
