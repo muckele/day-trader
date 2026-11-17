@@ -228,11 +228,12 @@ confinement = importlib.util.module_from_spec(_conf_spec)
 sys.modules[_conf_spec.name] = confinement
 _conf_spec.loader.exec_module(confinement)
 
-DENY_SYMBOLS = frozenset(
-    '__NR_' + n for n in (
-        'io_uring_setup io_uring_enter io_uring_register ptrace process_vm_readv process_vm_writev pidfd_getfd pidfd_open '
-        'capset setregid setgid setreuid setuid setresuid setresgid setfsuid setfsgid setgroups setns mknodat umount2 mount '
-        'pivot_root chroot').split())
+# Deny list in program order (24 inventoried symbols).
+DENY_ORDER = tuple('__NR_' + n for n in (
+    'io_uring_setup io_uring_enter io_uring_register ptrace process_vm_readv process_vm_writev pidfd_getfd pidfd_open '
+    'capset setregid setgid setreuid setuid setresuid setresgid setfsuid setfsgid setgroups setns mknodat umount2 mount '
+    'pivot_root chroot').split())
+DENY_SYMBOLS = frozenset(DENY_ORDER)
 
 # syscall symbol -> files whose native syscall(...) call sites invoke it (R6). Direct call sites only: the BPF deny list
 # and socketpair appear in the filter but are not called.
@@ -272,22 +273,62 @@ ARG_SYMBOLS = {
     '__NR_socket': _SOCKET_ARGS,
     '__NR_socketpair': _SOCKET_ARGS,
 }
-# (syscall, index) pairs that are bit-flag ORs; every other governed argument must equal exactly one symbol or a policy value.
-FLAG_ARGS = frozenset({('__NR_mount', 3), ('__NR_unshare', 0)})
-
-# Literals that are policy choices, not ABI values: name -> (value, one-line justification).
+# Literals that are policy choices, not ABI values: name -> (value, one-line justification). Each genuine use is named
+# at its own site (SITE_ARGS / the expected filter program); there is no catch-all "any policy value" acceptance.
 POLICY_LITERALS = {
-    'ZERO': (0, 'default/none/unused: empty flags, null pointer slot, zero protocol, zero high word of a constrained scalar, '
-                'capset pid 0 (calling thread), setgroups(0,0), unused prctl args, masked-nr result and the 0< lower bounds'),
-    'ONE_BOOLEAN': (1, 'boolean true: PR_SET_NO_NEW_PRIVS arg is literally 1 in the kernel; also the 1 in len/flags guards'),
+    'NR_HIGH_BITS_MASK': (0xc0000000, 'syscall-number high-bit mask: numbers with bits 30-31 set (x32-style/negative) are killed; no AArch64 header constant'),
+    'NR_MASKED_CLEAN': (0, 'expected result of the nr high-bit mask: no high bits set'),
+    'HIGH_WORD_ZERO': (0, 'every constrained scalar argument must have a zero upper 32-bit word'),
+    'PROTOCOL_DEFAULT': (0, 'socket protocol fails closed to the default scalar 0; no IPPROTO_* constant is consumed'),
+    'SECCOMP_NO_FLAGS': (0, 'seccomp(2) flags value meaning no flags'),
+    'NNP_ENABLE': (1, 'PR_SET_NO_NEW_PRIVS arg is the boolean 1; the kernel tests it literally'),
     'FD_FLOOR': (64, 'lowest descriptor for F_DUPFD_CLOEXEC, above the audited FD0..4'),
     'CLOSE_RANGE_MAX': (4294967295, 'close_range upper bound ~0U meaning all remaining descriptors; unsigned-int maximum'),
+    'CLOSE_RANGE_NO_FLAGS': (0, 'close_range flags: none'),
+    'EMPTY_GROUP_LIST': (0, 'setgroups(0, NULL): empty supplementary-group list'),
+    'UNUSED_ARG': (0, 'unused trailing prctl argument must be zero; no symbol exists'),
     'PROBE_PAYLOAD_LEN': (6, 'length of the fixed probe payload b"TASK10"'),
-    'NR_HIGH_BITS_MASK': (0xc0000000, 'syscall-number high-bit mask: any number with bits 30-31 set (x32-style/negative) is killed; '
-                                      'no AArch64 header constant'),
+    'SENDTO_NO_FLAGS': (0, 'sendto flags value meaning no flags'),
+    'CAPSET_HEADER_PID': (0, 'capset header pid 0 means the calling thread'),
+    'LOWER_BOUND_ZERO': (0, 'lower bound of the jt/jf range and of the program length'),
     'BPF_JUMP_BASE': (-1, 'classic-BPF jumps are relative to the next instruction: jt = target - index - 1'),
 }
 POLICY_VALUES = frozenset(v for v, _ in POLICY_LITERALS.values())
+
+# Exact per-site bindings for native syscall(...) calls: (file, enclosing qualname, ordinal in source order among the
+# syscall calls with a literal number in that function) -> (nr symbol, {arg index: expected}). expected is a frozenset
+# of covered symbols whose values OR to exactly the literal (a single symbol means equality), or a str naming a
+# POLICY_LITERALS entry. Every int-literal argument must be listed and no other.
+def _s(*names):
+    return frozenset(names)
+
+_PRCTL_ZERO = {2: 'UNUSED_ARG', 3: 'UNUSED_ARG', 4: 'UNUSED_ARG'}
+SITE_ARGS = {
+    ('confinement.py', 'LinuxBindings.pin_programs', 0): ('__NR_fcntl', {1: _s('F_DUPFD_CLOEXEC'), 2: 'FD_FLOOR'}),
+    ('confinement.py', 'LinuxBindings.pin_sample', 0): ('__NR_fcntl', {1: _s('F_DUPFD_CLOEXEC'), 2: 'FD_FLOOR'}),
+    ('confinement.py', 'NativeChildPort.establish_views', 0): ('__NR_mount', {3: _s('MS_PRIVATE', 'MS_REC')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 1): ('__NR_mount', {3: _s('MS_BIND')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 2): ('__NR_mount', {3: _s('MS_BIND', 'MS_REMOUNT', 'MS_RDONLY')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 3): ('__NR_mount', {3: _s('MS_BIND')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 4): ('__NR_mount', {3: _s('MS_BIND')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 5): ('__NR_mount', {3: _s('MS_NOSUID', 'MS_NODEV', 'MS_NOEXEC')}),
+    ('confinement.py', 'NativeChildPort.close_unaudited_fds', 0): ('__NR_close_range', {2: 'CLOSE_RANGE_NO_FLAGS'}),
+    ('confinement.py', 'NativeChildPort.close_unaudited_fds', 1): ('__NR_close_range', {1: 'CLOSE_RANGE_MAX', 2: 'CLOSE_RANGE_NO_FLAGS'}),
+    ('confinement.py', 'NativeChildPort.drop_credentials', 0): ('__NR_setgroups', {0: 'EMPTY_GROUP_LIST', 1: 'EMPTY_GROUP_LIST'}),
+    ('confinement.py', 'NativeChildPort.drop_credentials', 1): ('__NR_prctl', {0: _s('PR_CAP_AMBIENT'), 1: _s('PR_CAP_AMBIENT_CLEAR_ALL'), **_PRCTL_ZERO}),
+    ('confinement.py', 'NativeChildPort.drop_credentials', 2): ('__NR_prctl', {0: _s('PR_CAPBSET_DROP'), **_PRCTL_ZERO}),
+    ('confinement.py', 'NativeChildPort.drop_credentials', 3): ('__NR_setresgid', {}),
+    ('confinement.py', 'NativeChildPort.drop_credentials', 4): ('__NR_setresuid', {}),
+    ('confinement.py', 'NativeChildPort.clear_capabilities', 0): ('__NR_capset', {}),
+    ('confinement.py', 'NativeChildPort.no_new_privs', 0): ('__NR_prctl', {0: _s('PR_SET_NO_NEW_PRIVS'), 1: 'NNP_ENABLE', **_PRCTL_ZERO}),
+    ('confinement.py', 'NativeChildPort.install_seccomp', 0): ('__NR_seccomp', {0: _s('SECCOMP_SET_MODE_FILTER')}),
+    ('confinement.py', 'NativeKernelPort.spawn_waiting', 0): ('__NR_unshare', {0: _s('CLONE_NEWNS', 'CLONE_NEWPID', 'CLONE_NEWIPC')}),
+    ('topology.py', 'Task10NativeAttempts.execute_native.attempt', 0): ('__NR_socket', {2: 'PROTOCOL_DEFAULT'}),
+    ('topology.py', 'Task10NativeAttempts.execute_native.attempt', 1): ('__NR_connect', {}),
+    ('topology.py', 'Task10NativeAttempts.execute_native.attempt', 2): ('__NR_write', {2: 'PROBE_PAYLOAD_LEN'}),
+    ('topology.py', 'Task10NativeAttempts.execute_native.attempt', 3): ('__NR_sendto', {2: 'PROBE_PAYLOAD_LEN', 3: 'SENDTO_NO_FLAGS'}),
+}
+# SYSCALL_SITES is derived from the per-site table (nr symbol -> files); the test also checks it against the AST.
 
 
 def _coverage():
@@ -384,7 +425,7 @@ class CodeBindingTests(unittest.TestCase):
         self.assertEqual(len(bounds), 2)
         for n in bounds:
             lo, hi = n.left.value, n.comparators[1].value
-            self.assertEqual(lo, POLICY_LITERALS['ZERO'][0])
+            self.assertEqual(lo, POLICY_LITERALS['LOWER_BOUND_ZERO'][0])
             self.assertEqual(hi, 2 ** (8 * jt_sz) - 1)
             self.assertEqual(hi, 2 ** (8 * jf_sz) - 1)
         for ins in confinement.build_filter('PROXY'):
@@ -434,7 +475,7 @@ class CodeBindingTests(unittest.TestCase):
     def test_filter_comparisons_are_covered_per_loaded_field(self):
         V = self.V
         nr_values = set(self.nr_by_value)
-        zero, one = POLICY_LITERALS['ZERO'][0], POLICY_LITERALS['ONE_BOOLEAN'][0]
+        zero, high_zero = POLICY_LITERALS['NR_MASKED_CLEAN'][0], POLICY_LITERALS['HIGH_WORD_ZERO'][0]
         arg_low = {}
         for i in range(self.args_count):
             arg_low[V['seccomp_data.args'] + i * self.stride] = i
@@ -458,7 +499,7 @@ class CodeBindingTests(unittest.TestCase):
                     elif offset == V['seccomp_data.nr']:
                         self.assertIn(k, nr_values, where)
                     elif offset in arg_high:
-                        self.assertEqual(k, zero, where)
+                        self.assertEqual(k, high_zero, where)
                     else:
                         self.assertIn(offset, arg_low, where)
                         self.assertIn(k, self.arg_allowed(program, i, arg_low[offset], masked), where)
@@ -478,8 +519,8 @@ class CodeBindingTests(unittest.TestCase):
 
     def arg_allowed(self, program, index, arg_index, masked):
         """Values a comparison on args[arg_index] may take: ARG_SYMBOLS of every syscall whose filter branch reaches it,
-        plus the ZERO / ONE_BOOLEAN policy scalars."""
-        allowed = {POLICY_LITERALS['ZERO'][0], POLICY_LITERALS['ONE_BOOLEAN'][0]}
+        plus the named flag/protocol/NNP policy scalars. (Secondary check; the exact program comparison is authoritative.)"""
+        allowed = {POLICY_LITERALS[n][0] for n in ('PROTOCOL_DEFAULT', 'SECCOMP_NO_FLAGS', 'NNP_ENABLE')}
         owners = 0
         for j, (code, jt, jf, k), offset, m in self.walk(program):
             if code == self.op_jeq and offset == self.V['seccomp_data.nr'] and not m and jt and j + 1 + jt != len(program) - 1:
@@ -489,6 +530,76 @@ class CodeBindingTests(unittest.TestCase):
                     allowed |= self.values(ARG_SYMBOLS.get(sym, {}).get(arg_index, ()))
         self.assertGreater(owners, 0, ('compare unreachable from any syscall branch', index))
         return allowed
+
+    def expected_program(self, role):
+        """Symbolic classic-BPF program for ROLE, resolved only from coverage values and named policy literals,
+        assembled independently of guest/confinement.py."""
+        V, P = self.V, {k: v for k, (v, _) in POLICY_LITERALS.items()}
+        NR, ARCH = V['seccomp_data.nr'], V['seccomp_data.arch']
+        lo = lambda i: V['seccomp_data.args'] + i * self.stride
+        hi = lambda i: lo(i) + self.word
+        nrv = lambda name: V['__NR_' + name]
+        ALLOW, KILL, ERR = V['SECCOMP_RET_ALLOW'], V['SECCOMP_RET_KILL_PROCESS'], V['SECCOMP_RET_ERRNO'] | V['EPERM']
+        code, labels, jumps = [], {}, []
+        ld = lambda off: code.append((self.op_ld, 0, 0, off))
+        ret = lambda k: code.append((self.op_ret, 0, 0, k))
+        mask = lambda k: code.append((self.op_and, 0, 0, k))
+        lab = lambda n: labels.__setitem__(n, len(code))
+
+        def eq(k, yes=None, no=None):
+            jumps.append((len(code), yes, no))
+            code.append((self.op_jeq, 0, 0, k))
+        req = lambda k: eq(k, no='deny')
+        ld(ARCH); eq(V['AUDIT_ARCH_AARCH64'], yes='native'); ret(KILL)
+        lab('native'); ld(NR); mask(P['NR_HIGH_BITS_MASK']); eq(P['NR_MASKED_CLEAN'], yes='syscall'); ret(KILL)
+        lab('syscall'); ld(NR)
+        for sym in DENY_ORDER:
+            eq(V[sym], yes='deny')
+        eq(nrv('socket'), yes='socket'); eq(nrv('socketpair'), yes='socket'); eq(nrv('prctl'), yes='prctl')
+        eq(nrv('seccomp'), yes='seccomp'); ret(ALLOW)
+        lab('prctl'); ld(hi(0)); req(P['HIGH_WORD_ZERO']); ld(lo(0))
+        for name in ('PR_SET_KEEPCAPS', 'PR_SET_SECUREBITS'):
+            eq(V[name], yes='deny')
+        eq(V['PR_SET_NO_NEW_PRIVS'], yes='nnp'); eq(V['PR_SET_DUMPABLE'], yes='dumpable')
+        eq(V['PR_CAP_AMBIENT'], yes='ambient'); eq(V['PR_SET_SECCOMP'], yes='inner'); ret(ALLOW)
+        lab('nnp'); ld(hi(1)); req(P['HIGH_WORD_ZERO']); ld(lo(1)); req(P['NNP_ENABLE']); ret(ALLOW)
+        lab('dumpable'); ld(hi(1)); req(P['HIGH_WORD_ZERO']); ld(lo(1)); req(V['SUID_DUMP_DISABLE']); ret(ALLOW)
+        lab('ambient'); ld(hi(1)); req(P['HIGH_WORD_ZERO']); ld(lo(1)); eq(V['PR_CAP_AMBIENT_RAISE'], yes='deny'); ret(ALLOW)
+        lab('inner'); ld(hi(1)); req(P['HIGH_WORD_ZERO']); ld(lo(1)); req(V['SECCOMP_MODE_FILTER']); ret(ALLOW)
+        lab('seccomp'); ld(hi(0)); req(P['HIGH_WORD_ZERO']); ld(lo(0)); req(V['SECCOMP_SET_MODE_FILTER'])
+        ld(hi(1)); req(P['HIGH_WORD_ZERO']); ld(lo(1)); eq(P['SECCOMP_NO_FLAGS'], yes='allow')
+        eq(V['SECCOMP_FILTER_FLAG_TSYNC'], yes='allow'); ret(ERR)
+        lab('socket')
+        for i in range(3):
+            ld(hi(i)); req(P['HIGH_WORD_ZERO'])
+        ld(lo(0)); eq(V['AF_UNIX'], yes='unix'); eq(V['AF_INET'], yes='ip'); eq(V['AF_INET6'], yes='ip')
+        if role == 'PROXY':
+            eq(V['AF_VSOCK'], yes='vsock')
+        ret(ERR)
+        lab('unix'); ld(lo(2)); req(P['PROTOCOL_DEFAULT']); ld(lo(1)); mask(self.sock_mask)
+        for name in ('SOCK_STREAM', 'SOCK_DGRAM', 'SOCK_SEQPACKET'):
+            eq(V[name], yes='allow')
+        ret(ERR)
+        lab('ip'); ld(lo(2)); req(P['PROTOCOL_DEFAULT']); ld(lo(1)); mask(self.sock_mask)
+        eq(V['SOCK_STREAM'], yes='allow'); eq(V['SOCK_DGRAM'], yes='allow'); ret(ERR)
+        if role == 'PROXY':
+            lab('vsock'); ld(NR); req(nrv('socket')); ld(lo(1)); mask(self.sock_mask); req(V['SOCK_STREAM'])
+            ld(lo(2)); req(P['PROTOCOL_DEFAULT'])
+        lab('allow'); ret(ALLOW)
+        lab('deny'); ret(ERR)
+        for index, yes, no in jumps:
+            ins = code[index]
+            jt = labels[yes] - index + P['BPF_JUMP_BASE'] if yes is not None else 0
+            jf = labels[no] - index + P['BPF_JUMP_BASE'] if no is not None else 0
+            code[index] = (ins[0], jt, jf, ins[3])
+        return tuple(code)
+
+    def test_filter_equals_symbolic_expected_program_per_role(self):
+        for role, program in self.programs().items():
+            expected = self.expected_program(role)
+            self.assertEqual(len(program), len(expected), role)
+            for i, (got, want) in enumerate(zip(program, expected)):
+                self.assertEqual(got, want, (role, i))
 
     def test_filter_deny_list_matches_named_syscalls(self):
         expected = {self.V[s] for s in DENY_SYMBOLS}
@@ -528,39 +639,57 @@ class CodeBindingTests(unittest.TestCase):
         self.assertEqual(opaque, [('confinement.py', 'self._libc.syscall')])
         self.assertEqual({k: frozenset(v) for k, v in used.items()}, SYSCALL_SITES)
 
+    def site_table(self):
+        """(file, qualname, ordinal) -> (call node, nr symbol), over calls whose number is an int literal."""
+        found = {}
+        for fname, tree in self.trees.items():
+            per_func = {}
+
+            def visit(node, stack):
+                if isinstance(node, (ast.ClassDef, ast.FunctionDef)):
+                    stack = stack + [node.name]
+                if isinstance(node, ast.Call) and node in all_calls:
+                    first = node.args[0] if node.args else None
+                    if isinstance(first, ast.Constant) and type(first.value) is int:
+                        per_func.setdefault('.'.join(stack), []).append(node)
+                for child in ast.iter_child_nodes(node):
+                    visit(child, stack)
+            all_calls = set(_syscall_calls(tree))
+            visit(tree, [])
+            for qual, calls in per_func.items():
+                for n, call in enumerate(sorted(calls, key=lambda c: (c.lineno, c.col_offset))):
+                    found[(fname, qual, n)] = (call, self.nr_by_value[call.args[0].value])
+        return found
+
+    def test_per_site_table_keys_and_numbers_match_the_code_exactly(self):
+        found = self.site_table()
+        self.assertEqual(set(found), set(SITE_ARGS))
+        for key, (call, sym) in found.items():
+            self.assertEqual(sym, SITE_ARGS[key][0], key)
+        derived = {}
+        for (fname, _, _), (nr, _) in SITE_ARGS.items():
+            derived.setdefault(nr, set()).add(fname)
+        self.assertEqual({k: frozenset(v) for k, v in derived.items()}, SYSCALL_SITES)
+
     def test_syscall_flag_arguments_decompose_into_covered_symbols(self):
         checked = 0
-        for fname, call in self.sites():
-            nr = call.args[0]
-            if not (isinstance(nr, ast.Constant) and type(nr.value) is int):
-                continue
-            sym = self.nr_by_value[nr.value]
-            for idx, node in enumerate(call.args[1:]):
-                v = _eval_int(node)
-                if v is None:
-                    continue
-                where = (fname, call.lineno, sym, idx, v)
-                governed = ARG_SYMBOLS.get(sym, {}).get(idx)
-                if (sym, idx) in FLAG_ARGS:
-                    self.assertTrue(self.decomposes(v, governed), where)
-                elif governed is not None:
-                    self.assertTrue(v in self.values(governed) or v in POLICY_VALUES, where)
+        for key, (call, sym) in self.site_table().items():
+            expected = SITE_ARGS[key][1]
+            literal = {i: _eval_int(n) for i, n in enumerate(call.args[1:]) if _eval_int(n) is not None}
+            self.assertEqual(set(literal), set(expected), (key, 'literal arguments differ from table'))
+            for idx, want in expected.items():
+                where = (key, sym, idx, literal[idx])
+                if isinstance(want, str):
+                    self.assertEqual(literal[idx], POLICY_LITERALS[want][0], where)
                 else:
-                    self.assertIn(v, POLICY_VALUES, where)
+                    acc = 0
+                    for name in sorted(want):
+                        self.assertEqual(acc & self.V[name], 0, where)  # flag symbols are disjoint bits
+                        acc |= self.V[name]
+                    self.assertEqual(literal[idx], acc, where)
+                    self.assertLessEqual(want, ARG_SYMBOLS[sym][idx], where)
                 checked += 1
-        self.assertGreater(checked, 30)
-
-    def decomposes(self, value, symbols):
-        vals = sorted(self.values(symbols))
-        for mask in range(1, 1 << len(vals)):
-            acc = 0
-            for b, val in enumerate(vals):
-                if mask >> b & 1:
-                    self.assertEqual(acc & val, 0)  # flag symbols are disjoint bits
-                    acc |= val
-            if acc == value:
-                return True
-        return False
+        self.assertEqual(checked, 35)  # every int-literal argument at every site
 
     def test_capability_literals_are_covered(self):
         tree = self.trees['confinement.py']
@@ -571,7 +700,7 @@ class CodeBindingTests(unittest.TestCase):
         pack = next(n for n in ast.walk(clear) if isinstance(n, ast.Call) and ast.unparse(n.func) == 'struct.pack')
         self.assertEqual(pack.args[0].value, '<II')
         self.assertEqual(pack.args[1].value, self.V['_LINUX_CAPABILITY_VERSION_3'])
-        self.assertEqual(pack.args[2].value, POLICY_LITERALS['ZERO'][0])
+        self.assertEqual(pack.args[2].value, POLICY_LITERALS['CAPSET_HEADER_PID'][0])
         sizes = [n.args[0].value for n in ast.walk(clear) if isinstance(n, ast.Call) and ast.unparse(n.func) == 'bytearray'
                  and isinstance(n.args[0], ast.Constant)]
         # only the data-struct count factor is covered (R13 leaves the 12-byte element size uncovered)
