@@ -15,9 +15,10 @@ import unittest
 ROOT = Path(__file__).resolve().parents[4]
 REFERENCE = ROOT / 'tooling/production-acceptance/appliance/bootstrap-event-reference.json'
 BUNDLE = Path('/Users/Matt/day-trader-references/m4-linux-aarch64-offline-repair-20261002T181543Z')
-COVERAGE = ROOT / '.superpowers/sdd/2026-09-30-production-acceptance-controller/m4-reference-offline-repair-20261002T181543Z/abi-coverage.json'
+COVERAGE_V2 = ROOT / 'tooling/production-acceptance/appliance/abi-coverage-v2.json'
 ARCHIVE_SHA = 'c969dea4e8bb6be991bbf7c010ba0e0a5643a3a8d8fb0a2aaa053406f1e965f3'
-COVERAGE_SHA = '7c8714c95a67d8a2e6c1b4c8b8481525a61976c81dfe2037c251add071ac9898'
+LOST_PARENT_COVERAGE_SHA = '7c8714c95a67d8a2e6c1b4c8b8481525a61976c81dfe2037c251add071ac9898'
+COVERAGE_V2_SHA = '271e5d7ae4621f81b058f9b29d656207bb12a77b3ecced94723b5bef0a651f84'
 MANIFEST_SHA = 'bb5fb8c47a329b8792f85a957d5674690b8aac59580a604fa405855e745e49d5'
 ARM_SHA = '5862a326f202ed68e21e27b35716481ff610825484d2a088191759b76fddcc03'
 
@@ -189,8 +190,8 @@ class BootstrapReferenceTests(unittest.TestCase):
                 raise ValueError('retained archive mismatch')
         if digest((BUNDLE / 'manifest.json').read_bytes()) != MANIFEST_SHA:
             raise ValueError('retained manifest mismatch')
-        if digest(COVERAGE.read_bytes()) != COVERAGE_SHA:
-            raise ValueError('retained coverage mismatch')
+        if digest(COVERAGE_V2.read_bytes()) != COVERAGE_V2_SHA:
+            raise ValueError('committed coverage v2 mismatch')
         cls.members = {}
         with tarfile.open(BUNDLE / 'linux-6.8.tar.xz', 'r|xz') as archive:
             for member in archive:
@@ -207,6 +208,13 @@ class BootstrapReferenceTests(unittest.TestCase):
         cls.members['aapcs64.rst'] = (BUNDLE / 'aapcs64.rst').read_bytes()
         if digest(cls.members['aapcs64.rst']) != ARM_SHA:
             raise ValueError('retained ABI mismatch')
+
+    def test_v1_lost_parent_coverage_is_recorded_and_superseded(self):
+        self.assertEqual(self.reference['parentCoverageSHA256'], LOST_PARENT_COVERAGE_SHA)
+        data = COVERAGE_V2.read_bytes()
+        self.assertEqual(digest(data), COVERAGE_V2_SHA)
+        v2 = json.loads(data, object_pairs_hook=unique_pairs)
+        self.assertEqual(v2['supersedesLostCoverageSHA256'], LOST_PARENT_COVERAGE_SHA)
 
     def setUp(self):
         self.reference = json.loads(REFERENCE.read_bytes(), object_pairs_hook=unique_pairs)
@@ -226,7 +234,7 @@ class BootstrapReferenceTests(unittest.TestCase):
         self.assertIs(type(ref['version']), int)
         self.assertEqual(ref['version'], 1)
         self.assertEqual(ref['sourceArchiveSHA256'], ARCHIVE_SHA)
-        self.assertEqual(ref['parentCoverageSHA256'], COVERAGE_SHA)
+        self.assertEqual(ref['parentCoverageSHA256'], LOST_PARENT_COVERAGE_SHA)
         self.assertEqual([r['id'] for r in ref['records']], sorted(set(CONSTANTS) | set(LAYOUTS)))
         for row in ref['records']:
             self.assertEqual(set(row), {'id', 'memberPath', 'memberSHA256', 'firstLine', 'lastLine', 'declaration', 'value', 'width', 'signed'})
