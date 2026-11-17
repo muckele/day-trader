@@ -29,7 +29,7 @@ ARCHIVE = Path('/Users/Matt/day-trader-references/m4-linux-aarch64-offline-repai
 ARCHIVE_SHA = 'c969dea4e8bb6be991bbf7c010ba0e0a5643a3a8d8fb0a2aaa053406f1e965f3'
 INVENTORY = ROOT / 'appliance/abi-inventory.json'
 COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
-COVERAGE_V2_SHA = '271e5d7ae4621f81b058f9b29d656207bb12a77b3ecced94723b5bef0a651f84'
+COVERAGE_V2_SHA = 'e4015945d140086d2fc55a54ca1f6c7a402f924a78c0b0ab4fdb37250b727791'
 EVENT_REFERENCE = ROOT / 'appliance/bootstrap-event-reference.json'
 EVENT_REFERENCE_SHA = 'a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d'
 ORACLES_PATH = Path(__file__).resolve().parent / 'abi_oracles.py'
@@ -292,13 +292,26 @@ POLICY_LITERALS = {
     'CAPSET_HEADER_PID': (0, 'capset header pid 0 means the calling thread'),
     'LOWER_BOUND_ZERO': (0, 'lower bound of the jt/jf range and of the program length'),
     'BPF_JUMP_BASE': (-1, 'classic-BPF jumps are relative to the next instruction: jt = target - index - 1'),
+    'CLOSE_RANGE_INCLUSIVE_END': (1, 'close_range(first, fd-1): the upper bound is inclusive, so fd-1 keeps the retained fd open'),
+    'VSOCK_SERVICE_PORT': (4050, 'fixed host broker vsock service port; a deployment choice, no header constant'),
+    'UNIX_FLAGS_NONE': (0, '/proc/net/unix Flags column of a socket that is not listening: no flag bits set'),
+    'OPTIONAL_CLOEXEC_ABSENT': (0, 'getattr(os, "O_CLOEXEC", 0) fallback contributes no flag bit when Python lacks the name'),
 }
 POLICY_VALUES = frozenset(v for v, _ in POLICY_LITERALS.values())
+# Code literals that are Linux ABI values the deriver cannot derive (ruling R13), named so that a site can account for
+# them exactly. Recording the code value here is not a claim that it is correct; it stays known uncovered surface.
+R13_LITERALS = {
+    'CAPSET_DATA_BYTES': (24, 'R13: _LINUX_CAPABILITY_U32S_3 x sizeof(struct __user_cap_data_struct); the struct '
+                              'sits behind a typedef pointer declarator the deriver refuses, so only the count factor '
+                              'is covered'),
+}
 
 # Exact per-site bindings for native syscall(...) calls: (file, enclosing qualname, ordinal in source order among the
-# syscall calls with a literal number in that function) -> (nr symbol, {arg index: expected}). expected is a frozenset
-# of covered symbols whose values OR to exactly the literal (a single symbol means equality), or a str naming a
-# POLICY_LITERALS entry. Every int-literal argument must be listed and no other.
+# syscall calls with a literal number in that function) -> (nr symbol, {arg index: expected}[, {arg index: names}]).
+# expected is a frozenset of covered symbols whose values OR to exactly the literal (a single symbol means equality),
+# or a str naming a POLICY_LITERALS entry. Every int-literal argument must be listed and no other. The optional third
+# element names, in source order, the int constants nested inside a non-literal argument (coverage symbol,
+# POLICY_LITERALS or R13_LITERALS name); an argument absent from it may hold no int constant at all (R15).
 def _s(*names):
     return frozenset(names)
 
@@ -312,14 +325,16 @@ SITE_ARGS = {
     ('confinement.py', 'NativeChildPort.establish_views', 3): ('__NR_mount', {3: _s('MS_BIND')}),
     ('confinement.py', 'NativeChildPort.establish_views', 4): ('__NR_mount', {3: _s('MS_BIND')}),
     ('confinement.py', 'NativeChildPort.establish_views', 5): ('__NR_mount', {3: _s('MS_NOSUID', 'MS_NODEV', 'MS_NOEXEC')}),
-    ('confinement.py', 'NativeChildPort.close_unaudited_fds', 0): ('__NR_close_range', {2: 'CLOSE_RANGE_NO_FLAGS'}),
+    ('confinement.py', 'NativeChildPort.close_unaudited_fds', 0): ('__NR_close_range', {2: 'CLOSE_RANGE_NO_FLAGS'},
+                                                                   {1: ('CLOSE_RANGE_INCLUSIVE_END',)}),
     ('confinement.py', 'NativeChildPort.close_unaudited_fds', 1): ('__NR_close_range', {1: 'CLOSE_RANGE_MAX', 2: 'CLOSE_RANGE_NO_FLAGS'}),
     ('confinement.py', 'NativeChildPort.drop_credentials', 0): ('__NR_setgroups', {0: 'EMPTY_GROUP_LIST', 1: 'EMPTY_GROUP_LIST'}),
     ('confinement.py', 'NativeChildPort.drop_credentials', 1): ('__NR_prctl', {0: _s('PR_CAP_AMBIENT'), 1: _s('PR_CAP_AMBIENT_CLEAR_ALL'), **_PRCTL_ZERO}),
     ('confinement.py', 'NativeChildPort.drop_credentials', 2): ('__NR_prctl', {0: _s('PR_CAPBSET_DROP'), **_PRCTL_ZERO}),
     ('confinement.py', 'NativeChildPort.drop_credentials', 3): ('__NR_setresgid', {}),
     ('confinement.py', 'NativeChildPort.drop_credentials', 4): ('__NR_setresuid', {}),
-    ('confinement.py', 'NativeChildPort.clear_capabilities', 0): ('__NR_capset', {}),
+    ('confinement.py', 'NativeChildPort.clear_capabilities', 0): ('__NR_capset', {}, {
+        0: ('_LINUX_CAPABILITY_VERSION_3', 'CAPSET_HEADER_PID'), 1: ('CAPSET_DATA_BYTES',)}),
     ('confinement.py', 'NativeChildPort.no_new_privs', 0): ('__NR_prctl', {0: _s('PR_SET_NO_NEW_PRIVS'), 1: 'NNP_ENABLE', **_PRCTL_ZERO}),
     ('confinement.py', 'NativeChildPort.install_seccomp', 0): ('__NR_seccomp', {0: _s('SECCOMP_SET_MODE_FILTER')}),
     ('confinement.py', 'NativeKernelPort.spawn_waiting', 0): ('__NR_unshare', {0: _s('CLONE_NEWNS', 'CLONE_NEWPID', 'CLONE_NEWIPC')}),
@@ -330,16 +345,141 @@ SITE_ARGS = {
 }
 # SYSCALL_SITES is derived from the per-site table (nr symbol -> files); the test also checks it against the AST.
 
+# Ruling R14: the rest of the guest Python modules. Every table below is exact: the code sites it describes must be
+# exactly the ones the test finds, located by file, enclosing qualname and ordinal, never by line number.
+GUEST_MODULES = ('confinement.py', 'intake.py', 'protocol.py', 'proxy.py', 'storage.py', 'topology.py')
+
+# Syscalls the audit rule watches, in the order of topology.py _fixed_audit_rule and of the _audit_record check.
+AUDITED_SYSCALLS = tuple('__NR_' + n for n in (
+    'mknodat umount2 mount pivot_root chroot exit exit_group unshare bind listen clone execve setns execveat '
+    'clone3').split())
+_CLONE = ('__NR_clone', '__NR_clone3')
+
+# name -> (file, enclosing qualname, compared expressions, [(operator, names)]): in source order, every comparison in
+# that function whose left operand is one of the expressions, against an int literal or a tuple of int literals.
+# names resolve through coverage v2 or POLICY_LITERALS; each comparator must equal the resolved tuple exactly.
+COMPARE_SITES = {
+    'transition': ('topology.py', 'BootstrapEventOwner._accept_browser_transition', ('number',), [
+        ('NotIn', _CLONE),                                   # CLONE phase
+        ('NotIn', ('__NR_execve', '__NR_execveat')),         # EXEC phase
+        ('NotIn', ('__NR_exit', '__NR_exit_group')),         # EXIT phase
+    ]),
+    'audit_syscalls': ('topology.py', 'BootstrapEventOwner._audit_record',
+                       ("group['syscalls'][0]['number']", "syscall['number']", 'number'), [
+        ('Eq', ('__NR_bind',)),
+        ('NotEq', ('__NR_bind',)),
+        ('In', ('__NR_exit', '__NR_exit_group', '__NR_clone', '__NR_execve', '__NR_execveat', '__NR_clone3')),
+        ('Eq', ('__NR_mknodat',)),
+        ('Eq', ('__NR_bind',)),
+        ('In', ('__NR_bind', '__NR_listen')),
+        ('NotIn', AUDITED_SYSCALLS),
+        ('In', _CLONE),
+        ('NotIn', _CLONE),
+    ]),
+    'audit_families': ('topology.py', 'BootstrapEventOwner._audit_record', ("group['sockaddrs'][0]", 'family'), [
+        ('Eq', ('AF_UNIX',)),
+        ('NotIn', ('AF_UNIX', 'AF_INET', 'AF_INET6')),
+    ]),
+    'probe_errno': ('topology.py', 'Task10NativeAttempts.execute_native.attempt', ('error.errno',), [
+        ('NotIn', ('EPERM', 'EACCES', 'ENETUNREACH', 'EHOSTUNREACH')),
+    ]),
+    'unix_flags': ('topology.py', '_abstract', ('int(fields[3], 16)',), [
+        ('NotIn', ('UNIX_FLAGS_NONE', '__SO_ACCEPTCON')),
+    ]),
+    'unix_types': ('topology.py', '_abstract', ('int(fields[4], 16)',), [
+        ('NotIn', ('SOCK_STREAM', 'SOCK_DGRAM', 'SOCK_SEQPACKET')),
+    ]),
+    'name_max': ('storage.py', '_name', ('len(value)',), [
+        ('Gt', ('NAME_MAX',)),
+    ]),
+}
+
+# Task10NativeAttempts._ip: identifier -> (family, kind) symbols; the role and destination port are policy.
+IP_TABLE = {
+    'BROWSER_IPV4_TCP': ('AF_INET', 'SOCK_STREAM'),
+    'BROWSER_IPV6_TCP': ('AF_INET6', 'SOCK_STREAM'),
+    'BROWSER_UDP': ('AF_INET', 'SOCK_DGRAM'),
+    'CONTROLLER_DNS_TCP': ('AF_INET', 'SOCK_STREAM'),
+    'CONTROLLER_DNS_UDP': ('AF_INET', 'SOCK_DGRAM'),
+    'VERIFIER_IPV4_TCP': ('AF_INET', 'SOCK_STREAM'),
+}
+
+# open()/open_owned()/pipe2() calls whose flags argument holds an int constant: (file, qualname, callee, ordinal) -> a
+# frozenset of disjoint flag symbols whose OR equals the literal flags exactly, or a tuple naming the int constants
+# nested in a non-literal flags expression. The mode argument (POSIX permission bits) is not an ABI flag.
+_FLAG_ARG = {'open': 1, 'open_owned': 1, 'pipe2': 0}
+OPEN_FLAG_SITES = {
+    ('confinement.py', 'LinuxBindings.read_file', 'open', 0): _s('O_CLOEXEC', 'O_NOFOLLOW'),
+    ('confinement.py', 'LinuxBindings.pin_programs', 'open', 0): _s('O_CLOEXEC', 'O_NOFOLLOW'),
+    ('confinement.py', 'LinuxBindings.pin_sample', 'open', 0): _s('O_CLOEXEC', 'O_NOFOLLOW'),
+    ('confinement.py', 'NativeChildPort.establish_views', 'open', 0): _s('O_CREAT', 'O_EXCL', 'O_CLOEXEC', 'O_NOFOLLOW'),
+    ('confinement.py', 'NativeKernelPort.spawn_waiting', 'pipe2', 0): _s('O_CLOEXEC'),
+    ('confinement.py', 'NativeKernelPort.spawn_waiting', 'open', 0): _s('O_RDWR', 'O_CLOEXEC', 'O_NOFOLLOW'),
+    ('topology.py', 'NativeTopologyBindings._read', 'open_owned', 0): ('OPTIONAL_CLOEXEC_ABSENT',),
+}
+
+# AF_VSOCK host CID literals: (file, qualname) -> count. A CID literal is the element right before the policy service
+# port in a tuple, list or call, the value paired with a 'hostCID'/'hostCid' key, or the value bound to _HOST_CID.
+VSOCK_CID_SITES = {
+    ('confinement.py', 'proxy_endpoint'): 1,
+    ('proxy.py', '<module>'): 1,
+    ('proxy.py', 'ProxyRuntimeOwner._check'): 1,
+    ('proxy.py', '_observation_record'): 1,
+    ('proxy.py', 'NativeVsockTransport.__init__'): 1,
+    ('proxy.py', 'NativeVsockTransport.open'): 2,
+    ('proxy.py', '_inherited_entry'): 1,
+    ('topology.py', '_payload'): 1,
+    ('topology.py', '_validate_payload'): 1,
+    ('topology.py', 'Task9RuntimeObserver.observeAccepted'): 1,
+}
+
+# Attested seccomp mode comparisons (/proc/<pid>/status "Seccomp:"): (file, qualname) -> count.
+SECCOMP_MODE_SITES = {
+    ('confinement.py', '_check'): 1,
+    ('topology.py', '_role'): 1,
+    ('topology.py', '_validate_payload'): 1,
+}
+
+# Interface-name length bounds _ascii(name, IFNAMSIZ - 1) (IFNAMSIZ counts the terminating NUL): qualname -> count.
+IFNAME_BOUND_SITES = {'_interfaces': 1, '_routes4': 1, '_routes6': 1}
+
 
 def _coverage():
     data = json.loads(COVERAGE_V2.read_bytes())
     return data, {r['id']: r['value'] for r in data['records']}
 
 
+def _scoped_nodes(tree):
+    """[(qualname, node)] for every node; qualname is the innermost enclosing class/function path, '<module>' at top."""
+    out = []
+
+    def visit(node, stack):
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            stack = stack + [node.name]
+        out.append(('.'.join(stack) or '<module>', node))
+        for child in ast.iter_child_nodes(node):
+            visit(child, stack)
+    visit(tree, [])
+    return out
+
+
+def _source_order(nodes):
+    return sorted(nodes, key=lambda n: (n.lineno, n.col_offset))
+
+
+def _int_constants(node):
+    """Every int constant in NODE's subtree, in source order."""
+    return [n.value for n in _source_order(n for n in ast.walk(node)
+                                           if isinstance(n, ast.Constant) and type(n.value) is int)]
+
+
 def _eval_int(node):
-    """Int literal or OR of int literals, else None."""
+    """Int literal, negated int literal, or OR of those, else None (R15: unary minus is folded, never skipped)."""
     if isinstance(node, ast.Constant) and type(node.value) is int:
         return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        value = _eval_int(node.operand)
+        return None if value is None else -value
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         left, right = _eval_int(node.left), _eval_int(node.right)
         return None if left is None or right is None else left | right
@@ -360,12 +500,16 @@ def _function(tree, name):
 
 
 class CodeBindingTests(unittest.TestCase):
-    """Binds every ABI literal in guest/confinement.py (build_filter, native syscall sites) and guest/topology.py
-    (the socket probe sites) to the committed coverage v2, or to an explicit POLICY_LITERALS entry.
+    """Binds the Linux ABI literals of the guest Python modules (confinement.py, proxy.py, storage.py, topology.py;
+    intake.py and protocol.py carry none) to the committed coverage v2, or to an explicit POLICY_LITERALS entry.
+    Event constants already pinned by appliance/bootstrap-event-reference.json are left to bootstrap_reference_test,
+    except syscall numbers (ruling R14).
 
-    Known uncovered ABI surface (ruling R13), deliberately NOT tested here: capset struct sizes (the factor 12 in
-    bytearray(24); the count factor 2 is covered by _LINUX_CAPABILITY_U32S_3), struct sock_fprog, sockaddr_in and
-    sockaddr_in6, O_NOFOLLOW, and the errno set outside topology.py:2987-2997.
+    Known uncovered ABI surface (ruling R13), deliberately NOT tested here: the capset structs (only divisibility of
+    bytearray(24) by _LINUX_CAPABILITY_U32S_3 is checked; the 12-byte element size is not derivable), struct
+    sock_fprog, sockaddr_in and sockaddr_in6, the LP64 data model (sizeof long/pointer, 64-bit syscall registers),
+    socket_state SS_* values (implicit enumerators), and kernel text formats and behaviour (procfs field positions and
+    number bases, the audit record text, inotify watch descriptor numbering, syscall success return values).
     """
 
     @classmethod
@@ -375,6 +519,7 @@ class CodeBindingTests(unittest.TestCase):
         cls.nr_by_value = {v: k for k, v in V.items() if k.startswith('__NR_')}
         assert len(cls.nr_by_value) == sum(1 for k in V if k.startswith('__NR_'))
         cls.trees = {name: ast.parse((GUEST / name).read_text()) for name in ('confinement.py', 'topology.py')}
+        cls.scoped = {name: _scoped_nodes(ast.parse((GUEST / name).read_text())) for name in GUEST_MODULES}
         decl = next(r['declaration'] for r in cls.cov['records'] if r['id'] == 'seccomp_data.args')
         cls.args_count = int(re.search(r'args\[(\d+)\]', decl).group(1))
         cls.stride = (V['seccomp_data.sizeof'] - V['seccomp_data.args']) // cls.args_count
@@ -392,6 +537,33 @@ class CodeBindingTests(unittest.TestCase):
 
     def values(self, symbols):
         return {self.V[s] for s in symbols}
+
+    def resolve(self, name):
+        """Value of a POLICY_LITERALS, R13_LITERALS or coverage v2 name; a name missing from all three fails."""
+        if name in POLICY_LITERALS:
+            return POLICY_LITERALS[name][0]
+        if name in R13_LITERALS:
+            return R13_LITERALS[name][0]
+        self.assertTrue(name in self.V, f'{name}: symbol absent from coverage v2')
+        return self.V[name]
+
+    def nodes(self, fname, qual, kind):
+        """Nodes of type KIND whose innermost enclosing qualname in FNAME is QUAL, in source order."""
+        return _source_order(n for q, n in self.scoped[fname] if q == qual and isinstance(n, kind))
+
+    def compares(self, fname, qual, lefts):
+        """[(operator, comparator)] in source order for every Compare in QUAL whose left operand unparses to one of
+        LEFTS. comparator is the folded tuple of ints, or None when it is not an int literal or tuple of them."""
+        out = []
+        for node in self.nodes(fname, qual, ast.Compare):
+            if ast.unparse(node.left) not in lefts:
+                continue
+            self.assertEqual(len(node.ops), 1, (fname, qual, ast.unparse(node)))
+            comparator = node.comparators[0]
+            elements = comparator.elts if isinstance(comparator, ast.Tuple) else [comparator]
+            folded = tuple(_eval_int(e) for e in elements)
+            out.append((type(node.ops[0]).__name__, None if None in folded else folded))
+        return out
 
     # --- layout-derived facts -------------------------------------------------------------------------------------
     def test_seccomp_data_layout_derivations(self):
@@ -667,7 +839,7 @@ class CodeBindingTests(unittest.TestCase):
         for key, (call, sym) in found.items():
             self.assertEqual(sym, SITE_ARGS[key][0], key)
         derived = {}
-        for (fname, _, _), (nr, _) in SITE_ARGS.items():
+        for (fname, _, _), (nr, *_) in SITE_ARGS.items():
             derived.setdefault(nr, set()).add(fname)
         self.assertEqual({k: frozenset(v) for k, v in derived.items()}, SYSCALL_SITES)
 
@@ -718,10 +890,197 @@ class CodeBindingTests(unittest.TestCase):
                 and isinstance(n.left, ast.Name) and n.left.id in ('family', 'kind') and isinstance(n.ops[0], ast.Eq)}
         self.assertEqual(cmps, {'family': self.V['AF_INET'], 'kind': self.V['SOCK_STREAM']})
 
+    # --- R15: argument subtrees of native call sites -------------------------------------------------------------
+    def test_site_argument_subtrees_have_no_unlisted_int_constants(self):
+        """Every int constant anywhere in a native site's arguments is accounted for by SITE_ARGS: a listed literal
+        argument must fold whole (its value is checked by the decomposition test); any other argument may carry only
+        the int constants its optional third-element entry names, in source order. No keyword arguments."""
+        nested_total = 0
+        for key, (call, sym) in self.site_table().items():
+            literal_args = SITE_ARGS[key][1]
+            nested = SITE_ARGS[key][2] if len(SITE_ARGS[key]) > 2 else {}
+            self.assertEqual(call.keywords, [], key)
+            self.assertFalse(set(nested) & set(literal_args), key)
+            self.assertLessEqual(set(nested), set(range(len(call.args) - 1)), key)
+            for idx, arg in enumerate(call.args[1:]):
+                if idx in literal_args:
+                    self.assertIsNotNone(_eval_int(arg), (key, idx, ast.unparse(arg)))
+                    continue
+                want = [self.resolve(name) for name in nested.get(idx, ())]
+                self.assertEqual(_int_constants(arg), want, (key, idx, ast.unparse(arg)))
+                nested_total += len(want)
+        self.assertEqual(nested_total, 4)
+
+    # --- R14: the rest of the guest modules -----------------------------------------------------------------------
+    def check_compare_site(self, name):
+        fname, qual, lefts, want = COMPARE_SITES[name]
+        got = self.compares(fname, qual, lefts)
+        self.assertEqual(got, [(op, tuple(self.resolve(n) for n in names)) for op, names in want], name)
+
+    def test_topology_audit_syscall_numbers_match_named_symbols(self):
+        """_accept_browser_transition: CLONE -> (clone, clone3), EXEC -> (execve, execveat), EXIT -> (exit,
+        exit_group), each tuple exact and in phase order."""
+        self.check_compare_site('transition')
+
+    def test_topology_audit_record_syscall_numbers_match_named_symbols(self):
+        self.check_compare_site('audit_syscalls')
+
+    def test_topology_audit_sockaddr_families_match_named_symbols(self):
+        self.check_compare_site('audit_families')
+
+    def test_topology_probe_errno_set_matches_named_symbols(self):
+        self.check_compare_site('probe_errno')
+
+    def test_topology_unix_table_flags_and_types_match_named_symbols(self):
+        """/proc/net/unix in _abstract: Flags (column 3) and Type (column 4) are bound; Protocol (2) and St (5) are
+        R13 (kernel print format; socket_state enumerators have implicit values). No other column is compared."""
+        self.check_compare_site('unix_flags')
+        self.check_compare_site('unix_types')
+        columns = set()
+        for node in self.nodes('topology.py', '_abstract', ast.Compare):
+            match = re.fullmatch(r'int\(fields\[(\d+)\], 16\)', ast.unparse(node.left))
+            if match:
+                columns.add(int(match.group(1)))
+        self.assertEqual(columns, {2, 3, 4, 5})
+
+    def test_storage_name_bound_matches_named_symbol(self):
+        self.check_compare_site('name_max')
+
+    def test_topology_audit_rule_syscall_list_matches_named_symbols(self):
+        fn = self.nodes('topology.py', '_fixed_audit_rule', ast.FunctionDef)
+        self.assertEqual(len(fn), 1)
+        loops = [n for n in ast.walk(fn[0]) if isinstance(n, ast.For)]
+        self.assertEqual(len(loops), 1)
+        self.assertIsInstance(loops[0].iter, ast.Tuple)
+        got = tuple(_eval_int(e) for e in loops[0].iter.elts)
+        self.assertEqual(got, tuple(self.resolve(n) for n in AUDITED_SYSCALLS))
+
+    def test_topology_ip_table_families_and_kinds_match_named_symbols(self):
+        classes = self.nodes('topology.py', 'Task10NativeAttempts', ast.ClassDef)
+        self.assertEqual(len(classes), 1)
+        tables = [n for n in classes[0].body if isinstance(n, ast.Assign)
+                  and [ast.unparse(t) for t in n.targets] == ['_ip']]
+        self.assertEqual(len(tables), 1)
+        self.assertIsInstance(tables[0].value, ast.Dict)
+        got = {}
+        for key, row in zip(tables[0].value.keys, tables[0].value.values):
+            self.assertIsInstance(key, ast.Constant)
+            self.assertIsInstance(row, ast.Tuple)
+            self.assertEqual(len(row.elts), 4, key.value)
+            role, family, kind, port = row.elts
+            self.assertTrue(isinstance(role, ast.Constant) and type(role.value) is str, key.value)
+            # documentation destination port: policy, not ABI
+            self.assertTrue(isinstance(port, ast.Constant) and type(port.value) is int, key.value)
+            got[key.value] = (_eval_int(family), _eval_int(kind))
+        self.assertEqual(got, {k: (self.resolve(f), self.resolve(t)) for k, (f, t) in IP_TABLE.items()})
+        # the row is unpacked as (role, family, kind, port) for the socket() call
+        unpack = [n for n in self.nodes('topology.py', 'Task10NativeAttempts.execute_native', ast.Assign)
+                  if ast.unparse(n.value) == 'self._ip[identifier]']
+        self.assertEqual([ast.unparse(n.targets[0]) for n in unpack], ['(role, family, kind, port)'])
+
+    def test_open_flag_literals_match_named_symbols(self):
+        found = {}
+        for fname in GUEST_MODULES:
+            per = {}
+            for qual, node in self.scoped[fname]:
+                if not isinstance(node, ast.Call):
+                    continue
+                f = node.func
+                callee = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else None
+                index = _FLAG_ARG.get(callee)
+                if index is None or len(node.args) <= index or not _int_constants(node.args[index]):
+                    continue
+                per.setdefault((qual, callee), []).append(node)
+            for (qual, callee), calls in per.items():
+                for n, call in enumerate(_source_order(calls)):
+                    found[(fname, qual, callee, n)] = call.args[_FLAG_ARG[callee]]
+        self.assertEqual(set(found), set(OPEN_FLAG_SITES))
+        for key, flags in found.items():
+            want = OPEN_FLAG_SITES[key]
+            if isinstance(want, tuple):
+                self.assertIsNone(_eval_int(flags), key)
+                self.assertEqual(_int_constants(flags), [self.resolve(n) for n in want], key)
+                continue
+            acc = 0
+            for name in sorted(want):
+                self.assertEqual(acc & self.resolve(name), 0, (key, name))  # disjoint flag bits
+                acc |= self.resolve(name)
+            self.assertEqual(_eval_int(flags), acc, key)
+
+    def test_fdinfo_access_mode_literals_match_named_symbols(self):
+        """_native_observe reads each pipe end's /proc fdinfo flags: flags & O_ACCMODE must be O_RDONLY for the
+        command fd and O_WRONLY for the result fd."""
+        masks = [_eval_int(n.right) for n in self.nodes('confinement.py', '_native_observe', ast.BinOp)
+                 if isinstance(n.op, ast.BitAnd) and ast.unparse(n.left) == 'flags']
+        self.assertEqual(masks, [self.resolve('O_ACCMODE')])
+        loops = [n for n in self.nodes('confinement.py', '_native_observe', ast.For)
+                 if ast.unparse(n.target) == '(fd, direction)']
+        self.assertEqual(len(loops), 1)
+        self.assertIsInstance(loops[0].iter, ast.Tuple)
+        directions = [_eval_int(pair.elts[1]) for pair in loops[0].iter.elts]
+        self.assertEqual(directions, [self.resolve('O_RDONLY'), self.resolve('O_WRONLY')])
+        checks = [ast.unparse(n) for n in self.nodes('confinement.py', '_native_observe', ast.Compare)
+                  if ast.unparse(n.comparators[0]) == 'direction']
+        self.assertEqual(len(checks), 1)
+
+    def test_proxy_nonblocking_flag_literals_match_named_symbol(self):
+        """finalize_nonblocking: the one permitted fdinfo flags change is exactly O_NONBLOCK."""
+        qual = '_RuntimeDescriptors.finalize_nonblocking'
+        ors = [n.right for n in self.nodes('proxy.py', qual, ast.BinOp) if isinstance(n.op, ast.BitOr)]
+        ors += [n.value for n in self.nodes('proxy.py', qual, ast.AugAssign) if isinstance(n.op, ast.BitOr)]
+        self.assertEqual([_eval_int(n) for n in ors], [self.resolve('O_NONBLOCK')] * 2)
+
+    def test_vsock_host_cid_literals_match_named_symbol(self):
+        port = POLICY_LITERALS['VSOCK_SERVICE_PORT'][0]
+        found = {}
+        for fname in GUEST_MODULES:
+            for qual, node in self.scoped[fname]:
+                cids = []
+                if isinstance(node, (ast.Tuple, ast.List, ast.Call)):
+                    seq = node.args if isinstance(node, ast.Call) else node.elts
+                    for before, item in zip(seq, seq[1:]):
+                        if _eval_int(item) == port and not (isinstance(before, ast.Constant) and type(before.value) is str):
+                            cids.append(before)
+                    if (isinstance(node, ast.Tuple) and len(seq) == 2 and isinstance(seq[0], ast.Constant)
+                            and seq[0].value in ('hostCID', 'hostCid') and _int_constants(seq[1])):
+                        cids.append(seq[1])
+                elif isinstance(node, ast.Dict):  # a keyed value counts when it holds an int constant
+                    cids += [v for k, v in zip(node.keys, node.values) if isinstance(k, ast.Constant)
+                             and k.value in ('hostCID', 'hostCid') and _int_constants(v)]
+                elif isinstance(node, ast.Assign) and [ast.unparse(t) for t in node.targets] == ['_HOST_CID']:
+                    cids.append(node.value)
+                for cid in cids:
+                    found.setdefault((fname, qual), []).append(_eval_int(cid))
+        self.assertEqual({k: len(v) for k, v in found.items()}, VSOCK_CID_SITES)
+        for key, values in found.items():
+            self.assertEqual(values, [self.resolve('VMADDR_CID_HOST')] * len(values), key)
+
+    def test_seccomp_mode_attestation_literals_match_named_symbol(self):
+        found = {}
+        for fname in GUEST_MODULES:
+            for qual, node in self.scoped[fname]:
+                if isinstance(node, ast.Compare) and re.fullmatch(r".*(\.seccomp|\['seccomp'\])", ast.unparse(node.left)):
+                    self.assertEqual(len(node.ops), 1)
+                    found.setdefault((fname, qual), []).append((type(node.ops[0]).__name__, _eval_int(node.comparators[0])))
+        self.assertEqual({k: len(v) for k, v in found.items()}, SECCOMP_MODE_SITES)
+        for key, values in found.items():
+            self.assertEqual(values, [('NotEq', self.resolve('SECCOMP_MODE_FILTER'))] * len(values), key)
+
+    def test_interface_name_bounds_match_named_symbol(self):
+        found = {}
+        for qual, node in self.scoped['topology.py']:
+            if qual in IFNAME_BOUND_SITES and isinstance(node, ast.Call) and ast.unparse(node.func) == '_ascii':
+                found.setdefault(qual, []).append(_eval_int(node.args[1]))
+        self.assertEqual({k: len(v) for k, v in found.items()}, IFNAME_BOUND_SITES)
+        for qual, values in found.items():
+            self.assertEqual(values, [self.resolve('IFNAMSIZ') - 1] * len(values), qual)
+
     def test_policy_literals_are_justified(self):
-        for name, (value, reason) in POLICY_LITERALS.items():
+        for name, (value, reason) in {**POLICY_LITERALS, **R13_LITERALS}.items():
             self.assertIs(type(value), int, name)
             self.assertGreater(len(reason), 20, name)
+        self.assertFalse(set(POLICY_LITERALS) & set(R13_LITERALS))
+        self.assertFalse((set(POLICY_LITERALS) | set(R13_LITERALS)) & set(self.V))
 
     def test_build_filter_int_constants_are_classified(self):
         V = self.V

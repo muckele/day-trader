@@ -275,6 +275,72 @@
       "width": 32
     },
     {
+      "conditions": [],
+      "id": "__NR_exit",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_exit_group",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_bind",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_listen",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_clone",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_execve",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_execveat",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifdef __ARCH_WANT_SYS_CLONE3"
+      ],
+      "id": "__NR_clone3",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
       "conditions": [
         "#ifndef _UAPI_LINUX_SECCOMP_H"
       ],
@@ -389,6 +455,36 @@
       "id": "EPERM",
       "kind": "define",
       "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "id": "EACCES",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "id": "ENETUNREACH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "id": "EHOSTUNREACH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
       "signed": true,
       "width": 32
     },
@@ -875,6 +971,16 @@
     },
     {
       "conditions": [
+        "#ifndef _UAPI_VM_SOCKETS_H"
+      ],
+      "id": "VMADDR_CID_HOST",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/vm_sockets.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
         "#ifndef _LINUX_NET_H",
         "#ifndef ARCH_HAS_SOCKET_TYPES"
       ],
@@ -931,6 +1037,16 @@
     },
     {
       "conditions": [
+        "#ifndef _UAPI_LINUX_NET_H"
+      ],
+      "id": "__SO_ACCEPTCON",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/net.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
         "#ifndef _ASM_GENERIC_FCNTL_H",
         "#ifndef O_NONBLOCK"
       ],
@@ -948,6 +1064,99 @@
       "id": "O_CLOEXEC",
       "kind": "define",
       "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "id": "O_ACCMODE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "id": "O_RDONLY",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "id": "O_WRONLY",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "id": "O_RDWR",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H",
+        "#ifndef O_CREAT"
+      ],
+      "id": "O_CREAT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H",
+        "#ifndef O_EXCL"
+      ],
+      "id": "O_EXCL",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef __ASM_FCNTL_H"
+      ],
+      "id": "O_NOFOLLOW",
+      "kind": "define",
+      "memberPath": "linux-6.8/arch/arm64/include/uapi/asm/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_LIMITS_H"
+      ],
+      "id": "NAME_MAX",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/limits.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_IF_H",
+        "#if __UAPI_DEF_IF_IFNAMSIZ"
+      ],
+      "id": "IFNAMSIZ",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/if.h",
       "signed": true,
       "width": 32
     }

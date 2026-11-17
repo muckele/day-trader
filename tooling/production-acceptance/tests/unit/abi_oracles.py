@@ -105,4 +105,26 @@ ORACLES = {
     'SOCK_NONBLOCK': 2048,  # net.h:82 #define SOCK_NONBLOCK O_NONBLOCK; O_NONBLOCK = octal 00004000 (asm-generic/fcntl.h:39) = 0x800
     'O_NONBLOCK': 2048,  # linux-6.8/include/uapi/asm-generic/fcntl.h:39 octal 00004000 = 0x800 = 2048
     'O_CLOEXEC': 524288,  # asm-generic/fcntl.h:63 octal 02000000 = 0x80000 = 524288
+    '__NR_exit': 93,  # linux-6.8/include/uapi/asm-generic/unistd.h:258 #define __NR_exit 93
+    '__NR_exit_group': 94,  # linux-6.8/include/uapi/asm-generic/unistd.h:260 #define __NR_exit_group 94
+    '__NR_bind': 200,  # linux-6.8/include/uapi/asm-generic/unistd.h:526 #define __NR_bind 200
+    '__NR_listen': 201,  # linux-6.8/include/uapi/asm-generic/unistd.h:528 #define __NR_listen 201
+    '__NR_clone': 220,  # linux-6.8/include/uapi/asm-generic/unistd.h:566 #define __NR_clone 220
+    '__NR_execve': 221,  # linux-6.8/include/uapi/asm-generic/unistd.h:568 #define __NR_execve 221
+    '__NR_execveat': 281,  # linux-6.8/include/uapi/asm-generic/unistd.h:679 #define __NR_execveat 281
+    '__NR_clone3': 435,  # linux-6.8/include/uapi/asm-generic/unistd.h:781 under #ifdef __ARCH_WANT_SYS_CLONE3; #define __NR_clone3 435
+    'EACCES': 13,  # linux-6.8/include/uapi/asm-generic/errno-base.h:17 #define EACCES 13
+    'ENETUNREACH': 101,  # linux-6.8/include/uapi/asm-generic/errno.h:84 #define ENETUNREACH 101
+    'EHOSTUNREACH': 113,  # linux-6.8/include/uapi/asm-generic/errno.h:96 #define EHOSTUNREACH 113
+    'VMADDR_CID_HOST': 2,  # linux-6.8/include/uapi/linux/vm_sockets.h:127 #define VMADDR_CID_HOST 2
+    '__SO_ACCEPTCON': 65536,  # linux-6.8/include/uapi/linux/net.h:56 (1 << 16) = 0x10000
+    'O_ACCMODE': 3,  # linux-6.8/include/uapi/asm-generic/fcntl.h:19 octal 00000003
+    'O_RDONLY': 0,  # linux-6.8/include/uapi/asm-generic/fcntl.h:20 octal 00000000
+    'O_WRONLY': 1,  # linux-6.8/include/uapi/asm-generic/fcntl.h:21 octal 00000001
+    'O_RDWR': 2,  # linux-6.8/include/uapi/asm-generic/fcntl.h:22 octal 00000002
+    'O_CREAT': 64,  # linux-6.8/include/uapi/asm-generic/fcntl.h:24 octal 00000100 = 0x40; not overridden by arm64 fcntl.h
+    'O_EXCL': 128,  # linux-6.8/include/uapi/asm-generic/fcntl.h:27 octal 00000200 = 0x80; not overridden by arm64 fcntl.h
+    'O_NOFOLLOW': 32768,  # linux-6.8/arch/arm64/include/uapi/asm/fcntl.h:24 octal 0100000 = 0x8000 (arm64 override)
+    'NAME_MAX': 255,  # linux-6.8/include/uapi/linux/limits.h:12 #define NAME_MAX 255
+    'IFNAMSIZ': 16,  # linux-6.8/include/uapi/linux/if.h:33 #define IFNAMSIZ 16 under #if __UAPI_DEF_IF_IFNAMSIZ
 }
