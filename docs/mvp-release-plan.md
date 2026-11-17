@@ -82,7 +82,8 @@ Read-only. No owner approval needed beyond resuming Day Trader.
 | Offline baseline: Python | 345/353. 8 tests blocked by a lost, never-committed M4 coverage file |
 | Offline baseline: Swift | 180/181 |
 | Failure investigation | Done. Two test-data defects from `284f946`. A 2-line test-only fix (`54e5b6e`, branch `claude/production-acceptance-stage1`) gives Swift 181/181. Independent review: ACCEPT_WITH_NOTES, follow-ups only. |
-| M4 disposition | Not started |
+| M4 disposition | Accepted by the owner 2026-11-17, Option A. M4 stays open. The repair bundle is the reference. Lost evidence stays lost. A new committed ABI coverage derivation is to be built and reviewed. |
+| Option A ABI coverage re-derivation | Not started |
 | Independent reviews | Not started. About 28.6k lines of unreviewed code. |
 
 ### Stage 1 — Reconcile and review what is committed (≈3–5 days)
