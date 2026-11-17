@@ -38,7 +38,7 @@ Do not confuse this with the broader **agentic paper MVP** (roadmap Phases 0–3
 | `main` | `8e557f6` (2026-05-28) | Old baseline. Not the release-candidate line. |
 | `codex/owner-paper-mvp` | `852fb22` + docs commits | Release-candidate line: PF-001 fix (`44bc06f`) plus startup-readiness contract v2 (`852fb22`, STARTUP_READINESS_CLOSEOUT_VERIFIED; hosted run 35755989443). |
 | `codex/production-acceptance-m1` | `31a513e` (2026-10-04) | Production acceptance controller, 84 commits on top of `852fb22` (17 of them are the hosted-tooling pilot, `916d2ad` being an ancestor; corrected 2026-11-16 from "88"). Pushed to GitHub 2026-11-14. Design and plan: `docs/PRODUCTION_ACCEPTANCE_CONTROLLER_DESIGN.md`, `docs/superpowers/plans/2026-09-30-production-acceptance-controller.md` on that branch. |
-| `claude/production-acceptance-stage1` | `ee687f9` (2026-11-17) | Stage 1 fixes on top of `31a513e`. Pushed to GitHub up to `6c33545` (2026-11-16); `ee687f9` (the M4 disposition record) is local. Worktree: `~/day-trader-worktrees/production-acceptance-stage1-fixes`. `54e5b6e` is the 2-line test-only fix for the bootstrap v1 handoff test (Swift 181/181 at that commit). `6c33545` records its independent review (ACCEPT_WITH_NOTES, follow-ups only). |
+| `claude/production-acceptance-stage1` | `132b67e` (2026-11-17) | Stage 1 work on top of `31a513e`. Pushed to GitHub up to `6c33545` (2026-11-16); everything after that is local: the M4 disposition record `ee687f9`, the Option A plan `36898e9`, and Option A work through `132b67e`. Worktree: `~/day-trader-worktrees/production-acceptance-stage1-fixes`. `54e5b6e` is the 2-line test-only fix for the bootstrap v1 handoff test (Swift 181/181 at that commit). `6c33545` records its independent review (ACCEPT_WITH_NOTES, follow-ups only). |
 | `codex/hosted-acceptance-tooling` | `916d2ad` (2026-09-30) | Hosted acceptance tooling pilot. |
 | `codex/sprint1-policy-approval` | `15a2de3` (2026-08-14) | Pushed to GitHub 2026-11-14 (was 6 commits ahead). Worktree: `~/Documents/Codex Agentic Trading/day-trader-sprint1`. That folder is iCloud-synced and macOS can evict its files; its uncommitted changes are preserved on `codex/sprint1-uncommitted-2026-07`. |
 | `codex/sprint1-uncommitted-2026-07` | `ba322b9` (2026-11-15) | Snapshot of 35 files of uncommitted Jul 19–Aug 14 work (controlled-live readiness services, tests, design docs) recovered from the sprint1 worktree, where 31 existed only in iCloud. Saved exactly as found, built on `15a2de3`. Unreviewed, untested, not a release candidate. Pushed 2026-11-15. |
@@ -101,7 +101,21 @@ From the status handoff, plus local evidence checked on 2026-11-14:
     - The offline repair bundle (manifest `bb5fb8c4…`) is M4's reference input.
     - Lost October evidence stays lost and is not reconstructed.
     - **Option A:** build a new, reviewed, committed ABI coverage derivation that checks both the Task 8 seccomp/syscall constants and the event constants against the retained Linux bytes. It replaces the lost `abi-coverage.json` and unblocks the 8 `bootstrap_reference_test.py` tests.
-  - **Not started:** independent reviews (about 28.6k unreviewed lines across Tasks 8–15, 18 and the composition amendment) and the Option A derivation.
+  - **Option A: done 2026-11-17** (`36898e9..132b67e`, subagent-driven; record `.superpowers/sdd/…/m4-abi-coverage-v2/report.md`).
+    - **Built:**
+      - offline deriver `appliance/derive_abi_coverage.py`;
+      - 121-entry inventory and committed `abi-coverage-v2.json`, checked against hand-transcribed `abi_oracles.py`;
+      - `abi_coverage_test.py`, which binds every bound guest ABI literal exactly, per call site and per seccomp instruction.
+    - **Results:**
+      - the 8 `bootstrap_reference_test` tests run again;
+      - Python 400/400, Node 402/402, Swift 181/181 at `0f87065`; 401/401 Python after the fix wave;
+      - the final reviewer checked all 121 records against the archive.
+    - **Known gaps** for the whole-M4 review:
+      - the probe catalogue `tests/guest/confinement_probe.py` (bind before Stage 2 relies on probe evidence);
+      - event literals in `topology.py` (bind before the native event source is enabled);
+      - the R13 layouts, the `.cjs` modules.
+    - **Reconciliation:** D4's "update `parentCoverageSHA256`" was not done. The event reference keeps the lost parent hash, because its digest is pinned in four places.
+  - **Not started:** independent reviews (about 28.6k unreviewed lines across Tasks 8–15, 18 and the composition amendment), including the fresh whole-M4 offline review.
 
 ### Next sequence when Day Trader resumes
 
