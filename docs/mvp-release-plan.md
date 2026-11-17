@@ -68,6 +68,11 @@ Read-only. No owner approval needed beyond resuming Day Trader.
 - Check the toolchain the plan pins (Xcode/Swift, Node 24.21.0, Python), and record what changed since 2026-10-04.
 - **Exit:** a dated resume ledger under `~/day-trader-evidence/production-acceptance-tooling/` listing identities and any drift.
 
+**Done 2026-11-16 — exit met, with drift.** Ledger: `20261117T001708Z-stage0-resume/RESUME_LEDGER.md` (local, outside the repo).
+- Branches and M4 reference bundles are intact.
+- Since October the host moved from macOS 26 to 27, and Swift 6.4 / SDK 27.0 were replaced by 6.4.2 / 27.2.
+- Stage 1 first needs an owner decision on re-pinning the Swift toolchain.
+
 ### Stage 1 — Reconcile and review what is committed (≈3–5 days)
 
 | Step | Who | Approval |
