@@ -90,7 +90,10 @@ From the status handoff, plus local evidence checked on 2026-11-14:
   - **Offline baseline:**
     - Node: 402/402.
     - Python: 345/353. The other 8 cannot run: `bootstrap_reference_test.py` needs an uncommitted `abi-coverage.json` that was lost with the `/private/tmp` worktree.
-    - Swift: 180/181. One `BootstrapGateTests` handoff test fails, cause not yet known.
+    - Swift: 180/181. The one failing `BootstrapGateTests` handoff test was traced on 2026-11-16 to two test-data defects that came in with `284f946`:
+      - The Swift test signs with ASCII `"7"`, while the fixture's key is byte `7`.
+      - The Python fixture marks the RESULT pipe read-only, while the Swift validator and the real guest check require write-only.
+      - A verified 2-line test-only fix gives 181/181. It is not yet committed or reviewed.
   - **Test-run requirements:** a physical, non-symlinked `TMPDIR`, and fixture inputs produced as the composition-v1 plan describes.
   - **Not started:** independent reviews (about 28.6k unreviewed lines across Tasks 8–15, 18 and the composition amendment) and the M4 disposition.
 

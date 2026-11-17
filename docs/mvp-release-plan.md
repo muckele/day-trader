@@ -80,8 +80,8 @@ Read-only. No owner approval needed beyond resuming Day Trader.
 | Commit-to-task ledger | Done |
 | Offline baseline at `31a513e`: Node | 402/402 |
 | Offline baseline: Python | 345/353. 8 tests blocked by a lost, never-committed M4 coverage file |
-| Offline baseline: Swift | 180/181. One open failure |
-| Failure investigation | Not started |
+| Offline baseline: Swift | 180/181 |
+| Failure investigation | Root cause found: two test-data defects from `284f946`. A 2-line test-only fix gives 181/181. Not yet committed or reviewed. |
 | M4 disposition | Not started |
 | Independent reviews | Not started. About 28.6k lines of unreviewed code. |
 
