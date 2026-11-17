@@ -81,7 +81,7 @@ Read-only. No owner approval needed beyond resuming Day Trader.
 | Offline baseline at `31a513e`: Node | 402/402 |
 | Offline baseline: Python | 345/353. 8 tests blocked by a lost, never-committed M4 coverage file |
 | Offline baseline: Swift | 180/181 |
-| Failure investigation | Root cause found: two test-data defects from `284f946`. A 2-line test-only fix gives 181/181. Not yet committed or reviewed. |
+| Failure investigation | Done. Two test-data defects from `284f946`. A 2-line test-only fix (`54e5b6e`, branch `claude/production-acceptance-stage1`) gives Swift 181/181. Independent review: ACCEPT_WITH_NOTES, follow-ups only. |
 | M4 disposition | Not started |
 | Independent reviews | Not started. About 28.6k lines of unreviewed code. |
 

@@ -38,6 +38,7 @@ Do not confuse this with the broader **agentic paper MVP** (roadmap Phases 0–3
 | `main` | `8e557f6` (2026-05-28) | Old baseline. Not the release-candidate line. |
 | `codex/owner-paper-mvp` | `852fb22` + docs commits | Release-candidate line: PF-001 fix (`44bc06f`) plus startup-readiness contract v2 (`852fb22`, STARTUP_READINESS_CLOSEOUT_VERIFIED; hosted run 35755989443). |
 | `codex/production-acceptance-m1` | `31a513e` (2026-10-04) | Production acceptance controller, 84 commits on top of `852fb22` (17 of them are the hosted-tooling pilot, `916d2ad` being an ancestor; corrected 2026-11-16 from "88"). Pushed to GitHub 2026-11-14. Design and plan: `docs/PRODUCTION_ACCEPTANCE_CONTROLLER_DESIGN.md`, `docs/superpowers/plans/2026-09-30-production-acceptance-controller.md` on that branch. |
+| `claude/production-acceptance-stage1` | `6c33545` (2026-11-16) | Stage 1 fixes on top of `31a513e`. Local only, not pushed. Worktree: `~/day-trader-worktrees/production-acceptance-stage1-fixes`. `54e5b6e` is the 2-line test-only fix for the bootstrap v1 handoff test (Swift 181/181 at that commit). `6c33545` records its independent review (ACCEPT_WITH_NOTES, follow-ups only). |
 | `codex/hosted-acceptance-tooling` | `916d2ad` (2026-09-30) | Hosted acceptance tooling pilot. |
 | `codex/sprint1-policy-approval` | `15a2de3` (2026-08-14) | Pushed to GitHub 2026-11-14 (was 6 commits ahead). Worktree: `~/Documents/Codex Agentic Trading/day-trader-sprint1`. That folder is iCloud-synced and macOS can evict its files; its uncommitted changes are preserved on `codex/sprint1-uncommitted-2026-07`. |
 | `codex/sprint1-uncommitted-2026-07` | `ba322b9` (2026-11-15) | Snapshot of 35 files of uncommitted Jul 19–Aug 14 work (controlled-live readiness services, tests, design docs) recovered from the sprint1 worktree, where 31 existed only in iCloud. Saved exactly as found, built on `15a2de3`. Unreviewed, untested, not a release candidate. Pushed 2026-11-15. |
@@ -93,7 +94,7 @@ From the status handoff, plus local evidence checked on 2026-11-14:
     - Swift: 180/181. The one failing `BootstrapGateTests` handoff test was traced on 2026-11-16 to two test-data defects that came in with `284f946`:
       - The Swift test signs with ASCII `"7"`, while the fixture's key is byte `7`.
       - The Python fixture marks the RESULT pipe read-only, while the Swift validator and the real guest check require write-only.
-      - A verified 2-line test-only fix gives 181/181. It is not yet committed or reviewed.
+      - The fix is committed as `54e5b6e` on `claude/production-acceptance-stage1` and gives 181/181. Independent review: ACCEPT_WITH_NOTES, follow-ups only.
   - **Test-run requirements:** a physical, non-symlinked `TMPDIR`, and fixture inputs produced as the composition-v1 plan describes.
   - **Not started:** independent reviews (about 28.6k unreviewed lines across Tasks 8–15, 18 and the composition amendment) and the M4 disposition.
 
