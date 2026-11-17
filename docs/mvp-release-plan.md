@@ -71,7 +71,19 @@ Read-only. No owner approval needed beyond resuming Day Trader.
 **Done 2026-11-16 — exit met, with drift.** Ledger: `20261117T001708Z-stage0-resume/RESUME_LEDGER.md` (local, outside the repo).
 - Branches and M4 reference bundles are intact.
 - Since October the host moved from macOS 26 to 27, and Swift 6.4 / SDK 27.0 were replaced by 6.4.2 / 27.2.
-- Stage 1 first needs an owner decision on re-pinning the Swift toolchain.
+- The owner approved re-pinning to the installed Swift toolchain on 2026-11-16.
+
+**Stage 1 progress (2026-11-16).** Ledger: `20261117T002012Z-stage1/STAGE1_LEDGER.md` (local).
+
+| Item | Status |
+|---|---|
+| Commit-to-task ledger | Done |
+| Offline baseline at `31a513e`: Node | 402/402 |
+| Offline baseline: Python | 345/353. 8 tests blocked by a lost, never-committed M4 coverage file |
+| Offline baseline: Swift | 180/181. One open failure |
+| Failure investigation | Not started |
+| M4 disposition | Not started |
+| Independent reviews | Not started. About 28.6k lines of unreviewed code. |
 
 ### Stage 1 — Reconcile and review what is committed (≈3–5 days)
 

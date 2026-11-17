@@ -83,7 +83,16 @@ From the status handoff, plus local evidence checked on 2026-11-14:
   - **Intact:** all branch heads match GitHub, and the release-candidate code is still exactly `852fb22`. Both M4 reference bundles match their manifests file for file, 112/112.
   - **Codex progress ledger survives** at `~/.codex/visualizations/2026/09/23/<run>/production-acceptance-m1/progress.md`. It records the M1–M3 closeouts and the Oct 2 M4 BLOCKED disposition. It does not cover the later reference repair or Tasks 8–18.
   - **Toolchain drift:** the host went from macOS 26.6.2 to 27.2.1. Command Line Tools went from 27.0 to 27.2, Swift from 6.4 to 6.4.2, and the SDK from 27.0 to 27.2; the old SDK is gone. Node 24.21.0 and Python 3.12.2 are unchanged.
-  - **Before Stage 1:** the owner must decide whether to re-pin to the installed Swift toolchain, then approve running the offline suites.
+  - **Re-pinned (owner decision, 2026-11-16):** offline Stage 1 work uses the installed CLT 27.2 / Swift 6.4.2 / SDK 27.2. That decision approves nothing else: no Xcode/XCTest, signing, downloads or VM.
+- **Stage 1 (in progress, started 2026-11-16).**
+  - **Ledger:** `~/day-trader-evidence/production-acceptance-tooling/20261117T002012Z-stage1/STAGE1_LEDGER.md`.
+  - **Worktree:** detached at `31a513e`, `~/day-trader-worktrees/production-acceptance-m1-stage1`.
+  - **Offline baseline:**
+    - Node: 402/402.
+    - Python: 345/353. The other 8 cannot run: `bootstrap_reference_test.py` needs an uncommitted `abi-coverage.json` that was lost with the `/private/tmp` worktree.
+    - Swift: 180/181. One `BootstrapGateTests` handoff test fails, cause not yet known.
+  - **Test-run requirements:** a physical, non-symlinked `TMPDIR`, and fixture inputs produced as the composition-v1 plan describes.
+  - **Not started:** independent reviews (about 28.6k unreviewed lines across Tasks 8–15, 18 and the composition amendment) and the M4 disposition.
 
 ### Next sequence when Day Trader resumes
 
