@@ -131,7 +131,7 @@ From the status handoff, plus local evidence checked on 2026-11-14:
     - Design decisions are needed (summary §E).
     - Re-estimate: 2–4+ weeks of remediation before Stage 2, for a Path A total of roughly 6–10+ weeks.
   - **Owner decision, 2026-11-17: continue Path A** ("Continue Path A"), after being shown the 6–10+ week re-estimate and a recommendation to switch to Path B.
-  - **Proposed design decisions E1–E7:** `docs/STAGE1_REMEDIATION_DECISIONS.md` on the Stage 1 branch (`2495ffa`). Status PROPOSED. Remediation planning waits on owner approval of these decisions.
+  - **Proposed design decisions E1–E7:** `docs/STAGE1_REMEDIATION_DECISIONS.md` on the Stage 1 branch (`2495ffa`). Status PROPOSED. **Approved 2026-11-17** ("Approve all"). Remediation plan: `docs/superpowers/plans/2026-11-17-stage1-remediation.md` on the Stage 1 branch: 18 tasks, rough estimate ≈ 40 working days, above the earlier 2–4+ weeks. It awaits owner go-ahead.
 
 ### Next sequence when Day Trader resumes
 
