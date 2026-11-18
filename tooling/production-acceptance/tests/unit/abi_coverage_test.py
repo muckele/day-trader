@@ -29,7 +29,7 @@ ARCHIVE = Path('/Users/Matt/day-trader-references/m4-linux-aarch64-offline-repai
 ARCHIVE_SHA = 'c969dea4e8bb6be991bbf7c010ba0e0a5643a3a8d8fb0a2aaa053406f1e965f3'
 INVENTORY = ROOT / 'appliance/abi-inventory.json'
 COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
-COVERAGE_V2_SHA = 'e4015945d140086d2fc55a54ca1f6c7a402f924a78c0b0ab4fdb37250b727791'
+COVERAGE_V2_SHA = 'bf1085ded397981173b04041a9c52781318c48fb085c83a3526753697c5c4af4'
 EVENT_REFERENCE = ROOT / 'appliance/bootstrap-event-reference.json'
 EVENT_REFERENCE_SHA = 'a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d'
 ORACLES_PATH = Path(__file__).resolve().parent / 'abi_oracles.py'
@@ -243,18 +243,14 @@ DENY_SYMBOLS = frozenset(DENY_ORDER)
 SYSCALL_SITES = {
     '__NR_capset': frozenset({'confinement.py'}),
     '__NR_close_range': frozenset({'confinement.py'}),
-    '__NR_connect': frozenset({'topology.py'}),
     '__NR_fcntl': frozenset({'confinement.py'}),
     '__NR_mount': frozenset({'confinement.py'}),
     '__NR_prctl': frozenset({'confinement.py'}),
     '__NR_seccomp': frozenset({'confinement.py'}),
-    '__NR_sendto': frozenset({'topology.py'}),
     '__NR_setgroups': frozenset({'confinement.py'}),
     '__NR_setresgid': frozenset({'confinement.py'}),
     '__NR_setresuid': frozenset({'confinement.py'}),
-    '__NR_socket': frozenset({'topology.py'}),
     '__NR_unshare': frozenset({'confinement.py'}),
-    '__NR_write': frozenset({'topology.py'}),
 }
 
 # syscall symbol -> argument index (after the number; equals seccomp args[i]) -> covered symbols whose values the
@@ -290,8 +286,6 @@ POLICY_LITERALS = {
     'CLOSE_RANGE_NO_FLAGS': (0, 'close_range flags: none'),
     'EMPTY_GROUP_LIST': (0, 'setgroups(0, NULL): empty supplementary-group list'),
     'UNUSED_ARG': (0, 'unused trailing prctl argument must be zero; no symbol exists'),
-    'PROBE_PAYLOAD_LEN': (6, 'length of the fixed probe payload b"TASK10"'),
-    'SENDTO_NO_FLAGS': (0, 'sendto flags value meaning no flags'),
     'CAPSET_HEADER_PID': (0, 'capset header pid 0 means the calling thread'),
     'LOWER_BOUND_ZERO': (0, 'lower bound of the jt/jf range and of the program length'),
     'BPF_JUMP_BASE': (-1, 'classic-BPF jumps are relative to the next instruction: jt = target - index - 1'),
@@ -307,6 +301,9 @@ R13_LITERALS = {
     'CAPSET_DATA_BYTES': (24, 'R13: _LINUX_CAPABILITY_U32S_3 x sizeof(struct __user_cap_data_struct); the struct '
                               'sits behind a typedef pointer declarator the deriver refuses, so only the count factor '
                               'is covered'),
+    'TCP_LISTEN': (10, 'R13 (P34): linux-6.8/include/net/tcp_states.h:22 TCP_LISTEN is the 10th enumerator counted '
+                       'from TCP_ESTABLISHED = 1 at :13; an implicit enumerator the deriver refuses with '
+                       'SYMBOL_MISSING, the same route as the SS_* socket states'),
 }
 
 # Exact per-site bindings for native syscall(...) calls: (file, enclosing qualname, ordinal in source order among the
@@ -341,10 +338,6 @@ SITE_ARGS = {
     ('confinement.py', 'NativeChildPort.no_new_privs', 0): ('__NR_prctl', {0: _s('PR_SET_NO_NEW_PRIVS'), 1: 'NNP_ENABLE', **_PRCTL_ZERO}),
     ('confinement.py', 'NativeChildPort.install_seccomp', 0): ('__NR_seccomp', {0: _s('SECCOMP_SET_MODE_FILTER')}),
     ('confinement.py', 'NativeKernelPort.spawn_waiting', 0): ('__NR_unshare', {0: _s('CLONE_NEWNS', 'CLONE_NEWPID', 'CLONE_NEWIPC')}),
-    ('topology.py', 'Task10NativeAttempts.execute_native.attempt', 0): ('__NR_socket', {2: 'PROTOCOL_DEFAULT'}),
-    ('topology.py', 'Task10NativeAttempts.execute_native.attempt', 1): ('__NR_connect', {}),
-    ('topology.py', 'Task10NativeAttempts.execute_native.attempt', 2): ('__NR_write', {2: 'PROBE_PAYLOAD_LEN'}),
-    ('topology.py', 'Task10NativeAttempts.execute_native.attempt', 3): ('__NR_sendto', {2: 'PROBE_PAYLOAD_LEN', 3: 'SENDTO_NO_FLAGS'}),
 }
 # SYSCALL_SITES is derived from the per-site table (nr symbol -> files); the test also checks it against the AST.
 
@@ -383,9 +376,6 @@ COMPARE_SITES = {
         ('Eq', ('AF_UNIX',)),
         ('NotIn', ('AF_UNIX', 'AF_INET', 'AF_INET6')),
     ]),
-    'probe_errno': ('topology.py', 'Task10NativeAttempts.execute_native.attempt', ('error.errno',), [
-        ('NotIn', ('EPERM', 'EACCES', 'ENETUNREACH', 'EHOSTUNREACH')),
-    ]),
     'unix_flags': ('topology.py', '_abstract', ('int(fields[3], 16)',), [
         ('NotIn', ('UNIX_FLAGS_NONE', '__SO_ACCEPTCON')),
     ]),
@@ -395,16 +385,6 @@ COMPARE_SITES = {
     'name_max': ('storage.py', '_name', ('len(value)',), [
         ('Gt', ('NAME_MAX',)),
     ]),
-}
-
-# Task10NativeAttempts._ip: identifier -> (family, kind) symbols; the role and destination port are policy.
-IP_TABLE = {
-    'BROWSER_IPV4_TCP': ('AF_INET', 'SOCK_STREAM'),
-    'BROWSER_IPV6_TCP': ('AF_INET6', 'SOCK_STREAM'),
-    'BROWSER_UDP': ('AF_INET', 'SOCK_DGRAM'),
-    'CONTROLLER_DNS_TCP': ('AF_INET', 'SOCK_STREAM'),
-    'CONTROLLER_DNS_UDP': ('AF_INET', 'SOCK_DGRAM'),
-    'VERIFIER_IPV4_TCP': ('AF_INET', 'SOCK_STREAM'),
 }
 
 # open()/open_owned()/pipe2() calls whose flags argument holds an int constant: (file, qualname, callee, ordinal) -> a
@@ -445,6 +425,19 @@ SECCOMP_MODE_SITES = {
 
 # Interface-name length bounds _ascii(name, IFNAMSIZ - 1) (IFNAMSIZ counts the terminating NUL): qualname -> count.
 IFNAME_BOUND_SITES = {'_interfaces': 1, '_routes4': 1, '_routes6': 1}
+
+# Task 4 (T10-2, Option A R17 C4): Linux ABI values in topology.py's procfs parsers, each bound once at module level
+# (constant name -> coverage id, or the R13_LITERALS name TCP_LISTEN, ruling P34). The kernel-default IPv6 row flags
+# and the TCP state comparisons use these names only.
+TOPOLOGY_ABI_CONSTANTS = {
+    '_RTF_UP': 'RTF_UP', '_RTF_GATEWAY': 'RTF_GATEWAY', '_RTF_REJECT': 'RTF_REJECT',
+    '_RTF_NONEXTHOP': 'RTF_NONEXTHOP', '_RTF_LOCAL': 'RTF_LOCAL',
+    '_TCP_ESTABLISHED': 'TCP_ESTABLISHED', '_TCP_LISTEN': 'TCP_LISTEN',
+}
+# _KERNEL_DEFAULT_IPV6_ROWS, in order (fib6 null entry, ::1/128 local route): the flag constants whose OR is the
+# printed flags column (field index 7 of each shape).
+KERNEL_IPV6_ROW_FLAGS = (('_RTF_NONEXTHOP', '_RTF_REJECT'), ('_RTF_LOCAL', '_RTF_NONEXTHOP', '_RTF_UP'))
+KERNEL_IPV6_FLAGS_FIELD = 7
 
 
 def _coverage():
@@ -514,8 +507,9 @@ class CodeBindingTests(unittest.TestCase):
     Known uncovered ABI surface (ruling R13), deliberately NOT tested here: the capset structs (only divisibility of
     bytearray(24) by _LINUX_CAPABILITY_U32S_3 is checked; the 12-byte element size is not derivable), struct
     sock_fprog, sockaddr_in and sockaddr_in6, the LP64 data model (sizeof long/pointer, 64-bit syscall registers),
-    socket_state SS_* values (implicit enumerators), and kernel text formats and behaviour (procfs field positions and
-    number bases, the audit record text, inotify watch descriptor numbering, syscall success return values).
+    socket_state SS_* values (implicit enumerators; TCP_LISTEN likewise, bound only through R13_LITERALS, ruling P34),
+    and kernel text formats and behaviour (procfs field positions and number bases, the audit record text, inotify
+    watch descriptor numbering, syscall success return values).
     """
 
     @classmethod
@@ -867,7 +861,7 @@ class CodeBindingTests(unittest.TestCase):
                     self.assertEqual(literal[idx], acc, where)
                     self.assertLessEqual(want, ARG_SYMBOLS[sym][idx], where)
                 checked += 1
-        self.assertEqual(checked, 35)  # every int-literal argument at every site
+        self.assertEqual(checked, 31)  # every int-literal argument at every site
 
     def test_capability_literals_are_covered(self):
         tree = self.trees['confinement.py']
@@ -884,17 +878,6 @@ class CodeBindingTests(unittest.TestCase):
         # only the data-struct count factor is covered (R13 leaves the 12-byte element size uncovered)
         self.assertEqual(len(sizes), 1)
         self.assertEqual(sizes[0] % self.V['_LINUX_CAPABILITY_U32S_3'], 0)
-
-    def test_topology_probe_literals_are_covered(self):
-        tree = self.trees['topology.py']
-        fn = next(f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and any(
-            isinstance(c.args[0], ast.Constant) and c.args[0].value == self.V['__NR_socket'] for c in _syscall_calls(f)))
-        packs = [n.args[1].value for n in ast.walk(fn) if isinstance(n, ast.Call) and ast.unparse(n.func) == 'struct.pack'
-                 and n.args[0].value == '<H' and isinstance(n.args[1], ast.Constant)]
-        self.assertEqual(sorted(packs), sorted([self.V['AF_INET'], self.V['AF_INET6']]))
-        cmps = {n.left.id: n.comparators[0].value for n in ast.walk(fn) if isinstance(n, ast.Compare)
-                and isinstance(n.left, ast.Name) and n.left.id in ('family', 'kind') and isinstance(n.ops[0], ast.Eq)}
-        self.assertEqual(cmps, {'family': self.V['AF_INET'], 'kind': self.V['SOCK_STREAM']})
 
     # --- R15: argument subtrees of native call sites -------------------------------------------------------------
     def test_site_argument_subtrees_have_no_unlisted_int_constants(self):
@@ -934,9 +917,6 @@ class CodeBindingTests(unittest.TestCase):
     def test_topology_audit_sockaddr_families_match_named_symbols(self):
         self.check_compare_site('audit_families')
 
-    def test_topology_probe_errno_set_matches_named_symbols(self):
-        self.check_compare_site('probe_errno')
-
     def test_topology_unix_table_flags_and_types_match_named_symbols(self):
         """/proc/net/unix in _abstract: Flags (column 3) and Type (column 4) are bound; Protocol (2) and St (5) are
         R13 (kernel print format; socket_state enumerators have implicit values). No other column is compared."""
@@ -975,29 +955,6 @@ class CodeBindingTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(len(calls[0].args), 2)
         self.assertEqual(_eval_int(calls[0].args[1]), self.resolve('SECCOMP_FILTER_FLAG_TSYNC'))
-
-    def test_topology_ip_table_families_and_kinds_match_named_symbols(self):
-        classes = self.nodes('topology.py', 'Task10NativeAttempts', ast.ClassDef)
-        self.assertEqual(len(classes), 1)
-        tables = [n for n in classes[0].body if isinstance(n, ast.Assign)
-                  and [ast.unparse(t) for t in n.targets] == ['_ip']]
-        self.assertEqual(len(tables), 1)
-        self.assertIsInstance(tables[0].value, ast.Dict)
-        got = {}
-        for key, row in zip(tables[0].value.keys, tables[0].value.values):
-            self.assertIsInstance(key, ast.Constant)
-            self.assertIsInstance(row, ast.Tuple)
-            self.assertEqual(len(row.elts), 4, key.value)
-            role, family, kind, port = row.elts
-            self.assertTrue(isinstance(role, ast.Constant) and type(role.value) is str, key.value)
-            # documentation destination port: policy, not ABI
-            self.assertTrue(isinstance(port, ast.Constant) and type(port.value) is int, key.value)
-            got[key.value] = (_eval_int(family), _eval_int(kind))
-        self.assertEqual(got, {k: (self.resolve(f), self.resolve(t)) for k, (f, t) in IP_TABLE.items()})
-        # the row is unpacked as (role, family, kind, port) for the socket() call
-        unpack = [n for n in self.nodes('topology.py', 'Task10NativeAttempts.execute_native', ast.Assign)
-                  if ast.unparse(n.value) == 'self._ip[identifier]']
-        self.assertEqual([ast.unparse(n.targets[0]) for n in unpack], ['(role, family, kind, port)'])
 
     def test_open_flag_literals_match_named_symbols(self):
         found = {}
@@ -1095,6 +1052,36 @@ class CodeBindingTests(unittest.TestCase):
         self.assertEqual({k: len(v) for k, v in found.items()}, IFNAME_BOUND_SITES)
         for qual, values in found.items():
             self.assertEqual(values, [self.resolve('IFNAMSIZ') - 1] * len(values), qual)
+
+    def test_topology_route_flag_and_tcp_state_literals_match_named_symbols(self):
+        """One assertion per site: each module-level constant, each kernel-default IPv6 shape's flags, the RTF_GATEWAY
+        printer check in _routes6, and the two TCP state comparisons in _network_rows (no hex-string state literal)."""
+        module = self.nodes('topology.py', '<module>', ast.Assign)
+        bound = {}
+        for node in module:
+            targets = [ast.unparse(t) for t in node.targets]
+            if len(targets) == 1 and targets[0] in TOPOLOGY_ABI_CONSTANTS:
+                bound.setdefault(targets[0], []).append(node.value)
+        self.assertEqual(set(bound), set(TOPOLOGY_ABI_CONSTANTS))
+        for name, values in sorted(bound.items()):
+            self.assertEqual([_eval_int(v) for v in values], [self.resolve(TOPOLOGY_ABI_CONSTANTS[name])], name)
+        shapes = [n.value for n in module if [ast.unparse(t) for t in n.targets] == ['_KERNEL_DEFAULT_IPV6_ROWS']]
+        self.assertEqual(len(shapes), 1)
+        self.assertIsInstance(shapes[0], ast.Tuple)
+        self.assertEqual(len(shapes[0].elts), len(KERNEL_IPV6_ROW_FLAGS))
+        for index, (shape, names) in enumerate(zip(shapes[0].elts, KERNEL_IPV6_ROW_FLAGS)):
+            self.assertIsInstance(shape, ast.Tuple, index)
+            flags = shape.elts[KERNEL_IPV6_FLAGS_FIELD]
+            self.assertEqual((_int_constants(flags), sorted(n.id for n in ast.walk(flags) if isinstance(n, ast.Name))),
+                             ([], list(names)), index)
+        gateway = [ast.unparse(n) for n in self.nodes('topology.py', '_routes6', ast.BinOp)
+                   if isinstance(n.op, ast.BitAnd)]
+        self.assertEqual(gateway, ['flags & _RTF_GATEWAY'])
+        states = [(type(n.ops[0]).__name__, ast.unparse(n.comparators[0]))
+                  for n in self.nodes('topology.py', '_network_rows', ast.Compare) if ast.unparse(n.left) == 'state']
+        self.assertEqual(states, [('Eq', '_TCP_LISTEN'), ('Eq', '_TCP_ESTABLISHED')])
+        texts = [n.value for n in self.nodes('topology.py', '_network_rows', ast.Constant) if type(n.value) is str]
+        self.assertEqual([t for t in texts if re.fullmatch(r'[0-9A-Fa-f]{2}', t)], [])
 
     def test_policy_literals_are_justified(self):
         for name, (value, reason) in {**POLICY_LITERALS, **R13_LITERALS}.items():

@@ -1159,6 +1159,66 @@
       "memberPath": "linux-6.8/include/uapi/linux/if.h",
       "signed": true,
       "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ROUTE_H"
+      ],
+      "id": "RTF_UP",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/route.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ROUTE_H"
+      ],
+      "id": "RTF_GATEWAY",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/route.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ROUTE_H"
+      ],
+      "id": "RTF_REJECT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/route.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IPV6_ROUTE_H"
+      ],
+      "id": "RTF_NONEXTHOP",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/ipv6_route.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IPV6_ROUTE_H"
+      ],
+      "id": "RTF_LOCAL",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/ipv6_route.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_TCP_STATES_H"
+      ],
+      "id": "TCP_ESTABLISHED",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/net/tcp_states.h",
+      "signed": true,
+      "width": 32
     }
   ],
   "version": 1

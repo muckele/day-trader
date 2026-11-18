@@ -765,6 +765,76 @@
     },
     {
       "conditions": [
+        "#ifndef _LINUX_ROUTE_H"
+      ],
+      "declaration": "#define\tRTF_GATEWAY\t0x0002\t\t/* destination is a gateway\t*/",
+      "firstLine": 52,
+      "id": "RTF_GATEWAY",
+      "lastLine": 52,
+      "memberPath": "linux-6.8/include/uapi/linux/route.h",
+      "memberSHA256": "26101b575b648585c1a6f34e20eca000e6ae4c869e632b987e9e3f9345b13eab",
+      "signed": false,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IPV6_ROUTE_H"
+      ],
+      "declaration": "#define RTF_LOCAL\t0x80000000",
+      "firstLine": 40,
+      "id": "RTF_LOCAL",
+      "lastLine": 40,
+      "memberPath": "linux-6.8/include/uapi/linux/ipv6_route.h",
+      "memberSHA256": "99c6a6699a60879445f20a6037f0db734deb9ffb968f4d78f36f9658d01be963",
+      "signed": false,
+      "value": 2147483648,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IPV6_ROUTE_H"
+      ],
+      "declaration": "#define RTF_NONEXTHOP\t0x00200000\t/* route with no nexthop\t*/",
+      "firstLine": 27,
+      "id": "RTF_NONEXTHOP",
+      "lastLine": 27,
+      "memberPath": "linux-6.8/include/uapi/linux/ipv6_route.h",
+      "memberSHA256": "99c6a6699a60879445f20a6037f0db734deb9ffb968f4d78f36f9658d01be963",
+      "signed": false,
+      "value": 2097152,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ROUTE_H"
+      ],
+      "declaration": "#define RTF_REJECT\t0x0200\t\t/* Reject route\t\t\t*/",
+      "firstLine": 61,
+      "id": "RTF_REJECT",
+      "lastLine": 61,
+      "memberPath": "linux-6.8/include/uapi/linux/route.h",
+      "memberSHA256": "26101b575b648585c1a6f34e20eca000e6ae4c869e632b987e9e3f9345b13eab",
+      "signed": false,
+      "value": 512,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ROUTE_H"
+      ],
+      "declaration": "#define\tRTF_UP\t\t0x0001\t\t/* route usable\t\t  \t*/",
+      "firstLine": 51,
+      "id": "RTF_UP",
+      "lastLine": 51,
+      "memberPath": "linux-6.8/include/uapi/linux/route.h",
+      "memberSHA256": "26101b575b648585c1a6f34e20eca000e6ae4c869e632b987e9e3f9345b13eab",
+      "signed": false,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
         "#ifndef _UAPI_LINUX_SECCOMP_H"
       ],
       "declaration": "#define SECCOMP_FILTER_FLAG_TSYNC\t\t(1UL << 0)",
@@ -935,6 +1005,20 @@
       "memberSHA256": "d521e2c63149239d95eb7f86fdca812b2dd8dc177447c07f461450444a1c0346",
       "signed": true,
       "value": 0,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_TCP_STATES_H"
+      ],
+      "declaration": "\tTCP_ESTABLISHED = 1,",
+      "firstLine": 13,
+      "id": "TCP_ESTABLISHED",
+      "lastLine": 13,
+      "memberPath": "linux-6.8/include/net/tcp_states.h",
+      "memberSHA256": "8a41dab66aa79bd0b185da5bbb9b4c72ad7f3efb11bf75d894a80f4273f9766c",
+      "signed": true,
+      "value": 1,
       "width": 32
     },
     {

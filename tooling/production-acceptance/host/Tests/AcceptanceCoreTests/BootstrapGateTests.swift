@@ -201,6 +201,31 @@ private func resign(_ payload:[String:Any], capability:Data, rawKey:Bool = false
     return try canonical(["mac":mac,"payload":payload,"version":1])
 }
 
+// A JSON path is a list of object keys (String) and array indices (NSNumber).
+private func jsonValue(_ value:Any, at path:[Any]) throws -> Any {
+    guard let head = path.first else { return value }
+    let rest = Array(path.dropFirst())
+    if let key = head as? String, let object = value as? [String:Any], let child = object[key] {
+        return try jsonValue(child,at:rest)
+    }
+    if let index = (head as? NSNumber)?.intValue, let array = value as? [Any], array.indices.contains(index) {
+        return try jsonValue(array[index],at:rest)
+    }
+    throw VMFailure.admissionUnavailable
+}
+
+private func jsonSetting(_ value:Any, at path:[Any], to replacement:Any) throws -> Any {
+    guard let head = path.first else { return replacement }
+    let rest = Array(path.dropFirst())
+    if let key = head as? String, var object = value as? [String:Any], let child = object[key] {
+        object[key] = try jsonSetting(child,at:rest,to:replacement); return object
+    }
+    if let index = (head as? NSNumber)?.intValue, var array = value as? [Any], array.indices.contains(index) {
+        array[index] = try jsonSetting(array[index],at:rest,to:replacement); return array
+    }
+    throw VMFailure.admissionUnavailable
+}
+
 private func resignV2(_ payload:[String:Any], capability:Data, rawKey:Bool = false) throws -> Data {
     let bytes = try canonical(payload)
     let domain = Data("acceptance:bootstrap-composition:v1\0".utf8)
@@ -1205,6 +1230,46 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
                     expiresAt:190,capability:Data(repeating:7,count:32),
                     executables:try BootstrapExecutableAuthority.offlineLiteral(pins:pythonProgramPins),challenge:nil)
             }
+        }
+    }
+
+    @Test func v1_named_topology_negative_vectors_reject() throws {
+        // P8/P33: the T10-3 named vectors whose changed field this verifier
+        // inspects. Each is MAC'd with the topology-admission key, differs from
+        // the admitted Python fixture only in its named field, and is rejected.
+        // observation_skew compares guest clock values only (E2): never host-verifiable.
+        let hostVerifiable = ["nic","default_route_v4","default_route_v6","dns_nameserver","extra_listener",
+                              "missing_proxy_listener","abstract_unix","incorrect_uid","seccomp_mode",
+                              "fd_substitution","probe_attempted","probe_failed","host_listener"]
+        let path = try #require(ProcessInfo.processInfo.environment["TASK10_TOPOLOGY_INPUT"])
+        let valid = try Data(contentsOf:URL(fileURLWithPath:path))
+        let validPayload = try #require((try JSONSerialization.jsonObject(with:valid) as? [String:Any])?["payload"] as? [String:Any])
+        let records = try #require(try JSONSerialization.jsonObject(
+            with:Data(contentsOf:URL(fileURLWithPath:path + ".named-invalid.json"))) as? [[String:Any]])
+        let capability = Data(repeating:7,count:32)
+        func verify(_ data:Data) throws -> AdmissionProof {
+            try BootstrapHandoff.verify(data:data,expectedRunID:String(repeating:"1",count:32),
+                manifestIdentity:String(repeating:"a",count:64),configIdentity:String(repeating:"b",count:64),
+                expiresAt:190,capability:capability,
+                executables:try BootstrapExecutableAuthority.offlineLiteral(pins:pythonProgramPins),challenge:nil)
+        }
+        _ = try verify(valid)  // the unchanged fixture admits under the same expectations
+        func ids(_ verifiable:Bool) -> [String] {
+            records.compactMap { ($0["hostVerifiable"] as? Bool) == verifiable ? $0["id"] as? String : nil }
+        }
+        #expect(ids(true) == hostVerifiable)
+        #expect(ids(false) == ["observation_skew"])
+        #expect(records.allSatisfy { ($0["hostVerifiable"] as? Bool) == true || $0["wire"] is NSNull })
+        for id in hostVerifiable {
+            let record = try #require(records.first { $0["id"] as? String == id })
+            let wire = Data(try #require(record["wire"] as? String).utf8)
+            let fieldPath = try #require(record["path"] as? [Any])
+            let payload = try #require((try JSONSerialization.jsonObject(with:wire) as? [String:Any])?["payload"] as? [String:Any])
+            #expect(try resign(payload,capability:capability) == wire, "\(id): not the admission-key MAC")
+            #expect(try canonical(payload) != canonical(validPayload), "\(id)")
+            let restored = try jsonSetting(payload,at:fieldPath,to:try jsonValue(validPayload,at:fieldPath))
+            #expect(try canonical(restored) == canonical(validPayload), "\(id): more than the named field differs")
+            #expect(throws:VMFailure.admissionUnavailable,"\(id)") { _ = try verify(wire) }
         }
     }
 

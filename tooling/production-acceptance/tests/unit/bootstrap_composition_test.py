@@ -259,14 +259,10 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
                 self.assertEqual(len(setup[1].requests),1)
 
     def test_t5_r3_legacy_task10_shape_stays_legacy_only(self):
-        setup=self.setup_epoch(); family=setup[4]
-        family.authority.receiver_count=lambda operation: 0
-        native=t.Task10NativeAttempts(p,p.NativeProbePort(family.fixtures))
-        try: result=native.execute_native('BROWSER_IPV4_TCP')
-        except Exception as error: self.fail('accepted legacy Task10 attempt failed: '+str(error))
-        self.assertEqual(result,t.ProbeResult('BROWSER_IPV4_TCP',True,'DENIED',0))
-        self.assertFalse(family.fixtures._epoch_started)
-        # A v1 result with the same missing operation must still be rejected.
+        # T10-4 (Task 4, P9): the legacy Task10 attempt shape is deleted; the
+        # probe epoch is the only probe source.
+        self.assertFalse(hasattr(t,'Task10NativeAttempts'))
+        # A v1 result with a missing operation must still be rejected.
         setup=self.setup_epoch(); original=setup[4].fixtures.kernel._read_exact; pending=[]
         def read(endpoint,count,deadline):
             if pending: return pending.pop()
@@ -642,13 +638,8 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             self.probe_channel=Channel();receivers=p.ReceiverAuthority(tuple(inventory),self.probe_channel)
             self.probe_family=InertFamily(self.binding,receivers,self.clock,self.budget)
             self.fixture=self.probe_family.fixtures
-            header=b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n'
-            content={'/proc/net/dev':b'Inter-| Receive\n face |bytes packets errs drop fifo frame compressed multicast\n lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n',
-                '/proc/net/route':b'Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n',
-                '/proc/net/ipv6_route':b'', '/etc/resolv.conf':b'',
-                '/proc/net/tcp':header+b'0: 0100007F:0C38 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10004 0 123 1 0000000000000000 100 0 0 10 0\n',
-                '/proc/net/tcp6':header,'/proc/net/udp':header,'/proc/net/udp6':header,
-                '/proc/net/unix':b'Num RefCount Protocol Flags Type St Inode Path\n'}
+            # Kernel-format /proc text with the kernel-default IPv6 rows (T10-2).
+            content=topology_fixture.kernel_proc()
             class Observation:
                 def open_owned(_,path,flags):
                     self.timeline.append(('open',path))

@@ -225,6 +225,7 @@ _CONFINEMENT = _dependency('confinement.py', '_acceptance_topology_confinement')
 _PROXY = _dependency('proxy.py', '_acceptance_topology_proxy')
 _PROBES = _fixed_dependency(pathlib.Path(__file__).resolve().parents[1] /
     'tests/guest/confinement_probe.py', '_acceptance_topology_confinement_probe')
+RuntimeGateUnavailable = _PROBES.RuntimeGateUnavailable
 _RUN = re.compile(r'[0-9a-f]{32}')
 _DIGEST = re.compile(r'[0-9a-f]{64}')
 _MAX = 9007199254740991
@@ -251,14 +252,43 @@ NATIVE_OBSERVATION_PATHS = (
     '/etc/resolv.conf', '/proc/net/tcp', '/proc/net/tcp6',
     '/proc/net/udp', '/proc/net/udp6', '/proc/net/unix',
 )
-TASK8_PROBE_CASES = {
-    'BROWSER_FD_DONOR': 'SCM_RIGHTS_proc_pidfd_ptrace_process_vm_theft_denied',
-    'BROWSER_HELPER_IPV4': 'child_fork_exec_network_gpu_crash_helper_inherits',
-    'BROWSER_HELPER_IPV6': 'child_fork_exec_network_gpu_crash_helper_inherits',
-    'BROWSER_IO_URING': 'io_uring_setup_register_enter_and_inherited_ring_denied',
-    'BROWSER_VSOCK': 'vsock_browser_controller_verifier_denied',
-    'PROXY_VSOCK_CONTROL': 'proxy_fixed_vsock_positive',
-}
+
+# Linux 6.8 ABI values used by the /proc parsers (Task 4, R17 C4). Each is
+# bound to coverage v2 by abi_coverage_test; nothing else spells them.
+_RTF_UP = 0x0001  # include/uapi/linux/route.h:51
+_RTF_GATEWAY = 0x0002  # include/uapi/linux/route.h:52
+_RTF_REJECT = 0x0200  # include/uapi/linux/route.h:61
+_RTF_NONEXTHOP = 0x00200000  # include/uapi/linux/ipv6_route.h:27
+_RTF_LOCAL = 0x80000000  # include/uapi/linux/ipv6_route.h:40
+_TCP_ESTABLISHED = 1  # include/net/tcp_states.h:13
+_TCP_LISTEN = 10  # include/net/tcp_states.h:22 (implicit: tenth enumerator from 1)
+
+# T10-2: the only /proc/net/ipv6_route rows that are not forbidden routes, as
+# printed by ipv6_route_native_seq_show (net/ipv6/ip6_fib.c:2481-2512). Fields:
+# (destination, prefix length, source, source prefix length, gateway, metric,
+# use, flags, device); addresses are the 16 network-order bytes of %pi6. The
+# reference count (:2508, refcount_read of fib6_ref) is live state, validated
+# as >= 1 by _routes6 and never part of a shape.
+_KERNEL_DEFAULT_IPV6_ROWS = (
+    # fib6 null entry, the leaf of every table root (ip6_fib.c:245-247,
+    # :2381-2384, :2393-2396), yielded by the walk as an RTN_RTINFO node
+    # (:2100-2108). net/ipv6/route.c:285-292 fib6_null_entry_template: flags
+    # RTF_REJECT|RTF_NONEXTHOP (:286), metric ~(u32)0 (:288); the copy of
+    # :6476-6477 keeps the zeroed destination and fib6_nh of fib6_info_alloc
+    # (ip6_fib.c:147-164), so no gateway (:2499-2504); the device is the
+    # loopback device "lo" (route.c:6273-6274, drivers/net/loopback.c:214).
+    (bytes(16), 0, bytes(16), 0, bytes(16), 0xffffffff, 0,
+     _RTF_REJECT | _RTF_NONEXTHOP, 'lo'),
+    # ::1/128 local route of lo: init_loopback/add_addr (net/ipv6/addrconf.c:
+    # 3233-3248, :3144-3167) -> ipv6_add_addr -> addrconf_f6i_alloc (addrconf.c:
+    # 1131; route.c:4546-4583: RT6_TABLE_LOCAL :4553, ifindex lo :4554, flags
+    # RTF_UP|RTF_NONEXTHOP :4555 | RTF_LOCAL :4569, ::1/128 :4556-4557, no
+    # fc_metric so metric 0 at route.c:3776, flags kept at :3778, not made a
+    # reject route by fib6_is_reject :3498-3507), inserted by __ipv6_ifa_notify
+    # (addrconf.c:6221).
+    (bytes(15) + b'\x01', 128, bytes(16), 0, bytes(16), 0, 0,
+     _RTF_UP | _RTF_NONEXTHOP | _RTF_LOCAL, 'lo'),
+)
 
 # Reviewed Linux 6.8 event constants. Native selection remains unavailable
 # below because Task 2 could not establish exhaustive rule enumeration or a
@@ -1625,12 +1655,18 @@ def verify_handoff(wire, expected):
 
 
 class TopologyGate:
-    """Terminal, resampling admission gate with a Task8 one-use activation."""
-    def __init__(self, expected, adapter, supervisor=None):
+    """Terminal, resampling admission gate with a Task8 one-use activation.
+
+    Only the sealed NativeTopologyBindings adapter, whose capture owner covers
+    every acquisition before a snapshot exists (T10-5), and a required
+    supervisor (T10-12) are accepted.
+    """
+    def __init__(self, expected, adapter, *, supervisor):
         _authority(expected)
-        if not callable(getattr(adapter, 'capture', None)):
+        if (type(adapter) is not NativeTopologyBindings
+                or getattr(adapter, '_seal', None) is not _NATIVE_SEAL):
             _fail('ADAPTER_DENIED')
-        if supervisor is not None and not callable(getattr(supervisor, 'begin', None)):
+        if supervisor is None or not callable(getattr(supervisor, 'begin', None)):
             _fail('ADAPTER_DENIED')
         self._expected, self._adapter, self._supervisor = expected, adapter, supervisor
         self._proof, self._snapshot = None, None
@@ -1643,22 +1679,20 @@ class TopologyGate:
         self._unresolved_cleanup = []
         self._inflight, self._stopped_inflight = set(), set()
         self._cleanup_budget = CleanupBudget(expected.clock)
-        if isinstance(adapter, NativeTopologyBindings):
-            adapter.bind_cleanup_budget(self._cleanup_budget)
+        adapter.bind_cleanup_budget(self._cleanup_budget)
         self._snapshot_cleanup = False
         self._pending_stops = set()
         self._pending_snapshots = set()
         self._cleanup_failed = False
         self._pending_captures = {}
-        if isinstance(adapter, NativeTopologyBindings):
-            self._retain(adapter.capture_owner)
-            adapter.capture_owner.run_id = expected.run_id
+        self._retain(adapter.capture_owner)
+        adapter.capture_owner.run_id = expected.run_id
 
     @property
     def unresolved_cleanup(self):
         with self._lock:
             owners = list(self._unresolved_cleanup)
-            if self._failed and isinstance(self._adapter, NativeTopologyBindings):
+            if self._failed:
                 for owner in self._adapter.capture_owner.unresolved_cleanup:
                     if all(item is not owner for item in owners): owners.append(owner)
             return owners
@@ -1792,13 +1826,13 @@ class TopologyGate:
         token, sequence = self._reserve(initial=initial)
         snapshot = None
         capture_owner = None
+        admitted = False
         try:
-            if isinstance(self._adapter, NativeTopologyBindings):
-                with self._lock:
-                    if self._failed or self._reservation is not token:
-                        _fail('TOPOLOGY_DRIFT')
-                    capture_owner = self._adapter.capture_owner
-                    self._pending_captures[token] = capture_owner
+            with self._lock:
+                if self._failed or self._reservation is not token:
+                    _fail('TOPOLOGY_DRIFT')
+                capture_owner = self._adapter.capture_owner
+                self._pending_captures[token] = capture_owner
             before = self._clock()
             self._expected.appliance_recheck()
             before = self._clock()
@@ -1824,6 +1858,7 @@ class TopologyGate:
                 self._sequence, self._proof, self._snapshot = sequence, proof, snapshot
                 if not initial:
                     self._reservation = None
+            admitted = True
             return proof
         except Exception as error:
             if capture_owner is not None:
@@ -1843,14 +1878,15 @@ class TopologyGate:
         finally:
             if capture_owner is not None:
                 with self._lock: self._pending_captures.pop(token, None)
+                # compA M-2: a drift after the final check found this capture
+                # still pending and skipped its owner. Re-latch on the one
+                # terminal path (it stops that owner now); never return the proof.
+                if admitted and self._failed:
+                    self._latch()
+                    _fail('TOPOLOGY_DRIFT')
 
     def admit(self):
         proof = self._attempt(initial=True)
-        if self._supervisor is None:
-            with self._lock:
-                if self._failed: _fail('TOPOLOGY_DRIFT')
-                self._reservation = None
-            return proof
         handle = None
         try:
             handle = self._supervisor.begin(proof.handoff, self.topology_drifted)
@@ -1993,20 +2029,45 @@ def _routes4(raw):
 
 
 def _routes6(raw):
-    result = []
+    """Forbidden /proc/net/ipv6_route rows (T10-2).
+
+    Every row must be kernel format (ipv6_route_native_seq_show, net/ipv6/
+    ip6_fib.c:2492-2509: lower-case %pi6, %02x and %08x columns). A row equal
+    to a _KERNEL_DEFAULT_IPV6_ROWS shape is not a route the policy forbids;
+    every other row is returned as one. While IPv6 is enabled each table
+    without a default route prints the null entry, so a file with neither a
+    forbidden row nor a null entry is not kernel output.
+    """
+    forbidden, null_entries = [], 0
     for line in _text_lines(raw):
         if not line.strip():
             continue
         fields = line.split()
         if (len(fields) != 10
-                or any(re.fullmatch(r'[0-9A-Fa-f]{32}', fields[index]) is None
-                       for index in (0, 2, 4))
-                or any(re.fullmatch(r'[0-9A-Fa-f]{2,8}', fields[index]) is None
-                       for index in (1, 3, 5, 6, 7, 8))
+                or any(re.fullmatch(r'[0-9a-f]{2}', fields[index]) is None
+                       for index in (1, 3))
+                or any(re.fullmatch(r'[0-9a-f]{8}', fields[index]) is None
+                       for index in (5, 6, 7, 8))
                 or not _ascii(fields[9], 15)):
             _fail('OBSERVATION_DENIED')
-        result.append('v6:' + ':'.join(fields))
-    return tuple(result)
+        destination, source, gateway = (_ipv6_from_proc(fields[index], 'pi6')
+                                        for index in (0, 2, 4))
+        prefix, source_prefix = int(fields[1], 16), int(fields[3], 16)
+        metric, references, use, flags = (int(fields[index], 16) for index in (5, 6, 7, 8))
+        # A gateway is printed only with RTF_GATEWAY set (ip6_fib.c:2499-2504);
+        # a printed route holds a reference (:2508).
+        if (prefix > 128 or source_prefix > 128 or references < 1
+                or (gateway != bytes(16) and not flags & _RTF_GATEWAY)):
+            _fail('OBSERVATION_DENIED')
+        row = (destination, prefix, source, source_prefix, gateway, metric, use,
+               flags, fields[9])
+        if row == _KERNEL_DEFAULT_IPV6_ROWS[0]:
+            null_entries += 1
+        elif row not in _KERNEL_DEFAULT_IPV6_ROWS:
+            forbidden.append('v6:' + ':'.join(fields))
+    if not forbidden and not null_entries:
+        _fail('OBSERVATION_DENIED')
+    return tuple(forbidden)
 
 
 def _dns(raw):
@@ -2022,6 +2083,30 @@ def _dns(raw):
     return tuple(result)
 
 
+_IPV6_PRINTERS = {
+    # %pi6 (lib/vsprintf.c:1443-1456 ip6_string, hex_asc of lib/hexdump.c:14):
+    # the 16 network-order bytes as 32 lower-case hex digits (ipv6_route).
+    'pi6': re.compile(r'[0-9a-f]{32}'),
+    # get_tcp6_sock (net/ipv6/tcp_ipv6.c:2211-2216) and the udp6 printer
+    # (net/ipv6/datagram.c:1055-1057): %08X of each __be32 s6_addr32 word read
+    # as a host-order u32. On little-endian aarch64 each word prints reversed.
+    'be32_host_words': re.compile(r'[0-9A-F]{32}'),
+}
+_IPV6_LOOPBACK = bytes(15) + b'\x01'
+_IPV4_MAPPED_LOOPBACK = bytes(10) + b'\xff\xff' + bytes((127, 0, 0, 1))
+
+
+def _ipv6_from_proc(text, printer):
+    """The 16 network-order address bytes of one /proc IPv6 address column."""
+    pattern = _IPV6_PRINTERS.get(printer) if type(printer) is str else None
+    if pattern is None or type(text) is not str or pattern.fullmatch(text) is None:
+        _fail('OBSERVATION_DENIED')
+    if printer == 'pi6':
+        return bytes.fromhex(text)
+    return b''.join(bytes.fromhex(text[index:index + 8])[::-1]
+                    for index in range(0, 32, 8))
+
+
 def _ipv4(hexadecimal):
     if re.fullmatch(r'[0-9A-Fa-f]{8}', hexadecimal) is None:
         _fail('OBSERVATION_DENIED')
@@ -2030,13 +2115,13 @@ def _ipv4(hexadecimal):
 
 
 def _ipv6(hexadecimal):
-    if re.fullmatch(r'[0-9A-Fa-f]{32}', hexadecimal) is None:
-        _fail('OBSERVATION_DENIED')
-    if hexadecimal.upper() == '0000000000000000FFFF00000100007F':
+    """Label of a tcp6/udp6 address column, decoded per host-order word (T10-9)."""
+    address = _ipv6_from_proc(hexadecimal, 'be32_host_words')
+    if address == _IPV4_MAPPED_LOOPBACK:
         return '127.0.0.1'
-    if hexadecimal == '0' * 31 + '1':
+    if address == _IPV6_LOOPBACK:
         return '::1'
-    return hexadecimal.upper()
+    return address.hex()
 
 
 def _network_rows(raw, transport, version):
@@ -2057,7 +2142,7 @@ def _network_rows(raw, transport, version):
         try:
             local_hex, local_port = fields[1].split(':')
             remote_hex, remote_port = fields[2].split(':')
-            state = fields[3].upper()
+            state = int(fields[3], 16)  # %02X of the TCP state (R17 C4)
             port = int(local_port, 16); remote = int(remote_port, 16)
             uid = int(fields[7], 10)
         except Exception:
@@ -2081,11 +2166,11 @@ def _network_rows(raw, transport, version):
         local_address, remote_address = decode(local_hex), decode(remote_hex)
         if not _integer(port, 0, 65535) or not _integer(remote, 0, 65535) or not _integer(uid):
             _fail('OBSERVATION_DENIED')
-        if transport == 'TCP' and state == '0A':
+        if transport == 'TCP' and state == _TCP_LISTEN:
             if remote != 0 or remote_hex != '0' * (8 if version == 4 else 32):
                 _fail('OBSERVATION_DENIED')
             listeners.append(Listener('GUEST', 'TCP', local_address, port, uid))
-        elif transport == 'TCP' and state == '01':
+        elif transport == 'TCP' and state == _TCP_ESTABLISHED:
             approved = (
                 (local_address == '127.0.0.1' and uid == 10002 and remote_address == '127.0.0.1' and remote == 3128),
                 (local_address == '127.0.0.1' and uid == 10004 and port == 3128 and remote_address == '127.0.0.1'),
@@ -2338,6 +2423,15 @@ def select_native_topology(observation_port, role_source, host_device_source,
         _fail('ADAPTER_DENIED')
     return NativeTopologyBindings(observation_port, role_source, host_device_source,
                                   probe_source, proxy_source, _NATIVE_SEAL)
+
+
+def select_native_topology_port(platform_name, machine):
+    """The gated native port of tests/guest/topology_test.py (T10-8).
+
+    No native topology port exists before separate Stage 2 approval, on any
+    platform. This is a test error for that file: never a skip, never a pass.
+    """
+    raise RuntimeGateUnavailable('NATIVE_TOPOLOGY_PORT_UNAVAILABLE')
 
 
 _COMPOSITION_SEAL = object()
@@ -3073,121 +3167,6 @@ def compose_bootstrap_v1(*, binding, expected, role_config, fixtures,
 
 
 @dataclass(frozen=True)
-class Task8ProbeSource:
-    module: object = field(repr=False)
-    port: object = field(repr=False)
-    native: object = field(repr=False)
-    _seal: object = field(repr=False)
-
-    def execute(self, identifier):
-        if self._seal is not _COMPOSITION_SEAL or identifier not in FIXED_PROBE_IDS:
-            _fail('PROBE_DENIED')
-        case = TASK8_PROBE_CASES.get(identifier)
-        if case is not None and type(self.native) is not Task10NativeAttempts:
-            try:
-                self.module.run_case(case, self.port)
-            except CleanupFailure:
-                raise
-            except Exception:
-                _fail('PROBE_DENIED')
-        try:
-            result = self.native.execute_native(identifier)
-        except CleanupFailure:
-            raise
-        except Exception:
-            _fail('PROBE_DENIED')
-        _probe(result, identifier)
-        return result
-
-
-def select_task8_probe_source(module, port, native, platform_name, machine):
-    """Explicitly bind accepted Task8 NativeProbePort to exact Task10 probes."""
-    required = {
-        'vsock_browser_controller_verifier_denied',
-        'child_fork_exec_network_gpu_crash_helper_inherits',
-        'proxy_fixed_vsock_positive',
-        'io_uring_setup_register_enter_and_inherited_ring_denied',
-        'SCM_RIGHTS_proc_pidfd_ptrace_process_vm_theft_denied',
-    }
-    if (platform_name != 'linux' or machine != 'aarch64'
-            or type(port) is not getattr(module, 'NativeProbePort', None)
-            or not callable(getattr(module, 'run_case', None))
-            or not required.issubset(set(getattr(module, 'PROBES', ())))
-            or not callable(getattr(native, 'execute_native', None))):
-        _fail('PROBE_DENIED')
-    return Task8ProbeSource(module, port, native, _COMPOSITION_SEAL)
-
-
-class Task10NativeAttempts:
-    """Fixed attempts using Task8's confined subprocess/receiver boundary.
-
-    Only IP operations have a source implementation here. The accepted Task8
-    native catalogue supplies vsock, FD and ring operations. Its descendant
-    helper catalogue has no IPv4/IPv6 helper, so those remain unavailable.
-    """
-    _ip = {
-        'BROWSER_IPV4_TCP': ('BROWSER', 2, 1, 443),
-        'BROWSER_IPV6_TCP': ('BROWSER', 10, 1, 443),
-        'BROWSER_UDP': ('BROWSER', 2, 2, 443),
-        'CONTROLLER_DNS_TCP': ('CONTROLLER', 2, 1, 53),
-        'CONTROLLER_DNS_UDP': ('CONTROLLER', 2, 2, 53),
-        'VERIFIER_IPV4_TCP': ('VERIFIER', 2, 1, 443),
-    }
-    def __init__(self, module, port):
-        if (type(port) is not getattr(module, 'NativeProbePort', None)
-                or not callable(getattr(port.fixtures, 'run_confined', None))):
-            _fail('PROBE_DENIED')
-        self.module, self.port = module, port
-
-    def execute_native(self, identifier):
-        if identifier in ('BROWSER_HELPER_IPV4', 'BROWSER_HELPER_IPV6'):
-            _fail('NATIVE_HELPER_UNAVAILABLE')
-        if identifier not in self._ip:
-            case = self.module.PROBES.get(TASK8_PROBE_CASES.get(identifier))
-            if case is None: _fail('PROBE_DENIED')
-            rows = self.module.run_case(TASK8_PROBE_CASES[identifier], self.port)
-            positive = identifier == 'PROXY_VSOCK_CONTROL'
-            if (type(rows) is not tuple or not rows
-                    or any(not _keys(row, ('operation','attempted','denied','receiver_count'))
-                           or type(row['attempted']) is not bool or not row['attempted']
-                           or type(row['denied']) is not bool or row['denied'] == positive
-                           or type(row['receiver_count']) is not int
-                           or row['receiver_count'] != int(positive) for row in rows)):
-                _fail('PROBE_DENIED')
-            return ProbeResult(identifier, True, 'ALLOWED' if positive else 'DENIED', int(positive))
-        role, family, kind, port = self._ip[identifier]
-        def attempt(context):
-            fd, denied = None, False
-            try:
-                fd = context.syscall(198, family, kind, 0)
-                # Fixed documentation-only numeric destinations, never DNS.
-                address = (struct.pack('<H', 2) + struct.pack('>H', port)
-                           + bytes((192, 0, 2, 1)) + bytes(8)) if family == 2 else (
-                           struct.pack('<H', 10) + struct.pack('>H', port) + bytes(4)
-                           + bytes.fromhex('20010db8000000000000000000000001') + bytes(4))
-                if kind == 1:
-                    context.syscall(203, fd, address, len(address))
-                    context.syscall(64, fd, b'TASK10', 6)
-                else:
-                    context.syscall(206, fd, b'TASK10', 6, 0, address, len(address))
-            except OSError as error:
-                if error.errno not in (1, 13, 101, 113):
-                    _fail('PROBE_DENIED')
-                denied = True
-            finally:
-                if fd is not None: context.close(fd)
-            return {'attempted': True, 'denied': denied,
-                    'receiver_count': context.receiver_count()}
-        row = self.port.fixtures.run_confined(role, identifier, attempt)
-        if (not _keys(row, ('attempted','denied','receiver_count'))
-                or type(row['attempted']) is not bool or row['attempted'] is not True
-                or type(row['denied']) is not bool or row['denied'] is not True
-                or type(row['receiver_count']) is not int or row['receiver_count'] != 0):
-            _fail('PROBE_DENIED')
-        return ProbeResult(identifier, True, 'DENIED', 0)
-
-
-@dataclass(frozen=True)
 class Task8RoleSource:
     bridge: object = field(repr=False)
     _seal: object = field(repr=False)
@@ -3461,7 +3440,8 @@ class ServiceCreationMonitor:
         # event also invalidates; no event can confer additional authority.
         owner = self.source.subscribe_fixed(self.EVENTS, lambda event: on_drift())
         if not callable(getattr(owner, 'stop_owned', None)):
-            _fail('CLEANUP_UNCERTAIN')
+            # T10-12: the acquired subscription stays typed cleanup authority.
+            raise CleanupFailure(owner)
         return owner
 
 

@@ -127,4 +127,10 @@ ORACLES = {
     'O_NOFOLLOW': 32768,  # linux-6.8/arch/arm64/include/uapi/asm/fcntl.h:24 octal 0100000 = 0x8000 (arm64 override)
     'NAME_MAX': 255,  # linux-6.8/include/uapi/linux/limits.h:12 #define NAME_MAX 255
     'IFNAMSIZ': 16,  # linux-6.8/include/uapi/linux/if.h:33 #define IFNAMSIZ 16 under #if __UAPI_DEF_IF_IFNAMSIZ
+    'RTF_UP': 1,  # linux-6.8/include/uapi/linux/route.h:51 #define RTF_UP 0x0001
+    'RTF_GATEWAY': 2,  # linux-6.8/include/uapi/linux/route.h:52 #define RTF_GATEWAY 0x0002
+    'RTF_REJECT': 512,  # linux-6.8/include/uapi/linux/route.h:61 #define RTF_REJECT 0x0200
+    'RTF_NONEXTHOP': 2097152,  # linux-6.8/include/uapi/linux/ipv6_route.h:27 #define RTF_NONEXTHOP 0x00200000
+    'RTF_LOCAL': 2147483648,  # linux-6.8/include/uapi/linux/ipv6_route.h:40 #define RTF_LOCAL 0x80000000
+    'TCP_ESTABLISHED': 1,  # linux-6.8/include/net/tcp_states.h:13 enum { TCP_ESTABLISHED = 1,
 }
