@@ -109,8 +109,15 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
 - **Decision:** the "Not owner decisions" list in the decisions doc (T9-1, T9-2, T12-I2, T13 I-1, T13 I-2, categories B and D), plus recorded amendments. These are plain bug fixes, not owner decisions.
 - **Reconciliation:**
   - The proxy accepts one `Proxy-Connection: keep-alive` line (T9-1).
-  - Idle, client EOF before the header, and EPIPE after client close close only that tunnel (T9-2). The whole-run latch stays for transport, broker or vsock loss, protocol violation, aggregate and run caps, and clock faults: the 1025th tunnel latches `CAPACITY`. A 17th concurrent client is refused without a latch; design section 9.3's 16-simultaneous cap is unchanged.
-  - Per-run tunnel total: 1024.
+  - These close only that tunnel (T9-2):
+    - idle;
+    - client EOF before the header;
+    - on the client socket only (P36), a read, write or shutdown failure whose errno is exactly `ECONNRESET`, `EPIPE` or `ENOTCONN`.
+
+    Bytes stay charged. The tunnel's vsock stream needs a proven close; a failed close is whole-run `CLEANUP_UNCERTAIN`. Every other client errno, and every vsock or broker error, stays whole-run.
+  - The whole-run latch stays for transport, broker or vsock loss, protocol violation, aggregate and run caps, and clock faults. The 1025th tunnel latches `CAPACITY`.
+  - A 17th concurrent client is deferred, never latched (P35). While 16 tunnels are live, the proxy does not accept; the client waits in the kernel listen backlog and is accepted when a tunnel closes. Design section 9.3's 16-simultaneous cap is unchanged.
+  - Per-run tunnel total: 1024. A tunnel is one vsock stream (one sequence), so the `firstSequence` ceiling is `MAX_SAFE_INTEGER - 1023`.
   - The reducer admits `budget` in PREFLIGHT and AWAIT_CREDENTIAL.
   - New state fields `sessionMaybeIssued`, `safeSignOutRouted`, `revocation` and `postTerminalAnomaly`; internal events `safeSignOutRoute`, `safeSignOutResult` and `tick`.
   - P19: VERIFY_REVOCATION, FINALIZE and DONE `validState` = {`credentialConsumed`, `loginAttempted`, `sessionMaybeIssued`, non-null `sessionExpiresAtMs`, `authenticated===false`, `logoutAttempted`, `restartReceiptConsumed`}; VERIFY_REVOCATION PASS sets `revocation:'CONFIRMED'`.

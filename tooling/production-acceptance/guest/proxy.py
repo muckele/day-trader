@@ -40,6 +40,11 @@ _HEADER_LIMIT = 4096
 _CONTROL_LIMIT = 256
 _CHUNK_LIMIT = 4096
 _MAX_TUNNELS = 16
+# One sequence per tunnel (one vsock stream) for the whole run (T9-8, C9).
+_MAX_TUNNELS_PER_RUN = 1024
+_MAX_FIRST_SEQUENCE = _MAX_SAFE_INTEGER - (_MAX_TUNNELS_PER_RUN - 1)
+# P36: on the client socket only, these errnos are an ordinary browser close.
+_CLIENT_CLOSE_ERRNOS = frozenset({errno.ECONNRESET, errno.EPIPE, errno.ENOTCONN})
 _AGGREGATE_LIMIT = 1073741824
 _IDLE_LIMIT_MS = 120000
 _RUN_LIMIT_MS = 1200000
@@ -77,6 +82,10 @@ class _RunExpired(Exception):
 
 class _IdleExpired(Exception):
     pass
+
+
+class _TunnelClosed(Exception):
+    """An ordinary event of one tunnel; it never ends the run (T9-2, P36)."""
 
 
 class _TerminalOutcome(Exception):
@@ -184,7 +193,7 @@ def parse_connect(data, destinations):
                         if authority == host + ':443'), None)
     if destination is None:
         raise ProxyError('INVALID_CONNECT')
-    host_count = user_agent_count = 0
+    host_count = user_agent_count = keep_alive_count = 0
     for line in lines[1:]:
         if line.startswith('Host: '):
             host_count += 1
@@ -196,9 +205,12 @@ def parse_connect(data, destinations):
             if not value or any(ord(character) < 0x20 or ord(character) > 0x7e
                                 for character in value):
                 raise ProxyError('INVALID_CONNECT')
+        elif line == 'Proxy-Connection: keep-alive':
+            # T9-1: Chromium's proxy client always sends exactly this line.
+            keep_alive_count += 1
         else:
             raise ProxyError('INVALID_CONNECT')
-    if host_count != 1 or user_agent_count > 1:
+    if host_count != 1 or user_agent_count > 1 or keep_alive_count > 1:
         raise ProxyError('INVALID_CONNECT')
     return destination
 
@@ -247,8 +259,7 @@ def _validate_config(config, now):
             or _HEX32_RE.fullmatch(binding.run_id) is None
             or type(binding.capability) is not bytes or len(binding.capability) != 32
             or not _plain_integer(binding.expires_at, now[0] + 1, _MAX_SAFE_INTEGER)
-            or not _plain_integer(binding.first_sequence, 1,
-                                  _MAX_SAFE_INTEGER - (_MAX_TUNNELS - 1))
+            or not _plain_integer(binding.first_sequence, 1, _MAX_FIRST_SEQUENCE)
             or type(binding.manifest_identity) is not str
             or _HEX64_RE.fullmatch(binding.manifest_identity) is None
             or type(binding.config_identity) is not str
@@ -281,13 +292,22 @@ def _same_binding(expected, actual):
             and actual.origins == expected.origins)
 
 
-def _message(stream):
+def _io_failure(error, client):
+    """P36: exactly ECONNRESET, EPIPE or ENOTCONN on the client socket closes only
+    that tunnel. Every other client error and every vsock-side error is loss."""
+    if (client and isinstance(error, OSError) and type(error.errno) is int
+            and error.errno in _CLIENT_CLOSE_ERRNOS):
+        return _TunnelClosed()
+    return _TransportLost()
+
+
+def _message(stream, client=False):
     try:
         message = stream.read(_CHUNK_LIMIT)
     except _ChannelDenied:
         raise
-    except Exception:
-        raise _TransportLost() from None
+    except Exception as error:
+        raise _io_failure(error, client) from None
     if message is None:
         return None
     if (type(message) is not ChannelMessage or type(message.data) is not bytes
@@ -298,13 +318,13 @@ def _message(stream):
     return message.data
 
 
-def _write(stream, pending):
+def _write(stream, pending, client=False):
     if not pending:
         return False
     try:
         written = stream.write(bytes(pending[:_CHUNK_LIMIT]))
-    except Exception:
-        raise _TransportLost() from None
+    except Exception as error:
+        raise _io_failure(error, client) from None
     if written is None:
         return False
     if type(written) is not int or not 1 <= written <= min(_CHUNK_LIMIT, len(pending)):
@@ -313,11 +333,11 @@ def _write(stream, pending):
     return True
 
 
-def _end_write(stream):
+def _end_write(stream, client=False):
     try:
         stream.end_write()
-    except Exception:
-        raise _TransportLost() from None
+    except Exception as error:
+        raise _io_failure(error, client) from None
 
 
 def _close(stream):
@@ -401,26 +421,56 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
 
     timeline = _Timeline(config, now)
 
-    def checked_message(stream, tunnel):
+    def bracket(tunnel, operation):
         timeline.observe(tunnel)
         try:
-            return _message(stream)
-        finally:
-            timeline.observe(tunnel)
+            return operation()
+        except Exception:
+            # Run expiry and clock faults still come first. A failure is never
+            # absorbed by this tunnel's idle deadline (P37); the idle deadline
+            # only discards data that arrived after it.
+            timeline.observe()
+            raise
 
-    def checked_write(stream, pending, tunnel):
+    def checked_message(stream, tunnel, client):
+        data = bracket(tunnel, lambda: _message(stream, client))
+        if data == b'' and not client:
+            # Physical vsock EOF is loss, never logical EOF or an idle close.
+            timeline.observe()
+            raise _TransportLost()
         timeline.observe(tunnel)
-        try:
-            return _write(stream, pending)
-        finally:
-            timeline.observe(tunnel)
+        return data
 
-    def checked_end(stream, tunnel):
+    def checked_write(stream, pending, tunnel, client):
+        written = bracket(tunnel, lambda: _write(stream, pending, client))
         timeline.observe(tunnel)
+        return written
+
+    def checked_end(stream, tunnel, client):
+        bracket(tunnel, lambda: _end_write(stream, client))
+        timeline.observe(tunnel)
+
+    def close_one(tunnel):
+        """Close one tunnel after an ordinary per-tunnel event (T9-2, P35-P37).
+
+        Bytes stay charged and nothing is retried. The shared cleanup budget is
+        never touched. The transport is re-checked first, so a per-tunnel close
+        never masks a whole-run cause such as a vsock connect timeout. Returns a
+        whole-run outcome, or None when the run continues.
+        """
+        timeline.observe()
         try:
-            _end_write(stream)
-        finally:
-            timeline.observe(tunnel)
+            transport.check()
+        except Exception:
+            timeline.observe()
+            return 'TRANSPORT_LOST'
+        timeline.observe()
+        # A proven close of both endpoints, else whole-run uncertainty.
+        if not _close_tunnel(tunnel):
+            return 'CLEANUP_UNCERTAIN'
+        tunnels.remove(tunnel)
+        timeline.observe()
+        return None
 
     try:
         try:
@@ -464,25 +514,26 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                 break
             timeline.observe()
 
-            try:
-                client = listener.accept()
-            except Exception:
-                timeline.observe()
-                outcome = 'LISTENER_DENIED'
-                break
-            try:
-                timeline.observe()
-            except Exception:
-                if client is not None:
-                    _close(client)
-                raise
-            if client is not None:
-                if len(tunnels) >= _MAX_TUNNELS:
-                    outcome = 'CAPACITY' if _close(client) else 'CLEANUP_UNCERTAIN'
+            # P35: at 16 live tunnels, further clients wait in the kernel listen
+            # backlog and are accepted when a tunnel closes. accept() is not called
+            # at capacity, so a readable listener cannot spin the loop; STOP and
+            # FD3 EOF are still checked and the 1 ms wait still runs every pass.
+            if len(tunnels) < _MAX_TUNNELS:
+                try:
+                    client = listener.accept()
+                except Exception:
+                    timeline.observe()
+                    outcome = 'LISTENER_DENIED'
                     break
-                tunnel = _Tunnel(client, timeline.mono)
-                tunnels.append(tunnel)
-                timeline.observe(tunnel)
+                try:
+                    timeline.observe()
+                except Exception:
+                    if client is not None:
+                        _close(client)
+                    raise
+                if client is not None:
+                    # Its idle lease is checked in the per-tunnel pass below.
+                    tunnels.append(_Tunnel(client, timeline.mono))
 
             failure = None
             for tunnel in list(tunnels):
@@ -490,9 +541,10 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                 try:
                     timeline.observe(tunnel)
                     if tunnel.broker is None:
-                        incoming = checked_message(tunnel.client, tunnel)
+                        incoming = checked_message(tunnel.client, tunnel, True)
                         if incoming == b'':
-                            raise _TransportLost()
+                            # Client EOF before its header closes only this tunnel.
+                            raise _TunnelClosed()
                         if incoming:
                             tunnel.header.extend(incoming)
                             progressed = True
@@ -506,6 +558,9 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                                     raise _ChannelDenied()
                                 destination = parse_connect(bytes(tunnel.header[:header_end]),
                                                             config.destinations)
+                                # The 1025th CONNECT of the run latches before its vsock opens.
+                                if sequence - config.binding.first_sequence >= _MAX_TUNNELS_PER_RUN:
+                                    raise _TerminalOutcome('CAPACITY')
                                 remainder = bytes(tunnel.header[header_end:])
                                 tunnel.header.clear()
                                 control = _control(config.binding, sequence, config.phase,
@@ -516,7 +571,7 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                                     tunnel.broker = transport.open(
                                         _HOST_CID, _VSOCK_SERVICE, config.binding)
                                 except Exception:
-                                    timeline.observe(tunnel)
+                                    timeline.observe()
                                     raise _TransportLost() from None
                                 timeline.observe(tunnel)
                                 tunnel.to_broker.extend(len(control).to_bytes(2, 'big'))
@@ -527,16 +582,16 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                                         used, len(remainder), config.aggregate_bytes)
                                     tunnel.to_broker.extend(len(remainder).to_bytes(2, 'big'))
                                     tunnel.to_broker.extend(remainder)
-                                if checked_write(tunnel.broker, tunnel.to_broker, tunnel):
+                                if checked_write(tunnel.broker, tunnel.to_broker, tunnel, False):
                                     progressed = True
-                                if checked_write(tunnel.client, tunnel.to_client, tunnel):
+                                if checked_write(tunnel.client, tunnel.to_client, tunnel, True):
                                     progressed = True
                     else:
                         # A bounded single-frame queue supplies backpressure in
                         # each direction; do not keep reading behind a stalled
                         # destination.
                         if not tunnel.client_eof and not tunnel.to_broker:
-                            incoming = checked_message(tunnel.client, tunnel)
+                            incoming = checked_message(tunnel.client, tunnel, True)
                             if incoming == b'':
                                 tunnel.client_eof = True
                                 tunnel.to_broker.extend(b'\x00\x00')
@@ -548,9 +603,7 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                                 tunnel.to_broker.extend(incoming)
                                 progressed = True
                         if not tunnel.broker_eof and not tunnel.to_client:
-                            incoming = checked_message(tunnel.broker, tunnel)
-                            if incoming == b'':
-                                raise _TransportLost()
+                            incoming = checked_message(tunnel.broker, tunnel, False)
                             if incoming:
                                 tunnel.broker_input.extend(incoming)
                                 progressed = True
@@ -572,16 +625,16 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                                         used, size, config.aggregate_bytes)
                                     tunnel.to_client.extend(payload)
 
-                        if checked_write(tunnel.broker, tunnel.to_broker, tunnel):
+                        if checked_write(tunnel.broker, tunnel.to_broker, tunnel, False):
                             progressed = True
                         if tunnel.client_eof and not tunnel.to_broker and not tunnel.broker_write_ended:
-                            checked_end(tunnel.broker, tunnel)
+                            checked_end(tunnel.broker, tunnel, False)
                             tunnel.broker_write_ended = True
                             progressed = True
-                        if checked_write(tunnel.client, tunnel.to_client, tunnel):
+                        if checked_write(tunnel.client, tunnel.to_client, tunnel, True):
                             progressed = True
                         if tunnel.broker_eof and not tunnel.to_client and not tunnel.client_write_ended:
-                            checked_end(tunnel.client, tunnel)
+                            checked_end(tunnel.client, tunnel, True)
                             tunnel.client_write_ended = True
                             progressed = True
                         if (tunnel.client_eof and tunnel.broker_eof
@@ -595,6 +648,11 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                                 break
                     if progressed:
                         timeline.progressed(tunnel)
+                except (_TunnelClosed, _IdleExpired):
+                    # Idle, client EOF before the header, or a client close errno.
+                    failure = close_one(tunnel)
+                    if failure is not None:
+                        break
                 except ProxyError:
                     failure = 'CHANNEL_DENIED'
                     break
@@ -615,7 +673,10 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                 stopped = config.sockets.stop_requested()
             finally:
                 timeline.observe()
-            if stopped and (composition is not None or not tunnels):
+            if stopped:
+                # STOP or FD3 EOF ends admission at once in every mode (T9-6):
+                # the finally block closes the listener, which resets backlog
+                # clients, and every tunnel.
                 outcome = 'COMPLETE'
                 break
             try:
@@ -632,6 +693,7 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
     except _RunExpired:
         outcome = 'EXPIRED'
     except _IdleExpired:
+        # Defensive only: idle is raised for a tunnel and handled per tunnel above.
         outcome = 'IDLE_TIMEOUT'
     except _TerminalOutcome as terminal:
         outcome = terminal.code
@@ -900,6 +962,7 @@ class ProxyRuntimeOwner:
                     or config.clock is not facts[7] or config.sockets is not sockets
                     or config.native_admission is not facts[9]
                     or (transport.host_cid,transport.service,transport.connect_timeout_ms) != (2,4050,config.idle_timeout_ms)
+                    or transport.clock is not config.clock
                     or listener.module is not smodule
                     or listener.endpoint != (_LISTEN_ADDRESS, _LISTEN_PORT)
                     or any(owner.inventory is not context._inventory
@@ -1361,8 +1424,7 @@ _BOOTSTRAP_RULE = {
         'capability': {'ref': 'Digest'},
         'configIdentity': {'ref': 'Digest'},
         'expiresAt': {'type': 'integer', 'min': 1, 'max': _MAX_SAFE_INTEGER},
-        'firstSequence': {'type': 'integer', 'min': 1,
-                          'max': _MAX_SAFE_INTEGER - (_MAX_TUNNELS - 1)},
+        'firstSequence': {'type': 'integer', 'min': 1, 'max': _MAX_FIRST_SEQUENCE},
         'handoff': {
             'type': 'object',
             'fields': {
@@ -1434,8 +1496,7 @@ def qualify_native_admission(binding, destinations, aggregate_bytes,
             or _HEX32_RE.fullmatch(getattr(binding, 'run_id', '')) is None
             or type(binding.capability) is not bytes or len(binding.capability) != 32
             or not _plain_integer(binding.expires_at, 1, _MAX_SAFE_INTEGER)
-            or not _plain_integer(binding.first_sequence, 1,
-                                  _MAX_SAFE_INTEGER - (_MAX_TUNNELS - 1))
+            or not _plain_integer(binding.first_sequence, 1, _MAX_FIRST_SEQUENCE)
             or _HEX64_RE.fullmatch(getattr(binding, 'manifest_identity', '')) is None
             or _HEX64_RE.fullmatch(getattr(binding, 'config_identity', '')) is None
             or binding.origins != expected_origins
@@ -1600,7 +1661,18 @@ class NativeStream:
         self.closed = False
         self.inventory = inventory
         self.cleanup_uncertain = False
+        # T9-9: a pending connect carries its deadline on the run clock.
+        self.connect_clock = None
+        self.connect_deadline = None
         if inventory is not None: _NATIVE_INVENTORIES[self] = inventory
+
+    def connect_expired(self):
+        """True once a still-pending connect reaches its deadline (equality expires)."""
+        if self.connector_closed:
+            return False
+        if self.connect_deadline is None:
+            raise OSError('vsock connect')
+        return _sample(self.connect_clock)[1] >= self.connect_deadline
 
     def attach_connector(self, connector):
         if self.connector is not None or self.closing:
@@ -1619,6 +1691,8 @@ class NativeStream:
             raise OSError('stream ownership')
         if self.connector is None:
             return True
+        if self.connect_expired():
+            raise OSError(errno.ETIMEDOUT, 'vsock connect')
         if not self.connector.select(0):
             return False
         error = self.socket.getsockopt(self.module.SOL_SOCKET, self.module.SO_ERROR)
@@ -1945,7 +2019,7 @@ class NativeSockets:
 class NativeVsockTransport:
     """One-use binding and fixed AF_VSOCK CID2/service4050 connector."""
     def __init__(self, socket_module, selectors_module, binding, host_cid, service,
-                 connect_timeout_ms=10000):
+                 connect_timeout_ms=10000, *, clock=None):
         if (host_cid, service) != (2, 4050):
             raise ProxyError('TRANSPORT_DENIED')
         if not _plain_integer(connect_timeout_ms, 1, _IDLE_LIMIT_MS):
@@ -1956,6 +2030,7 @@ class NativeVsockTransport:
         self.host_cid = host_cid
         self.service = service
         self.connect_timeout_ms = connect_timeout_ms
+        self.clock = clock
         self.claimed = False
         self.closing = False
         self.closed = False
@@ -1973,13 +2048,21 @@ class NativeVsockTransport:
     def check(self):
         if self.closed or self.closing or not self.claimed:
             raise OSError('transport')
+        # T9-9: a vsock connect still pending at connect_timeout_ms is loss.
+        for stream in tuple(self._owned_streams):
+            if not stream.closed and stream.connect_expired():
+                raise OSError(errno.ETIMEDOUT, 'vsock connect')
 
     def open(self, cid, service, binding):
         inventory = _NATIVE_INVENTORIES.get(self)
         if (cid, service) != (2, 4050) or not _same_binding(self.binding, binding):
             raise ProxyError('TRANSPORT_DENIED')
+        if not callable(getattr(self.clock, 'sample', None)):
+            # No unbounded connect: a transport without the run clock never opens.
+            raise ProxyError('TRANSPORT_DENIED')
         if self.closed or self.closing or not self.claimed:
             raise OSError('transport')
+        started = _sample(self.clock)[1]
         kind = self.module.SOCK_STREAM | self.module.SOCK_NONBLOCK | self.module.SOCK_CLOEXEC
         endpoint = self.module.socket(self.module.AF_VSOCK, kind, 0)
         stream = NativeStream(endpoint, self.module, inventory=inventory)
@@ -1994,6 +2077,8 @@ class NativeVsockTransport:
             if result != 0:
                 if result not in pending:
                     raise OSError(result, 'vsock connect')
+                stream.connect_clock = self.clock
+                stream.connect_deadline = started + self.connect_timeout_ms
                 selector = self.selectors.DefaultSelector()
                 stream.attach_connector(selector)
                 try:
@@ -2129,7 +2214,7 @@ def _inherited_entry(arguments, bindings, policy, composition_policy=None):
         _admit_native_config(config, policy)
         transport = NativeVsockTransport(
             bindings.socket, bindings.selectors, config.binding, 2, 4050,
-            config.idle_timeout_ms)
+            config.idle_timeout_ms, clock=config.clock)
         outcome = (serve_proxy(config, transport, composition=composition) if composition is not None
                    else bindings.runner(config, transport))
     except Exception:
