@@ -1512,6 +1512,16 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
                     probe:probe,lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals)) }
             #expect(lifecycle.starts == 0)
         }
+        do {  // The verifier itself requires the answer, not only the issuer's later value check.
+            let challenge=try BootstrapChallengeIssuer(nonces:BootstrapNonceFake())
+                .issue(kind:.initial,at:ClockSample(wall:100,monotonic:10))
+            #expect(throws:VMFailure.admissionUnavailable) {
+                _=try self.verifyComposition(run,try self.compositionHandoff(run,originals:originals,challenge:nil),
+                                             originals:originals,challenge:challenge) }
+            #expect(throws:Never.self) {
+                _=try self.verifyComposition(run,try self.compositionHandoff(run,originals:originals),
+                                             originals:originals,challenge:challenge) }
+        }
         do {  // Control: the same current answering the host challenge admits.
             let probe=BootstrapProbeFake([try compositionHandoff(run,originals:originals),
                 try compositionHandoff(run,originals:originals,sequence:2)])
