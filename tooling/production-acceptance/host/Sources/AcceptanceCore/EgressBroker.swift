@@ -248,10 +248,15 @@ public final class Tunnel: @unchecked Sendable {
         } catch {
             // P38: a per-slot end (idle, or the guest's physical close) ends this tunnel only.
             // The pump toward the guest sends its logical EOF first (b), unless the guest has
-            // closed its stream (c). Every other error still fails the run.
+            // closed its stream (c). Every other error still fails the run, and a protocol or limit
+            // violation fails it even after the slot ended (fix round 1, I-1).
+            if let failure = error as? BrokerFailure, failure == .limits || failure == .invalidControl { throw error }
             if error is GuestStreamClosed { await broker.endSlot(id, guestClosed: true) }
             guard let end = await broker.endedSlot(id) else { throw error }
-            if toGuest, !ended, !end.guestClosed { try await destination.endWrite() }
+            if toGuest, !ended, !end.guestClosed {
+                // P39(b): if that write fails, the guest's side has gone: still this slot only.
+                do { try await destination.endWrite() } catch is GuestStreamClosed { await broker.endSlot(id, guestClosed: true) }
+            }
         }
     }
     private func forward(_ source: any ByteStream, _ destination: any ByteStream, ended: inout Bool) async throws {
@@ -503,12 +508,15 @@ public actor EgressBroker {
             return Tunnel(id: id, broker: self, input: input, output: output)
         } catch {
             // P38(b): a pending slot that went idle ends only itself. Its guest stream gets the
-            // logical EOF before it closes; failing to write it is a run failure.
+            // logical EOF before it closes. A failed physical write on its lane is that lane's end
+            // (P39(b)); any other failure to write it is a run failure.
             if let reserved, let end = endedSlot(reserved) {
-                var delivered = end.guestClosed
-                if !delivered { delivered = (try? await input.stream.endWrite()) != nil }
+                var failed = false
+                if !end.guestClosed {
+                    do { try await input.stream.endWrite() } catch is GuestStreamClosed {} catch { failed = true }
+                }
                 input.close(); finish(reserved)
-                guard delivered else { fail(.transport); throw BrokerFailure.transport }
+                guard !failed else { fail(.transport); throw BrokerFailure.transport }
                 throw end
             }
             input.close()
@@ -779,8 +787,12 @@ private func writeAll(_ stream:any ByteStream,_ data:Data) async throws {
         guard n > 0, n <= part.count else { throw BrokerFailure.transport }; offset += n
     }
 }
-private func readLength(_ stream:any ByteStream,_ lane:RelayState? = nil) async throws -> Int {
-    let d = try await readExact(stream,2,lane); return Int(d[0]) << 8 | Int(d[1])
+// The first length byte is read and checked on its own: a byte that already proves an out-of-range
+// length is a protocol violation at once, even if the guest's stream then ends (fix round 1).
+private func readLength(_ stream:any ByteStream,_ lane:RelayState?,firstAtMost:UInt8,violation:BrokerFailure) async throws -> Int {
+    let high = try await readExact(stream,1,lane)[0]
+    guard high <= firstAtMost else { throw violation }
+    return Int(high) << 8 | Int(try await readExact(stream,1,lane)[0])
 }
 private func framed(_ data:Data) -> Data { Data([UInt8(data.count >> 8),UInt8(data.count & 255)]) + data }
 private final class RelayState: @unchecked Sendable {
@@ -793,7 +805,7 @@ private final class RelayStream: ByteStream, @unchecked Sendable {
         guard maxBytes > 0, maxBytes <= 4096 else { throw BrokerFailure.limits }
         let ended = try state.lock.withLock { guard !state.closed else { throw BrokerFailure.terminal }; return state.inputEOF }
         if ended { return Data() }
-        let n = try await readLength(physical,state)
+        let n = try await readLength(physical,state,firstAtMost:0x10,violation:.limits)
         guard n <= 4096, n <= maxBytes else { throw BrokerFailure.limits }
         if n == 0 { state.lock.withLock { state.inputEOF = true }; return Data() }
         return try await readExact(physical,n,state)
@@ -801,11 +813,18 @@ private final class RelayStream: ByteStream, @unchecked Sendable {
     func write(_ data:Data) async throws -> Int {
         guard !data.isEmpty, data.count <= 4096 else { throw BrokerFailure.limits }
         try state.lock.withLock { guard !state.closed, !state.outputEOF else { throw BrokerFailure.terminal } }
-        try await writeAll(physical,framed(data)); return data.count
+        try await toLane(framed(data)); return data.count
     }
     func endWrite() async throws {
         let already = try state.lock.withLock { guard !state.closed else { throw BrokerFailure.terminal }; return state.outputEOF }
-        if !already { try await writeAll(physical,Data([0,0])); state.lock.withLock { state.outputEOF = true } }
+        if !already { try await toLane(Data([0,0])); state.lock.withLock { state.outputEOF = true } }
+    }
+    // P39(b): a failed physical write means the guest's side of this lane has gone. Like the guest's
+    // physical close it ends this slot and lane only; cancellation is not such a failure.
+    private func toLane(_ data:Data) async throws {
+        do { try await writeAll(physical,data) }
+        catch let error where error is CancellationError || error as? BrokerFailure == .cancelled { throw error }
+        catch { state.lock.withLock { state.physicalEnded = true }; throw GuestStreamClosed() }
     }
     func close() { state.lock.withLock { state.closed = true } }
 }
@@ -823,10 +842,10 @@ public actor RelayChannel {
         // C4: the challenge frame (length 16, then a fresh nonce) precedes the stream's control.
         guard let nonce = try? nonces.nonce(), nonce.count == 16 else { throw BrokerFailure.identity }
         try await writeAll(physical,framed(nonce))
-        let n = try await readLength(physical,state)
+        let n = try await readLength(physical,state,firstAtMost:0x01,violation:.invalidControl)
         guard n > 0, n <= 256 else { throw BrokerFailure.invalidControl }
         let control = try await readExact(physical,n,state)
-        guard try await readLength(physical,state) == 32 else { throw BrokerFailure.invalidControl }
+        guard try await readLength(physical,state,firstAtMost:0x00,violation:.invalidControl) == 32 else { throw BrokerFailure.invalidControl }
         let proof = try await readExact(physical,32,state)
         return RelayRequest(control:control,nonce:nonce,proof:proof,stream:RelayStream(physical,state))
     }
@@ -839,8 +858,9 @@ public actor RelayChannel {
         if ended { throw GuestStreamClosed() }
         guard closed, outputEOF else { throw BrokerFailure.terminal }
         if inputEOF { return }
+        // No deadline of its own: bounded by the run lifetime and the guest's own idle close.
         while true {
-            let n = try await readLength(physical,state)
+            let n = try await readLength(physical,state,firstAtMost:0x10,violation:.limits)
             guard n <= 4096 else { throw BrokerFailure.limits }
             if n == 0 { return }
             _ = try await readExact(physical,n,state)
