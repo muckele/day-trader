@@ -1335,9 +1335,17 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
         h=self.Harness(self);composition,stack=h.build()
         with stack:proof=composition.begin(TEST_HOST_CHALLENGE)
         self.assertEqual(t.verify_bootstrap_handoff_v1(proof.handoff,h.expected,h.binding,composition)['runId'],h.binding.runId)
+        # C3: re-sign with the topology-admission key, so only the binding can fail;
+        # the unmutated control proves the re-signing key is the right one.
+        key=c.derive_channel_key(h.expected.capability,'topology-admission')
+        def resigned(value):
+            value['mac']=hmac.new(key,t.BOOTSTRAP_HANDOFF_DOMAIN+t._canonical(value['payload']),hashlib.sha256).hexdigest()
+            return t._canonical(value).decode()
+        control=resigned(json.loads(proof.handoff))
+        self.assertEqual(control,proof.handoff)
+        self.assertEqual(t.verify_bootstrap_handoff_v1(control,h.expected,h.binding,composition)['runId'],h.binding.runId)
         value=json.loads(proof.handoff);value['payload']['composition']['binding']['epoch']=2
-        value['mac']=__import__('hmac').new(h.expected.capability,t.BOOTSTRAP_HANDOFF_DOMAIN+t._canonical(value['payload']),hashlib.sha256).hexdigest()
-        with self.assertRaises(t.TopologyError):t.verify_bootstrap_handoff_v1(t._canonical(value).decode(),h.expected,h.binding,composition)
+        with self.assertRaises(t.TopologyError):t.verify_bootstrap_handoff_v1(resigned(value),h.expected,h.binding,composition)
 
     def test_v1_capture_failure_at_each_acquisition_keeps_original_cleanup(self):
         h=self.Harness(self);composition,stack=h.build()
