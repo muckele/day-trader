@@ -124,6 +124,7 @@ final class BootstrapChallengeIssuer: @unchecked Sendable {
     private let nonces:any BootstrapNonceSource, lock=NSLock()
     private var issued:[UUID:BootstrapChallengeKind]=[:], consumed=Set<UUID>()
     private var initialIssued=false, initialAnswered=false
+    private var issuedValues=Set<String>(), refused=false
     init(nonces:any BootstrapNonceSource) { self.nonces=nonces }
     // One initial challenge per issuer; a current challenge exists only after
     // the initial one was answered, so an initial challenge never serves a current check.
@@ -132,12 +133,16 @@ final class BootstrapChallengeIssuer: @unchecked Sendable {
         guard bytes.count == 16, sample.monotonic >= 0, sample.monotonic <= 9007199254740991
               else { throw VMFailure.admissionUnavailable }
         return try lock.withLock {
+            guard !refused else { throw VMFailure.admissionUnavailable }
             switch kind {
             case .initial: guard !initialIssued else { throw VMFailure.admissionUnavailable }; initialIssued=true
             case .current: guard initialAnswered else { throw VMFailure.admissionUnavailable }
             }
-            let challenge=BootstrapChallenge(kind:kind,value:bytes.map { String(format:"%02x",$0) }.joined(),
-                                             id:UUID(),issuedAt:sample.monotonic)
+            let value=bytes.map { String(format:"%02x",$0) }.joined()
+            // A value issued twice in a run would reduce freshness to sequence-only:
+            // refuse it and every later issue or consume (fail closed, terminal).
+            guard issuedValues.insert(value).inserted else { refused=true; throw VMFailure.admissionUnavailable }
+            let challenge=BootstrapChallenge(kind:kind,value:value,id:UUID(),issuedAt:sample.monotonic)
             issued[challenge.id]=kind
             return challenge
         }
@@ -145,7 +150,7 @@ final class BootstrapChallengeIssuer: @unchecked Sendable {
     // One use: the first consume retires the challenge, whatever its outcome.
     func consume(_ challenge:BootstrapChallenge,handoffChallenge:String,at sample:ClockSample) throws {
         try lock.withLock {
-            guard issued[challenge.id] == challenge.kind, consumed.insert(challenge.id).inserted
+            guard !refused, issued[challenge.id] == challenge.kind, consumed.insert(challenge.id).inserted
                   else { throw VMFailure.admissionUnavailable }
             let limit=challenge.kind == .initial ? BOOTSTRAP_CHALLENGE_INITIAL_MS:BOOTSTRAP_CHALLENGE_CURRENT_MS
             guard Array(handoffChallenge.utf8) == Array(challenge.value.utf8),

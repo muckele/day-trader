@@ -20,6 +20,16 @@ private final class BootstrapNonceFake: BootstrapNonceSource, @unchecked Sendabl
     init(_ values:[Data] = [Data((0..<16).map { UInt8($0) })]) { self.values = values }
     func nonce() throws -> Data { lock.withLock { values.count == 1 ? values[0]:values.removeFirst() } }
 }
+// Several checks need distinct values (the issuer refuses a repeat): value i is
+// bytes 16i..16i+15, so the first is the brief's 00..0f (distinct for i < 16).
+private func countingNonce(_ index:Int) -> Data { Data((0..<16).map { UInt8((16*index + $0) & 0xff) }) }
+private func countingChallenge(sequence:Int) -> String { countingNonce(sequence-1).map { String(format:"%02x",$0) }.joined() }
+private final class BootstrapCountingNonceFake: BootstrapNonceSource, @unchecked Sendable {
+    private let lock = NSLock(); private var next = 0
+    func nonce() throws -> Data { lock.withLock { defer { next += 1 }; return countingNonce(next) } }
+}
+// Default handoff answer: the value the counting fake issues for that check (sequence n -> value n-1).
+private let issuedChallengeAnswer = "<issued challenge for this sequence>"
 
 private final class BootstrapProbeFake: BootstrapProbePort, @unchecked Sendable {
     private var values:[Data]; var requested = [[BootstrapProbeID]](), challenges = [String?]()
@@ -300,7 +310,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
     private func compositionHandoff(_ run:RunConfiguration, originals:[[String:Any]], sequence:Int = 1,
                                     epoch:Int = 1, generation:Int = 1,
                                     wall:Int = 100, monotonic:Int = 10,
-                                    challenge:String? = testHostChallenge, rawKey:Bool = false,
+                                    challenge:String? = issuedChallengeAnswer, rawKey:Bool = false,
                                     mutate:(([String:Any]) -> [String:Any])? = nil) throws -> Data {
         let path = try #require(ProcessInfo.processInfo.environment["BOOTSTRAP_V1_HANDOFF_INPUT"])
         let data = try Data(contentsOf:URL(fileURLWithPath:path))
@@ -313,7 +323,8 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         payload["sequence"] = sequence
         payload["observedWall"] = wall
         payload["observedMonotonic"] = monotonic
-        if let challenge { payload["hostChallenge"] = challenge } else { payload.removeValue(forKey:"hostChallenge") }
+        let answer = challenge == issuedChallengeAnswer ? countingChallenge(sequence:sequence) : challenge
+        if let answer { payload["hostChallenge"] = answer } else { payload.removeValue(forKey:"hostChallenge") }
         var proxy = payload["proxy"] as! [String:Any]
         proxy["runId"] = run.binding.runID
         proxy["manifestIdentity"] = run.appliance.manifest.digest
@@ -365,7 +376,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
                                     originals:[[String:Any]],
                                     population:OfflineBootstrapPopulationAuthority? = nil,
                                     events:OfflineBootstrapEventOwner? = nil,
-                                    nonces:any BootstrapNonceSource = BootstrapNonceFake()) throws -> BootstrapCompositionV1 {
+                                    nonces:any BootstrapNonceSource = BootstrapCountingNonceFake()) throws -> BootstrapCompositionV1 {
         let retainedPopulation=try population ?? BootstrapPopulationFixture(run).authority
         let retainedEvents=try events ?? OfflineVMHost.installBootstrapEvents(run:run,
             rolePolicyDigest:String(repeating:"d",count:64),epoch:1,generation:1,
@@ -1464,7 +1475,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
                 #expect(throws:VMFailure.admissionUnavailable) { _=try q.requireBrowserAdmission() }
                 #expect(lifecycle.stops == 1)
             }
-            #expect(probe.challenges == [testHostChallenge,testHostChallenge])
+            #expect(probe.challenges == [testHostChallenge,countingChallenge(sequence:2)])
         }
         // Guest observedWall/observedMonotonic are guest-local: 0 and 2^53-1 both
         // admit on the composition (initial and current) and the literal-wire paths.
@@ -1502,7 +1513,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
                 probe:probe,lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals))
             #expect(throws:VMFailure.admissionUnavailable) { _=try q.requireBrowserAdmission() }
             #expect(lifecycle.stops == 1)
-            #expect(probe.challenges == [testHostChallenge,testHostChallenge])
+            #expect(probe.challenges == [testHostChallenge,countingChallenge(sequence:2)])
         }
         do {
             let lifecycle=BootstrapLifecycleFake()
@@ -1672,5 +1683,41 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         #expect(throws:VMFailure.admissionUnavailable) { _=try q.requireBrowserAdmission() }
         #expect(probe.requested.count == 1); #expect(liveLifecycle.stops == 1)
         #expect(throws:VMFailure.terminal) { _=try q.currentProofWithoutActivation() }
+    }
+
+    @Test func v1_issuer_refuses_repeated_challenge_value() throws {
+        // Controller ruling (Task 3 fix round 1): a value issued twice in a run is
+        // refused, and the issuer then refuses everything (fail closed, terminal).
+        let start=ClockSample(wall:100,monotonic:10)
+        let issuer=BootstrapChallengeIssuer(nonces:BootstrapNonceFake([nonce(0),nonce(16),nonce(0),nonce(32)]))
+        let initial=try issuer.issue(kind:.initial,at:start)
+        try issuer.consume(initial,handoffChallenge:initial.value,at:start)
+        let outstanding=try issuer.issue(kind:.current,at:start)
+        #expect(outstanding.value == countingChallenge(sequence:2))
+        #expect(throws:VMFailure.admissionUnavailable) { _=try issuer.issue(kind:.current,at:start) }  // 00..0f again
+        #expect(throws:VMFailure.admissionUnavailable) { _=try issuer.issue(kind:.current,at:start) }  // fresh 20..2f
+        #expect(throws:VMFailure.admissionUnavailable) {
+            try issuer.consume(outstanding,handoffChallenge:outstanding.value,at:start) }
+        // Full path: the brief's constant 00..0f source admits the one initial check;
+        // the next check would reissue 00..0f, so it is refused before capture and
+        // the qualification is terminal, although that handoff answers 00..0f.
+        let originals=runtimeRows()
+        for counting in [false,true] {
+            let run=try BootstrapRunFixture().run, lifecycle=BootstrapLifecycleFake()
+            let answer=counting ? countingChallenge(sequence:2):testHostChallenge
+            let probe=BootstrapProbeFake([try compositionHandoff(run,originals:originals),
+                try compositionHandoff(run,originals:originals,sequence:2,challenge:answer)])
+            let q=try OfflineVMHost.bootstrapCheck(run:run,composition:offlineComposition(run,
+                probe:probe,lifecycle:lifecycle,clock:BootstrapTestClock(),originals:originals,
+                nonces:counting ? BootstrapCountingNonceFake():BootstrapNonceFake()))
+            if counting {  // Control: distinct values admit the same current check.
+                #expect(throws:Never.self) { _=try q.requireBrowserAdmission() }
+                #expect(probe.challenges == [testHostChallenge,answer])
+            } else {
+                #expect(throws:VMFailure.admissionUnavailable) { _=try q.requireBrowserAdmission() }
+                #expect(probe.challenges == [testHostChallenge]); #expect(lifecycle.stops == 1)
+                #expect(throws:VMFailure.terminal) { _=try q.requireBrowserAdmission() }
+            }
+        }
     }
 }
