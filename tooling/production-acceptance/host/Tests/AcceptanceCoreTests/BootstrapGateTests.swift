@@ -1518,6 +1518,10 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
             #expect(throws:VMFailure.admissionUnavailable) {
                 _=try self.verifyComposition(run,try self.compositionHandoff(run,originals:originals,challenge:nil),
                                              originals:originals,challenge:challenge) }
+            // Nor is a composition handoff ever accepted without a held host challenge.
+            #expect(throws:VMFailure.admissionUnavailable) {
+                _=try self.verifyComposition(run,try self.compositionHandoff(run,originals:originals,challenge:nil),
+                                             originals:originals,challenge:nil) }
             #expect(throws:Never.self) {
                 _=try self.verifyComposition(run,try self.compositionHandoff(run,originals:originals),
                                              originals:originals,challenge:challenge) }
