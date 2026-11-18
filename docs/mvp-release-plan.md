@@ -85,6 +85,7 @@ Read-only. No owner approval needed beyond resuming Day Trader.
 | M4 disposition | Accepted by the owner 2026-11-17, Option A. M4 stays open. The repair bundle is the reference. Lost evidence stays lost. A new committed ABI coverage derivation is to be built and reviewed. |
 | Option A ABI coverage re-derivation | Done 2026-11-17 (`36898e9..132b67e`, local). It covers 121 checked Linux values, binds them to the guest code, and unblocks the 8 reference tests. Python 401/401, Node 402/402, Swift 181/181. Known gaps go to the whole-M4 review. |
 | Independent reviews | Done 2026-11-17 (`e6ad547`). **7 REJECT; 0 Critical, 47 Important.** Everything fails closed, but much of the controller cannot work in a real run as written, and design decisions are needed. Remediation is estimated at 2–4+ weeks before Stage 2. The whole-M4 review and fixes are on hold pending an owner decision. |
+| Remediation (18-task plan) | Started 2026-11-18, subagent-driven. **Tasks 1–6 done locally** (`8f979c8..05488a4`), each independently reviewed clean after 1–2 fix rounds. **Stopped at Task 6:** the owner must accept the reviewed M2 broker diff and decide the broker lane model (16 fixed lanes, each ordinary guest tunnel end retires one). Tasks 7–18 pending. |
 
 ### Stage 1 — Reconcile and review what is committed (≈3–5 days)
 
