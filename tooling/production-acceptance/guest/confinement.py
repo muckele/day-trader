@@ -43,6 +43,25 @@ def _deadline(value):
     if type(value) is not int or not 0 < value <= 1200000: _fail('EXIT_DENIED')
 
 
+_KEY_DERIVATION_DOMAIN = b'acceptance:key-derivation:v1\0'
+CHANNEL_KEY_LABELS = ('vsock-stream', 'topology-admission')
+
+
+def derive_channel_key(capability, label):
+    """C3 (E3, T10-10): one key per channel from the 32-byte run capability.
+
+    derive(capability, label) = HMAC-SHA256(key=capability,
+    msg="acceptance:key-derivation:v1\\0" || label || "\\0"), for the two fixed
+    labels only. The PROXY receives only the vsock-stream key (R6); the
+    topology-admission key, like the capability, stays with the bootstrap and host.
+    """
+    if (type(capability) is not bytes or len(capability) != 32
+            or type(label) is not str or label not in CHANNEL_KEY_LABELS):
+        _fail('KEY_DERIVATION_DENIED')
+    return hmac.new(capability, _KEY_DERIVATION_DOMAIN + label.encode('ascii') + b'\0',
+                    hashlib.sha256).digest()
+
+
 @dataclass(frozen=True, slots=True)
 class CompositionBinding:
     """Shared immutable wire identity; possession alone grants no authority."""

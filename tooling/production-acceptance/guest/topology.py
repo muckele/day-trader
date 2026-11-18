@@ -228,7 +228,12 @@ _PROBES = _fixed_dependency(pathlib.Path(__file__).resolve().parents[1] /
 _RUN = re.compile(r'[0-9a-f]{32}')
 _DIGEST = re.compile(r'[0-9a-f]{64}')
 _MAX = 9007199254740991
-_MAX_OBSERVATION_SKEW = 1
+# R4 (T10-7): guest-local window from the observation sample to the bracket end,
+# on the guest clock only. Stage 2 may tighten it, never widen it.
+GUEST_OBSERVATION_WINDOW_MS = 100
+# C2 (E2): the host challenge is 16 random host bytes as 32 lowercase hex.
+_HOST_CHALLENGE = re.compile(r'[0-9a-f]{32}')
+_TOPOLOGY_ADMISSION = 'topology-admission'
 
 HOST_DEVICES = (
     'LINUX_BOOT', 'VIRTIO_BLOCK_READ_ONLY', 'VIRTIO_ENTROPY',
@@ -1353,8 +1358,8 @@ def _payload(snapshot, expected, before, after):
             or not _integer(snapshot.observed_monotonic)
             or not before[0] <= snapshot.observed_wall <= after[0]
             or not before[1] <= snapshot.observed_monotonic <= after[1]
-            or after[0] - snapshot.observed_wall > _MAX_OBSERVATION_SKEW
-            or after[1] - snapshot.observed_monotonic > _MAX_OBSERVATION_SKEW
+            or after[0] - snapshot.observed_wall > GUEST_OBSERVATION_WINDOW_MS
+            or after[1] - snapshot.observed_monotonic > GUEST_OBSERVATION_WINDOW_MS
             or after[0] >= expected.expires_at
             or type(snapshot.run_id) is not str
             or type(snapshot.manifest_identity) is not str
@@ -1550,8 +1555,20 @@ def _validate_payload(payload, expected):
     return payload
 
 
+def _admission_key(expected):
+    """C3: the topology-admission key; the raw capability never MACs a handoff."""
+    return _CONFINEMENT.derive_channel_key(expected.capability, _TOPOLOGY_ADMISSION)
+
+
 def admit_topology(snapshot, expected, before, after):
-    """Revalidate complete Task8/9 evidence and authenticate a canonical handoff."""
+    """Legacy v1 handoff from caller-supplied Task 8/9 projections (T10-15).
+
+    Checks the snapshot against fixed policy and MACs a canonical v1 handoff
+    with the topology-admission key (C3). The role attestations and probe
+    results are caller-constructible projections, not independent native
+    evidence, and a v1 handoff carries no host challenge: only the
+    composition (v2) handoff can answer a host check.
+    """
     try:
         payload = _payload(snapshot, expected, before, after)
         _validate_payload(payload, expected)
@@ -1561,7 +1578,7 @@ def admit_topology(snapshot, expected, before, after):
         stable = dict(payload)
         stable.pop('sequence'); stable.pop('observedWall'); stable.pop('observedMonotonic')
         topology_digest = hashlib.sha256(_canonical(stable)).hexdigest()
-        mac = hmac.new(expected.capability, canonical, hashlib.sha256).hexdigest()
+        mac = hmac.new(_admission_key(expected), canonical, hashlib.sha256).hexdigest()
         wire = _canonical({'mac': mac, 'payload': payload, 'version': 1}).decode('ascii')
         return AdmissionProof(
             expected.run_id, expected.manifest_identity, expected.config_identity,
@@ -1575,7 +1592,13 @@ def admit_topology(snapshot, expected, before, after):
 
 
 def verify_handoff(wire, expected):
-    """Verify the capability MAC, canonical bytes and complete independent policy."""
+    """Offline only: verify a legacy v1 handoff's MAC, canonical bytes and policy.
+
+    A v1 handoff carries no host challenge, so this consumer has no freshness
+    and no sequence binding (T10-13). It returns the validated payload dict,
+    never an AdmissionProof, and a v1 wire never satisfies the composition
+    consumer (verify_bootstrap_handoff_v1).
+    """
     _authority(expected)
     try:
         if type(wire) is not str or len(wire) > 131072 or not wire.isascii():
@@ -1591,7 +1614,7 @@ def verify_handoff(wire, expected):
                 or _canonical(envelope).decode('ascii') != wire):
             _fail('HANDOFF_DENIED')
         payload = envelope['payload']
-        calculated = hmac.new(expected.capability, _canonical(payload), hashlib.sha256).hexdigest()
+        calculated = hmac.new(_admission_key(expected), _canonical(payload), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(calculated, envelope['mac']):
             _fail('HANDOFF_DENIED')
         return _validate_payload(payload, expected)
@@ -2278,16 +2301,20 @@ class NativeTopologyBindings:
             abstract = _abstract(raw[8])
             roles = self.role_source.collect(authority)
             self.capture_owner.roles = roles
+            devices = self.host_device_source.observe(authority)
+            probes = tuple(self.probe_source.execute(identifier)
+                           for identifier in FIXED_PROBE_IDS)
+            runtime = self.proxy_source.observe(authority.proxy_policy)
+            # T10-7: sample after every device, probe and proxy observation,
+            # immediately before the gate's bracket end, so probe latency never
+            # ages it (GUEST_OBSERVATION_WINDOW_MS, guest clock only).
             sample = authority.clock.sample()
             if not _sample(sample): _fail('CLOCK_DENIED')
             return TopologySnapshot(
                 sequence, sample[0], sample[1], authority.run_id,
                 authority.manifest_identity, authority.config_identity,
-                self.host_device_source.observe(authority), interfaces, routes, dns,
-                tuple(listeners), abstract, roles,
-                tuple(self.probe_source.execute(identifier)
-                      for identifier in FIXED_PROBE_IDS),
-                self.proxy_source.observe(authority.proxy_policy))
+                devices, interfaces, routes, dns, tuple(listeners), abstract,
+                roles, probes, runtime)
         except Exception as error:
             if roles is not None:
                 try: self.role_source.cleanup_owned(roles)
@@ -2334,6 +2361,11 @@ class BootstrapHandoffV1:
         if (self._seal is not _BOOTSTRAP_COMPOSITION_OWNER_SEAL
                 or self._owner not in _BOOTSTRAP_COMPOSITIONS):
             _fail('HANDOFF_DENIED')
+
+    @property
+    def host_eligible(self):
+        """C2/R3: only a handoff answering a host challenge can reach the host."""
+        return 'hostChallenge' in self.payload
 
 
 def _runtime_wire_row(value, role, handoff=None, expected_lifecycle=None):
@@ -2400,13 +2432,25 @@ def _runtime_wire_row(value, role, handoff=None, expected_lifecycle=None):
     return value
 
 
+_COMPOSITION_PAYLOAD_KEYS = frozenset({
+    'configIdentity','devices','expiresAt','manifestIdentity',
+    'observedMonotonic','observedWall','probes','proxy','roles',
+    'runId','sequence','composition'})
+
+
 def _validate_composition_payload(payload, expected, binding, owner=None):
-    if (type(payload) is not dict or set(payload) != {
-            'configIdentity','devices','expiresAt','manifestIdentity',
-            'observedMonotonic','observedWall','probes','proxy','roles',
-            'runId','sequence','composition'} or not _wire_shape(payload)):
+    # C2: a host-facing handoff adds exactly hostChallenge; an internal one
+    # (guest require_current) has the unchanged key set and no challenge.
+    keys = set(payload) if type(payload) is dict else None
+    if (keys not in (_COMPOSITION_PAYLOAD_KEYS,
+                     _COMPOSITION_PAYLOAD_KEYS | {'hostChallenge'})
+            or not _wire_shape(payload)):
         _fail('HANDOFF_DENIED')
     base = dict(payload); composition = base.pop('composition')
+    if 'hostChallenge' in base:
+        challenge = base.pop('hostChallenge')
+        if type(challenge) is not str or _HOST_CHALLENGE.fullmatch(challenge) is None:
+            _fail('HANDOFF_DENIED')
     _validate_payload(base, expected)
     if (not _keys(composition, ('binding','probeEpochDigest',
             'fixtureInventoryDigest','eventCheckpoint','proxyRuntimeId',
@@ -2483,7 +2527,7 @@ def verify_bootstrap_handoff_v1(wire, expected, binding, owner=None):
             _fail('HANDOFF_DENIED')
         payload = _validate_composition_payload(envelope['payload'], expected,
                                                 binding, owner)
-        calculated = hmac.new(expected.capability,
+        calculated = hmac.new(_admission_key(expected),
             BOOTSTRAP_HANDOFF_DOMAIN + _canonical(payload), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(calculated, envelope['mac']):
             _fail('HANDOFF_DENIED')
@@ -2542,6 +2586,9 @@ class BootstrapComposition:
         self._cleanup_uncertain = set()
         self._cleanup_running = self._cleanup_dirty = False
         self._observations_retired = False
+        # C2: every host challenge this composition has answered (one use each).
+        self._host_challenges = set()
+        self._admission_key = _admission_key(expected)
         _BOOTSTRAP_COMPOSITIONS.add(self)
 
     def _retain_cleanup(self, owner):
@@ -2673,7 +2720,7 @@ class BootstrapComposition:
                      + _network_rows(raw[7], 'UDP', 6))
         return interfaces, routes, dns, tuple(listeners), _abstract(raw[8])
 
-    def _capture(self, token):
+    def _capture(self, token, challenge=None):
         before = self._event_owner.barrier()
         self._checkpoint(token); self._clock(); self._checkpoint(token)
         self._expected.appliance_recheck(); self._checkpoint(token)
@@ -2722,15 +2769,17 @@ class BootstrapComposition:
             proxyRuntimeId=proxy_record['runtimeId'],
             roleRuntime=[dict(row) for row in runtime])
         payload = dict(base, composition=composition)
+        if challenge is not None: payload['hostChallenge'] = challenge
         self._publish(token, _proxy_runtime_id=proxy_record['runtimeId'],
                       _event_source_id=after.sourceIdentity)
         _validate_composition_payload(payload, self._expected, self.binding, self)
         self._checkpoint(token)
         stable = json.loads(_canonical(payload))
         stable.pop('sequence'); stable.pop('observedWall'); stable.pop('observedMonotonic')
+        stable.pop('hostChallenge', None)  # P6: MAC-covered, never in the stable digest
         stable['composition']['eventCheckpoint'].pop('sequence')
         proof_digest = hashlib.sha256(_canonical(stable)).hexdigest()
-        mac = hmac.new(self._expected.capability,
+        mac = hmac.new(self._admission_key,
             BOOTSTRAP_HANDOFF_DOMAIN + _canonical(payload), hashlib.sha256).hexdigest()
         wire = _canonical({'mac':mac,'payload':payload,
                            'version':BOOTSTRAP_HANDOFF_VERSION}).decode('ascii')
@@ -2747,9 +2796,9 @@ class BootstrapComposition:
         self._checkpoint(token)
         return proof, handoff
 
-    def _capture_current(self):
+    def _capture_current(self, challenge=None):
         token = self._reserve_acquisition('capture')
-        try: proof, handoff = self._capture(token)
+        try: proof, handoff = self._capture(token, challenge)
         except BaseException as error:
             self._settle_acquisition(token, error=error)
             raise
@@ -2757,10 +2806,21 @@ class BootstrapComposition:
         self._publish(token, _proof=proof, _handoff=handoff)
         return proof
 
-    def begin(self) -> AdmissionProof:
+    def _claim_host_challenge(self, challenge):
+        # C2: a malformed challenge is CHALLENGE_DENIED and a reused one is
+        # CHALLENGE_REPLAY; callers make both terminal before any effect.
+        if type(challenge) is not str or _HOST_CHALLENGE.fullmatch(challenge) is None:
+            _fail('CHALLENGE_DENIED')
+        with self._lock:
+            if challenge in self._host_challenges: _fail('CHALLENGE_REPLAY')
+            self._host_challenges.add(challenge)
+
+    def begin(self, challenge) -> AdmissionProof:
+        """The initial host check; its handoff answers the host's challenge (C2)."""
         try:
             with self._lock:
                 if self._state != 'NEW' or self._terminal: _fail('TOPOLOGY_FAILED')
+                self._claim_host_challenge(challenge)
                 self._state = 'PROBING'
             token, probe_epoch = self._acquire('probe', lambda:
                 _PROBES.qualify_probe_epoch(self.binding, self._fixtures, self._budget))
@@ -2788,7 +2848,7 @@ class BootstrapComposition:
             token, _ = self._acquire('current-source', lambda:
                 self._roles.bind_current_source(_CompositionCurrentSource(self)))
             self._checkpoint(token)
-            proof = self._capture_current()
+            proof = self._capture_current(challenge)
             with self._lock:
                 if self._terminal: _fail('TOPOLOGY_FAILED')
                 self._state = 'ADMITTED'
@@ -2797,7 +2857,19 @@ class BootstrapComposition:
             self._failed(error)
             raise
 
+    def host_current(self, challenge) -> AdmissionProof:
+        """A host-facing current check (R3): binds a fresh one-use host challenge."""
+        if self._state not in ('ADMITTED','BROWSER_COMMITTED') or self._terminal:
+            _fail('TOPOLOGY_FAILED')
+        try:
+            self._claim_host_challenge(challenge)
+            return self._capture_current(challenge)
+        except Exception as error:
+            self._failed(error)
+            raise
+
     def require_current(self) -> AdmissionProof:
+        """Guest-internal current (R3): no host challenge, never host-eligible."""
         if self._state not in ('ADMITTED','BROWSER_COMMITTED') or self._terminal:
             _fail('TOPOLOGY_FAILED')
         try:

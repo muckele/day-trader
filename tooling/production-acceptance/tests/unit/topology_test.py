@@ -35,6 +35,13 @@ RUN = '1' * 32
 MANIFEST = 'a' * 64
 CONFIG = 'b' * 64
 CAPABILITY = bytes([7]) * 32
+# C2: the host-issued challenge exported to the Swift consumer (nonce bytes 00..0f).
+TEST_HOST_CHALLENGE = '000102030405060708090a0b0c0d0e0f'
+
+
+def admission_key(capability=CAPABILITY):
+    """C3 topology-admission key; tests sign handoffs only with this key."""
+    return confinement.derive_channel_key(capability, 'topology-admission')
 DEVICES = ('LINUX_BOOT', 'VIRTIO_BLOCK_READ_ONLY', 'VIRTIO_ENTROPY',
            'VIRTIO_SERIAL_PRIVATE_PIPE', 'VIRTIO_VSOCK_CID2_PORT4050')
 PROBES = (
@@ -430,7 +437,7 @@ class TopologyTests(unittest.TestCase):
                 sequence=1, sourceIdentity='a' * 32, lostCount=0),
             proxyRuntimeId='b' * 32, roleRuntime=runtime))
         def wire(value):
-            mac = hmac.new(expected.capability, topology.BOOTSTRAP_HANDOFF_DOMAIN +
+            mac = hmac.new(admission_key(expected.capability), topology.BOOTSTRAP_HANDOFF_DOMAIN +
                 topology._canonical(value), hashlib.sha256).hexdigest()
             return topology._canonical({'mac':mac,'payload':value,'version':2}).decode('ascii')
         with self.assertRaises(topology.TopologyError):
@@ -1822,7 +1829,7 @@ class TopologyTests(unittest.TestCase):
             wire = json.loads(json.dumps(original))
             mutate(wire)
             wire['mac'] = __import__('hmac').new(
-                CAPABILITY, json.dumps(wire['payload'], sort_keys=True,
+                admission_key(), json.dumps(wire['payload'], sort_keys=True,
                                        separators=(',', ':')).encode('ascii'),
                 __import__('hashlib').sha256).hexdigest()
             return json.dumps(wire, sort_keys=True, separators=(',', ':'))
@@ -2122,6 +2129,71 @@ class TopologyTests(unittest.TestCase):
         bindings.cleanup_unresolved()
         self.assertEqual((owner.closes, owner.cleanups), (1, 1))
 
+    def test_legacy_capture_admits_with_1ms_per_probe_and_samples_before_bracket_end(self):
+        # Reviewer witness tmp/reviews/task10/scripts/probe_latency.py (T10-7):
+        # each fixed probe costs `cost` ms on the guest clock. The observation
+        # sample must follow device, probe and proxy observation, immediately
+        # before the gate's bracket end, so probe latency never ages it.
+        header = b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n'
+        content = {
+            '/proc/net/dev': b'Inter-| Receive\n face |bytes packets errs drop fifo frame compressed multicast\n lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n',
+            '/proc/net/route': b'Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n',
+            '/proc/net/ipv6_route': b'', '/etc/resolv.conf': b'',
+            '/proc/net/tcp': header + b'0: 0100007F:0C38 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10004 0 123 1 0000000000000000 100 0 0 10 0\n',
+            '/proc/net/tcp6': header, '/proc/net/udp': header, '/proc/net/udp6': header,
+            '/proc/net/unix': b'Num RefCount Protocol Flags Type St Inode Path\n'}
+        for cost in (1, 6):
+            now = [100, 10]
+            class AdvancingClock:
+                def sample(self): return tuple(now)
+            def advance(ms): now[0] += ms; now[1] += ms
+            class Owner:
+                def __init__(self, path): self.parts = [content[path], b'']
+                def read(self, size): return self.parts.pop(0)
+                def close(self): pass
+                def cleanup(self): pass
+            class Observations:
+                def open_owned(self, path, flags): return Owner(path)
+            class Roles:
+                def collect(self, expected): return snapshot().role_handoffs
+                def cleanup_owned(self, handoffs): pass
+            class Devices:
+                def observe(self, expected): advance(1); return DEVICES
+            class Probes:
+                def execute(self, identifier): advance(cost); return result(identifier)
+            class Proxy:
+                def observe(self, policy): advance(1); return snapshot().proxy_runtime
+            with self.subTest(cost=cost):
+                gate = topology.TopologyGate(authority(clock=AdvancingClock()),
+                    topology.select_native_topology(Observations(), Roles(), Devices(),
+                                                    Probes(), Proxy(), 'linux', 'aarch64'))
+                try: proof = gate.admit()
+                except topology.TopologyError as error:
+                    self.fail('%d ms per probe denied the legacy capture: %s' % (cost, error))
+                self.assertEqual(proof.sequence, 1)
+                # Sampled after devices (+1), all 12 probes and the proxy (+1).
+                end = 10 + 1 + len(PROBES) * cost + 1
+                self.assertEqual((gate._snapshot.observed_wall, gate._snapshot.observed_monotonic),
+                                 (100 + end - 10, end))
+
+    def test_legacy_verify_handoff_is_offline_only(self):
+        # T10-13: the legacy v1 consumer has no sequence or freshness binding.
+        # Its result is a plain validated payload, never an AdmissionProof, and
+        # the same v1 wire never satisfies the composition (v2) consumer.
+        a = authority()
+        proof = topology.admit_topology(snapshot(), a, (100, 10), (100, 10))
+        decoded = topology.verify_handoff(proof.handoff, a)
+        self.assertIs(type(decoded), dict)
+        self.assertNotIsInstance(decoded, topology.AdmissionProof)
+        self.assertNotIn('hostChallenge', decoded)
+        self.assertNotIn('composition', decoded)
+        binding = confinement.CompositionBinding(1, RUN, MANIFEST, CONFIG, 'd' * 64, 1, 190)
+        with self.assertRaisesRegex(topology.TopologyError, '^HANDOFF_DENIED$'):
+            topology.verify_bootstrap_handoff_v1(proof.handoff, a, binding)
+        doc = ' '.join(topology.verify_handoff.__doc__.split()).lower()
+        self.assertIn('offline only', doc)
+        self.assertIn('no freshness', doc)
+
     def test_export_composition_fixture_for_swift_consumer(self):
         proof = topology.admit_topology(snapshot(), authority(), (100, 10), (100, 10))
         path = os.environ.get('TASK10_TOPOLOGY_OUTPUT')
@@ -2138,7 +2210,7 @@ class TopologyTests(unittest.TestCase):
         )
         for mutate in mutations:
             envelope = json.loads(proof.handoff); mutate(envelope['payload'])
-            envelope['mac'] = __import__('hmac').new(CAPABILITY,
+            envelope['mac'] = __import__('hmac').new(admission_key(),
                 topology._canonical(envelope['payload']), __import__('hashlib').sha256).hexdigest()
             wire = topology._canonical(envelope).decode('ascii')
             with self.assertRaises(topology.TopologyError): topology.verify_handoff(wire, authority())
@@ -2172,8 +2244,9 @@ class TopologyTests(unittest.TestCase):
             eventCheckpoint=dict(binding=binding.to_record(),generation=1,
                 sequence=1,sourceIdentity='a' * 32,lostCount=0),
             proxyRuntimeId='b' * 32,roleRuntime=role_runtime)
+        payload['hostChallenge'] = TEST_HOST_CHALLENGE
         def composition_wire(value):
-            mac = hmac.new(expected.capability,topology.BOOTSTRAP_HANDOFF_DOMAIN +
+            mac = hmac.new(admission_key(expected.capability),topology.BOOTSTRAP_HANDOFF_DOMAIN +
                 topology._canonical(value),hashlib.sha256).hexdigest()
             return topology._canonical(
                 {'mac':mac,'payload':value,'version':2}).decode('ascii')
@@ -2184,7 +2257,7 @@ class TopologyTests(unittest.TestCase):
         def invalid_composition(mutate, *, remac=True):
             envelope=json.loads(valid_composition);mutate(envelope)
             if remac:
-                envelope['mac']=hmac.new(expected.capability,
+                envelope['mac']=hmac.new(admission_key(expected.capability),
                     topology.BOOTSTRAP_HANDOFF_DOMAIN +
                     topology._canonical(envelope['payload']),hashlib.sha256).hexdigest()
             value=topology._canonical(envelope).decode('ascii')
@@ -2206,6 +2279,8 @@ class TopologyTests(unittest.TestCase):
         invalid_composition(lambda e:e['payload']['composition']
             .__setitem__('unknown',0))
         invalid_composition(lambda e:e.__setitem__('mac','0' * 64),remac=False)
+        invalid_composition(lambda e:e['payload'].__setitem__('hostChallenge',
+            TEST_HOST_CHALLENGE.upper()))
         if path:
             with pathlib.Path(path + '.bootstrap-v1.json').open(
                     'x',encoding='ascii') as output:

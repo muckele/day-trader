@@ -34,6 +34,10 @@ p = t._PROBES
 proxy_fixture = load('bootstrap_v1_proxy_fixture', ROOT / 'tests/unit/proxy_test.py')
 topology_fixture = load('bootstrap_v1_topology_fixture', ROOT / 'tests/unit/topology_test.py')
 confinement_fixture = load('bootstrap_v1_confinement_fixture', ROOT / 'tests/unit/confinement_test.py')
+# C2: host-issued one-use challenges (32 lowercase hex). The first is the
+# shared exported test value (nonce bytes 00..0f); the second is another.
+TEST_HOST_CHALLENGE = topology_fixture.TEST_HOST_CHALLENGE
+OTHER_HOST_CHALLENGE = '101112131415161718191a1b1c1d1e1f'
 
 
 class Clock:
@@ -763,7 +767,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     role_config=h.role_config,fixtures=ForeignFixtures(),
                     proxy_entry=original._proxy_entry,observations=h.observations,
                     host_devices=h.host,events=h.events,cleanup_budget=h.budget)
-                composition.begin()
+                composition.begin(TEST_HOST_CHALLENGE)
             self.assertNotIn('roles',h.timeline);self.assertNotIn('proxy',h.timeline)
             self.assertFalse(h.event_native.opened)
         finally:sys.modules.pop(module_name,None)
@@ -771,7 +775,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_original_browser_commit_consumes_task8_transition_once(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack:
-            composition.begin();preparation=composition.prepare_browser()
+            composition.begin(TEST_HOST_CHALLENGE);preparation=composition.prepare_browser()
             reservation=composition._browser_reservation
             self.assertIs(composition._browser_preparation,preparation)
             self.assertIs(reservation._event_owner,composition._event_owner)
@@ -800,7 +804,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_composed_handoff_retains_distinct_command_result_identities(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack:
-            proof=composition.begin()
+            proof=composition.begin(TEST_HOST_CHALLENGE)
             runtime=json.loads(proof.handoff)['payload']['composition']['roleRuntime']
             self.assertEqual([row['role'] for row in runtime],list(c.UIDS))
             for row in runtime:
@@ -812,7 +816,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_controller_forwarder_owns_prepare_and_commit_state_change(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack:
-            admitted=composition.begin();row=next(value for value in
+            admitted=composition.begin(TEST_HOST_CHALLENGE);row=next(value for value in
                 h.role_init['CONTROLLER']['roles'] if value['role']=='BROWSER')
             key=bytes.fromhex(h.role_init['CONTROLLER']['channelKeyHex'])
             def request(sequence,action,payload):
@@ -840,7 +844,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_task13_application_chunks_use_the_original_browser_pipe_only(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack:
-            composition.begin();preparation=composition.prepare_browser();composition.commit_browser(preparation)
+            composition.begin(TEST_HOST_CHALLENGE);preparation=composition.prepare_browser();composition.commit_browser(preparation)
             controller=h.role_init['CONTROLLER'];row=next(value for value in controller['roles'] if value['role']=='BROWSER')
             key=bytes.fromhex(controller['channelKeyHex'])
             def request(sequence,action,payload):
@@ -863,7 +867,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_browser_failure_and_expiry_never_revive_reserved_transition(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack:
-            composition.begin();preparation=composition.prepare_browser()
+            composition.begin(TEST_HOST_CHALLENGE);preparation=composition.prepare_browser()
             reservation=composition._browser_reservation
             read=h.role_kernel.read_role;reads=0
             def fail_after_refresh(owned,remaining):
@@ -882,7 +886,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             with self.assertRaises(Exception):composition.commit_browser(preparation)
         h=self.Harness(self);composition,stack=h.build()
         with stack:
-            composition.begin();preparation=composition.prepare_browser()
+            composition.begin(TEST_HOST_CHALLENGE);preparation=composition.prepare_browser()
             reservation=composition._browser_reservation
             h.clock.wall=h.binding.expiresAtMs
             with self.assertRaises(Exception):composition.commit_browser(preparation)
@@ -894,7 +898,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_authenticated_cancel_terminalizes_composition_and_cleanup_once(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack:
-            composition.begin();preparation=composition.prepare_browser()
+            composition.begin(TEST_HOST_CHALLENGE);preparation=composition.prepare_browser()
             reservation=composition._browser_reservation
             def write_cancelled(owned,data):
                 value=json.loads(data[4:]);self.assertEqual(value['action'],'CANCEL')
@@ -945,7 +949,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             with self.subTest(committed=committed):
                 h=self.Harness(self);composition,stack=h.build()
                 with stack:
-                    first=composition.begin();preparation=reservation=None
+                    first=composition.begin(TEST_HOST_CHALLENGE);preparation=reservation=None
                     if committed:
                         preparation=composition.prepare_browser()
                         reservation=composition._browser_reservation
@@ -953,7 +957,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                                          {'status':'ACTIVE','generation':1})
                         self.assertEqual(composition._state,'BROWSER_COMMITTED')
                     with self.assertRaisesRegex(t.TopologyError,'^TOPOLOGY_FAILED$'):
-                        composition.begin()
+                        composition.begin(TEST_HOST_CHALLENGE)
                     self.assertTrue(composition._terminal)
                     self.assertEqual(composition._state,'FAILED')
                     self.assertEqual(composition._generation,2)
@@ -966,7 +970,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     self.assertIsNot(first,composition._proof)
                     stopped=tuple(h.role_finite.stopped)
                     self.assertEqual(len(stopped),4)
-                    operations=(composition.begin,composition.require_current,
+                    operations=(lambda:composition.begin(TEST_HOST_CHALLENGE),composition.require_current,
                         composition.prepare_browser,
                         lambda:composition.commit_browser(preparation),
                         lambda:composition.handle_controller(b'bad'))
@@ -1017,7 +1021,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                         t,'_validate_composition_payload',side_effect=validate))
                 result=error=None
                 with stack:
-                    try:result=composition.begin()
+                    try:result=composition.begin(TEST_HOST_CHALLENGE)
                     except Exception as caught:error=caught
                     self.assertEqual(receipts,[{'status':'TIMEOUT','runId':h.binding.runId}])
                     self.assertIsNone(result);self.assertIsNotNone(error)
@@ -1028,7 +1032,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     self.assertEqual(composition.stop_owned(60000)['status'],'STOPPED')
                     self.assertTrue(all(owner.closed for owner in h.event_native.opened))
                     generation=composition._generation
-                    for operation in (composition.begin,composition.require_current,
+                    for operation in (lambda:composition.begin(TEST_HOST_CHALLENGE),composition.require_current,
                                       composition.prepare_browser):
                         with self.assertRaises(Exception):operation()
                         self.assertEqual(composition._generation,generation)
@@ -1064,7 +1068,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                         error=t.TopologyError('LATE_FAILURE');error.cleanup=late;raise error
                     return late
                 composition._proxy_entry=activate
-                with stack,self.assertRaises(Exception):composition.begin()
+                with stack,self.assertRaises(Exception):composition.begin(TEST_HOST_CHALLENGE)
                 self.assertEqual(receipts[0],{'status':'TIMEOUT','runId':h.binding.runId})
                 self.assertEqual(late.maximum,1)
                 self.assertGreaterEqual(late.calls,1)
@@ -1087,7 +1091,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 def stop(owner,remaining):
                     allowances.append(remaining);return original(owner,remaining)
                 with stack:
-                    composition.begin()
+                    composition.begin(TEST_HOST_CHALLENGE)
                     self.assertIsNone(h.budget.deadline)
                     if shared_cap is not None:
                         # An earlier terminal event already started the shared end.
@@ -1127,7 +1131,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     receipts.append(composition.stop_owned(60000))
                     return late
                 composition._proxy_entry=activate
-                with stack,self.assertRaises(Exception):composition.begin()
+                with stack,self.assertRaises(Exception):composition.begin(TEST_HOST_CHALLENGE)
                 self.assertEqual(receipts[0],
                                  {'status':'TIMEOUT','runId':h.binding.runId})
                 self.assertEqual(receipts[1],
@@ -1146,7 +1150,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_shared_cleanup_end_unarmed_after_successful_begin(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack:
-            self.assertIs(type(composition.begin()),t.AdmissionProof)
+            self.assertIs(type(composition.begin(TEST_HOST_CHALLENGE)),t.AdmissionProof)
             self.assertEqual(composition._state,'ADMITTED')
             self.assertIs(h.budget.started,False)
             self.assertIsNone(h.budget.deadline)
@@ -1161,7 +1165,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 allowances.append((owner,remaining));return original(owner,remaining)
             return mock.patch.object(kind,'stop_owned',new=stop)
         with stack:
-            composition.begin()
+            composition.begin(TEST_HOST_CHALLENGE)
             h.clock.wall+=61000;h.clock.mono+=61000;real[0]+=61000
             retained=list(composition._cleanup_chain);mono=h.clock.mono
             self.assertEqual([type(owner) for owner in retained],
@@ -1185,7 +1189,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             return stop(owner,duration)
         kernel.stop_owned=slow_family_stop
         with stack:
-            try:composition.begin()
+            try:composition.begin(TEST_HOST_CHALLENGE)
             except Exception as error:self.fail('a >60 s probe catalogue was denied: '+repr(error))
             self.assertEqual(composition._state,'ADMITTED')
             self.assertEqual(len(h.fixture.family_owners),91)
@@ -1196,7 +1200,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_activation_deadline_not_capped_by_unstarted_cleanup(self):
         h=self.Harness(self,expires_at=self.LONG_LIVED_EXPIRES_MS);composition,stack=h.build()
         with stack:
-            composition.begin()
+            composition.begin(TEST_HOST_CHALLENGE)
             h.clock.wall+=61000;h.clock.mono+=61000;wall,mono=h.clock.wall,h.clock.mono
             try:composition.prepare_browser()
             except Exception as error:self.fail('activation capped by cleanup end: '+repr(error))
@@ -1222,14 +1226,17 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 self.assertIsNone(h.proxy_harness.budget.deadline,step)
         with stack,mock.patch.object(t.CleanupBudget,'start_terminal',new=spy):
             unarmed('built')
-            composition.begin();unarmed('begin')
+            composition.begin(TEST_HOST_CHALLENGE);unarmed('begin')
             for index in range(3):
                 composition.require_current();unarmed('current-%d'%index)
+            # Host-facing current checks (C2) are routine as well.
+            composition.host_current(OTHER_HOST_CHALLENGE);unarmed('host-current')
             preparation=composition.prepare_browser();unarmed('prepare')
             self.assertEqual(composition.commit_browser(preparation),
                              {'status':'ACTIVE','generation':1})
             unarmed('commit')
             composition.require_current();unarmed('committed-current')
+            composition.host_current('20'*16);unarmed('committed-host-current')
         self.assertEqual([budget for budget in calls if budget is h.budget],[])
 
     def test_v1_late_acquisition_racing_cleanup_is_stopped(self):
@@ -1256,7 +1263,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             with mock.patch.object(c,'bind_original_roles',side_effect=bind), \
                     mock.patch.object(t.NativeTopologyBindings,'cleanup_unresolved',blocking_unresolved):
                 def run_begin():
-                    try:composition.begin()
+                    try:composition.begin(TEST_HOST_CHALLENGE)
                     except Exception as error:begin_errors.append(error)
                 begin=threading.Thread(target=run_begin,name='begin',daemon=True);begin.start()
                 self.assertTrue(roles_entered.wait(5))
@@ -1274,7 +1281,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_bootstrap_clamps_to_worker_first_terminal_end(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack:
-            composition.begin()
+            composition.begin(TEST_HOST_CHALLENGE)
             h.clock.mono+=5000;failed_at=h.clock.mono-5000
             write=h.role_kernel.write_role
             def fail_prepare(owned,data):
@@ -1311,7 +1318,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
 
     def test_v1_all_probe_families_exit_before_persistent_roles(self):
         h=self.Harness(self);composition,stack=h.build()
-        with stack: composition.begin()
+        with stack: composition.begin(TEST_HOST_CHALLENGE)
         self.assertLess(h.timeline.index('probes'),h.timeline.index('roles'))
         self.assertLess(h.timeline.index('roles'),h.timeline.index('proxy'))
         event_index=next(i for i,v in enumerate(h.timeline) if isinstance(v,tuple) and v[0]=='event-retain')
@@ -1321,12 +1328,12 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_resample_reuses_probe_epoch_without_spawn(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack:
-            composition.begin();composition.require_current()
+            composition.begin(TEST_HOST_CHALLENGE);composition.require_current()
         self.assertEqual(h.timeline.count('probes'),1);self.assertEqual(h.timeline.count('roles'),1)
 
     def test_v1_binding_mutation_invalidates_every_owner(self):
         h=self.Harness(self);composition,stack=h.build()
-        with stack:proof=composition.begin()
+        with stack:proof=composition.begin(TEST_HOST_CHALLENGE)
         self.assertEqual(t.verify_bootstrap_handoff_v1(proof.handoff,h.expected,h.binding,composition)['runId'],h.binding.runId)
         value=json.loads(proof.handoff);value['payload']['composition']['binding']['epoch']=2
         value['mac']=__import__('hmac').new(h.expected.capability,t.BOOTSTRAP_HANDOFF_DOMAIN+t._canonical(value['payload']),hashlib.sha256).hexdigest()
@@ -1335,18 +1342,18 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_capture_failure_at_each_acquisition_keeps_original_cleanup(self):
         h=self.Harness(self);composition,stack=h.build()
         h.observations.observation_port.open_owned=lambda *args:(_ for _ in ()).throw(OSError('inert capture'))
-        with stack,self.assertRaises(Exception) as caught:composition.begin()
+        with stack,self.assertRaises(Exception) as caught:composition.begin(TEST_HOST_CHALLENGE)
         self.assertEqual(composition._state,'FAILED');self.assertIs(composition._roles,h.roles)
         self.assertIs(caught.exception.cleanup,composition)
 
     def test_v1_partial_role_and_event_acquisitions_keep_exact_cleanup_owners(self):
         h=self.Harness(self);h.role_finite.fail_spawn='PROXY';composition,stack=h.build()
-        with stack,self.assertRaises(Exception) as caught:composition.begin()
+        with stack,self.assertRaises(Exception) as caught:composition.begin(TEST_HOST_CHALLENGE)
         self.assertIs(caught.exception.cleanup,composition)
         self.assertTrue(any(type(owner) is c.OriginalRoleSet
                             for owner in composition._cleanup_chain))
         h=self.Harness(self);h.event_native.fail_at='ROUTE';composition,stack=h.build()
-        with stack,self.assertRaises(Exception) as caught:composition.begin()
+        with stack,self.assertRaises(Exception) as caught:composition.begin(TEST_HOST_CHALLENGE)
         self.assertIs(caught.exception.cleanup,composition)
         events=[owner for owner in composition._cleanup_chain
                 if type(owner) is t.BootstrapEventOwner]
@@ -1358,7 +1365,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
 
     def test_v1_complete_guest_composition_uses_actual_accepted_modules(self):
         h=self.Harness(self);composition,stack=h.build()
-        with stack:proof=composition.begin()
+        with stack:proof=composition.begin(TEST_HOST_CHALLENGE)
         self.assertEqual(h.proxy_harness.events[:3],['bind','listen','owner'])
         self.assertEqual(len(h.proxy_harness.owners),1)
         self.assertIs(type(composition._proxy_owner),t._PROXY.ProxyRuntimeOwner)
@@ -1370,7 +1377,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_composition_preparation_returns_original_python_owner(self):
         h=self.Harness(self);composition,stack=h.build()
         with stack:
-            composition.begin();owner=composition.prepare_browser()
+            composition.begin(TEST_HOST_CHALLENGE);owner=composition.prepare_browser()
         self.assertIs(type(owner),c.BootstrapBrowserPreparation)
         self.assertEqual(set(owner.to_prepare_result()),{'grantId','proofDigest','generation','expiresAtMs','monotonicDeadlineMs'})
         self.assertIs(owner._roles,h.roles)
@@ -1380,6 +1387,148 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
         self.assertEqual(t.BOOTSTRAP_HANDOFF_LIMIT, 131072)
         self.assertEqual(t.BOOTSTRAP_HANDOFF_DOMAIN,
                          b'acceptance:bootstrap-composition:v1\0')
+
+    def test_v1_handoff_payload_carries_exact_host_challenge(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            proof=composition.begin(TEST_HOST_CHALLENGE)
+            payload=json.loads(proof.handoff)['payload']
+            self.assertEqual(payload.get('hostChallenge'),TEST_HOST_CHALLENGE)
+            self.assertEqual(json.loads(proof.canonical).get('hostChallenge'),TEST_HOST_CHALLENGE)
+            self.assertEqual(composition._handoff.payload.get('hostChallenge'),TEST_HOST_CHALLENGE)
+            self.assertIs(composition._handoff.host_eligible,True)
+            current=composition.host_current(OTHER_HOST_CHALLENGE)
+            self.assertEqual(json.loads(current.handoff)['payload'].get('hostChallenge'),
+                             OTHER_HOST_CHALLENGE)
+            self.assertEqual(current.sequence,proof.sequence+1)
+            self.assertIs(composition._handoff.host_eligible,True)
+
+    def test_v1_host_challenge_format_and_reuse_denied(self):
+        bad_values=(TEST_HOST_CHALLENGE.upper(),TEST_HOST_CHALLENGE[:31],
+                    TEST_HOST_CHALLENGE+'0','g'*32,TEST_HOST_CHALLENGE[:31]+'\n',
+                    TEST_HOST_CHALLENGE.encode('ascii'),None)
+        for bad in bad_values:
+            with self.subTest(begin=bad):
+                h=self.Harness(self);composition,stack=h.build()
+                with stack:
+                    with self.assertRaisesRegex(t.TopologyError,'^CHALLENGE_DENIED$'):
+                        composition.begin(bad)
+                    self.assertTrue(composition._terminal)
+                    self.assertEqual(composition._state,'FAILED')
+                    self.assertNotIn('probes',h.timeline)
+        with self.subTest(host_current='uppercase'):
+            h=self.Harness(self);composition,stack=h.build()
+            with stack:
+                composition.begin(TEST_HOST_CHALLENGE)
+                with self.assertRaisesRegex(t.TopologyError,'^CHALLENGE_DENIED$'):
+                    composition.host_current(OTHER_HOST_CHALLENGE.upper())
+                self.assertTrue(composition._terminal)
+                self.assertEqual(composition._state,'FAILED')
+        with self.subTest(replay='begin-then-host-current'):
+            h=self.Harness(self);composition,stack=h.build()
+            with stack:
+                composition.begin(TEST_HOST_CHALLENGE)
+                with self.assertRaisesRegex(t.TopologyError,'^CHALLENGE_REPLAY$'):
+                    composition.host_current(TEST_HOST_CHALLENGE)
+                self.assertTrue(composition._terminal)
+                self.assertEqual(composition._state,'FAILED')
+                self.assertIsNone(composition._proof)
+        with self.subTest(replay='host-current-twice'):
+            h=self.Harness(self);composition,stack=h.build()
+            with stack:
+                composition.begin(TEST_HOST_CHALLENGE)
+                composition.host_current(OTHER_HOST_CHALLENGE)
+                with self.assertRaisesRegex(t.TopologyError,'^CHALLENGE_REPLAY$'):
+                    composition.host_current(OTHER_HOST_CHALLENGE)
+                self.assertTrue(composition._terminal)
+                self.assertEqual(composition._state,'FAILED')
+
+    def test_v1_internal_current_handoff_has_no_host_challenge(self):
+        # R3: guest-internal currents (browser commit paths) carry no host
+        # challenge, so the host can never accept them (Swift twin denies).
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            composition.begin(TEST_HOST_CHALLENGE)
+            self.assertIs(composition._handoff.host_eligible,True)
+            proof=composition.require_current()
+            self.assertNotIn('hostChallenge',json.loads(proof.handoff)['payload'])
+            self.assertNotIn('hostChallenge',json.loads(proof.canonical))
+            self.assertIs(composition._handoff.host_eligible,False)
+            composition.prepare_browser()
+            self.assertNotIn('hostChallenge',composition._handoff.payload)
+            self.assertIs(composition._handoff.host_eligible,False)
+
+    def test_v1_host_challenge_excluded_from_stable_digest_but_macd(self):
+        # P6: hostChallenge is MAC-covered but outside the stable topology digest.
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            first=composition.begin(TEST_HOST_CHALLENGE)
+            second=composition.host_current(OTHER_HOST_CHALLENGE)
+            internal=composition.require_current()
+            self.assertEqual(first.topology_digest,second.topology_digest)
+            self.assertEqual(first.topology_digest,internal.topology_digest)
+            self.assertEqual(t.verify_bootstrap_handoff_v1(second.handoff,h.expected,h.binding)
+                             .get('hostChallenge'),OTHER_HOST_CHALLENGE)
+            tampered=json.loads(second.handoff)
+            tampered['payload']['hostChallenge']=TEST_HOST_CHALLENGE
+            with self.assertRaisesRegex(t.TopologyError,'^HANDOFF_DENIED$'):
+                t.verify_bootstrap_handoff_v1(t._canonical(tampered).decode('ascii'),
+                                              h.expected,h.binding)
+
+    def test_v1_handoff_mac_uses_topology_admission_key(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            proof=composition.begin(TEST_HOST_CHALLENGE)
+            envelope=json.loads(proof.handoff)
+            body=t.BOOTSTRAP_HANDOFF_DOMAIN+t._canonical(envelope['payload'])
+            capability=h.expected.capability
+            # Independent C3 derivation; the module function must agree with it.
+            derived=hmac.new(capability,b'acceptance:key-derivation:v1\0topology-admission\0',
+                             hashlib.sha256).digest()
+            self.assertEqual(c.derive_channel_key(capability,'topology-admission'),derived)
+            self.assertEqual(envelope['mac'],hmac.new(derived,body,hashlib.sha256).hexdigest())
+            raw_mac=hmac.new(capability,body,hashlib.sha256).hexdigest()
+            self.assertNotEqual(envelope['mac'],raw_mac)
+            self.assertEqual(t.verify_bootstrap_handoff_v1(proof.handoff,h.expected,h.binding)
+                             .get('hostChallenge'),TEST_HOST_CHALLENGE)
+            raw=dict(envelope,mac=raw_mac)
+            with self.assertRaisesRegex(t.TopologyError,'^HANDOFF_DENIED$'):
+                t.verify_bootstrap_handoff_v1(t._canonical(raw).decode('ascii'),
+                                              h.expected,h.binding)
+
+    def test_v1_guest_observation_window_is_100ms_with_advancing_clock(self):
+        # T10-7 with an advancing guest clock: every read advances 1 ms, and the
+        # closing event barrier ends gap-1 ms after `observed` (whatever it reads
+        # itself), so the next read, `final`, is exactly gap ms after `observed`.
+        for gap,admitted in ((99,True),(100,True),(101,False)):
+            with self.subTest(gap=gap):
+                h=self.Harness(self,expires_at=self.LONG_LIVED_EXPIRES_MS)
+                composition,stack=h.build();clock=h.clock
+                def sample(clock=clock):
+                    clock.wall+=1;clock.mono+=1;return clock.wall,clock.mono
+                clock.sample=sample
+                barrier=t.BootstrapEventOwner.barrier
+                def slow_barrier(owner,clock=clock,gap=gap):
+                    wall,mono=clock.wall,clock.mono;value=barrier(owner)
+                    clock.wall,clock.mono=wall+gap-1,mono+gap-1;return value
+                windows=[];payload=t._payload
+                def measured(snapshot,expected,observed,final):
+                    windows.append((final[0]-snapshot.observed_wall,
+                                    final[1]-snapshot.observed_monotonic))
+                    return payload(snapshot,expected,observed,final)
+                stack.enter_context(mock.patch.object(t.BootstrapEventOwner,'barrier',slow_barrier))
+                stack.enter_context(mock.patch.object(t,'_payload',side_effect=measured))
+                with stack:
+                    if admitted:
+                        try:composition.begin(TEST_HOST_CHALLENGE)
+                        except t.TopologyError as error:
+                            self.fail('%d ms guest window denied: %s'%(gap,error))
+                        self.assertEqual(composition._state,'ADMITTED')
+                    else:
+                        with self.assertRaisesRegex(t.TopologyError,'^BINDING_DENIED$'):
+                            composition.begin(TEST_HOST_CHALLENGE)
+                        self.assertTrue(composition._terminal)
+                    self.assertEqual(windows,[(gap,gap)])
 
     def test_v1_exchange_directory_is_created_only_when_explicitly_requested(self):
         target = os.environ.get('BOOTSTRAP_V1_EXCHANGE')

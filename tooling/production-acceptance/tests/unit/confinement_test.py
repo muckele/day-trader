@@ -614,6 +614,22 @@ class ConfinementTests(unittest.TestCase):
         next(iter(k._owned.values()))['exec_identity']=(1,999)
         a=c.inspect_role(300,kernel=k)
         self.assertEqual((a.pid,a.role,a.uids,a.capabilities,a.no_new_privs,a.seccomp),(300,'BROWSER',(10002,)*3,(0,)*5,1,2))
+    def test_channel_key_derivation_vectors(self):
+        # C3 vectors, computed by the plan author with Python hmac from the C3
+        # string; never edited to match an implementation.
+        m=self.api(); capability=bytes([7])*32
+        self.assertEqual(m.derive_channel_key(capability,'vsock-stream').hex(),
+            '5814c7147c97464dd6833b65cfd337b5d6f8277a080522efe9c3f7f498d54d00')
+        self.assertEqual(m.derive_channel_key(capability,'topology-admission').hex(),
+            '49206226671c56e90e00b0198cbeca8b32acb63e5e5c714b12989d3172cf0e49')
+        for label in ('vsock','topology-admission\0','TOPOLOGY-ADMISSION','',
+                      'bootstrap-composition',b'vsock-stream',None):
+            with self.subTest(label=label), self.assertRaises(m.ConfinementError):
+                m.derive_channel_key(capability,label)
+        for bad in (bytes(31),bytes(33),b'',bytearray(32),'\x07'*32,None):
+            with self.subTest(capability=bad), self.assertRaises(m.ConfinementError):
+                m.derive_channel_key(bad,'vsock-stream')
+
     def test_vsock_browser_controller_verifier_denied(self):
         for role in ('BROWSER', 'CONTROLLER', 'VERIFIER'):
             for nr in (198, 199):
