@@ -136,18 +136,70 @@ private final class FakeResolver: Resolver, @unchecked Sendable {
 private final class FakeConnector: Connector, @unchecked Sendable {
     let lock = NSLock(); var calls = [(NumericAddress, UInt16)](); let stream: MemoryStream
     let deferred: Deferred<any ByteStream>?
-    init(stream: MemoryStream = MemoryStream(), deferred: Deferred<any ByteStream>? = nil) { self.stream = stream; self.deferred = deferred }
-    func connect(address: NumericAddress, port: UInt16) async throws -> any ByteStream { let first = lock.withLock { calls.append((address,port)); return calls.count == 1 }; if first, let deferred { return try await deferred.get() }; return stream }
+    // Origins handed out in order before falling back to `stream`.
+    var queued: [any ByteStream]
+    init(stream: MemoryStream = MemoryStream(), deferred: Deferred<any ByteStream>? = nil, queued: [any ByteStream] = []) { self.stream = stream; self.deferred = deferred; self.queued = queued }
+    func connect(address: NumericAddress, port: UInt16) async throws -> any ByteStream {
+        let (first, next) = lock.withLock { () -> (Bool, (any ByteStream)?) in calls.append((address,port)); return (calls.count == 1, queued.isEmpty ? nil : queued.removeFirst()) }
+        if first, let deferred { return try await deferred.get() }
+        return next ?? stream
+    }
 }
 private struct Harness {
     let clock: FakeClock, authority: ReleaseAuthority, release: VerifiedRelease, binding: RunBinding, resolver: FakeResolver, connector: FakeConnector, broker: EgressBroker
-    init(clock: FakeClock = FakeClock(), resolver: FakeResolver? = nil, connector: FakeConnector = FakeConnector(), bytes: Int = 10000, idle: Int = 20, duration: Int = 30, expiry: Int = 190, releaseMaxAge: Int = 100, capability: Data = Data(repeating:7,count:32), manifestIdentity: String = String(repeating:"b",count:64), configIdentity: String = String(repeating:"a",count:64), origins: [Destination:String] = [.frontend:"https://frontend.example.test",.backend:"https://backend.example.test"]) throws {
+    init(clock: FakeClock = FakeClock(), resolver: FakeResolver? = nil, connector: FakeConnector = FakeConnector(), bytes: Int = 10000, idle: Int = 20, duration: Int = 30, expiry: Int = 190, releaseMaxAge: Int = 100, capability: Data = harnessCapability, firstSequence: Int = 1, manifestIdentity: String = String(repeating:"b",count:64), configIdentity: String = String(repeating:"a",count:64), origins: [Destination:String] = [.frontend:"https://frontend.example.test",.backend:"https://backend.example.test"]) throws {
         self.clock = clock
         let f = try BrokerTests.fixture(); let a = try BrokerTests.authority(f,maxAge:releaseMaxAge); authority = a
         release = try ReceiptVerifier.verifyRelease(BrokerTests.candidate(f), authority:a, atWallTime:clock.sample().wall)
         let r = try resolver ?? FakeResolver([NumericAddress("8.8.8.8")]); self.resolver = r; self.connector = connector
-        binding = RunBinding(runID: BrokerTests.runID, capability:Data(repeating:7,count:32), expiresAt:expiry,firstSequence:1,manifest:BrokerManifest(identity:manifestIdentity,limits:BrokerLimits(bytes:bytes,idleMs:idle),durationMs:duration),configIdentity:configIdentity,origins:origins)
-        broker = try EgressBroker(release:release,authority:a,binding:binding,authenticatedCapability:capability,limits:BrokerLimits(bytes:bytes,idleMs:idle),resolver:r,connector:connector,clock:clock)
+        binding = RunBinding(runID: BrokerTests.runID, capability:capability, expiresAt:expiry,firstSequence:firstSequence,manifest:BrokerManifest(identity:manifestIdentity,limits:BrokerLimits(bytes:bytes,idleMs:idle),durationMs:duration),configIdentity:configIdentity,origins:origins)
+        broker = try EgressBroker(release:release,authority:a,binding:binding,limits:BrokerLimits(bytes:bytes,idleMs:idle),resolver:r,connector:connector,clock:clock)
+    }
+}
+
+// C3/C4 (E3). The harness run capability is 32 bytes of 7; the host derives k_vsock from it
+// (Task 3 vector 5814c714...4d00) and verifies each stream's proof with that key.
+private let harnessCapability = Data(repeating: 7, count: 32)
+private let testVsockKey = try! ChannelKeys.derive(capability: harnessCapability, label: "vsock-stream")
+private func hexString(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+// Challenge value i: bytes 00..0f with the big-endian i XORed into the last eight bytes, so the
+// first is the vector's 00..0f and no two values repeat.
+private func brokerNonce(_ index: UInt64) -> Data {
+    var bytes = (0..<16).map { UInt8($0) }
+    withUnsafeBytes(of: index.bigEndian) { for (offset, byte) in $0.enumerated() { bytes[8 + offset] ^= byte } }
+    return Data(bytes)
+}
+private final class CountingBrokerNonces: BrokerNonceSource, @unchecked Sendable {
+    private let lock = NSLock(); private var next: UInt64
+    init(start: UInt64 = 0) { next = start }
+    func nonce() throws -> Data { lock.withLock { defer { next += 1 }; return brokerNonce(next) } }
+}
+private final class ConstantBrokerNonces: BrokerNonceSource, @unchecked Sendable {
+    let value: Data?
+    init(_ value: Data?) { self.value = value }
+    func nonce() throws -> Data { guard let value else { throw BrokerFailure.transport }; return value }
+}
+// Suite-wide fresh values for the M2 cases that predate the challenge.
+private let harnessNonces = CountingBrokerNonces(start: 1 << 32)
+private func controlFields(_ control: Data) -> (String, Int) {
+    let value = (try? JSONSerialization.jsonObject(with: control)) as? [String: Any]
+    return (value?["runId"] as? String ?? "", value?["sequence"] as? Int ?? 0)
+}
+// The guest's C4 proof for CONTROL's own run and sequence (k_vsock unless KEY is given).
+private func proofFor(_ control: Data, _ nonce: Data, key: Data = testVsockKey) -> Data {
+    let (run, sequence) = controlFields(control)
+    return VsockStreamProof.compute(key: key, nonce: nonce, runID: run, sequence: sequence)
+}
+// A C4 request for CONTROL: by default a fresh nonce and a valid proof.
+private func admission(_ control: Data, _ stream: any ByteStream, nonce: Data? = nil, proof: Data? = nil, key: Data = testVsockKey) -> RelayRequest {
+    let challenge = nonce ?? (try! harnessNonces.nonce())
+    return RelayRequest(control: control, nonce: challenge, proof: proof ?? proofFor(control, challenge, key: key), stream: stream)
+}
+extension EgressBroker {
+    // Test-only: the M2 cases admit through the real verifier with a valid C4 proof.
+    // Production has no proof-less entry.
+    func accept(control: Data, stream: any ByteStream) async throws -> Tunnel {
+        try await accept(request: admission(control, stream))
     }
 }
 @Suite(.serialized) struct BrokerTests {
@@ -180,12 +232,14 @@ private struct Harness {
         for data in bad { let h = try Harness(); await denied(h,data); #expect(h.resolver.calls.isEmpty) }
     }
     @Test func wrong_run_sequence_replay_and_terminal_phase_rejected() async throws {
-        for data in [control(run:String(repeating:"b",count:32)),control(sequence:2),control(phase:"DONE",event:"readResult"),control(event:"abort")] { let h = try Harness(); await denied(h,data); #expect(h.connector.calls.isEmpty) }
+        // P38(a): a first control with a gap (sequence 2) is admitted; sequence_gaps_admitted_repeat_or_decrease_denied binds it.
+        for data in [control(run:String(repeating:"b",count:32)),control(phase:"DONE",event:"readResult"),control(event:"abort")] { let h = try Harness(); await denied(h,data); #expect(h.connector.calls.isEmpty) }
         let h = try Harness(); let t = try await h.broker.accept(control:control(),stream:MemoryStream()); await denied(h,control(),expected:.replay); t.close()
     }
     @Test func required_limits_run_and_capability_fail_closed() throws {
         for (bytes,idle,duration,expiry) in [(0,20,30,190),(100,0,30,190),(100,20,0,190),(100,20,30,160),(-1,20,30,190)] { #expect(throws:(any Error).self) { _ = try Harness(bytes:bytes,idle:idle,duration:duration,expiry:expiry) } }
-        #expect(throws:(any Error).self) { _ = try Harness(capability:Data(repeating:8,count:32)) }
+        // The host derives k_vsock from its own 32-byte capability; no other length is a run capability.
+        for bad in [Data(),Data(repeating:7,count:31),Data(repeating:7,count:33)] { #expect(throws:BrokerFailure.identity) { _ = try Harness(capability:bad) } }
     }
     @Test func nonpublic_ipv4_addresses_rejected() throws {
         for text in ["0.0.0.0","0.1.2.3","10.1.2.3","100.64.0.1","127.0.0.1","169.254.169.254","172.16.0.1","172.31.255.255","192.0.0.1","192.0.2.1","192.88.99.1","192.168.1.1","198.18.0.1","198.19.255.255","198.51.100.2","203.0.113.2","224.0.0.1","239.1.1.1","240.0.0.1","255.255.255.255"] { #expect(try !NumericAddress(text).isPublic,"\(text)") }
@@ -306,13 +360,19 @@ extension BrokerTests {
             for _ in 0..<1000 { let count = await h.broker.activeCount; if input.closes > 0 && count == 0 { break }; await Task.yield() }
             #expect(input.closes == 1,"Pending resources were not closed before late completion")
             #expect(await h.broker.activeCount == 0)
-            await d.finish(r.addresses); do { _ = try await task.value; Issue.record("Pending admission revived") } catch {}
+            await d.finish(r.addresses); do { _ = try await task.value; Issue.record("Pending admission revived") } catch { if mode == "idle" { #expect(error is SlotEnded) } }
             #expect(h.connector.calls.isEmpty)
+            if mode == "idle" {
+                // P38(b): an idle pending slot ends only itself; its guest stream gets a logical
+                // EOF before it closes, and the run admits the next stream.
+                #expect(input.ends == 1)
+                let next = try await h.broker.accept(control:control(sequence:2),stream:MemoryStream()); next.close()
+            }
         }
     }
     @Test func sixteen_simultaneous_pending_no_connector_and_single_cleanup() async throws {
         let h = try Harness(), resolver = PendingResolver()
-        let b = try EgressBroker(release:h.release,authority:h.authority,binding:h.binding,authenticatedCapability:h.binding.capability,limits:BrokerLimits(bytes:10000,idleMs:20),resolver:resolver,connector:h.connector,clock:h.clock)
+        let b = try EgressBroker(release:h.release,authority:h.authority,binding:h.binding,limits:BrokerLimits(bytes:10000,idleMs:20),resolver:resolver,connector:h.connector,clock:h.clock)
         var tasks = [Task<Tunnel, any Error>](), inputs = [MemoryStream]()
         for n in 1...16 { let input = MemoryStream(); inputs.append(input); tasks.append(Task { try await b.accept(control:control(sequence:n),stream:input) }); for _ in 0..<1000 { if await resolver.count == n { break }; await Task.yield() } }
         #expect(await b.activeCount == 16); do { _ = try await b.accept(control:control(sequence:17),stream:MemoryStream()); Issue.record("17th pending admission") } catch { #expect(error as? BrokerFailure == .capacity) }
@@ -326,12 +386,14 @@ extension BrokerTests {
         let second = try await h.broker.accept(control:control(sequence:2),stream:MemoryStream([Data(repeating:2,count:5)])); do { try await second.run(); Issue.record("Aggregate byte budget reset") } catch { #expect(error as? BrokerFailure == .limits) }; #expect(await h.broker.activeCount == 0)
     }
     @Test func stalled_stream_idle_deadline_and_run_cancellation() async throws {
-        for mode in ["idle","deadline","cancel"] {
+        // An idle slot now closes only itself (T9-2, P38): idle_slot_closes_only_itself_and_run_continues.
+        // The run deadline and cancellation stay whole-run.
+        for mode in ["deadline","cancel"] {
             let d = Deferred<Data>(), input = MemoryStream(delayed:d), h = try Harness(); let t = try await h.broker.accept(control:control(),stream:input)
             let task = Task { try await t.run() }; await d.waitEntered()
             if mode == "cancel" { task.cancel() } else {
                 await h.clock.waitForWaiters(2)
-                h.clock.set(160,mode == "idle" ? 30 : 40); h.clock.tick()
+                h.clock.set(160,40); h.clock.tick()
             }
             for _ in 0..<1000 { let count = await h.broker.activeCount; if input.closes > 0 && count == 0 { break }; await Task.yield() }
             #expect(input.closes == 1); #expect(await h.broker.activeCount == 0)
@@ -430,22 +492,36 @@ extension BrokerTests {
         #expect(throws:(any Error).self) { try BrokerBootstrap.auditFacts(Array(facts.dropLast()),uid:501,arguments:[],environment:[:]) }
     }
     @Test func relay_partial_framing_logical_eof_reuse_and_old_generation() async throws {
-        let physical = BufferedStream(record(control()) + record(Data([0,255,1])) + record(Data()) + record(control("BACKEND",sequence:2)) + record(Data()))
-        let channel = RelayChannel(physical:physical), first = try await channel.next(); #expect(first.control == control())
+        let n1 = brokerNonce(1), n2 = brokerNonce(2), p1 = proofFor(control(),n1), p2 = proofFor(control("BACKEND",sequence:2),n2)
+        let physical = BufferedStream(record(control()) + record(p1) + record(Data([0,255,1])) + record(Data()) + record(control("BACKEND",sequence:2)) + record(p2) + record(Data()))
+        let channel = RelayChannel(physical:physical,nonces:CountingBrokerNonces(start:1)), first = try await channel.next()
+        #expect(first.control == control()); #expect(first.nonce == n1); #expect(first.proof == p1)
         #expect(try await first.stream.read(maxBytes:4096) == Data([0,255,1])); #expect(try await first.stream.read(maxBytes:4096) == Data()); #expect(try await first.stream.write(Data([7,8])) == 2); try await first.stream.endWrite(); first.stream.close()
-        let second = try await channel.next(); #expect(second.control == control("BACKEND",sequence:2)); #expect(try await second.stream.read(maxBytes:4096) == Data()); try await second.stream.endWrite(); second.stream.close()
-        #expect(physical.output == record(Data([7,8])) + record(Data()) + record(Data())); #expect(physical.closes == 0)
+        let second = try await channel.next(); #expect(second.control == control("BACKEND",sequence:2)); #expect(second.nonce == n2); #expect(second.proof == p2)
+        #expect(try await second.stream.read(maxBytes:4096) == Data()); try await second.stream.endWrite(); second.stream.close()
+        // C4: each stream's challenge frame (length 16, then the nonce) precedes what the host writes on it.
+        #expect(physical.output == record(n1) + record(Data([7,8])) + record(Data()) + record(n2) + record(Data())); #expect(physical.closes == 0)
         do { _ = try await first.stream.write(Data([9])); Issue.record("Old generation wrote into next tunnel") } catch { #expect(error as? BrokerFailure == .terminal) }
     }
     @Test func relay_oversize_partial_physical_loss_and_no_early_reuse() async throws {
-        for data in [Data(),Data([0]),record(Data(repeating:1,count:257))] {
-            do { _ = try await RelayChannel(physical:BufferedStream(data)).next(); Issue.record("Malformed control framing") } catch {}
+        let nonces = CountingBrokerNonces(start:10)
+        // A control outside 1...256 bytes or a proof frame that is not exactly 32 bytes is a protocol violation.
+        for data in [Data([0,0]),record(Data(repeating:1,count:257)),record(control()) + record(Data(repeating:1,count:31)) + Data(repeating:0,count:64),record(control()) + Data([0,33]),record(control()) + Data([0,0])] {
+            do { _ = try await RelayChannel(physical:BufferedStream(data),nonces:nonces).next(); Issue.record("Malformed setup framing") } catch { #expect(error as? BrokerFailure == .invalidControl) }
         }
-        let physical = BufferedStream(record(control()) + record(Data(repeating:1,count:4097))), channel = RelayChannel(physical:physical), request = try await channel.next()
+        // P38(c): a physical EOF before or inside the setup ends that lane only, never as a run failure code.
+        for data in [Data(),Data([0]),record(control()),record(control()) + Data([0,32,1])] {
+            do { _ = try await RelayChannel(physical:BufferedStream(data),nonces:nonces).next(); Issue.record("Truncated setup admitted") } catch { #expect(error is GuestStreamClosed) }
+        }
+        let n = brokerNonce(20)
+        let physical = BufferedStream(record(control()) + record(proofFor(control(),n)) + record(Data(repeating:1,count:4097))), channel = RelayChannel(physical:physical,nonces:ConstantBrokerNonces(n)), request = try await channel.next()
         do { _ = try await request.stream.read(maxBytes:4096); Issue.record("Oversized opaque record") } catch { #expect(error as? BrokerFailure == .limits) }
         do { _ = try await channel.next(); Issue.record("Relay reused before both EOF") } catch { #expect(error as? BrokerFailure == .terminal) }
-        let lost = RelayChannel(physical:BufferedStream(record(control()) + Data([0,2,1]))), current = try await lost.next()
-        do { _ = try await current.stream.read(maxBytes:4096); Issue.record("Partial physical EOF mistaken for logical EOF") } catch { #expect(error as? BrokerFailure == .transport) }
+        // A physical EOF inside a record is never a logical EOF. It ends only that lane (P38(c)).
+        let lost = RelayChannel(physical:BufferedStream(record(control()) + record(proofFor(control(),n)) + Data([0,2,1])),nonces:ConstantBrokerNonces(n)), current = try await lost.next()
+        do { _ = try await current.stream.read(maxBytes:4096); Issue.record("Partial physical EOF mistaken for logical EOF") } catch { #expect(error is GuestStreamClosed) }
+        current.stream.close()
+        do { _ = try await lost.next(); Issue.record("Lane reused after the guest's physical close") } catch { #expect(error is GuestStreamClosed) }
     }
 }
 
@@ -479,7 +555,7 @@ extension BrokerTests {
     @Test func overall_deadline_closes_physical_channels_without_active_slots() async throws {
         for completed in [false,true] {
             let h = try Harness(), physical = MemoryStream()
-            let b = try EgressBroker(release:h.release,authority:h.authority,binding:h.binding,authenticatedCapability:h.binding.capability,limits:h.binding.manifest.limits,resolver:h.resolver,connector:h.connector,clock:h.clock,physicalChannels:[physical])
+            let b = try EgressBroker(release:h.release,authority:h.authority,binding:h.binding,limits:h.binding.manifest.limits,resolver:h.resolver,connector:h.connector,clock:h.clock,physicalChannels:[physical])
             if completed { let t = try await b.accept(control:control(),stream:MemoryStream()); try await t.run() }
             await h.clock.waitForWaiters(2)
             h.clock.set(190,40); h.clock.tick()
@@ -495,7 +571,7 @@ extension BrokerTests {
     }
     @Test func release_max_age_watchdog_uses_exact_current_authority_window() async throws {
         let h = try Harness(releaseMaxAge:70), d = Deferred<[NumericAddress]>(), r = try FakeResolver([NumericAddress("8.8.8.8")],deferred:d)
-        let b = try EgressBroker(release:h.release,authority:h.authority,binding:h.binding,authenticatedCapability:h.binding.capability,limits:h.binding.manifest.limits,resolver:r,connector:h.connector,clock:h.clock)
+        let b = try EgressBroker(release:h.release,authority:h.authority,binding:h.binding,limits:h.binding.manifest.limits,resolver:r,connector:h.connector,clock:h.clock)
         let task = Task { try await b.accept(control:control(),stream:MemoryStream()) }; await d.waitEntered()
         await h.clock.waitForWaiters(2)
         #expect(h.clock.durations.contains { $0 <= 11 },"Release max-age expires at171 and must bound sleep")
@@ -546,7 +622,6 @@ extension BrokerTests {
             release: h.release,
             authority: h.authority,
             binding: h.binding,
-            authenticatedCapability: h.binding.capability,
             limits: h.binding.manifest.limits,
             resolver: resolver,
             connector: connector,
@@ -574,8 +649,14 @@ extension BrokerTests {
             await h.clock.waitForWaiters(2)
             if mode == "fail" {
                 await broker.fail(.transport)
+            } else if mode == "idle" {
+                // P38: an idle pending slot ends only itself; the physical channels stay open.
+                h.clock.set(180, 30)
+                h.clock.tick()
+                await native.closeEvent.wait()
+                do { _ = try await admission.value; Issue.record("Idle admission returned a tunnel") }
+                catch { #expect(error is SlotEnded) }
             } else {
-                if mode == "idle" { h.clock.set(180, 30) }
                 if mode == "run" { h.clock.set(190, 40) }
                 if mode == "release" { h.clock.set(171, 21) }
                 h.clock.tick()
@@ -587,14 +668,18 @@ extension BrokerTests {
                 // Only RED cleanup releases the noncooperative native callback.
                 await gate.finish(())
             }
-            do { _ = try await admission.value; Issue.record("Cancelled admission returned a tunnel") }
-            catch { #expect(error as? BrokerFailure != nil) }
+            if mode != "idle" {
+                do { _ = try await admission.value; Issue.record("Cancelled admission returned a tunnel") }
+                catch { #expect(error as? BrokerFailure != nil) }
+            }
             if !native.closed.isEmpty { await gate.finish(()) }
             #expect(native.closed == [91])
             #expect(input.closes == 1)
-            #expect(physical.base.closes == 1)
+            #expect(input.ends == (mode == "idle" ? 1 : 0))
+            #expect(physical.base.closes == (mode == "idle" ? 0 : 1))
             await broker.fail(.transport)
             #expect(native.closed == [91])
+            #expect(physical.base.closes == 1)
         }
     }
 
@@ -669,10 +754,12 @@ extension BrokerTests {
         let losing = ObservedMemoryStream(readGate: losingGate)
         let sibling = ObservedMemoryStream(readGate: siblingGate)
         let broker = try replacementBroker(h, resolver: h.resolver, connector: h.connector, physical: [losing, sibling])
-        let task = Task { try await BrokerExecutable.runRelays(broker: broker, physical: [losing, sibling]) }
+        let task = Task { try await BrokerExecutable.runRelays(broker: broker, physical: [losing, sibling], nonces: CountingBrokerNonces()) }
         await losingGate.waitEntered()
         await siblingGate.waitEntered()
-        await losingGate.finish(Data())
+        // A control length of 257 is a protocol violation. (A physical EOF here would end only that
+        // lane, P38(c): relay_guest_close_ends_only_its_lane_and_all_lanes_gone_fails_run.)
+        await losingGate.finish(Data([1, 1]))
         await sibling.closed.wait()
         await sibling.cancelled.wait()
         #expect(sibling.cancelled.isSignalled, "First child failure must cancel pending sibling before waitForAll drains")
@@ -729,5 +816,292 @@ extension BrokerTests {
         if wasClosed { await gate.finish(()) }
         #expect(input.closes == 1)
         #expect(native.closed == [91])
+    }
+}
+
+// Task 6: C4 vsock stream challenge-response (E3, R5, R6) and per-slot events (T9-2, P38).
+// Reopens accepted M2 broker code under the owner's E3-A approval (R7).
+
+// A stream whose pending read waits for deliver(_:) and is interrupted by close(), as the
+// ByteStream contract requires. It records the order of endWrite and close.
+private final class StallingStream: ByteStream, @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiter: CheckedContinuation<Data, any Error>?
+    private var isClosed = false, log = [String](), bytes = Data()
+    let readEntered = MemoryEvent(), closed = MemoryEvent()
+    var events: [String] { lock.withLock { log } }
+    var written: Data { lock.withLock { bytes } }
+    func read(maxBytes: Int) async throws -> Data {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, any Error>) in
+            let shut = lock.withLock { () -> Bool in
+                if isClosed { return true }
+                waiter = continuation
+                return false
+            }
+            if shut { continuation.resume(throwing: BrokerFailure.terminal) } else { readEntered.signal() }
+        }
+    }
+    func deliver(_ data: Data) {
+        let pending = lock.withLock { () -> CheckedContinuation<Data, any Error>? in defer { waiter = nil }; return waiter }
+        pending?.resume(returning: data)
+    }
+    func write(_ data: Data) async throws -> Int { lock.withLock { bytes.append(data); log.append("write") }; return data.count }
+    func endWrite() async throws { lock.withLock { log.append("endWrite") } }
+    func close() {
+        let pending = lock.withLock { () -> CheckedContinuation<Data, any Error>? in
+            log.append("close"); isClosed = true
+            defer { waiter = nil }
+            return waiter
+        }
+        pending?.resume(throwing: BrokerFailure.terminal)
+        closed.signal()
+    }
+}
+
+extension BrokerTests {
+    @Test func stream_proof_vector_matches_python() throws {
+        // The plan author's vector, verbatim; proxy_test.py test_stream_proof_vector binds the guest.
+        let key = try ChannelKeys.derive(capability: Data(repeating: 7, count: 32), label: "vsock-stream")
+        #expect(hexString(key) == "5814c7147c97464dd6833b65cfd337b5d6f8277a080522efe9c3f7f498d54d00")
+        #expect(VsockStreamProof.domain == Data("acceptance:vsock-stream:v1\0".utf8))
+        let proof = VsockStreamProof.compute(key: key, nonce: Data((0..<16).map { UInt8($0) }),
+                                             runID: "0123456789abcdef0123456789abcdef", sequence: 1)
+        #expect(hexString(proof) == "564c1588db8960fb3a6748fe644fa0b4ffa9d1ca23ce8ae7d21c97020fe42e72")
+    }
+
+    @Test func forged_proof_latches_identity_before_sequence() async throws {
+        // C4: the proof is compared in constant time before sequence admission. A mismatch latches
+        // the whole run as identity, even where the sequence alone would be a replay.
+        let n = brokerNonce(200), valid = proofFor(control(), n)
+        let topology = try ChannelKeys.derive(capability: harnessCapability, label: "topology-admission")
+        var flipped = valid; flipped[flipped.startIndex] ^= 1
+        let forgeries: [(String, Data)] = [
+            ("raw-capability", proofFor(control(), n, key: harnessCapability)),
+            ("topology-key", proofFor(control(), n, key: topology)),
+            ("flipped-bit", flipped), ("zeros", Data(count: 32)),
+            ("short", Data(valid.prefix(31))), ("long", valid + Data([0])), ("empty", Data()),
+        ]
+        for (name, forged) in forgeries {
+            for replayed in [false, true] {
+                let h = try Harness(), input = MemoryStream()
+                var first: Tunnel? = nil
+                if replayed { first = try await h.broker.accept(control: control(), stream: input) }
+                // Sequence 1: fresh, or (replayed) already admitted, which alone would be a replay.
+                do {
+                    _ = try await h.broker.accept(request: RelayRequest(control: control(), nonce: n, proof: forged, stream: MemoryStream()))
+                    Issue.record("Forged proof admitted: \(name)")
+                } catch { #expect(error as? BrokerFailure == .identity, "\(name)") }
+                #expect(h.resolver.calls.count == (replayed ? 1 : 0))
+                await denied(h, control(sequence: 2), expected: .terminal)
+                if replayed { #expect(input.closes == 1, "the whole run latched") }
+                first?.close()
+            }
+        }
+    }
+
+    @Test func replayed_proof_for_other_nonce_denied() async throws {
+        // A proof recorded for one challenge never answers another, directly or through a lane.
+        let a = brokerNonce(300), b = brokerNonce(301), recorded = proofFor(control(), a)
+        let h = try Harness()
+        do {
+            _ = try await h.broker.accept(request: RelayRequest(control: control(), nonce: b, proof: recorded, stream: MemoryStream()))
+            Issue.record("Replayed proof admitted")
+        } catch { #expect(error as? BrokerFailure == .identity) }
+        #expect(h.resolver.calls.isEmpty); #expect(h.connector.calls.isEmpty)
+        let relayed = try Harness(), physical = BufferedStream(record(control()) + record(recorded))
+        let request = try await RelayChannel(physical: physical, nonces: ConstantBrokerNonces(b)).next()
+        #expect(physical.output == record(b)); #expect(request.nonce == b); #expect(request.proof == recorded)
+        do { _ = try await relayed.broker.accept(request: request); Issue.record("Replayed proof admitted through the relay") }
+        catch { #expect(error as? BrokerFailure == .identity) }
+        // The proof made for b is admitted.
+        let fresh = try Harness()
+        let tunnel = try await fresh.broker.accept(request: RelayRequest(control: control(), nonce: b, proof: proofFor(control(), b), stream: MemoryStream()))
+        tunnel.close()
+    }
+
+    @Test func proof_for_wrong_sequence_or_run_denied() async throws {
+        let n = brokerNonce(400)
+        for (sequence, run) in [(2, BrokerTests.runID), (0, BrokerTests.runID),
+                                (1, String(repeating: "2", count: 32)), (1, String(repeating: "1", count: 31))] {
+            let h = try Harness()
+            let forged = VsockStreamProof.compute(key: testVsockKey, nonce: n, runID: run, sequence: sequence)
+            do {
+                _ = try await h.broker.accept(request: RelayRequest(control: control(), nonce: n, proof: forged, stream: MemoryStream()))
+                Issue.record("Proof for sequence \(sequence) or run \(run) admitted")
+            } catch { #expect(error as? BrokerFailure == .identity) }
+            #expect(h.connector.calls.isEmpty)
+            await denied(h, control(sequence: 2), expected: .terminal)
+        }
+    }
+
+    @Test func broker_derives_vsock_key_from_bootstrap_capability() async throws {
+        // R6: the host derives k_vsock from the bootstrap capability itself (there is no second,
+        // "authenticated" capability). A proof under the raw capability or the topology key fails.
+        let configuration = try BootstrapConfiguration.decode(try bootstrapBytes())
+        #expect(configuration.binding.capability == harnessCapability)
+        let topology = try ChannelKeys.derive(capability: harnessCapability, label: "topology-admission")
+        for (name, key, admitted) in [("vsock-stream", testVsockKey, true), ("raw-capability", harnessCapability, false),
+                                      ("topology-admission", topology, false)] {
+            let broker = try configuration.makeBroker(resolver: FakeResolver([NumericAddress("8.8.8.8")]), connector: FakeConnector(),
+                                                      clock: FakeClock(), physicalChannels: [])
+            let n = brokerNonce(500)
+            let request = RelayRequest(control: control(), nonce: n, proof: proofFor(control(), n, key: key), stream: MemoryStream())
+            if admitted { let tunnel = try await broker.accept(request: request); tunnel.close() }
+            else {
+                do { _ = try await broker.accept(request: request); Issue.record("Proof under \(name) admitted") }
+                catch { #expect(error as? BrokerFailure == .identity) }
+            }
+        }
+    }
+
+    @Test func repeated_challenge_nonce_latches_identity() async throws {
+        // A challenge value presented twice in a run would reduce freshness to sequence-only: the
+        // second presentation latches identity (fail closed), as the bootstrap challenge issuer does.
+        let n = brokerNonce(600), h = try Harness()
+        let first = try await h.broker.accept(request: admission(control(), MemoryStream(), nonce: n))
+        do { _ = try await h.broker.accept(request: admission(control(sequence: 2), MemoryStream(), nonce: n)); Issue.record("Repeated challenge admitted") }
+        catch { #expect(error as? BrokerFailure == .identity) }
+        await denied(h, control(sequence: 3), expected: .terminal)
+        first.close()
+        // One lane with a constant nonce source: the second stream latches.
+        let relayed = try Harness()
+        let physical = BufferedStream(record(control()) + record(proofFor(control(), n)) + record(Data())
+                                      + record(control(sequence: 2)) + record(proofFor(control(sequence: 2), n)))
+        let lane = RelayChannel(physical: physical, nonces: ConstantBrokerNonces(n))
+        let tunnel = try await relayed.broker.accept(request: try await lane.next()); try await tunnel.run()
+        let second = try await lane.next()
+        do { _ = try await relayed.broker.accept(request: second); Issue.record("Repeated challenge admitted through the relay") }
+        catch { #expect(error as? BrokerFailure == .identity) }
+    }
+
+    @Test func relay_challenge_precedes_control_and_bad_nonce_source_fails_closed() async throws {
+        // C4/R5: the host writes the challenge frame before it reads anything of the stream.
+        let gate = Deferred<Data>(), physical = ObservedMemoryStream(readGate: gate), n = brokerNonce(700)
+        let task = Task { try await RelayChannel(physical: physical, nonces: ConstantBrokerNonces(n)).next() }
+        await gate.waitEntered()
+        #expect(physical.base.output == record(n))
+        await gate.fail()
+        do { _ = try await task.value; Issue.record("Failed read admitted a request") } catch {}
+        for source in [ConstantBrokerNonces(nil), ConstantBrokerNonces(Data(count: 15)), ConstantBrokerNonces(Data(count: 17))] {
+            let quiet = BufferedStream(record(control()) + record(proofFor(control(), n)))
+            do { _ = try await RelayChannel(physical: quiet, nonces: source).next(); Issue.record("Challenge without a 16-byte nonce") }
+            catch { #expect(error as? BrokerFailure == .identity) }
+            #expect(quiet.output.isEmpty)
+        }
+    }
+
+    @Test func sequence_gaps_admitted_repeat_or_decrease_denied() async throws {
+        // P38(a): strictly increasing sequences with gaps, never a repeat or a decrease. A gap is a
+        // guest stream closed before its control was delivered; each sequence is used once.
+        let h = try Harness(); var tunnels = [Tunnel]()
+        for sequence in [2, 3, 7, 1024] { tunnels.append(try await h.broker.accept(control: control(sequence: sequence), stream: MemoryStream())) }
+        #expect(h.connector.calls.count == 4); tunnels.forEach { $0.close() }
+        for (admitted, next) in [([1, 3], 3), ([1, 3], 2), ([1, 3], 1), ([5], 4)] {
+            let run = try Harness(); var open = [Tunnel]()
+            for sequence in admitted { open.append(try await run.broker.accept(control: control(sequence: sequence), stream: MemoryStream())) }
+            await denied(run, control(sequence: next), expected: .replay)
+            await denied(run, control(sequence: 100), expected: .terminal)
+            #expect(run.connector.calls.count == admitted.count)
+            open.forEach { $0.close() }
+        }
+        // Below the run's first sequence is a replay as well; the first sequence itself is admitted.
+        let low = try Harness(firstSequence: 5)
+        await denied(low, control(sequence: 4), expected: .replay)
+        let exact = try Harness(firstSequence: 5)
+        let tunnel = try await exact.broker.accept(control: control(sequence: 5), stream: MemoryStream()); tunnel.close()
+    }
+
+    @Test func idle_slot_closes_only_itself_and_run_continues() async throws {
+        // T9-2, P38(b): an idle slot ends only itself. Its guest stream receives a zero-length logical
+        // EOF before it closes, nothing late is forwarded, and the run keeps admitting streams.
+        let guestA = StallingStream(), originA = StallingStream()
+        let guestB = MemoryStream([Data([1, 2])]), originB = MemoryStream([Data([9])])
+        let h = try Harness(connector: FakeConnector(queued: [originA, originB]))
+        let a = try await h.broker.accept(control: control(), stream: guestA)        // last progress: monotonic 10
+        let runA = Task { try await a.run() }
+        await guestA.readEntered.wait(); await originA.readEntered.wait()
+        await h.clock.waitForWaiters(2)
+        h.clock.set(160, 30); h.clock.tick()                                        // idle: 30 - 10 >= 20
+        await originA.closed.wait()
+        guestA.deliver(Data())                                                       // the guest's own logical EOF
+        try await runA.value                                                         // a per-slot end, not a run failure
+        #expect(guestA.events == ["endWrite", "close"], "the logical EOF precedes the close")
+        #expect(originA.written.isEmpty); #expect(guestA.written.isEmpty)
+        #expect(await h.broker.activeCount == 0)
+        let b = try await h.broker.accept(control: control("BACKEND", sequence: 2), stream: guestB)
+        try await b.run()
+        #expect(originB.written == Data([1, 2])); #expect(guestB.written == Data([9]))
+        #expect(guestB.ends == 1 && originB.ends == 1)
+    }
+
+    @Test func guest_physical_close_without_logical_eof_ends_only_its_slot() async throws {
+        // P38(c): a guest stream that closes physically without its logical EOF (a per-tunnel close
+        // on the guest, at a record boundary or inside a record) ends only that slot and its lane.
+        for tail in [Data(), Data([0, 5, 1])] {
+            let origin = StallingStream(), next = MemoryStream()
+            let h = try Harness(connector: FakeConnector(queued: [origin, next]))
+            let n = brokerNonce(800)
+            let physical = BufferedStream(record(control()) + record(proofFor(control(), n)) + record(Data([1, 2, 3])) + tail)
+            let lane = RelayChannel(physical: physical, nonces: ConstantBrokerNonces(n))
+            let tunnel = try await h.broker.accept(request: try await lane.next())
+            try await tunnel.run()                                                   // not a run failure
+            #expect(origin.written == Data([1, 2, 3])); #expect(origin.events == ["write", "close"])
+            #expect(physical.output == record(n), "no logical EOF is written to a closed guest stream")
+            do { _ = try await lane.next(); Issue.record("Lane reused after the guest's physical close") }
+            catch { #expect(error is GuestStreamClosed) }
+            #expect(await h.broker.activeCount == 0)
+            let later = try await h.broker.accept(control: control(sequence: 2), stream: MemoryStream()); try await later.run()
+        }
+    }
+
+    @Test func relay_guest_close_ends_only_its_lane_and_all_lanes_gone_fails_run() async throws {
+        // P38(c) through the relay supervisor: one lane's guest closes physically; the broker and the
+        // sibling lane keep running. Once every lane is gone the run fails as transport loss.
+        let h = try Harness(); await h.broker.fail(.terminal)
+        let n = brokerNonce(900)
+        let closing = BufferedStream(record(control()) + record(proofFor(control(), n)) + record(Data([1])))
+        let siblingGate = Deferred<Data>(), sibling = ObservedMemoryStream(readGate: siblingGate)
+        let broker = try replacementBroker(h, resolver: h.resolver, connector: h.connector, physical: [closing, sibling])
+        let task = Task { try await BrokerExecutable.runRelays(broker: broker, physical: [closing, sibling], nonces: ConstantBrokerNonces(n)) }
+        await siblingGate.waitEntered()
+        // The closing lane's origin closes when its slot ends; the actor then has no slot left.
+        await h.connector.stream.closeEvent.wait()
+        for _ in 0..<10000 { if await broker.activeCount == 0 { break }; await Task.yield() }
+        #expect(await broker.activeCount == 0)
+        #expect(h.connector.stream.written == Data([1])); #expect(h.connector.stream.closes > 0)
+        #expect(!sibling.cancelled.isSignalled); #expect(sibling.base.closes == 0)
+        let direct = try await broker.accept(control: control(sequence: 2), stream: MemoryStream()); direct.close()
+        await siblingGate.finish(Data())                                             // the last lane's guest is gone too
+        do { try await task.value; Issue.record("Relay supervision outlived every lane") }
+        catch { #expect(error as? BrokerFailure == .transport) }
+        do { _ = try await broker.accept(control: control(sequence: 3), stream: MemoryStream()); Issue.record("Run survived losing every lane") }
+        catch { #expect(error as? BrokerFailure == .terminal) }
+    }
+
+    @Test func relay_lane_drains_after_host_first_close_then_reuses() async throws {
+        // P38(b) on a lane: after a host-first close (logical EOF sent, stream closed) the guest's
+        // remaining records of that generation are discarded up to its logical EOF, then the lane
+        // carries the next stream. There, an oversized record is still a protocol violation and a
+        // physical EOF ends only the lane.
+        let n1 = brokerNonce(1000), n2 = brokerNonce(1001)
+        let physical = BufferedStream(record(control()) + record(proofFor(control(), n1)) + record(Data([5])) + record(Data([6, 7]))
+                                      + record(Data()) + record(control(sequence: 2)) + record(proofFor(control(sequence: 2), n2)))
+        let lane = RelayChannel(physical: physical, nonces: CountingBrokerNonces(start: 1000))
+        let first = try await lane.next(); try await first.stream.endWrite(); first.stream.close()
+        let second = try await lane.next()
+        #expect(second.control == control(sequence: 2)); #expect(second.nonce == n2)
+        #expect(physical.output == record(n1) + record(Data()) + record(n2))
+        for (tail, oversized) in [(record(Data(repeating: 1, count: 4097)), true), (record(Data([1])), false)] {
+            let p = BufferedStream(record(control()) + record(proofFor(control(), n1)) + tail)
+            let l = RelayChannel(physical: p, nonces: ConstantBrokerNonces(n1))
+            let s = try await l.next(); try await s.stream.endWrite(); s.stream.close()
+            do { _ = try await l.next(); Issue.record("Undrained lane reused") }
+            catch { if oversized { #expect(error as? BrokerFailure == .limits) } else { #expect(error is GuestStreamClosed) } }
+        }
+        // Without the host's logical EOF the old generation is never reused.
+        let p = BufferedStream(record(control()) + record(proofFor(control(), n1)) + record(Data()))
+        let l = RelayChannel(physical: p, nonces: ConstantBrokerNonces(n1)); let s = try await l.next(); s.stream.close()
+        do { _ = try await l.next(); Issue.record("Lane reused without the host's logical EOF") }
+        catch { #expect(error as? BrokerFailure == .terminal) }
     }
 }

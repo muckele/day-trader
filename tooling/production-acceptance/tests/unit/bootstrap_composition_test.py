@@ -1,4 +1,5 @@
 """Offline composition contracts. Every kernel/channel effect here is inert."""
+import dataclasses
 import hashlib
 import hmac
 import importlib.util
@@ -614,9 +615,12 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             self.role_kernel.write_role=write_role
             self.role_kernel.read_role=lambda owned,remaining:self.role_queue.pop(0)
             self.role_kernel.poll_role=lambda owned:bool(self.role_queue)
-            run=t._PROXY.RunBinding(self.binding.runId,b'7'*32,expires_at,1,
+            # P10/R6: the proxy policy carries only the derived vsock-stream key.
+            self.vsock_key=c.derive_channel_key(b'7'*32,'vsock-stream')
+            run=t._PROXY.RunBinding(self.binding.runId,self.vsock_key,expires_at,1,
                 self.binding.manifestDigest,self.binding.configIdentity,
                 (('FRONTEND','https://frontend.example'),('BACKEND','https://backend.example')))
+            self.proxy_run=run
             policy=t._PROXY.qualify_native_admission(run,
                 {'FRONTEND':'frontend.example','BACKEND':'backend.example'},1024,1000,10000,
                 runtime_identity='e'*64,role_policy_identity=self.binding.rolePolicyDigest,
@@ -705,11 +709,15 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 # Local long-lived proxy admission matching this binding only.
                 proxy_config=proxy_fixture.config
                 def long_lived_config(sockets,clock=None,**changes):
-                    changes.setdefault('binding',t._PROXY.RunBinding('1'*32,b'\x07'*32,
+                    changes.setdefault('binding',t._PROXY.RunBinding('1'*32,self.vsock_key,
                         self.binding.expiresAtMs,1,'b'*64,'a'*64,proxy_fixture.ORIGINS))
                     return proxy_config(sockets,clock,**changes)
                 stack.enter_context(mock.patch.object(proxy_fixture,'config',long_lived_config))
-            def proxy_entry(*_):
+            self.proxy_entry_args=None
+            def proxy_entry(*args):
+                # P10: the 4th argument is the key the proxy initializer carries as vsockKey.
+                self.proxy_entry_args=args
+                vsock_key=args[3] if len(args)>3 else self.vsock_key
                 ready,release=threading.Event(),threading.Event();box=[]
                 def sink(harness,owner):
                     self.timeline.append('proxy-loop-owner');box.append(owner);ready.set()
@@ -719,7 +727,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     initial['binding']['expiresAtMs']=expires
                     initial['proxyBootstrap']['expiresAt']=expires
                 harness=proxy_fixture.CompositionHarness(self.test,commands=[],sink=sink,
-                    mutate=None if expires==190 else long_lived)
+                    mutate=None if expires==190 else long_lived,vsock_key=vsock_key)
                 harness.binding['expiresAtMs']=expires
                 thread=threading.Thread(target=harness.run,daemon=True);thread.start()
                 if not ready.wait(5): raise AssertionError('actual inherited proxy loop did not mint owner')
@@ -1494,6 +1502,53 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             with self.assertRaisesRegex(t.TopologyError,'^HANDOFF_DENIED$'):
                 t.verify_bootstrap_handoff_v1(t._canonical(raw).decode('ascii'),
                                               h.expected,h.binding)
+
+    def test_v1_proxy_initializer_carries_derived_vsock_key_only(self):
+        # P10/R6 (C3): _activate_proxy passes derive(capability,'vsock-stream') to the proxy entry
+        # as an explicit argument; the PROXY initializer carries it as vsockKey (64 lowercase hex)
+        # and the serving proxy holds only that key, never the run capability.
+        h=self.Harness(self);composition,stack=h.build()
+        capability=h.expected.capability
+        derived=hmac.new(capability,b'acceptance:key-derivation:v1\0vsock-stream\0',hashlib.sha256).digest()
+        # The entry's arguments, recorded before any proxy runs.
+        seen=[]
+        class Recorded(Exception):pass
+        def record(*args):seen.append(args);raise Recorded()
+        composition._proxy_entry=record
+        with stack,self.assertRaises(Exception):composition.begin(TEST_HOST_CHALLENGE)
+        self.assertEqual(len(seen),1)
+        self.assertEqual(len(seen[0]),4)
+        self.assertEqual(seen[0][3],derived)
+        self.assertNotIn(capability,[arg for arg in seen[0] if type(arg) is bytes])
+        # End to end: the initializer frame and the serving proxy's own binding.
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            composition.begin(TEST_HOST_CHALLENGE)
+            self.assertEqual(h.proxy_entry_args[3],derived)
+            boot=h.proxy_harness.initial['proxyBootstrap']
+            self.assertEqual(boot['vsockKey'],derived.hex())
+            self.assertNotIn('capability',boot)
+            self.assertNotIn(capability.hex(),json.dumps(h.proxy_harness.initial))
+            binding=h.proxy_harness.owners[0]._config.binding
+            self.assertEqual(binding.vsock_key,derived)
+            self.assertFalse(hasattr(binding,'capability'))
+            self.assertEqual(h.expected.proxy_policy.binding.vsock_key,derived)
+        # The topology authority admits a proxy policy only with exactly that derived key.
+        for name,key in (('capability',capability),
+                         ('topology-admission',c.derive_channel_key(capability,'topology-admission')),
+                         ('other-capability',c.derive_channel_key(b'8'*32,'vsock-stream'))):
+            with self.subTest(key=name):
+                run=dataclasses.replace(h.proxy_run,vsock_key=key)
+                policy=t._PROXY.qualify_native_admission(run,
+                    {'FRONTEND':'frontend.example','BACKEND':'backend.example'},1024,1000,10000,
+                    runtime_identity='e'*64,role_policy_identity=h.binding.rolePolicyDigest,
+                    handoff_validator=lambda value:value)
+                with self.assertRaisesRegex(t.TopologyError,'^AUTHORITY_DENIED$'):
+                    t.qualify_topology_authority(run_id=h.binding.runId,
+                        manifest_identity=h.binding.manifestDigest,config_identity=h.binding.configIdentity,
+                        expires_at=h.expected.expires_at,capability=capability,
+                        role_launches=h.expected.role_launches,proxy_policy=policy,clock=h.clock,
+                        appliance_recheck=lambda:None)
 
     def test_v1_guest_observation_window_is_100ms_with_advancing_clock(self):
         # T10-7 with an advancing guest clock: every read advances 1 ms, and the

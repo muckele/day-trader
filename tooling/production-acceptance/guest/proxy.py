@@ -52,6 +52,14 @@ _LISTEN_ADDRESS = '127.0.0.1'
 _LISTEN_PORT = 3128
 _HOST_CID = 2
 _VSOCK_SERVICE = 4050
+# C4 (E3): the host challenges every vsock stream with a frame of a 2-byte length (exactly 16)
+# and 16 random bytes. The proxy answers with its control frame, then a proof frame of a 2-byte
+# length (32) and stream_proof(...), keyed by k_vsock, the only key it holds (R6, P10).
+VSOCK_PROOF_DOMAIN = b'acceptance:vsock-stream:v1\0'
+_NONCE_SIZE = 16
+_CHALLENGE_HEADER = _NONCE_SIZE.to_bytes(2, 'big')
+_CHALLENGE_SIZE = 2 + _NONCE_SIZE
+_PROOF_HEADER = (32).to_bytes(2, 'big')
 _OK = b'HTTP/1.1 200 Connection Established\r\n\r\n'
 _OUTCOME_CODES = frozenset({
     'BYTE_LIMIT', 'CAPACITY', 'CHANNEL_DENIED', 'CLOCK', 'COMPLETE',
@@ -103,7 +111,9 @@ class ChannelMessage:
 @dataclass(frozen=True)
 class RunBinding:
     run_id: str
-    capability: bytes
+    # R6/P10 (C3): k_vsock = derive(capability, 'vsock-stream'). The proxy never holds the run
+    # capability; the bootstrap and the host keep it.
+    vsock_key: bytes = field(repr=False)
     expires_at: int
     first_sequence: int
     manifest_identity: str
@@ -120,6 +130,8 @@ class ProxyConfig:
     run_timeout_ms: int
     clock: object
     sockets: object
+    # T9-7 (C9): the proxy and the host broker are phase-unaware. CONTROL.phase and .event are
+    # fixed constants (the native decoder never sets them); the route gate is the phase authority.
     phase: str = 'PREFLIGHT'
     event: str = 'validate'
     native_admission: object = None
@@ -148,6 +160,37 @@ class _Tunnel:
     client_closed: bool = False
     broker_closed: bool = False
     closed: bool = False
+    # C4 stream setup: the parsed CONNECT waits for the setup slot, its stream then reads the
+    # host's challenge, and `setup` counts its control and proof bytes not yet written.
+    destination: str = None
+    remainder: bytes = b''
+    sequence: int = None
+    challenge: bytearray = field(default_factory=bytearray)
+    established: bool = False
+    setup: int = 0
+
+
+def _in_setup(tunnel):
+    """Between its vsock connect and its fully written proof (C4)."""
+    return tunnel.broker is not None and (not tunnel.established or tunnel.setup > 0)
+
+
+def _check_challenge(frame):
+    """C4: the challenge frame's length is exactly 16; any other length is a protocol violation."""
+    head = bytes(frame[:2])
+    if head != _CHALLENGE_HEADER[:len(head)]:
+        raise _ChannelDenied()
+
+
+def stream_proof(vsock_key, nonce, run_id, sequence):
+    """C4: HMAC-SHA256(k_vsock, domain || nonce || runId (32 ASCII hex) || sequence (8-byte BE))."""
+    if (type(vsock_key) is not bytes or len(vsock_key) != 32
+            or type(nonce) is not bytes or len(nonce) != _NONCE_SIZE
+            or type(run_id) is not str or _HEX32_RE.fullmatch(run_id) is None
+            or not _plain_integer(sequence, 1, _MAX_SAFE_INTEGER)):
+        raise ProxyError('INVALID_PROOF')
+    message = VSOCK_PROOF_DOMAIN + nonce + run_id.encode('ascii') + sequence.to_bytes(8, 'big')
+    return hmac.new(vsock_key, message, hashlib.sha256).digest()
 
 
 def _plain_integer(value, lower, upper):
@@ -257,7 +300,7 @@ def _validate_config(config, now):
     if (type(binding) is not RunBinding
             or type(binding.run_id) is not str
             or _HEX32_RE.fullmatch(binding.run_id) is None
-            or type(binding.capability) is not bytes or len(binding.capability) != 32
+            or type(binding.vsock_key) is not bytes or len(binding.vsock_key) != 32
             or not _plain_integer(binding.expires_at, now[0] + 1, _MAX_SAFE_INTEGER)
             or not _plain_integer(binding.first_sequence, 1, _MAX_FIRST_SEQUENCE)
             or type(binding.manifest_identity) is not str
@@ -283,8 +326,8 @@ def _same_binding(expected, actual):
     if type(actual) is not RunBinding:
         return False
     return (actual.run_id == expected.run_id
-            and type(actual.capability) is bytes
-            and hmac.compare_digest(actual.capability, expected.capability)
+            and type(actual.vsock_key) is bytes
+            and hmac.compare_digest(actual.vsock_key, expected.vsock_key)
             and actual.expires_at == expected.expires_at
             and actual.first_sequence == expected.first_sequence
             and actual.manifest_identity == expected.manifest_identity
@@ -301,9 +344,9 @@ def _io_failure(error, client):
     return _TransportLost()
 
 
-def _message(stream, client=False):
+def _message(stream, client=False, limit=_CHUNK_LIMIT):
     try:
-        message = stream.read(_CHUNK_LIMIT)
+        message = stream.read(limit)
     except _ChannelDenied:
         raise
     except Exception as error:
@@ -311,7 +354,7 @@ def _message(stream, client=False):
     if message is None:
         return None
     if (type(message) is not ChannelMessage or type(message.data) is not bytes
-            or len(message.data) > _CHUNK_LIMIT
+            or len(message.data) > limit
             or type(message.ancillary) is not tuple or message.ancillary
             or type(message.flags) is not int or message.flags != 0):
         raise _ChannelDenied()
@@ -463,8 +506,8 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
             timeline.observe()
             raise
 
-    def checked_message(stream, tunnel, client):
-        data = bracket(tunnel, lambda: _message(stream, client))
+    def checked_message(stream, tunnel, client, limit=_CHUNK_LIMIT):
+        data = bracket(tunnel, lambda: _message(stream, client, limit))
         if data == b'' and not client:
             # Physical vsock EOF is loss, never logical EOF or an idle close.
             timeline.observe()
@@ -481,7 +524,9 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
         """Bytes read across the idle deadline are discarded, never forwarded or
         charged, but a protocol violation in them, with what is already buffered,
         still ends the whole run. The same framing and header checks run on a copy."""
-        if not client:
+        if not client and not tunnel.established:
+            _check_challenge(tunnel.challenge + data)
+        elif not client:
             late = bytearray(tunnel.broker_input)
             late.extend(data)
             while _next_record(late):
@@ -500,6 +545,13 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
     def checked_end(stream, tunnel, client):
         bracket(tunnel, lambda: _end_write(stream, client))
         timeline.observe(tunnel)
+
+    def write_broker(tunnel):
+        pending = len(tunnel.to_broker)
+        written = checked_write(tunnel.broker, tunnel.to_broker, tunnel, False)
+        # The stream's setup ends once its control and proof frames are fully written.
+        tunnel.setup = max(0, tunnel.setup - (pending - len(tunnel.to_broker)))
+        return written
 
     def close_one(tunnel):
         """Close one tunnel after an ordinary per-tunnel event (T9-2, P35-P37).
@@ -524,14 +576,13 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
         return None
 
     try:
+        # One use per run. Streams are authenticated by the host's challenge (C4), not here.
         try:
-            actual = transport.authenticate(config.binding)
+            transport.claim()
         except Exception:
             timeline.observe()
             raise _TerminalOutcome('IDENTITY_MISMATCH') from None
         timeline.observe()
-        if not _same_binding(config.binding, actual):
-            raise _TerminalOutcome('IDENTITY_MISMATCH')
 
         try:
             listener = config.sockets.listen(_LISTEN_ADDRESS, _LISTEN_PORT, _MAX_TUNNELS)
@@ -592,46 +643,69 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                 try:
                     timeline.observe(tunnel)
                     if tunnel.broker is None:
-                        incoming = checked_message(tunnel.client, tunnel, True)
-                        if incoming == b'':
-                            # Client EOF before its header closes only this tunnel.
-                            raise _TunnelClosed()
-                        if incoming:
-                            tunnel.header.extend(incoming)
+                        if tunnel.destination is None:
+                            incoming = checked_message(tunnel.client, tunnel, True)
+                            if incoming == b'':
+                                # Client EOF before its header closes only this tunnel.
+                                raise _TunnelClosed()
+                            if incoming:
+                                tunnel.header.extend(incoming)
+                                progressed = True
+                                header_end = _header_end(tunnel.header)
+                                if header_end is not None:
+                                    tunnel.destination = parse_connect(
+                                        bytes(tunnel.header[:header_end]), config.destinations)
+                                    tunnel.remainder = bytes(tunnel.header[header_end:])
+                                    tunnel.header.clear()
+                        # C4 and the T9 broker sequence-ordering note: at most one stream is
+                        # between its vsock connect and its fully written proof, and streams
+                        # open in sequence order. A parsed CONNECT waits here meanwhile.
+                        if tunnel.destination is not None and not any(map(_in_setup, tunnels)):
+                            # The 1025th CONNECT of the run latches before its vsock opens.
+                            if sequence - config.binding.first_sequence >= _MAX_TUNNELS_PER_RUN:
+                                raise _TerminalOutcome('CAPACITY')
+                            # The stream consumes its sequence before its control is delivered;
+                            # a per-tunnel close from here on leaves a gap (P38).
+                            tunnel.sequence = sequence
+                            sequence += 1
+                            timeline.observe(tunnel)
+                            try:
+                                tunnel.broker = transport.open(
+                                    _HOST_CID, _VSOCK_SERVICE, config.binding)
+                            except Exception:
+                                timeline.observe()
+                                raise _TransportLost() from None
+                            timeline.observe(tunnel)
                             progressed = True
-                            header_end = _header_end(tunnel.header)
-                            if header_end is not None:
-                                destination = parse_connect(bytes(tunnel.header[:header_end]),
-                                                            config.destinations)
-                                # The 1025th CONNECT of the run latches before its vsock opens.
-                                if sequence - config.binding.first_sequence >= _MAX_TUNNELS_PER_RUN:
-                                    raise _TerminalOutcome('CAPACITY')
-                                remainder = bytes(tunnel.header[header_end:])
-                                tunnel.header.clear()
-                                control = _control(config.binding, sequence, config.phase,
-                                                   config.event, destination)
-                                sequence += 1
-                                timeline.observe(tunnel)
-                                try:
-                                    tunnel.broker = transport.open(
-                                        _HOST_CID, _VSOCK_SERVICE, config.binding)
-                                except Exception:
-                                    timeline.observe()
-                                    raise _TransportLost() from None
-                                timeline.observe(tunnel)
+                    if tunnel.broker is not None and not tunnel.established:
+                        # C4: read exactly the host's challenge frame, within the idle deadline.
+                        incoming = checked_message(tunnel.broker, tunnel, False,
+                                                   _CHALLENGE_SIZE - len(tunnel.challenge))
+                        if incoming:
+                            tunnel.challenge.extend(incoming)
+                            progressed = True
+                            _check_challenge(tunnel.challenge)
+                            if len(tunnel.challenge) == _CHALLENGE_SIZE:
+                                # Answer: the control frame, then the proof frame.
+                                control = _control(config.binding, tunnel.sequence, config.phase,
+                                                   config.event, tunnel.destination)
+                                proof = stream_proof(config.binding.vsock_key,
+                                                     bytes(tunnel.challenge[2:]),
+                                                     config.binding.run_id, tunnel.sequence)
                                 tunnel.to_broker.extend(len(control).to_bytes(2, 'big'))
                                 tunnel.to_broker.extend(control)
+                                tunnel.to_broker.extend(_PROOF_HEADER)
+                                tunnel.to_broker.extend(proof)
+                                tunnel.setup = len(tunnel.to_broker)
+                                tunnel.established = True
                                 tunnel.to_client.extend(_OK)
-                                if remainder:
+                                if tunnel.remainder:
                                     used = _consume_budget(
-                                        used, len(remainder), config.aggregate_bytes)
-                                    tunnel.to_broker.extend(len(remainder).to_bytes(2, 'big'))
-                                    tunnel.to_broker.extend(remainder)
-                                if checked_write(tunnel.broker, tunnel.to_broker, tunnel, False):
-                                    progressed = True
-                                if checked_write(tunnel.client, tunnel.to_client, tunnel, True):
-                                    progressed = True
-                    else:
+                                        used, len(tunnel.remainder), config.aggregate_bytes)
+                                    tunnel.to_broker.extend(len(tunnel.remainder).to_bytes(2, 'big'))
+                                    tunnel.to_broker.extend(tunnel.remainder)
+                                    tunnel.remainder = b''
+                    if tunnel.established:
                         # A bounded single-frame queue supplies backpressure in
                         # each direction; do not keep reading behind a stalled
                         # destination.
@@ -663,7 +737,7 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                                         used, len(payload), config.aggregate_bytes)
                                     tunnel.to_client.extend(payload)
 
-                        if checked_write(tunnel.broker, tunnel.to_broker, tunnel, False):
+                        if write_broker(tunnel):
                             progressed = True
                         if tunnel.client_eof and not tunnel.to_broker and not tunnel.broker_write_ended:
                             checked_end(tunnel.broker, tunnel, False)
@@ -1459,7 +1533,6 @@ _BOOTSTRAP_RULE = {
     'type': 'object',
     'fields': {
         'aggregateBytes': {'type': 'integer', 'min': 1, 'max': _AGGREGATE_LIMIT},
-        'capability': {'ref': 'Digest'},
         'configIdentity': {'ref': 'Digest'},
         'expiresAt': {'type': 'integer', 'min': 1, 'max': _MAX_SAFE_INTEGER},
         'firstSequence': {'type': 'integer', 'min': 1, 'max': _MAX_FIRST_SEQUENCE},
@@ -1489,6 +1562,8 @@ _BOOTSTRAP_RULE = {
         'runTimeoutMs': {'type': 'integer', 'min': 1, 'max': _RUN_LIMIT_MS},
         'runtimeIdentity': {'ref': 'Digest'},
         'version': {'type': 'enum', 'values': [1]},
+        # P10/R6: the derived vsock-stream key (64 lowercase hex), never the run capability.
+        'vsockKey': {'ref': 'Digest'},
     },
 }
 
@@ -1532,7 +1607,7 @@ def qualify_native_admission(binding, destinations, aggregate_bytes,
     expected_origins = tuple((name, 'https://' + hosts[name]) for name in _DESTINATIONS)
     if (type(binding) is not RunBinding
             or _HEX32_RE.fullmatch(getattr(binding, 'run_id', '')) is None
-            or type(binding.capability) is not bytes or len(binding.capability) != 32
+            or type(binding.vsock_key) is not bytes or len(binding.vsock_key) != 32
             or not _plain_integer(binding.expires_at, 1, _MAX_SAFE_INTEGER)
             or not _plain_integer(binding.first_sequence, 1, _MAX_FIRST_SEQUENCE)
             or _HEX64_RE.fullmatch(getattr(binding, 'manifest_identity', '')) is None
@@ -1647,7 +1722,8 @@ def _decode_bootstrap(data, clock, sockets, composition_policy=None):
             data, rule=_BOOTSTRAP_RULE, definitions=_BOOTSTRAP_DEFINITIONS,
             max_bytes=_HEADER_LIMIT)
     except _PROTOCOL.InvalidFrame:
-        raise ProxyError('BOOTSTRAP_DENIED') from None
+        # Any field outside the exact rule, such as a leftover 'capability', is an invalid config.
+        raise ProxyError('INVALID_CONFIG') from None
     origins = value['origins']
     destinations = {
         'FRONTEND': origins['FRONTEND'][8:],
@@ -1656,7 +1732,7 @@ def _decode_bootstrap(data, clock, sockets, composition_policy=None):
     _validated_destinations(destinations)
     admission = NativeAdmission(value['runtimeIdentity'], value['rolePolicyIdentity'])
     binding = RunBinding(
-        value['runId'], bytes.fromhex(value['capability']), value['expiresAt'],
+        value['runId'], bytes.fromhex(value['vsockKey']), value['expiresAt'],
         value['firstSequence'], value['manifestIdentity'], value['configIdentity'],
         tuple((name, origins[name]) for name in _DESTINATIONS))
     config = ProxyConfig(
@@ -2055,7 +2131,10 @@ class NativeSockets:
 
 
 class NativeVsockTransport:
-    """One-use binding and fixed AF_VSOCK CID2/service4050 connector."""
+    """One-use fixed AF_VSOCK CID2/service4050 connector for one run binding.
+
+    It authenticates nothing itself (T9-3): the host challenges every stream and verifies the
+    proof the serving loop writes (C4)."""
     def __init__(self, socket_module, selectors_module, binding, host_cid, service,
                  connect_timeout_ms=10000, *, clock=None):
         if (host_cid, service) != (2, 4050):
@@ -2077,11 +2156,11 @@ class NativeVsockTransport:
         self.closed_streams = set()
         self.inventory = None
 
-    def authenticate(self, binding):
-        if self.closed or self.closing or self.claimed or not _same_binding(self.binding, binding):
-            raise OSError('identity')
+    def claim(self):
+        """One use per run: the serving loop claims the transport once. Not authentication."""
+        if self.closed or self.closing or self.claimed:
+            raise OSError('transport')
         self.claimed = True
-        return self.binding
 
     def check(self):
         if self.closed or self.closing or not self.claimed:

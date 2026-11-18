@@ -25,6 +25,26 @@ ORIGINS = tuple((key, 'https://' + value) for key, value in HOSTS.items())
 REQUEST = b'CONNECT frontend.example.test:443 HTTP/1.1\r\nHost: frontend.example.test:443\r\n\r\n'
 OK = b'HTTP/1.1 200 Connection Established\r\n\r\n'
 CONTROL = next(v['canonical'].encode() for v in VECTORS['accepted'] if v['name'] == 'control')
+# C3/C4 (E3, R6, P10). The run capability bytes([7])*32 stays with the bootstrap and the host; the
+# proxy holds only k_vsock = derive(capability, 'vsock-stream'), the Task 3 vector 5814c714...4d00.
+CAPABILITY = bytes([7]) * 32
+VSOCK_KEY = hmac.new(CAPABILITY, b'acceptance:key-derivation:v1\0vsock-stream\0', hashlib.sha256).digest()
+TOPOLOGY_KEY = hmac.new(CAPABILITY, b'acceptance:key-derivation:v1\0topology-admission\0', hashlib.sha256).digest()
+# The host's per-stream challenge frame: a 2-byte big-endian length (16), then 16 bytes (00..0f here).
+NONCE = bytes(range(16))
+
+
+def challenge(nonce=NONCE):
+    return len(nonce).to_bytes(2, 'big') + nonce
+
+
+CHALLENGE = challenge()
+
+
+def proof(sequence=1, nonce=NONCE, run_id='1' * 32, key=VSOCK_KEY):
+    """Independent C4 oracle: HMAC-SHA256(k_vsock, domain || nonce || runId || sequence (8-byte BE))."""
+    message = b'acceptance:vsock-stream:v1\0' + nonce + run_id.encode('ascii') + sequence.to_bytes(8, 'big')
+    return hmac.new(key, message, hashlib.sha256).digest()
 
 
 class Clock:
@@ -86,14 +106,15 @@ class Sockets:
 
 
 class Transport:
-    def __init__(self, streams=(), *, binding=None, loss_at=None):
-        self.streams, self.binding = list(streams), binding
+    """One-use fake transport. By default every opened stream first delivers the host's
+    challenge frame (C4); challenge=None leaves each stream exactly as the test built it."""
+    def __init__(self, streams=(), *, loss_at=None, challenge=CHALLENGE):
+        self.streams = list(streams)
         self.calls, self.closes, self.claims, self.checks = [], 0, 0, 0
-        self.loss_at = loss_at
-    def authenticate(self, binding):
+        self.loss_at, self.challenge = loss_at, challenge
+    def claim(self):
         self.claims += 1
         if self.claims > 1: raise OSError('one use')
-        return self.binding if self.binding is not None else binding
     def check(self):
         self.checks += 1
         if self.loss_at is not None and self.checks >= self.loss_at: raise OSError('lost')
@@ -102,12 +123,14 @@ class Transport:
         if not self.streams: raise OSError('no stream')
         result = self.streams.pop(0)
         if isinstance(result, Exception): raise result
+        if self.challenge is not None and isinstance(result, Stream):
+            result.parts.insert(0, self.challenge)
         return result
     def close(self): self.closes += 1
 
 
 def config(sockets, clock=None, **changes):
-    binding = proxy.RunBinding('1' * 32, b'\x07' * 32, 190, 1,
+    binding = proxy.RunBinding('1' * 32, VSOCK_KEY, 190, 1,
                                'b' * 64, 'a' * 64, ORIGINS)
     values = dict(destinations=HOSTS.copy(), binding=binding,
                   aggregate_bytes=10000, idle_timeout_ms=20, run_timeout_ms=50,
@@ -123,7 +146,7 @@ CHROMIUM_CONNECT = (b'CONNECT fe.example.test:443 HTTP/1.1\r\nHost: fe.example.t
                     b'Proxy-Connection: keep-alive\r\nUser-Agent: Mozilla/5.0 (X11; Linux aarch64)\r\n\r\n')
 # One schema-valid denial per pinned inherited-frame field (T9-4).
 FRAME_FIELD_DENIALS = (
-    ('runId', '2' * 32), ('capability', '08' * 32), ('expiresAt', 191), ('firstSequence', 2),
+    ('runId', '2' * 32), ('vsockKey', '08' * 32), ('expiresAt', 191), ('firstSequence', 2),
     ('manifestIdentity', 'e' * 64), ('configIdentity', 'e' * 64),
     ('origins', {'BACKEND': 'https://backend.example.test', 'FRONTEND': 'https://other.example.test'}),
     ('aggregateBytes', 9999), ('idleTimeoutMs', 21), ('runTimeoutMs', 51))
@@ -134,6 +157,12 @@ def control(destination='FRONTEND', sequence=1):
     value = CONTROL.replace(b'FRONTEND', destination.encode()).replace(
         b'"sequence":1', b'"sequence":' + str(sequence).encode())
     return len(value).to_bytes(2, 'big') + value
+
+
+def setup(destination='FRONTEND', sequence=1, nonce=NONCE):
+    """C4 stream setup as written after the host's challenge: the control frame, then the
+    proof frame (2-byte length 32, then the 32-byte proof)."""
+    return control(destination, sequence) + b'\x00\x20' + proof(sequence, nonce)
 
 
 def connect_result(wire, hosts):
@@ -196,6 +225,30 @@ class CountingSockets(Sockets):
     def stop_requested(self): return self.stop()
 
 
+class LateAncillary(Stream):
+    """Carries ancillary data from its third read on (after the challenge and one empty read)."""
+    def read(self, max_bytes):
+        message = super().read(max_bytes)
+        if message is None or len(self.read_bounds) < 3: return message
+        return proxy.ChannelMessage(message.data, ((1, 1, b'fd'),), message.flags)
+
+
+class AfterListener(Listener):
+    """Hands out the next client only after every client handed out before has closed."""
+    def __init__(self, clients, endpoint):
+        super().__init__(clients, endpoint); self.given = []
+    def accept(self):
+        if not self.clients or any(c.closes == 0 for c in self.given): return None
+        self.given.append(self.clients.pop(0)); return self.given[-1]
+
+
+class AfterSockets(Sockets):
+    def listen(self, address, port, backlog):
+        self.calls.append((address, port, backlog))
+        self.listener = AfterListener(self.clients, self.endpoint)
+        return self.listener
+
+
 class ProxyTests(unittest.TestCase):
     # Break: accepting a broadened target or normalizing ambiguous authority.
     def test_FE_BE_443_accept(self):
@@ -248,7 +301,7 @@ class ProxyTests(unittest.TestCase):
         broker = Stream([b'\x00\x03\x80\xff\x01\x00\x00'])
         outcome, cfg, sockets, transport = self.run_case([client], [broker])
         self.assertEqual(outcome.code, 'COMPLETE')
-        self.assertEqual(bytes(broker.written), len(CONTROL).to_bytes(2, 'big') + CONTROL + b'\x00\x09\x16\x03\x01secret\x00\x00')
+        self.assertEqual(bytes(broker.written), setup() + b'\x00\x09\x16\x03\x01secret\x00\x00')
         self.assertEqual(bytes(client.written), OK + b'\x80\xff\x01')
         self.assertEqual((client.ends, client.closes, broker.closes), (1, 1, 1))
         self.assertEqual([(cid, port) for cid, port, _ in transport.calls], [(2, 4050)])
@@ -260,7 +313,7 @@ class ProxyTests(unittest.TestCase):
         outcome, _, _, _ = self.run_case([client], [broker], idle_timeout_ms=120000, run_timeout_ms=1000)
         self.assertEqual(outcome.code, 'COMPLETE')
         self.assertEqual(bytes(client.written), OK + b'\x00\xff')
-        self.assertEqual(bytes(broker.written), len(CONTROL).to_bytes(2, 'big') + CONTROL + b'\x00\x03abc\x00\x00')
+        self.assertEqual(bytes(broker.written), setup() + b'\x00\x03abc\x00\x00')
         self.assertLessEqual(max(client.read_bounds + broker.read_bounds + client.write_bounds + broker.write_bounds), 4096)
 
     def test_listens_127001_only(self):
@@ -316,24 +369,49 @@ class ProxyTests(unittest.TestCase):
             outcome, _, _, _ = self.run_case([Stream([REQUEST], flags=flags)], [Stream()])
             self.assertEqual(outcome.code, 'CHANNEL_DENIED')
 
-    def test_capability_run_and_release_binding_mismatch_stops_before_listener(self):
-        for field, value in [('capability', b'\x08' * 32), ('run_id', '2' * 32),
-                             ('config_identity', 'c' * 64), ('manifest_identity', 'c' * 64),
-                             ('first_sequence', 2), ('expires_at', 180),
-                             ('origins', (('FRONTEND', 'https://evil.example.test'), ORIGINS[1]))]:
-            sockets = Sockets()
-            cfg = config(sockets)
-            transport = Transport(binding=dataclasses.replace(cfg.binding, **{field: value}))
-            self.assertEqual(proxy.serve_proxy(cfg, transport).code, 'IDENTITY_MISMATCH')
-            self.assertEqual(sockets.calls, [])
+    def test_forged_or_replayed_stream_proof_rejected_by_real_verifier(self):
+        # T9-3 (replaces the fake-binding mismatch test): the proofs the proxy actually wrote are
+        # checked against their recorded challenges with the real stream_proof, compared in
+        # constant time as the host does (BrokerTests binds the host verifier to the same vector).
+        n1, n2 = bytes(range(16)), bytes(range(16, 32))
+        clients = [Stream([REQUEST, b'']), Stream([BACKEND_REQUEST, b''])]
+        brokers = [Stream([challenge(n1), b'\x00\x00']), Stream([challenge(n2), b'\x00\x00'])]
+        sockets, transport = Sockets(clients), Transport(brokers, challenge=None)
+        self.assertEqual(proxy.serve_proxy(config(sockets), transport).code, 'COMPLETE')
+
+        def recorded(stream):
+            data = bytes(stream.written)
+            size = int.from_bytes(data[:2], 'big')
+            self.assertEqual(data[2 + size:4 + size], b'\x00\x20')
+            return json.loads(data[2:2 + size]), data[4 + size:36 + size]
+
+        def verify(nonce, frame, candidate):
+            expected = proxy.stream_proof(VSOCK_KEY, nonce, frame['runId'], frame['sequence'])
+            return hmac.compare_digest(candidate, expected)
+
+        (c1, p1), (c2, p2) = recorded(brokers[0]), recorded(brokers[1])
+        self.assertEqual((c1['sequence'], c2['sequence']), (1, 2))
+        self.assertTrue(verify(n1, c1, p1))
+        self.assertTrue(verify(n2, c2, p2))
+        # Replays: a recorded proof never answers another challenge, sequence or run.
+        self.assertFalse(verify(n2, c1, p1), 'replayed for another challenge')
+        self.assertFalse(verify(n1, c2, p1), 'replayed for another sequence')
+        self.assertFalse(verify(n1, dict(c1, runId='2' * 32), p1), 'replayed for another run')
+        # Forgeries: the raw capability or the topology key in place of k_vsock, a flipped bit.
+        for key in (CAPABILITY, TOPOLOGY_KEY):
+            self.assertFalse(verify(n1, c1, proxy.stream_proof(key, n1, '1' * 32, 1)))
+        self.assertFalse(verify(n1, c1, bytes([p1[0] ^ 1]) + p1[1:]))
+        # Neither key nor capability ever reaches a stream.
+        for stream in brokers:
+            self.assertNotIn(VSOCK_KEY, bytes(stream.written))
+            self.assertNotIn(CAPABILITY, bytes(stream.written))
 
     def test_sequence_controls_do_not_reset_across_tunnels(self):
         clients = [Stream([REQUEST, b'']), Stream([REQUEST.replace(b'frontend', b'backend'), b''])]
         brokers = [Stream([b'\x00\x00']), Stream([b'\x00\x00'])]
         outcome, _, _, _ = self.run_case(clients, brokers)
         self.assertEqual(outcome.code, 'COMPLETE')
-        expected = CONTROL.replace(b'FRONTEND', b'BACKEND').replace(b'"sequence":1', b'"sequence":2')
-        self.assertEqual(bytes(brokers[1].written), len(expected).to_bytes(2, 'big') + expected + b'\x00\x00')
+        self.assertEqual(bytes(brokers[1].written), setup('BACKEND', 2) + b'\x00\x00')
 
     def test_aggregate_bytes_counts_both_directions_before_forwarding(self):
         client, broker = Stream([REQUEST + b'abcd']), Stream([b'\x00\x03xyz'])
@@ -341,7 +419,7 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(outcome.code, 'BYTE_LIMIT')
         self.assertEqual(outcome.used_bytes, 4)
         self.assertEqual(bytes(client.written), OK)
-        self.assertEqual(bytes(broker.written), len(CONTROL).to_bytes(2, 'big') + CONTROL + b'\x00\x04abcd')
+        self.assertEqual(bytes(broker.written), setup() + b'\x00\x04abcd')
 
     def test_aggregate_bytes_never_reset_between_completed_tunnels(self):
         # Hold the second CONNECT until the first has completed; common ceiling persists.
@@ -413,7 +491,7 @@ class ProxyTests(unittest.TestCase):
             self.assertEqual(sockets.calls, [])
 
     def test_binding_invalid_fields_are_denied(self):
-        for field, value in [('run_id', 'owner'), ('capability', b'x'), ('capability', bytearray(32)),
+        for field, value in [('run_id', 'owner'), ('vsock_key', b'x'), ('vsock_key', bytearray(32)),
                              ('first_sequence', True), ('first_sequence', 0), ('first_sequence', 9007199254740992),
                              ('manifest_identity', 'z' * 64), ('expires_at', True), ('expires_at', 100)]:
             sockets = Sockets()
@@ -495,11 +573,11 @@ class ProxyTests(unittest.TestCase):
         class DeadlineTransport(Transport):
             def __init__(self, clock, path, streams=()):
                 super().__init__(streams); self.clock, self.path = clock, path
-            def authenticate(self, binding):
-                if self.path == 'authenticate':
+            def claim(self):
+                if self.path == 'claim':
                     self.clock.mono = 30
-                    raise OSError('late authenticate failure')
-                return super().authenticate(binding)
+                    raise OSError('late claim failure')
+                return super().claim()
             def check(self):
                 if self.path == 'check':
                     self.clock.mono = 30
@@ -530,7 +608,7 @@ class ProxyTests(unittest.TestCase):
                     raise OSError('late end failure')
                 return super().end_write()
 
-        for path in ('authenticate', 'check'):
+        for path in ('claim', 'check'):
             with self.subTest(path=path):
                 clock, sockets = Clock(), Sockets(complete=False)
                 outcome = proxy.serve_proxy(
@@ -619,7 +697,7 @@ class ProxyTests(unittest.TestCase):
         sockets, transport = Sockets([client]), Transport([broker])
         outcome = proxy.serve_proxy(self.chromium_config(sockets), transport)
         self.assertEqual(outcome.code, 'COMPLETE')
-        self.assertEqual(bytes(broker.written), control() + b'\x00\x03\x16\x03\x01\x00\x00')
+        self.assertEqual(bytes(broker.written), setup() + b'\x00\x03\x16\x03\x01\x00\x00')
         self.assertEqual(bytes(client.written), OK + b'\x17')
         self.assertEqual(len(transport.calls), 1)
 
@@ -664,9 +742,9 @@ class ProxyTests(unittest.TestCase):
         # together, while B kept exchanging bytes and finished much later.
         self.assertEqual((closed_at['idle'], closed_at['idle-broker']), (30, 30))
         self.assertGreater(closed_at['active'], 60)
-        self.assertEqual(bytes(idle_broker.written), control() + b'\x00\x03abc')
+        self.assertEqual(bytes(idle_broker.written), setup() + b'\x00\x03abc')
         self.assertEqual(bytes(active.written), OK + b'y' * 60)
-        self.assertEqual(bytes(active_broker.written), control('BACKEND', 2) + b'\x00\x01x' * 60 + b'\x00\x00')
+        self.assertEqual(bytes(active_broker.written), setup('BACKEND', 2) + b'\x00\x01x' * 60 + b'\x00\x00')
         # Bytes stay charged: A's 3 bytes count with B's 120.
         self.assertEqual(outcome.used_bytes, 3 + 60 + 60)
         self.assertEqual((sockets.listener.closes, transport.closes, len(transport.calls)), (1, 1, 2))
@@ -681,7 +759,7 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(len(transport.calls), 1, 'no vsock for a client that never sent a header')
         self.assertEqual(bytes(quiet.written) + bytes(partial.written), b'')
         self.assertEqual(bytes(other.written), OK + b'z')
-        self.assertEqual(bytes(broker.written), control() + b'\x00\x00')
+        self.assertEqual(bytes(broker.written), setup() + b'\x00\x00')
         self.assertEqual(outcome.used_bytes, 1)
 
     def test_write_after_client_close_closes_only_that_tunnel(self):
@@ -705,7 +783,7 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(outcome.code, 'COMPLETE')
         self.assertEqual([s.closes for s in (closing, closing_broker, other, other_broker)], [1, 1, 1, 1])
         self.assertEqual(bytes(closing.written), OK)
-        self.assertEqual(bytes(closing_broker.written), control() + b'\x00\x00')
+        self.assertEqual(bytes(closing_broker.written), setup() + b'\x00\x00')
         self.assertEqual(bytes(other.written), OK + b'w')
         self.assertEqual(outcome.used_bytes, 5 + 1, 'the undelivered late record stays charged')
 
@@ -737,7 +815,7 @@ class ProxyTests(unittest.TestCase):
                     self.assertEqual([s.closes for s in [a] + brokers + [b]], [1] * (len(brokers) + 2))
                     sequence = len(brokers)
                     self.assertEqual(bytes(b_broker.written),
-                                     control('BACKEND', sequence) + b'\x00\x01q\x00\x00')
+                                     setup('BACKEND', sequence) + b'\x00\x01q\x00\x00')
                     self.assertEqual(bytes(b.written), OK + b'r')
                     self.assertEqual(outcome.used_bytes, charged + 2, 'bytes stay charged')
                     self.assertEqual((sockets.listener.closes, transport.closes), (1, 1))
@@ -790,7 +868,8 @@ class ProxyTests(unittest.TestCase):
             ('vsock-loss:physical-eof', {}, [REQUEST], Stream([None, b'']), {}, 'TRANSPORT_LOST'),
             ('vsock-loss:read-error', {}, [REQUEST], Stream([None, OSError('inert vsock loss')]), {}, 'TRANSPORT_LOST'),
             ('protocol:oversized-record', {}, [REQUEST], Stream([None, b'\x10\x01x']), {}, 'CHANNEL_DENIED'),
-            ('protocol:ancillary', {}, [REQUEST], Stream([None, b'x'], ancillary=((1, 1, b'fd'),)), {}, 'CHANNEL_DENIED'),
+            # Ancillary data on a data read (the challenge read is the stream's first and clean).
+            ('protocol:ancillary', {}, [REQUEST], LateAncillary([None, b'x']), {}, 'CHANNEL_DENIED'),
             ('protocol:connect', {}, [None, None, b'GET / HTTP/1.1\r\n\r\n'], None, {}, 'CHANNEL_DENIED'),
             ('aggregate-cap', {}, [REQUEST, None, b'abcd'], Stream(), dict(aggregate_bytes=3), 'BYTE_LIMIT'),
             ('run-expiry', {}, [REQUEST], Stream(), dict(run_timeout_ms=5), 'EXPIRED'),
@@ -849,10 +928,10 @@ class ProxyTests(unittest.TestCase):
     def test_vsock_failure_after_idle_deadline_latches_not_absorbed(self):
         # P37: a vsock-side failure observed after the tunnel's idle deadline is loss; the idle
         # deadline only discards late *data*. Client-socket failures follow P36.
-        def late(stream_type, clock, **kwargs):
+        def late(stream_type, clock, before=1, **kwargs):
             class Late(stream_type):
                 def read(self, max_bytes):
-                    if len(self.read_bounds) == 1: clock.mono += 25
+                    if len(self.read_bounds) == before: clock.mono += 25
                     return super().read(max_bytes)
             return Late(**kwargs)
         cases = [
@@ -866,7 +945,8 @@ class ProxyTests(unittest.TestCase):
             with self.subTest(case=name):
                 clock = Clock()
                 if side == 'broker':
-                    a, a_broker = Stream([REQUEST, None, None]), late(Stream, clock, data=parts)
+                    # The host's challenge is the stream's first read (C4).
+                    a, a_broker = Stream([REQUEST, None, None]), late(Stream, clock, 2, data=parts)
                 else:
                     a, a_broker = late(Stream, clock, data=parts), Stream()
                 sockets, transport = Sockets([a]), Transport([a_broker])
@@ -916,7 +996,8 @@ class ProxyTests(unittest.TestCase):
             with self.subTest(case=name):
                 clock = Clock()
                 if side == 'broker':
-                    client, broker = Stream([REQUEST, None, None]), late(clock, parts, 2)
+                    # The host's challenge is the stream's first read (C4): parts[1] is read 3.
+                    client, broker = Stream([REQUEST, None, None]), late(clock, parts, 3)
                 else:
                     client, broker = late(clock, parts, 2), Stream()
                 sockets, transport = Sockets([client]), Transport([broker])
@@ -925,7 +1006,7 @@ class ProxyTests(unittest.TestCase):
                 self.assertEqual(bytes(client.written), client_bytes)
                 self.assertEqual(len(transport.calls), opened)
                 if opened:
-                    self.assertEqual(bytes(broker.written), control(), 'late bytes never forwarded')
+                    self.assertEqual(bytes(broker.written), setup(), 'late bytes never forwarded')
                 self.assertEqual(outcome.used_bytes, used, 'late bytes never charged')
                 self.assertEqual((client.closes, broker.closes, sockets.listener.closes, transport.closes),
                                  (1, opened, 1, 1))
@@ -955,7 +1036,7 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(first_after[1], 16, 'no accept in the iteration that freed the slot')
         self.assertEqual(sockets.listener.accepts, 17)
         self.assertEqual(len(transport.calls), 16)
-        self.assertEqual(bytes(seventeenth_broker.written), control('FRONTEND', 16) + b'\x00\x00')
+        self.assertEqual(bytes(seventeenth_broker.written), setup('FRONTEND', 16) + b'\x00\x00')
         self.assertEqual([s.closes for s in [slot] + live + [seventeenth] + brokers], [1] * 33)
         self.assertEqual((sockets.listener.closes, transport.closes), (1, 1))
 
@@ -1028,7 +1109,7 @@ class ProxyTests(unittest.TestCase):
         outcome = proxy.serve_proxy(cfg, transport)
         self.assertEqual(outcome.code, 'CAPACITY')
         self.assertEqual(len(transport.calls), 1024, 'the 1025th CONNECT never opens a vsock')
-        self.assertEqual(bytes(brokers[-1].written), control('FRONTEND', proxy._MAX_SAFE_INTEGER) + b'\x00\x00')
+        self.assertEqual(bytes(brokers[-1].written), setup('FRONTEND', proxy._MAX_SAFE_INTEGER) + b'\x00\x00')
         self.assertEqual((bytes(clients[-1].written), clients[-1].closes), (b'', 1))
         self.assertTrue(all(s.closes == 1 for s in clients + brokers))
         self.assertEqual((sockets.listener.closes, transport.closes), (1, 1))
@@ -1117,7 +1198,7 @@ class ProxyTests(unittest.TestCase):
                 client, broker = Stream([exact[:split], exact[split:], b'']), Stream([b'\x00\x00'])
                 outcome, _, _, transport = self.run_case([client], [broker], idle_timeout_ms=1000)
                 self.assertEqual(outcome.code, 'COMPLETE')
-                self.assertEqual(bytes(broker.written), control() + b'\x00\x00')
+                self.assertEqual(bytes(broker.written), setup() + b'\x00\x00')
         for parts in ([b'C' * 4000, b'C' * 96], [b'C' * 4000, b'C' * 200], [over[:3000], over[3000:]],
                       [over[:4096], over[4096:]], [b'C' * 3, b'C' * 4093]):
             with self.subTest(denied=[len(p) for p in parts]):
@@ -1136,6 +1217,199 @@ class ProxyTests(unittest.TestCase):
                 self.assertEqual(bytes(client.written), OK, 'nothing from a record with trailing bytes')
                 self.assertEqual((client.closes, broker.closes, sockets.listener.closes), (1, 1, 1))
 
+    # ---- Task 6: C4 vsock stream challenge-response (E3, R6, P10, P38).
+    def test_stream_proof_vector(self):
+        # The plan author's vector, used verbatim; BrokerTests binds the host to the same bytes.
+        self.assertEqual(proxy.VSOCK_PROOF_DOMAIN, b'acceptance:vsock-stream:v1\0')
+        key = bytes.fromhex('5814c7147c97464dd6833b65cfd337b5d6f8277a080522efe9c3f7f498d54d00')
+        self.assertEqual(VSOCK_KEY, key)
+        self.assertEqual(
+            proxy.stream_proof(key, bytes(range(16)), '0123456789abcdef0123456789abcdef', 1).hex(),
+            '564c1588db8960fb3a6748fe644fa0b4ffa9d1ca23ce8ae7d21c97020fe42e72')
+        self.assertEqual(proxy.stream_proof(VSOCK_KEY, NONCE, '1' * 32, 7), proof(7))
+        for args in [(key[:31], NONCE, '1' * 32, 1), (bytearray(key), NONCE, '1' * 32, 1),
+                     (key, NONCE[:15], '1' * 32, 1), (key, NONCE + b'\0', '1' * 32, 1),
+                     (key, NONCE, 'A' * 32, 1), (key, NONCE, '1' * 31, 1), (key, NONCE, '1' * 32, 0),
+                     (key, NONCE, '1' * 32, True), (key, NONCE, '1' * 32, proxy._MAX_SAFE_INTEGER + 1)]:
+            with self.subTest(args=args), self.assertRaises(proxy.ProxyError):
+                proxy.stream_proof(*args)
+
+    def test_proxy_never_holds_capability(self):
+        # R6/P10: the proxy receives only k_vsock. Its binding has no capability, the FD3 config
+        # carries vsockKey (64 lowercase hex), and a frame that still carries capability is denied.
+        names = [f.name for f in dataclasses.fields(proxy.RunBinding)]
+        self.assertNotIn('capability', names)
+        self.assertEqual(names[1], 'vsock_key')
+        self.assertFalse(hasattr(config(Sockets()).binding, 'capability'))
+        fields = proxy._BOOTSTRAP_RULE['fields']
+        self.assertNotIn('capability', fields)
+        self.assertEqual(fields['vsockKey'], {'ref': 'Digest'})
+        self.assertFalse(hasattr(proxy.NativeVsockTransport, 'authenticate'))
+        accepted = proxy._decode_bootstrap(self._bootstrap_wire()[2:], Clock(), Sockets())
+        self.assertEqual(accepted.binding.vsock_key, VSOCK_KEY)
+        renamed = lambda value: value.__setitem__('capability', value.pop('vsockKey'))
+        both = lambda value: value.__setitem__('capability', CAPABILITY.hex())
+        for name, change in (('renamed', renamed), ('alongside', both)):
+            with self.subTest(frame=name):
+                with self.assertRaisesRegex(proxy.ProxyError, '^INVALID_CONFIG$'):
+                    proxy._decode_bootstrap(self._bootstrap_wire(change)[2:], Clock(), Sockets())
+                # Through the composition entry: denied before any context, owner or frame.
+                h = CompositionHarness(self, mutate=lambda initial, change=change: change(initial['proxyBootstrap']))
+                h.run()
+                self.assertEqual((h.exit, h.owners, h.events, h.frames, h.endpoints), (1, [], [], [], []))
+
+    def test_control_and_proof_follow_host_challenge_on_every_stream(self):
+        # C4: per stream the proxy first reads the host's challenge (bounded reads: the 18-byte
+        # frame minus what it holds), then writes its control frame, then its proof frame. Nothing
+        # moves before the challenge: no control, no proof, no early client bytes, no 200.
+        nonces = [bytes([0xa0]) * 16, bytes([0xb1]) * 16]
+        seen = []
+        class Watched(Stream):
+            def __init__(self, name, data, client):
+                super().__init__(data); self.name, self.client = name, client
+            def read(self, max_bytes):
+                seen.append((self.name, max_bytes, len(self.written), len(self.client.written)))
+                return super().read(max_bytes)
+        a = Stream([REQUEST + b'abc', None, None, None, None, b''])
+        b = Stream([BACKEND_REQUEST, None, None, None, None, b''])
+        wa, wb = challenge(nonces[0]), challenge(nonces[1])
+        a_broker = Watched('a', [None, wa[:5], None, wa[5:], b'\x00\x01z', b'\x00\x00'], a)
+        b_broker = Watched('b', [wb[:1], wb[1:9], wb[9:], b'\x00\x00'], b)
+        sockets, transport = Sockets([a, b]), Transport([a_broker, b_broker], challenge=None)
+        outcome = proxy.serve_proxy(config(sockets, idle_timeout_ms=1000, run_timeout_ms=1000), transport)
+        self.assertEqual(outcome.code, 'COMPLETE')
+        self.assertEqual(bytes(a_broker.written),
+                         control('FRONTEND', 1) + b'\x00\x20' + proof(1, nonces[0]) + b'\x00\x03abc\x00\x00')
+        self.assertEqual(bytes(b_broker.written),
+                         control('BACKEND', 2) + b'\x00\x20' + proof(2, nonces[1]) + b'\x00\x00')
+        self.assertEqual((bytes(a.written), bytes(b.written)), (OK + b'z', OK))
+        for name, bounds in (('a', [18, 18, 13, 13]), ('b', [18, 17, 9])):
+            reads = [row for row in seen if row[0] == name]
+            self.assertEqual([row[1] for row in reads[:len(bounds)]], bounds)
+            # Until the frame is complete nothing was written to the stream or to its client.
+            self.assertEqual({row[2:] for row in reads[:len(bounds)]}, {(0, 0)})
+
+    def test_short_or_long_challenge_frame_latches(self):
+        # C4: the challenge frame is a 2-byte length of exactly 16, then 16 bytes. Any other
+        # length is a protocol violation that latches the whole run (the established bystander
+        # closes too); a physical EOF inside it is vsock loss. Nothing is written on that stream.
+        cases = [
+            ('length-15', [b'\x00\x0f' + b'x' * 15], 'CHANNEL_DENIED'),
+            ('length-17', [b'\x00\x11' + b'x' * 17], 'CHANNEL_DENIED'),
+            ('length-0', [b'\x00\x00'], 'CHANNEL_DENIED'),
+            ('length-65535', [b'\xff\xff'], 'CHANNEL_DENIED'),
+            ('first-byte', [b'\x01'], 'CHANNEL_DENIED'),
+            ('long-split', [b'\x00', None, b'\x20' + b'x' * 16], 'CHANNEL_DENIED'),
+            ('truncated', [b'\x00\x10' + b'x' * 5, b''], 'TRANSPORT_LOST'),
+            ('eof-first', [b''], 'TRANSPORT_LOST'),
+        ]
+        for name, parts, code in cases:
+            with self.subTest(case=name):
+                by, by_broker = Stream([BACKEND_REQUEST] + [None] * 10), Stream([CHALLENGE])
+                a, a_broker = Stream([None, REQUEST] + [None] * 10), Stream(parts)
+                sockets = Sockets([by, a], complete=False)
+                transport = Transport([by_broker, a_broker], challenge=None)
+                outcome = proxy.serve_proxy(config(sockets, idle_timeout_ms=1000, run_timeout_ms=1000), transport)
+                self.assertEqual(outcome.code, code)
+                self.assertEqual((bytes(a_broker.written), bytes(a.written)), (b'', b''))
+                self.assertEqual(bytes(by_broker.written), setup('BACKEND', 1))
+                self.assertEqual([s.closes for s in (a, a_broker, by, by_broker)], [1, 1, 1, 1])
+        # Read across the idle deadline: a wrong length is still examined and latches; a valid
+        # part of the frame, or no frame at all, is an ordinary idle close of that tunnel.
+        for name, parts, code in (('late-long', [b'\x00\x11'], 'CHANNEL_DENIED'),
+                                  ('late-valid-part', [b'\x00\x10xx'], 'COMPLETE'),
+                                  ('late-none', [], 'COMPLETE')):
+            with self.subTest(case=name):
+                clock = Clock()
+                class Late(Stream):
+                    def read(self, max_bytes):
+                        if not self.read_bounds: clock.mono += 25      # straddles idle (20)
+                        return super().read(max_bytes)
+                a, a_broker = Stream([REQUEST]), Late(parts)
+                sockets = Sockets([a])
+                outcome = proxy.serve_proxy(config(sockets, clock, run_timeout_ms=1000),
+                                            Transport([a_broker], challenge=None))
+                self.assertEqual(outcome.code, code)
+                self.assertEqual((bytes(a_broker.written), bytes(a.written)), (b'', b''))
+                self.assertEqual((a.closes, a_broker.closes, sockets.listener.closes), (1, 1, 1))
+
+    def test_stream_setup_serialized_in_sequence_order(self):
+        # C4 and the T9 broker sequence-ordering note: at most one stream is between its vsock
+        # connect and its fully written proof, and streams open in sequence order. A CONNECT that
+        # completes meanwhile waits without a vsock.
+        class Recording(Transport):
+            def __init__(self, streams):
+                super().__init__(streams, challenge=None); self.opened, self.snapshots = [], []
+            def open(self, cid, service, binding):
+                self.snapshots.append([bytes(s.written) for s in self.opened])
+                stream = super().open(cid, service, binding); self.opened.append(stream)
+                return stream
+        clients = [Stream([wire] + [None] * 30 + [b'']) for wire in (REQUEST, BACKEND_REQUEST, REQUEST)]
+        nonces = [bytes([i]) * 16 for i in range(3)]
+        # Each challenge comes after two empty reads; each setup is written 40 bytes at a time.
+        brokers = [Stream([None, None, challenge(n), None, None, b'\x00\x00'], partial=40) for n in nonces]
+        transport = Recording(brokers)
+        outcome = proxy.serve_proxy(config(Sockets(clients), idle_timeout_ms=1000, run_timeout_ms=1000), transport)
+        self.assertEqual(outcome.code, 'COMPLETE')
+        expected = [setup(d, i + 1, nonces[i]) for i, d in enumerate(('FRONTEND', 'BACKEND', 'FRONTEND'))]
+        self.assertEqual([bytes(s.written) for s in brokers], [e + b'\x00\x00' for e in expected])
+        # When stream i opened, every earlier stream had written its whole control and proof.
+        self.assertEqual(len(transport.snapshots), 3)
+        for i, snapshot in enumerate(transport.snapshots):
+            self.assertEqual([w[:len(expected[j])] for j, w in enumerate(snapshot)], expected[:i])
+
+    def test_sequence_consumed_by_closed_setup_leaves_gap_never_repeat(self):
+        # P38(a), guest side: a stream consumes its sequence when it opens. Closed per tunnel
+        # before its control was delivered (no challenge within the idle deadline, or a setup
+        # write that never drained), it leaves a gap: the next stream takes the next sequence.
+        for name, first_broker in (('no-challenge', Stream()),
+                                   ('setup-unwritten', Stream([CHALLENGE], partial=None))):
+            with self.subTest(case=name):
+                first = Stream([REQUEST])
+                second, second_broker = Stream([BACKEND_REQUEST, b'']), Stream([CHALLENGE, b'\x00\x00'])
+                sockets = AfterSockets([first, second])   # the second arrives after the first closed
+                transport = Transport([first_broker, second_broker], challenge=None)
+                outcome = proxy.serve_proxy(config(sockets, run_timeout_ms=1000), transport)
+                self.assertEqual(outcome.code, 'COMPLETE')
+                self.assertEqual(bytes(first_broker.written), b'')
+                self.assertEqual(bytes(second_broker.written), setup('BACKEND', 2) + b'\x00\x00')
+                self.assertEqual([s.closes for s in (first, first_broker, second, second_broker)], [1, 1, 1, 1])
+
+    def test_host_first_logical_eof_ends_tunnel_normally_and_run_continues(self):
+        # P38(b), guest side: a host that closes an idle slot first sends a zero-length logical
+        # EOF. On the guest that is an ordinary tunnel end: the client gets its data and its
+        # shutdown, later client bytes still go to the host (which discards them), the guest's own
+        # logical EOF follows when the client closes, and the run continues for other tunnels.
+        alert = b'\x15late-alert'
+        a, a_broker = Stream([REQUEST, None, None, alert, None, b'']), Stream([b'\x00\x02hi', b'\x00\x00'])
+        b, b_broker = Stream([None] * 12 + [BACKEND_REQUEST, b'']), Stream([b'\x00\x01k\x00\x00'])
+        outcome, _, sockets, transport = self.run_case([a, b], [a_broker, b_broker],
+                                                       idle_timeout_ms=1000, run_timeout_ms=1000)
+        self.assertEqual(outcome.code, 'COMPLETE')
+        self.assertEqual((bytes(a.written), a.ends), (OK + b'hi', 1))
+        self.assertEqual(bytes(a_broker.written), setup() + len(alert).to_bytes(2, 'big') + alert + b'\x00\x00')
+        self.assertEqual(bytes(b.written), OK + b'k')
+        self.assertEqual(bytes(b_broker.written), setup('BACKEND', 2) + b'\x00\x00')
+        self.assertEqual([s.closes for s in (a, a_broker, b, b_broker)], [1, 1, 1, 1])
+        self.assertEqual((sockets.listener.closes, transport.closes), (1, 1))
+
+    def test_per_tunnel_close_closes_vsock_without_logical_eof(self):
+        # P38(c), guest side: a per-tunnel close (P36 client reset, or idle) closes the vsock
+        # stream without a logical-EOF record. The host treats exactly that physical close as an
+        # event of its slot only (BrokerTests); the guest run continues.
+        for name, a in (('client-reset', Stream([REQUEST + b'ab', oserror(errno.ECONNRESET)])),
+                        ('idle', Stream([REQUEST + b'ab']))):
+            with self.subTest(close=name):
+                a_broker = Stream()
+                b, b_broker = Stream([BACKEND_REQUEST, b'']), Stream([b'\x00\x00'])
+                # b arrives after a closed, so a's close is the only event that ends a.
+                sockets, transport = AfterSockets([a, b]), Transport([a_broker, b_broker])
+                outcome = proxy.serve_proxy(config(sockets, run_timeout_ms=1000), transport)
+                self.assertEqual(outcome.code, 'COMPLETE')
+                self.assertEqual(bytes(a_broker.written), setup() + b'\x00\x02ab', 'no logical EOF')
+                self.assertEqual(bytes(b_broker.written), setup('BACKEND', 2) + b'\x00\x00')
+                self.assertEqual([s.closes for s in (a, a_broker, b, b_broker)], [1, 1, 1, 1])
+
     def native_vsock(self, *, so_errors=(), ready=True):
         """Inert AF_VSOCK adapter: pending connect, readiness, and SO_ERROR per created socket."""
         created = []
@@ -1143,12 +1417,17 @@ class ProxyTests(unittest.TestCase):
             def __init__(self, *args):
                 self.args, self.closes, self.sent = args, 0, bytearray()
                 self.error = so_errors[len(created)] if len(created) < len(so_errors) else 0
+                self.incoming = [CHALLENGE]      # C4: the host's challenge, then nothing
                 created.append(self)
             def setblocking(self, value): pass
             def connect_ex(self, address): return errno.EINPROGRESS
             def getsockopt(self, level, option): return self.error
             def send(self, data): self.sent.extend(data); return len(data)
-            def recvmsg(self, size, ancillary): raise BlockingIOError()
+            def recvmsg(self, size, ancillary):
+                if not self.incoming: raise BlockingIOError()
+                data = self.incoming.pop(0)
+                if len(data) > size: self.incoming.insert(0, data[size:]); data = data[:size]
+                return data, [], 0, None
             def shutdown(self, how): pass
             def close(self): self.closes += 1
         class SocketModule:
@@ -1169,7 +1448,7 @@ class ProxyTests(unittest.TestCase):
         module, selectors, created = self.native_vsock(so_errors=(errno.ECONNREFUSED,))
         binding = config(Sockets()).binding
         transport = proxy.NativeVsockTransport(module, selectors, binding, 2, 4050, 20, clock=Clock())
-        transport.authenticate(binding)
+        transport.claim()
         stream = transport.open(2, 4050, binding)
         with self.assertRaises(OSError) as raised: stream.write(b'x')
         self.assertEqual(raised.exception.errno, errno.ECONNREFUSED)
@@ -1184,14 +1463,14 @@ class ProxyTests(unittest.TestCase):
         transport = proxy.NativeVsockTransport(module, selectors, binding, 2, 4050, 20, clock=clock)
         outcome = proxy.serve_proxy(config(sockets, clock), transport)
         self.assertEqual(outcome.code, 'TRANSPORT_LOST')
-        self.assertEqual([bytes(e.sent) for e in created], [control('BACKEND', 1), b''])
+        self.assertEqual([bytes(e.sent) for e in created], [setup('BACKEND', 1), b''])
         self.assertEqual([e.closes for e in created] + [bystander.closes, client.closes], [1, 1, 1, 1])
 
     def test_vsock_connect_timeout_enforced(self):
         module, selectors, created = self.native_vsock(ready=False)
         binding, clock = config(Sockets()).binding, Clock()
         transport = proxy.NativeVsockTransport(module, selectors, binding, 2, 4050, 20, clock=clock)
-        transport.authenticate(binding)
+        transport.claim()
         stream = transport.open(2, 4050, binding)          # opened at mono 10: deadline 30
         clock.mono = 29
         self.assertIsNone(stream.write(b'x')); self.assertIsNone(stream.read(16)); transport.check()
@@ -1214,7 +1493,6 @@ class ProxyTests(unittest.TestCase):
     def _bootstrap_wire(self, change=None):
         value = {
             'aggregateBytes': 10000,
-            'capability': '07' * 32,
             'configIdentity': 'a' * 64,
             'expiresAt': 190,
             'firstSequence': 1,
@@ -1230,6 +1508,8 @@ class ProxyTests(unittest.TestCase):
             'runTimeoutMs': 50,
             'runtimeIdentity': 'd' * 64,
             'version': 1,
+            # P10/R6: the derived vsock-stream key only; never the run capability.
+            'vsockKey': VSOCK_KEY.hex(),
         }
         if change: change(value)
         body = json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
@@ -1268,7 +1548,7 @@ class ProxyTests(unittest.TestCase):
         self.assertTrue(hasattr(proxy, 'qualify_native_admission'))
         self.assertTrue(hasattr(proxy, 'admitted_inherited_main'))
         expected_binding=proxy.RunBinding(
-            '1'*32, b'\x07'*32, 190, 1, 'b'*64, 'a'*64, ORIGINS)
+            '1'*32, VSOCK_KEY, 190, 1, 'b'*64, 'a'*64, ORIGINS)
         validations=[]
         policy=proxy.qualify_native_admission(
             expected_binding, HOSTS.copy(), 10000, 20, 50,
@@ -1345,7 +1625,7 @@ class ProxyTests(unittest.TestCase):
                 ('destinations', dict(destinations={'FRONTEND':'other.example.test','BACKEND':HOSTS['BACKEND']})),
                 ('aggregateBytes', dict(aggregate_bytes=9999)), ('idleTimeoutMs', dict(idle_timeout_ms=21)),
                 ('runTimeoutMs', dict(run_timeout_ms=51)),
-                ('runId', rebound(run_id='2'*32)), ('capability', rebound(capability=b'\x08'*32)),
+                ('runId', rebound(run_id='2'*32)), ('vsockKey', rebound(vsock_key=b'\x08'*32)),
                 ('expiresAt', rebound(expires_at=191)), ('firstSequence', rebound(first_sequence=2)),
                 ('manifestIdentity', rebound(manifest_identity='e'*64)),
                 ('configIdentity', rebound(config_identity='e'*64)),
@@ -1460,12 +1740,12 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(stream.write(b'abc'), 1)
         binding=config(Sockets()).binding
         bare=proxy.NativeVsockTransport(module, Selector, binding, 2, 4050)
-        bare.authenticate(binding); created=len(module.created)
+        bare.claim(); created=len(module.created)
         with self.assertRaisesRegex(proxy.ProxyError, '^TRANSPORT_DENIED$'): bare.open(2,4050,binding)
         self.assertEqual(len(module.created), created, 'no vsock socket without a connect deadline clock')
         transport=proxy.NativeVsockTransport(module, Selector, binding, 2, 4050, clock=Clock())
-        self.assertIs(transport.authenticate(binding), binding)
-        with self.assertRaises(OSError): transport.authenticate(binding)
+        self.assertIsNone(transport.claim())
+        with self.assertRaises(OSError): transport.claim()
         native=transport.open(2,4050,binding)
         self.assertEqual(module.created[-1].created, (40, 1|2048|524288, 0))
         self.assertIn(('connect_ex',(2,4050)), module.created[-1].calls)
@@ -1531,7 +1811,7 @@ class ProxyTests(unittest.TestCase):
                 def close(self): pass
         binding=config(Sockets()).binding
         transport=proxy.NativeVsockTransport(SocketModule(), Selectors, binding, 2, 4050, 20, clock=Clock())
-        transport.authenticate(binding)
+        transport.claim()
         stream=transport.open(2,4050,binding)
         self.assertEqual(selected, [])
         self.assertEqual(stream.write(b'x'), 1)
@@ -1666,10 +1946,12 @@ class ProxyTests(unittest.TestCase):
 
 class CompositionHarness:
     """Real inherited decoder, selector parser and loop; inert OS bytes only."""
-    def __init__(self, test, *, commands=None, mutate=None, sink=None, limits=(20, 50)):
+    def __init__(self, test, *, commands=None, mutate=None, sink=None, limits=(20, 50), vsock_key=VSOCK_KEY):
         self.test, self.owners, self.frames, self.events = test, [], [], []
         # (idleTimeoutMs, runTimeoutMs) for both the frame and the independent admission.
         self.limits = limits
+        # P10: the key the bootstrap passes to the proxy entry, for the frame and the admission.
+        self.vsock_key = vsock_key
         self.clock = Clock()
         self.clock.wall, self.clock.mono = 100, 10
         self.live = {fd: [1, fd + 100, 0 if fd != 4 else 1] for fd in range(5)}
@@ -1694,16 +1976,19 @@ class CompositionHarness:
         self.budget.call = lambda fn: fn(self.remaining())
         bootstrap = json.loads(ProxyTests()._bootstrap_wire()[2:])
         bootstrap['idleTimeoutMs'], bootstrap['runTimeoutMs'] = limits
+        bootstrap['vsockKey'] = vsock_key.hex()
         initial = dict(version=2, kind='PROXY_COMPOSITION_INIT', binding=self.binding.copy(),
                        childId='2'*32, pipeId='3'*32, channelKeyHex=self.key.hex(), proxyBootstrap=bootstrap)
         if mutate: mutate(initial)
+        self.initial = initial
         self.input.extend(self.frame(initial))
         harness = self
 
         class Endpoint:
             def __init__(self, family=2):
                 self.fd = harness.allocate(); self.family = family; self.closes = 0
-                self.data, self.sent = [], bytearray()
+                # C4: every vsock stream first carries the host's challenge frame.
+                self.data, self.sent = ([CHALLENGE] if family == 40 else []), bytearray()
                 harness.endpoints.append(self)
             def fileno(self): return self.fd
             def setblocking(self, value):
@@ -1819,7 +2104,10 @@ class CompositionHarness:
         self.events.append('owner'); self.owners.append(owner)
         if self.on_ready: self.on_ready(self, owner)
     def run(self, *, legacy=False, policy_override=None, legacy_commands=None):
-        admitted = proxy.qualify_native_admission(config(Sockets()).binding, HOSTS, 10000, *self.limits,
+        base = config(Sockets()).binding
+        fields = dataclasses.fields(base)
+        keyed = proxy.RunBinding(base.run_id, self.vsock_key, *(getattr(base, f.name) for f in fields[2:]))
+        admitted = proxy.qualify_native_admission(keyed, HOSTS, 10000, *self.limits,
             runtime_identity='d'*64, role_policy_identity='c'*64, handoff_validator=lambda *_: True)
         bindings = proxy.qualify_native_bindings(self.os, self.socket, self.selector_module, self.time,
             platform_name='linux', machine='aarch64')
@@ -2045,7 +2333,7 @@ class ProxyCompositionTests(unittest.TestCase):
         self.assertEqual(observations, [True])
 
     def test_v1_listener_and_transport_auth_fail_before_mint(self):
-        with patch.object(proxy.NativeVsockTransport, 'authenticate', return_value=None):
+        with patch.object(proxy.NativeVsockTransport, 'claim', side_effect=OSError('inert claim failure')):
             h = CompositionHarness(self).run()
         self.assertEqual((h.owners, h.endpoints), ([], []))
         self.assertEqual(h.frames[-1]['payload']['code'], 'IDENTITY_MISMATCH')

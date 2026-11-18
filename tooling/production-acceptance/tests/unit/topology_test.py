@@ -239,8 +239,9 @@ def launches_and_handoffs():
 
 
 def proxy_policy():
+    # P10/R6: the proxy policy carries only the derived vsock-stream key.
     binding = proxy.RunBinding(
-        RUN, CAPABILITY, 190, 1, MANIFEST, CONFIG,
+        RUN, confinement.derive_channel_key(CAPABILITY, 'vsock-stream'), 190, 1, MANIFEST, CONFIG,
         (('FRONTEND', 'https://frontend.example'),
          ('BACKEND', 'https://backend.example')))
     return proxy.qualify_native_admission(
@@ -1766,7 +1767,7 @@ class TopologyTests(unittest.TestCase):
         sockets = proxy.NativeSockets(module, selectors, stop_fd=3, os_module=object())
         sockets.listener = proxy.NativeListener(Endpoint(), module); sockets.listener_closed = False
         transport = proxy.NativeVsockTransport(module, selectors, policy.binding, 2, 4050)
-        transport.authenticate(policy.binding)
+        transport.claim()
         config = proxy.ProxyConfig(dict(policy.destinations), policy.binding,
             policy.aggregate_bytes, policy.idle_timeout_ms, policy.run_timeout_ms, Clock(), sockets,
             native_admission=proxy.NativeAdmission(policy.runtime_identity, policy.role_policy_identity))
@@ -1800,7 +1801,7 @@ class TopologyTests(unittest.TestCase):
         sockets = proxy.NativeSockets(module, selectors, stop_fd=3, os_module=object())
         sockets.listener = proxy.NativeListener(Endpoint(), module); sockets.listener_closed = False
         transport = proxy.NativeVsockTransport(module, selectors, policy.binding, 2, 4050)
-        transport.authenticate(policy.binding)
+        transport.claim()
         config = proxy.ProxyConfig(dict(policy.destinations), policy.binding,
             policy.aggregate_bytes, policy.idle_timeout_ms, policy.run_timeout_ms, Clock(), object(),
             native_admission=proxy.NativeAdmission(policy.runtime_identity, policy.role_policy_identity))
@@ -1873,7 +1874,7 @@ class TopologyTests(unittest.TestCase):
         sockets.listener = proxy.NativeListener(endpoint, module)
         sockets.listener_closed = False
         transport = proxy.NativeVsockTransport(module, selectors, policy.binding, 2, 4050)
-        transport.authenticate(policy.binding)
+        transport.claim()
         config = proxy.ProxyConfig(dict(policy.destinations), policy.binding,
             policy.aggregate_bytes, policy.idle_timeout_ms, policy.run_timeout_ms,
             Clock(), sockets, native_admission=proxy.NativeAdmission(policy.runtime_identity,policy.role_policy_identity))

@@ -235,6 +235,7 @@ GUEST_OBSERVATION_WINDOW_MS = 100
 # C2 (E2): the host challenge is 16 random host bytes as 32 lowercase hex.
 _HOST_CHALLENGE = re.compile(r'[0-9a-f]{32}')
 _TOPOLOGY_ADMISSION = 'topology-admission'
+_VSOCK_STREAM = 'vsock-stream'
 
 HOST_DEVICES = (
     'LINUX_BOOT', 'VIRTIO_BLOCK_READ_ONLY', 'VIRTIO_ENTROPY',
@@ -1228,7 +1229,9 @@ def qualify_topology_authority(*, run_id, manifest_identity, config_identity,
             or type(binding) is not _PROXY.RunBinding
             or binding.run_id != run_id or binding.manifest_identity != manifest_identity
             or binding.config_identity != config_identity or binding.expires_at != expires_at
-            or not hmac.compare_digest(binding.capability, capability)
+            # R6/P10: the proxy policy carries exactly derive(capability, 'vsock-stream').
+            or not hmac.compare_digest(binding.vsock_key,
+                                       _CONFINEMENT.derive_channel_key(capability, _VSOCK_STREAM))
             or tuple(item[0] for item in proxy_policy.destinations)
                 != ('FRONTEND', 'BACKEND')
             or not callable(getattr(clock, 'sample', None))
@@ -2778,7 +2781,10 @@ class BootstrapComposition:
     def _activate_proxy(self):
         operation = (self._proxy_entry if callable(self._proxy_entry) else
                      self._proxy_entry.activate_original)
-        return operation(self._roles, self.binding, self._budget)
+        # P10/R6 (C3): the proxy entry receives the vsock-stream key as an explicit argument (the
+        # PROXY initializer's vsockKey); the run capability stays with the bootstrap and the host.
+        vsock_key = _CONFINEMENT.derive_channel_key(self._expected.capability, _VSOCK_STREAM)
+        return operation(self._roles, self.binding, self._budget, vsock_key)
 
     def _bind_runtime_owners(self):
         for role in _CONFINEMENT.UIDS:

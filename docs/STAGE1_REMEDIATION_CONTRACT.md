@@ -52,6 +52,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
   - The guest answers with its control frame (2-byte length ≤ 256), then a proof frame (2-byte length 32, then 32 bytes).
   - `proof = HMAC-SHA256(k_vsock, "acceptance:vsock-stream:v1\0" ‖ nonce ‖ runId (32 ASCII hex) ‖ sequence (8-byte big-endian))`.
   - The broker verifies in constant time before sequence admission. A mismatch latches the whole run as `identity`.
+  - P38(a): the broker admits strictly increasing sequences with gaps. A guest stream closed before its control was delivered leaves a gap. A repeated or decreasing sequence latches `replay`. Each sequence is used once, and the proof still binds it.
 - **Owning task:** Task 6.
 
 ## C5. Proxy authority (E4)
@@ -115,6 +116,11 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
     - on the client socket only (P36), a read, write or shutdown failure whose errno is exactly `ECONNRESET`, `EPIPE` or `ENOTCONN`.
 
     Bytes stay charged. The tunnel's vsock stream needs a proven close; a failed close is whole-run `CLEANUP_UNCERTAIN`. Every other client errno, and every vsock or broker error, stays whole-run.
+  - On the host broker (P38), these end only that slot:
+    - (b) idle: the host first sends the guest a zero-length logical-EOF record, then closes the stream, so a host-first idle close is an ordinary tunnel end on the guest;
+    - (c) a guest stream that closes physically without a logical-EOF record.
+
+    Host whole-run causes remain identity or proof failure, a repeated or decreasing sequence (`replay`, C4), caps, protocol violations and broker errors. A relay lane whose guest stream closed carries no further stream; when every lane is gone, the run fails as transport loss.
   - The whole-run latch stays for transport, broker or vsock loss, protocol violation, aggregate and run caps, and clock faults. The 1025th tunnel latches `CAPACITY`.
   - A 17th concurrent client is deferred, never latched (P35). While 16 tunnels are live, the proxy does not accept; the client waits in the kernel listen backlog and is accepted when a tunnel closes. Design section 9.3's 16-simultaneous cap is unchanged.
   - Per-run tunnel total: 1024. A tunnel is one vsock stream (one sequence), so the `firstSequence` ceiling is `MAX_SAFE_INTEGER - 1023`.
