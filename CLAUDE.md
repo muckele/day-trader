@@ -130,7 +130,8 @@ From the status handoff, plus local evidence checked on 2026-11-14:
     - Several probes and attestations would not detect a real failure. The vsock "authentication" compares the binding with itself; the M2 broker does the same.
     - Design decisions are needed (summary §E).
     - Re-estimate: 2–4+ weeks of remediation before Stage 2, for a Path A total of roughly 6–10+ weeks.
-  - **On hold pending owner decision:** the whole-M4 offline review and all fix work.
+  - **Owner decision, 2026-11-17: continue Path A** ("Continue Path A"), after being shown the 6–10+ week re-estimate and a recommendation to switch to Path B.
+  - **Proposed design decisions E1–E7:** `docs/STAGE1_REMEDIATION_DECISIONS.md` on the Stage 1 branch (`2495ffa`). Status PROPOSED. Remediation planning waits on owner approval of these decisions.
 
 ### Next sequence when Day Trader resumes
 
