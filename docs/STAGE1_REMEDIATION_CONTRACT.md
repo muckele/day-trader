@@ -6,7 +6,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
 
 ## C1. Cleanup budget (E7)
 
-- **Old requirement:** Composition amendment section 5 (one cleanup deadline); design section 20 (VM cleanup). The shared 60 s window opened during normal probing, and Python, JS and Swift each started it under a different rule (review findings CA-I1, CB-I1).
+- **Old requirement:** Composition amendment section 5 (one absolute end allocated at first terminal cleanup, `start+60000ms`; receivers never renew it); design section 20 (finalization and VM cleanup). As built, the shared 60 s window opened during normal probing, and Python, JS and Swift each started it under a different rule, contrary to section 5 (review findings CA-I1, CB-I1).
 - **Decision:** E7, option A. Folds compA D-1.
 - **Reconciliation:**
   - The shared 60000 ms end starts at the first terminal event: stop, cancel, failure, drift or expiry.
@@ -20,7 +20,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
 
 ## C2. Freshness challenge (E2)
 
-- **Old requirement:** Design section 14 and composition amendment sections 4 and 5: guest observation compared with host time within 1 ms (T10-1, T10-7). The two clocks are separate, so it could never pass.
+- **Old requirement:** Original plan (2026-09-30) Task 10: the topology proof binds an expiry, and there is no freshness mechanism. Composition amendment section 3 (a monotonic value never crosses host/guest clock domains) and section 5 (never compares guest monotonic timestamps to host time) are the rules the as-built code violates: the host compared guest-reported wall and monotonic times with host time within 1 ms (`VMHost.swift:778-780`, `:1091-1093`, `:1157-1159`; `topology.py:2199`, `:2604-2606`; task10-report T10-1, T10-7). The two clocks are separate, so that check could never pass.
 - **Decision:** E2, option A. T10-7 (the 1 ms legacy capture bound) is a plain bug fixed here.
 - **Reconciliation:**
   - The host challenge is `hostChallenge`: 16 random bytes as 32 lowercase hex characters, one use.
@@ -33,7 +33,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
 
 ## C3. Key derivation (E3, T10-10)
 
-- **Old requirement:** Composition amendment section 3: one run capability keyed the handoff MAC and was also used for other purposes (T10-10).
+- **Old requirement:** Design sections 6.3 and 9.3 (the one-use run capability); composition amendment section 3 (distinct per-channel keys) and section 4.1, last paragraph (the v2 envelope MAC, which names no key). As built, the one run capability keys the handoff MAC and is also used for other purposes (`topology.py:1484`, `:2648`; `proxy.py` `_BOOTSTRAP_RULE.capability`; T10-10).
 - **Decision:** E3, option A (with T10-10).
 - **Reconciliation:**
   - `derive(capability, label) = HMAC-SHA256(key=capability, msg="acceptance:key-derivation:v1\0" ‖ label ‖ "\0")`.
@@ -45,7 +45,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
 
 ## C4. vsock stream proof (E3)
 
-- **Old requirement:** Design section 9.3. The proxy's vsock "transport authentication" compared the binding with itself, and the M2 host broker used its own capability as the authenticated one (T9-3).
+- **Old requirement:** Design section 9.3 (private run capability; broker repeats run and sequence validation); original plan Tasks 5 (host broker, M2) and 9 (guest proxy). As built, the proxy's vsock "transport authentication" compared the binding with itself, and the M2 host broker used its own capability as the authenticated one (T9-3).
 - **Decision:** E3, option A. This reopens accepted M2 broker code (`EgressBroker.swift`) under the owner's 2026-11-17 approval; the `55c115a` historical evidence exception is neither reopened nor generalized.
 - **Reconciliation:**
   - Per stream, the host first sends a challenge frame: a 2-byte big-endian length (16) followed by 16 random bytes.
@@ -56,7 +56,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
 
 ## C5. Proxy authority (E4)
 
-- **Old requirement:** Composition amendment section 6 (in-process `ProxyRuntimeOwner` consumed by the composition). A confined PROXY child cannot hand that object to the bootstrap (CB-I2).
+- **Old requirement:** Composition amendment sections 6 and 6.1 (finite inherited proxy protocol; in-process `ProxyRuntimeOwner` consumed by the composition). A confined PROXY child cannot hand that object to the bootstrap (CB-I2).
 - **Decision:** E4, option A.
 - **Reconciliation:**
   - The bootstrap observes `/proc/<proxy-pid>/fd/*` and `fdinfo/*`, and cross-checks them against the proxy's MAC'd runtime report on the existing v2 FD3/FD4 channel.
@@ -67,7 +67,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
 
 ## C6. Per-role seccomp (E1)
 
-- **Old requirement:** Design section 9.2 and plan Task 8. The outer filter denied more than section 9.2 requires, so Chromium's namespace sandbox very likely could not start (T8-06).
+- **Old requirement:** Design section 9.2 and original plan Task 8. As built, the outer filter denied more than section 9.2 requires, so Chromium's namespace sandbox very likely could not start (T8-06).
 - **Decision:** E1, option A, narrowed by R1: only the decision's explicit allow list is allowed; the other denials stay.
 - **Reconciliation:**
   - The BROWSER deny list is the base list minus `chroot`, `capset`, `setuid`, `setgid`, `setreuid`, `setregid`, `setresuid`, `setresgid`, `setfsuid`, `setfsgid` and `setgroups`, leaving 13 entries.
@@ -80,7 +80,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
 
 ## C7. Per-role storage (E5)
 
-- **Old requirement:** Design section 15 and plan Task 18 storage model: one caller admitted and deleted all five role roots across four UIDs, and the root model contradicted the Task 8 role-view layout (T18-I1, T18-I2).
+- **Old requirement:** Design section 15 (per-role tmpfs storage scopes), original plan Tasks 8 (role views) and 18 (each role scans its own readable scope). As built, one caller admitted and deleted all five role roots across four UIDs, and the root model contradicted the Task 8 role-view layout (T18-I1, T18-I2).
 - **Decision:** E5, option A.
 - **Reconciliation:** Role scopes as seen inside each view:
   - `/run/acceptance/<role>`, `/tmp`, `/var`
@@ -94,7 +94,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
 
 ## C8. Credential framing (E6)
 
-- **Old requirement:** Design section 8. The host sent a 4-byte length plus bytes; the guest read a newline-terminated line, so no credential could be delivered (T11-I3).
+- **Old requirement:** Design section 8 and original plan Task 11 (one-use no-echo intake). As built, the host sent a 4-byte length plus bytes and the guest read a newline-terminated line, so no credential could be delivered (T11-I3).
 - **Decision:** E6, option A (also covering T11-I1 and T11-I2).
 - **Reconciliation:**
   - Host to guest: a 4-byte big-endian length n (1 ≤ n ≤ 4096), then n bytes.
@@ -105,11 +105,11 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
 
 ## C9. Contract changes from the plain bugs and recorded widenings
 
-- **Old requirement:** Design sections 9.3, 10, 13, 17, 19; composition amendment section 9; Task 13 review notes T13 m-2 and compB part-B note 5.
+- **Old requirement:** Design sections 9.3 (proxy limits), 10 (route policy) and 17 (controller state machine); original plan Tasks 9, 12, 13 and 14; composition amendment section 3 (closed unions) for compB part-B note 5; Task 13 review note T13 m-2.
 - **Decision:** the "Not owner decisions" list in the decisions doc (T9-1, T9-2, T12-I2, T13 I-1, T13 I-2, categories B and D), plus recorded amendments. These are plain bug fixes, not owner decisions.
 - **Reconciliation:**
   - The proxy accepts one `Proxy-Connection: keep-alive` line (T9-1).
-  - Idle, EOF and EPIPE events close only their tunnel; the whole-run latch stays for transport, broker or vsock loss, protocol violation, caps and clock faults (T9-2).
+  - Idle, client EOF before the header, and EPIPE after client close close only that tunnel (T9-2). The whole-run latch stays for transport, broker or vsock loss, protocol violation, aggregate and run caps, and clock faults: the 1025th tunnel latches `CAPACITY`. A 17th concurrent client is refused without a latch; design section 9.3's 16-simultaneous cap is unchanged.
   - Per-run tunnel total: 1024.
   - The reducer admits `budget` in PREFLIGHT and AWAIT_CREDENTIAL.
   - New state fields `sessionMaybeIssued`, `safeSignOutRouted`, `revocation` and `postTerminalAnomaly`; internal events `safeSignOutRoute`, `safeSignOutResult` and `tick`.
@@ -118,17 +118,18 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
   - Header policy: every non-browser-generated header goes to admission, and `authorization`, `proxy-authorization`, `x-*` and method-override headers abort locally (T13 I-2).
   - New fixed worker action `SESSION_READINESS`.
   - P20: `verifyGate(kind, handle, binding)` keeps its 3-argument form; readiness and owner handles are added. The brand registry stays in `receipts.cjs`; `isBrowserSession` is injected, not required.
-  - Record-only: the as-built action catalogue `LOGIN_SESSION`/`SESSION_OBSERVATION` (T13 m-2) and the Task 13 `browserConfig`/`APP_WRITE`/`APP_POLL`/`APP_CHUNK` union widening (compB part-B note 5) are recorded as reviewed amendments.
-- **Owning task:** Tasks 5 (proxy parsing), 13 (reducer), 15 (routing and headers), 16 and 17 (provenance, readiness and owner gates).
+  - Record-only: the as-built action catalogue `LOGIN_SESSION`/`SESSION_OBSERVATION` (T13 m-2) and the Task 13 `browserConfig`/`APP_WRITE`/`APP_POLL`/`APP_CHUNK` union widening (compB part-B note 5) are recorded as as-built amendments identified by the Stage 1 review (T13 m-2, compB note 5); content not separately reviewed.
+- **Owning task:** Tasks 5 and 6 (per-tunnel close, proxy and broker sides; proxy parsing), 13 (reducer), 15 (routing and headers), 16 and 17 (provenance, readiness and owner gates).
 
 ## C10. Native blockers carried to Stage 2
 
-- **Old requirement:** Design sections 22 and 23: synthetic and native qualification evidence is required before any real run.
+- **Old requirement:** Design section 22: synthetic and native qualification evidence is required before any real run.
 - **Decision:** none. These have no offline fix. Records compA D-2.
 - **Reconciliation:** the following stay open and are carried to Stage 2 unchanged:
   - boot `audit=1` (compA D-2)
   - `CONFIG_PROC_CHILDREN`, `CONFIG_IPC_NS` and `CONFIG_COMPAT` facts
   - the real Node FD inventory beyond `{0..4}`
+  - fork from a multi-threaded bootstrap (Task 8 review note 5)
   - `filter_digest` read-back
   - a real Chromium sandbox start
   - the host VZ relay forwarding bytes only
