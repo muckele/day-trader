@@ -361,6 +361,37 @@ def _close_tunnel(tunnel):
     return tunnel.closed
 
 
+def _next_record(buffer):
+    """Remove and return the next complete broker record's payload from BUFFER, or None
+    if incomplete. b'' is the logical EOF. A record over 4096 bytes, or any byte after a
+    logical EOF, is a protocol violation."""
+    if len(buffer) < 2:
+        return None
+    size = int.from_bytes(buffer[:2], 'big')
+    if size > _CHUNK_LIMIT:
+        raise _ChannelDenied()
+    if len(buffer) < size + 2:
+        return None
+    payload = bytes(buffer[2:size + 2])
+    del buffer[:size + 2]
+    if size == 0 and buffer:
+        raise _ChannelDenied()
+    return payload
+
+
+def _header_end(header):
+    """End offset of a complete CONNECT header, or None while it is incomplete. A
+    header that cannot end within 4096 bytes is a protocol violation."""
+    marker = header.find(b'\r\n\r\n')
+    if marker < 0:
+        if len(header) >= _HEADER_LIMIT:
+            raise _ChannelDenied()
+        return None
+    if marker + 4 > _HEADER_LIMIT:
+        raise _ChannelDenied()
+    return marker + 4
+
+
 def _consume_budget(used, amount, ceiling):
     if amount > ceiling - used:
         raise OverflowError
@@ -438,8 +469,28 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
             # Physical vsock EOF is loss, never logical EOF or an idle close.
             timeline.observe()
             raise _TransportLost()
-        timeline.observe(tunnel)
+        try:
+            timeline.observe(tunnel)
+        except _IdleExpired:
+            if data:
+                examine_late(tunnel, data, client)
+            raise
         return data
+
+    def examine_late(tunnel, data, client):
+        """Bytes read across the idle deadline are discarded, never forwarded or
+        charged, but a protocol violation in them, with what is already buffered,
+        still ends the whole run. The same framing and header checks run on a copy."""
+        if not client:
+            late = bytearray(tunnel.broker_input)
+            late.extend(data)
+            while _next_record(late):
+                pass
+        elif tunnel.broker is None:
+            late = bytes(tunnel.header) + data
+            header_end = _header_end(late)
+            if header_end is not None:
+                parse_connect(late[:header_end], config.destinations)
 
     def checked_write(stream, pending, tunnel, client):
         written = bracket(tunnel, lambda: _write(stream, pending, client))
@@ -548,14 +599,8 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                         if incoming:
                             tunnel.header.extend(incoming)
                             progressed = True
-                            marker = tunnel.header.find(b'\r\n\r\n')
-                            if marker < 0:
-                                if len(tunnel.header) >= _HEADER_LIMIT:
-                                    raise _ChannelDenied()
-                            else:
-                                header_end = marker + 4
-                                if header_end > _HEADER_LIMIT:
-                                    raise _ChannelDenied()
+                            header_end = _header_end(tunnel.header)
+                            if header_end is not None:
                                 destination = parse_connect(bytes(tunnel.header[:header_end]),
                                                             config.destinations)
                                 # The 1025th CONNECT of the run latches before its vsock opens.
@@ -607,22 +652,15 @@ def serve_proxy(config, transport, *, composition=None, runtime_sink=None):
                             if incoming:
                                 tunnel.broker_input.extend(incoming)
                                 progressed = True
-                                while len(tunnel.broker_input) >= 2:
-                                    size = int.from_bytes(tunnel.broker_input[:2], 'big')
-                                    if size > _CHUNK_LIMIT:
-                                        raise _ChannelDenied()
-                                    if len(tunnel.broker_input) < size + 2:
+                                while True:
+                                    payload = _next_record(tunnel.broker_input)
+                                    if payload is None:
                                         break
-                                    del tunnel.broker_input[:2]
-                                    payload = bytes(tunnel.broker_input[:size])
-                                    del tunnel.broker_input[:size]
-                                    if size == 0:
-                                        if tunnel.broker_input:
-                                            raise _ChannelDenied()
+                                    if not payload:
                                         tunnel.broker_eof = True
                                         break
                                     used = _consume_budget(
-                                        used, size, config.aggregate_bytes)
+                                        used, len(payload), config.aggregate_bytes)
                                     tunnel.to_client.extend(payload)
 
                         if checked_write(tunnel.broker, tunnel.to_broker, tunnel, False):

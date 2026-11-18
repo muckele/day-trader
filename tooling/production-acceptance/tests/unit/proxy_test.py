@@ -883,6 +883,53 @@ class ProxyTests(unittest.TestCase):
         outcome = proxy.serve_proxy(config(Sockets([a]), clock, run_timeout_ms=1000), Transport([a_broker]))
         self.assertEqual(outcome.code, 'TRANSPORT_LOST')
 
+    def test_protocol_violation_read_across_idle_deadline_latches_whole_run(self):
+        # Fix round 1 (review I-1): bytes read across a tunnel's idle deadline are discarded,
+        # never forwarded or charged, but a protocol violation in them (with the bytes already
+        # buffered) is still a whole-run cause. Valid late bytes stay a per-tunnel idle close.
+        def late(clock, parts, at):
+            class Late(Stream):
+                def read(self, max_bytes):
+                    if len(self.read_bounds) + 1 == at: clock.mono += 25   # straddles idle (20)
+                    return super().read(max_bytes)
+            return Late(parts)
+        # (name, late side, parts, expected outcome, client bytes, vsock opened, used bytes)
+        cases = [
+            # The reviewer's four probe cases.
+            ('broker:oversized-record', 'broker', [None, b'\x10\x01x'], 'CHANNEL_DENIED', OK, 1, 0),
+            ('broker:bytes-after-logical-eof', 'broker', [None, b'\x00\x00x'], 'CHANNEL_DENIED', OK, 1, 0),
+            ('client:non-connect', 'client', [None, b'GET / HTTP/1.1\r\n\r\n'], 'CHANNEL_DENIED', b'', 0, 0),
+            ('client:header-over-4096', 'client', [None, b'C' * 4096], 'CHANNEL_DENIED', b'', 0, 0),
+            # The violation needs the bytes buffered before the deadline as well.
+            ('broker:oversized-split', 'broker', [b'\x10', b'\x01x'], 'CHANNEL_DENIED', OK, 1, 0),
+            ('broker:after-eof-split', 'broker', [b'\x00\x01y\x00', b'\x00x'], 'CHANNEL_DENIED', OK + b'y', 1, 1),
+            ('client:non-connect-split', 'client', [b'GET / HTTP/1.1\r\n', b'\r\n'], 'CHANNEL_DENIED', b'', 0, 0),
+            ('client:over-4096-split', 'client', [b'C' * 4000, b'C' * 96], 'CHANNEL_DENIED', b'', 0, 0),
+            # Controls: valid late bytes are discarded by a per-tunnel close; the run continues.
+            ('control:broker-record', 'broker', [None, b'\x00\x04late'], 'COMPLETE', OK, 1, 0),
+            ('control:broker-logical-eof', 'broker', [None, b'\x00\x02la\x00\x00'], 'COMPLETE', OK, 1, 0),
+            ('control:client-connect', 'client', [None, REQUEST], 'COMPLETE', b'', 0, 0),
+            ('control:client-partial-header', 'client', [REQUEST[:7], REQUEST[7:20]], 'COMPLETE', b'', 0, 0),
+            ('control:client-tunnel-data', 'client', [REQUEST, b'late'], 'COMPLETE', OK, 1, 0),
+        ]
+        for name, side, parts, code, client_bytes, opened, used in cases:
+            with self.subTest(case=name):
+                clock = Clock()
+                if side == 'broker':
+                    client, broker = Stream([REQUEST, None, None]), late(clock, parts, 2)
+                else:
+                    client, broker = late(clock, parts, 2), Stream()
+                sockets, transport = Sockets([client]), Transport([broker])
+                outcome = proxy.serve_proxy(config(sockets, clock, run_timeout_ms=1000), transport)
+                self.assertEqual(outcome.code, code)
+                self.assertEqual(bytes(client.written), client_bytes)
+                self.assertEqual(len(transport.calls), opened)
+                if opened:
+                    self.assertEqual(bytes(broker.written), control(), 'late bytes never forwarded')
+                self.assertEqual(outcome.used_bytes, used, 'late bytes never charged')
+                self.assertEqual((client.closes, broker.closes, sockets.listener.closes, transport.closes),
+                                 (1, opened, 1, 1))
+
     # ---- Task 5: capacity (P35 deferral, 1024 per-run cap).
     def test_seventeenth_concurrent_connection_deferred_not_latched(self):
         self.assertEqual(proxy._MAX_TUNNELS, 16)
