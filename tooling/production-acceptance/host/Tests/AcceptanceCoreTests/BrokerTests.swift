@@ -1290,3 +1290,110 @@ extension BrokerTests {
         }
     }
 }
+
+// Fix round 2 (controller ruling on a reviewer observation): the pending path's per-slot end.
+
+// A clock whose waits are woken by their duration, and whose next sample() can hold the broker
+// actor job that sampled until the test releases it.
+private final class HeldClock: BrokerClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = ClockSample(wall: 160, monotonic: 10)
+    private var waiters = [UUID: (Int, CheckedContinuation<Void, any Error>)]()
+    private var observers = [(Int, CheckedContinuation<Void, Never>)]()
+    private var hold: DispatchSemaphore?
+    let held = MemoryEvent()
+    func set(_ wall: Int, _ monotonic: Int) { lock.withLock { value = ClockSample(wall: wall, monotonic: monotonic) } }
+    func holdNextSample() -> DispatchSemaphore { let gate = DispatchSemaphore(value: 0); lock.withLock { hold = gate }; return gate }
+    func sample() throws -> ClockSample {
+        let gate = lock.withLock { () -> DispatchSemaphore? in defer { hold = nil }; return hold }
+        if let gate { held.signal(); gate.wait() }
+        return lock.withLock { value }
+    }
+    func wait(milliseconds: Int) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                let ready = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                    if Task.isCancelled { continuation.resume(throwing: CancellationError()); return [] }
+                    waiters[id] = (milliseconds, continuation)
+                    let ready = observers.filter { $0.0 == milliseconds }.map { $0.1 }
+                    observers.removeAll { $0.0 == milliseconds }
+                    return ready
+                }
+                ready.forEach { $0.resume() }
+            }
+        } onCancel: { self.lock.withLock { self.waiters.removeValue(forKey: id) }?.1.resume(throwing: CancellationError()) }
+    }
+    func waitForWaiter(duration: Int) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now = lock.withLock { () -> Bool in
+                if waiters.values.contains(where: { $0.0 == duration }) { return true }
+                observers.append((duration, continuation)); return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+    func wake(duration: Int) {
+        let ready = lock.withLock { () -> [CheckedContinuation<Void, any Error>] in
+            let ids = waiters.filter { $0.value.0 == duration }.map { $0.key }
+            return ids.compactMap { waiters.removeValue(forKey: $0)?.1 }
+        }
+        ready.forEach { $0.resume() }
+    }
+}
+// Waits on its gate, signals `thrown`, then throws FAILURE (or, with no failure, answers 8.8.8.8).
+private final class GatedResolver: Resolver, @unchecked Sendable {
+    let gate = Deferred<Void>(), thrown = MemoryEvent(), failure: BrokerFailure?
+    init(_ failure: BrokerFailure?) { self.failure = failure }
+    func resolve(host: String) async throws -> [NumericAddress] {
+        guard let failure else { return [try NumericAddress("8.8.8.8")] }
+        try await gate.get(); thrown.signal(); throw failure
+    }
+}
+private final class GatedConnector: Connector, @unchecked Sendable {
+    let gate = Deferred<Void>(), thrown = MemoryEvent(), failure: BrokerFailure
+    init(_ failure: BrokerFailure) { self.failure = failure }
+    func connect(address: NumericAddress, port: UInt16) async throws -> any ByteStream {
+        try await gate.get(); thrown.signal(); throw failure
+    }
+}
+
+extension BrokerTests {
+    @Test func idle_ended_pending_slot_still_fails_run_on_resolver_or_connector_failure() async throws {
+        // Fix round 2: once a pending slot is marked ended (host idle), only that end's own signals
+        // are per-slot. A genuine resolver or connector failure that reaches the admission after
+        // the end still fails the run with its own code. The slot watch's job holds the broker
+        // actor inside check(id) while the failure is delivered, so the end is processed first.
+        // A delivery that lands after the end's cancellation is a lost race and is retried.
+        for (stage, code) in [("resolver", BrokerFailure.address), ("resolver", .transport), ("connector", .transport)] {
+            var decided = false
+            for _ in 0..<20 where !decided {
+                let h = try Harness(); await h.broker.fail(.terminal)
+                let clock = HeldClock(), input = MemoryStream()
+                let resolver = GatedResolver(stage == "resolver" ? code : nil), connector = GatedConnector(code)
+                let broker = try EgressBroker(release: h.release, authority: h.authority, binding: h.binding,
+                                              limits: h.binding.manifest.limits, resolver: resolver, connector: connector, clock: clock)
+                let admission = Task { try await broker.accept(control: control(), stream: input) }
+                if stage == "resolver" { await resolver.gate.waitEntered() } else { await connector.gate.waitEntered() }
+                await clock.waitForWaiter(duration: 20)                              // the slot's idle watch
+                let release = clock.holdNextSample()
+                clock.set(160, 30); clock.wake(duration: 20)                         // idle: 30 - 10 >= 20
+                await clock.held.wait()                                              // the watch holds the actor in check(id)
+                if stage == "resolver" { await resolver.gate.finish(()); await resolver.thrown.wait() }
+                else { await connector.gate.finish(()); await connector.thrown.wait() }
+                release.signal()                                                     // the slot ends, then the failure is seen
+                do { _ = try await admission.value; Issue.record("Admission returned a tunnel") }
+                catch is SlotEnded { continue }                                      // lost race: the end's own cancellation came first
+                catch {
+                    decided = true
+                    #expect(error as? BrokerFailure == code, "\(stage) \(code)")
+                    #expect(input.ends == 0, "no per-slot logical EOF")
+                    #expect(input.closes == 1)
+                    do { _ = try await broker.accept(control: control(sequence: 2), stream: MemoryStream()); Issue.record("Run survived a \(stage) failure") }
+                    catch { #expect(error as? BrokerFailure == .terminal) }
+                }
+            }
+            #expect(decided, "a \(stage) \(code) failure after the slot's end never failed the run")
+        }
+    }
+}

@@ -509,8 +509,10 @@ public actor EgressBroker {
         } catch {
             // P38(b): a pending slot that went idle ends only itself. Its guest stream gets the
             // logical EOF before it closes. A failed physical write on its lane is that lane's end
-            // (P39(b)); any other failure to write it is a run failure.
-            if let reserved, let end = endedSlot(reserved) {
+            // (P39(b)); any other failure to write it is a run failure. Only the end's own signals
+            // (SlotEnded from check, or the cancellation endSlot delivers) are per-slot: a resolver,
+            // connector, address or protocol error still fails the run (fix round 2).
+            if let reserved, let end = endedSlot(reserved), error is SlotEnded || error is CancellationError {
                 var failed = false
                 if !end.guestClosed {
                     do { try await input.stream.endWrite() } catch is GuestStreamClosed {} catch { failed = true }

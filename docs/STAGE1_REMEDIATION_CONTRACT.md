@@ -119,7 +119,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
     Bytes stay charged. The tunnel's vsock stream needs a proven close; a failed close is whole-run `CLEANUP_UNCERTAIN`. Every other client errno, and every vsock or broker error, stays whole-run.
   - On the host broker (P38), these end only that slot:
     - (b) idle: the host first sends the guest a zero-length logical-EOF record, then closes the stream, so a host-first idle close is an ordinary tunnel end on the guest;
-    - (c) a guest stream that closes physically without a logical-EOF record. P39(b): a failed physical write on that stream's lane counts as the same close.
+    - (c) a guest stream that closes physically without a logical-EOF record. P39(b): a failed physical write of that stream's records or logical EOF counts as the same close.
 
     Host whole-run causes remain identity or proof failure, a repeated or decreasing sequence (`replay`, C4), caps, protocol violations and broker errors.
   - The whole-run latch stays for transport, broker or vsock loss, protocol violation, aggregate and run caps, and clock faults. The 1025th tunnel latches `CAPACITY`.
