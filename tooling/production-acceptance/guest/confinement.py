@@ -437,6 +437,10 @@ def start_roles(config, *, cleanup_budget=None, acquisition_owner=None):
             if _ownership_facts(handoff._owned)!=ownership[id(handoff._owned)][0]: _fail('HANDOFF_DENIED')
             _check(inspect_role(handoff.attestation.pid,kernel=k),handoff.launch,waiting=True)
     except Exception:
+        # A failed acquisition is a terminal event: start the shared end (C1).
+        if cleanup_budget is not None:
+            try: cleanup_budget.start_terminal()
+            except Exception: pass
         cleanup_failed = False
         cleaned, cleanup_pids, distinct = set(), set(), []
         for owned in owned_children:
@@ -455,7 +459,7 @@ def start_roles(config, *, cleanup_budget=None, acquisition_owner=None):
         for owned in reversed(distinct):
             try:
                 if acquisition_owner is not None:
-                    result=acquisition_owner._stop_one(owned,cleanup_budget.remaining())
+                    result=acquisition_owner._stop_one(owned,acquisition_owner._cleanup_remaining())
                     if result['status'] not in ('STOPPED','EXITED'):cleanup_failed=True
                 else:
                     result = (cleanup_budget.call(lambda ms,original=owned: k.stop_owned(original,ms))
@@ -565,10 +569,16 @@ class OriginalRoleSet:
             self._clock_failed=True;_fail('CLOCK')
 
     def _cleanup_remaining(self):
+        # Every caller is terminal (failure, cancel, stop, wait-exit, clamp):
+        # the first one starts the one shared end (C1). No direct deadline write.
         with self._cleanup_lock:
-            if self._clock_failed:self._budget.deadline=0
-            try:return _v1_int(self._budget.remaining(),0)
-            except Exception:self._budget.deadline=0;return 0
+            try:
+                if self._clock_failed:self._budget.clamp_end(0)
+                return _v1_int(self._budget.start_terminal(),0)
+            except Exception:
+                try:self._budget.clamp_end(0)
+                except Exception:pass
+                return 0
 
     def _failed(self,error):
         self._terminal=True
@@ -717,10 +727,8 @@ class OriginalRoleSet:
     def _clamp(self,end):
         _v1_int(end,0)
         with self._cleanup_lock:
-            if end==0:self._budget.deadline=0
-            else:
-                self._cleanup_remaining()
-                self._budget.deadline=min(self._budget.deadline,end)
+            self._cleanup_remaining()
+            self._budget.clamp_end(end)
 
     def cancel(self,cleanup_ends_at=None):
         self._terminal=True
@@ -825,7 +833,7 @@ class OriginalRoleSet:
 
 
 def bind_original_roles(config,binding,cleanup_budget):
-    if type(binding) is not CompositionBinding or type(config) is not BootstrapConfig or config.run_id!=binding.runId or not callable(getattr(cleanup_budget,'remaining',None)) or not callable(getattr(cleanup_budget,'call',None)): _fail('COMPOSITION_BINDING_DENIED')
+    if type(binding) is not CompositionBinding or type(config) is not BootstrapConfig or config.run_id!=binding.runId or any(not callable(getattr(cleanup_budget,name,None)) for name in ('remaining','call','start_terminal','clamp_end')): _fail('COMPOSITION_BINDING_DENIED')
     if id(config) in _BOUND_ROLE_CONFIGS:_fail('AUTHORITY_LOST')
     # Retain the exact configuration through the whole run, including failure;
     # a second call cannot respawn its four original children or recycle IDs.

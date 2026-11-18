@@ -36,48 +36,101 @@ class CleanupFailure(TopologyError):
         self.cleanup = cleanup
 
 
-class CleanupBudget:
-    """One monotonic deadline, also bounded against a stalled injected clock.
+# Routine (non-terminal) probe-family stop step. Mirrors
+# confinement_probe.PROBE_FAMILY_STOP_MS; a binding test keeps them equal.
+PROBE_FAMILY_STOP_MS = 2000
 
-    A timed-out call keeps running only with its retained original owner. No
-    retry or replacement owner is launched by this waiter.
+
+class CleanupBudget:
+    """One shared cleanup end, started only at the first terminal event (C1).
+
+    The first stop, cancel, failure, drift or expiry allocates one absolute
+    guest-monotonic end at start+60000ms, also bounded against a stalled
+    injected clock by a real-time end. Later starts never move either end.
+    Routine work uses ``routine_call`` with a fixed bounded step and never
+    starts or reads the shared end. A timed-out call keeps running only with
+    its retained original owner. No retry or replacement owner is launched.
     """
-    def __init__(self, clock=None):
+    def __init__(self, clock=None, *, real_clock=None):
         self.clock, self.deadline, self.real_deadline = clock, None, None
         self.last = None
         self.lock = threading.RLock()
+        self._started = False
+        self._real = real_clock if real_clock is not None else (
+            lambda: time.monotonic_ns() // 1000000)
+
+    @property
+    def started(self):
+        with self.lock: return self._started
+
+    def _now(self):
+        """(guest monotonic, real) from one sample, or None if either fails."""
+        try:
+            real = self._real()
+            if type(real) is not int or real < 0: raise ValueError('clock')
+            sample = self.clock.sample() if self.clock else (0, real)
+            if not _sample(sample) or (self.last is not None and sample[1] < self.last):
+                raise ValueError('clock')
+        except Exception:
+            return None
+        self.last = sample[1]
+        return sample[1], real
+
+    def _start_locked(self):
+        """Allocate the one end once; returns its allowance, or None if started."""
+        if self._started: return None
+        self._started = True
+        now = self._now()
+        if now is None:
+            # A failed clock at the terminal event permits nonblocking cleanup only.
+            self.deadline, self.real_deadline = 0, 0
+            return 0
+        self.deadline, self.real_deadline = now[0] + 60000, now[1] + 60000
+        return 60000
+
+    def start_terminal(self):
+        """Start the shared end at this terminal event; return the allowance."""
+        with self.lock:
+            allowance = self._start_locked()
+            return self.remaining() if allowance is None else allowance
 
     def remaining(self):
+        """Allowance until the started end. Never allocates (C1)."""
         with self.lock:
-            real = time.monotonic_ns() // 1000000
+            if not self._started: _fail('CLEANUP_NOT_STARTED')
+            now = self._now()
+            if now is None:
+                self.deadline = 0
+                return 0
+            return max(0, min(self.deadline - now[0], self.real_deadline - now[1]))
+
+    def clamp(self, remaining_ms):
+        """A caller's stop is a terminal event: start, then shorten to its cap."""
+        with self.lock:
+            current = self.start_terminal()
             try:
-                sample = self.clock.sample() if self.clock else (0, real)
-                if not _sample(sample) or (self.last is not None and sample[1] < self.last):
-                    raise ValueError('clock')
+                real = self._real()
+                if type(real) is not int or real < 0: raise ValueError('clock')
             except Exception:
                 self.deadline = 0
                 return 0
-            self.last = sample[1]
-            if self.deadline is None:
-                self.deadline, self.real_deadline = sample[1] + 60000, real + 60000
-            return max(0, min(self.deadline - sample[1], (self.real_deadline or 0) - real))
-
-    def clamp(self, remaining_ms):
-        """Shorten this shared deadline to a caller's current cleanup cap."""
-        with self.lock:
-            real = time.monotonic_ns() // 1000000
-            current = self.remaining()
-            if self.last is None or self.deadline is None:
+            if self.last is None:
                 self.deadline = 0
                 self.real_deadline = real
                 return 0
             self.deadline = min(self.deadline, self.last + remaining_ms)
-            self.real_deadline = min(
-                self.real_deadline if self.real_deadline is not None else real,
-                real + remaining_ms)
+            self.real_deadline = min(self.real_deadline, real + remaining_ms)
             return min(current, remaining_ms)
 
+    def clamp_end(self, end_ms):
+        """Terminal: start, then shorten to an earlier absolute monotonic end."""
+        with self.lock:
+            self._start_locked()
+            if type(end_ms) is not int or end_ms < 0: end_ms = 0
+            self.deadline = min(self.deadline, end_ms)
+
     def call(self, operation):
+        """Terminal cleanup call bounded by the shared end; requires started."""
         remaining = self.remaining()
         if not remaining: _fail('CLEANUP_UNCERTAIN')
         done, outcome = threading.Event(), []
@@ -95,6 +148,47 @@ class CleanupBudget:
             if not remaining: _fail('CLEANUP_UNCERTAIN')
         if not outcome[0][0]: raise outcome[0][1]
         if not self.remaining(): _fail('CLEANUP_UNCERTAIN')
+        return outcome[0][1]
+
+    def routine_call(self, operation, step_ms=PROBE_FAMILY_STOP_MS):
+        """Routine, non-terminal step with a fixed bounded wait (C1, D-1).
+
+        Never starts the shared end. Before a terminal event the operation
+        gets ``step_ms``; once one has started the end it gets
+        ``min(step_ms, remaining())``. The wait is bounded by the step and by
+        any end started meanwhile.
+        """
+        if type(step_ms) is not int or not 0 < step_ms <= 60000:
+            _fail('CLEANUP_UNCERTAIN')
+        with self.lock:
+            started = self._started
+            if not started:
+                now = self._now()
+                if now is None: _fail('CLEANUP_UNCERTAIN')
+                step_end = (now[0] + step_ms, now[1] + step_ms)
+        if started:
+            return self.call(lambda allowance: operation(min(step_ms, allowance)))
+        def left():
+            with self.lock:
+                now = self._now()
+                if now is None: return 0
+                value = min(step_end[0] - now[0], step_end[1] - now[1])
+                if self._started:
+                    value = min(value, self.deadline - now[0],
+                                self.real_deadline - now[1])
+                return max(0, value)
+        done, outcome = threading.Event(), []
+        def invoke():
+            try: outcome.append((True, operation(step_ms)))
+            except BaseException as error: outcome.append((False, error))
+            finally: done.set()
+        threading.Thread(target=invoke, daemon=True).start()
+        remaining = step_ms
+        while not done.wait(min(remaining / 1000, 0.01)):
+            remaining = left()
+            if not remaining: _fail('CLEANUP_UNCERTAIN')
+        if not outcome[0][0]: raise outcome[0][1]
+        if not left(): _fail('CLEANUP_UNCERTAIN')
         return outcome[0][1]
 
 
@@ -821,24 +915,10 @@ class BootstrapEventOwner:
             if self.selector is not None:
                 try: self.selector.close()
                 except Exception: pass
-            real = time.monotonic_ns() // 1000000
-            try:
-                sample = (self._budget.clock.sample() if self._budget.clock
-                          else (0, real))
-                if (not _sample(sample) or (self._budget.last is not None
-                        and sample[1] < self._budget.last)):
-                    raise ValueError('clock')
-                self._budget.last = sample[1]
-                caller_deadline = sample[1] + remaining_ms
-                caller_real_deadline = real + remaining_ms
-                self._budget.deadline = (caller_deadline
-                    if self._budget.deadline is None else
-                    min(self._budget.deadline, caller_deadline))
-                self._budget.real_deadline = (caller_real_deadline
-                    if self._budget.real_deadline is None else
-                    min(self._budget.real_deadline, caller_real_deadline))
-            except Exception:
-                self._budget.deadline = self._budget.real_deadline = 0
+            # A stop is a terminal event: start the one shared end, then clamp
+            # it to this caller's cap. No direct deadline write (C1).
+            try: self._budget.clamp(remaining_ms)
+            except Exception: self._budget.clamp_end(0)
             failed = False
             for kind, owner in reversed(self._obligations):
                 try:
@@ -1678,9 +1758,9 @@ class TopologyGate:
             if snapshot is not None and callable(getattr(self._adapter, 'cleanup', None)):
                 self._pending_snapshots.add(id(snapshot))
             else: snapshot = None
-        # Freeze the shared end at terminal cleanup even if every owner is
-        # still acquiring. Clock callbacks run outside the gate lock.
-        self._cleanup_budget.remaining()
+        # Start the shared end at this first terminal latch even if every
+        # owner is still acquiring. Clock callbacks run outside the gate lock.
+        self._cleanup_budget.start_terminal()
         self._cleanup()
         if snapshot is not None: self._cleanup_snapshot(snapshot)
         if self.cleanup_uncertain: raise CleanupFailure(self)
@@ -2142,6 +2222,8 @@ class NativeTopologyBindings:
                 raise CleanupFailure(next(owner for owner in pending
                                           if id(owner) in self._pending_observation_cleanup))
             self._pending_observation_cleanup.update(id(owner) for owner in pending)
+        # Explicit cleanup of an uncertain close follows a failure: terminal.
+        if pending: self._cleanup_budget.start_terminal()
         failure = None
         for owner in pending:
             settled, abandoned = threading.Event(), threading.Event()
@@ -2458,7 +2540,7 @@ class BootstrapComposition:
         self._pending_acquisitions = {}
         self._retired_cleanup, self._pending_cleanup = set(), set()
         self._cleanup_uncertain = set()
-        self._cleanup_running = False
+        self._cleanup_running = self._cleanup_dirty = False
         self._observations_retired = False
         _BOOTSTRAP_COMPOSITIONS.add(self)
 
@@ -2472,6 +2554,8 @@ class BootstrapComposition:
             if any(wrapped is retained for retained in self._cleanup_chain):
                 return
             self._cleanup_chain.append(owner)
+            # A pass already running must pick this owner up before it ends.
+            self._cleanup_dirty = True
             if self._terminal: self._cleanup_status = None
 
     def _reserve_acquisition(self, name):
@@ -2516,6 +2600,8 @@ class BootstrapComposition:
             for key, value in values.items(): setattr(self, key, value)
 
     def _invalidate_terminal(self, state):
+        # The first terminal event starts the one shared cleanup end (C1).
+        self._budget.start_terminal()
         with self._lock:
             if self._terminal: return
             self._generation += 1
@@ -2740,7 +2826,7 @@ class BootstrapComposition:
         wall, mono = self._clock()
         end = mono + self.binding.expiresAtMs - wall
         if end > _MAX: _fail('TOPOLOGY_EXPIRED')
-        if self._budget.deadline is not None: end = min(end, self._budget.deadline)
+        # Bounded by the run binding only; never by the cleanup end (E7).
         return end
 
     def prepare_browser(self) -> _CONFINEMENT.BootstrapBrowserPreparation:
@@ -2823,61 +2909,78 @@ class BootstrapComposition:
 
     def _cleanup_retained(self):
         with self._lock:
-            if self._cleanup_running: return False
+            if self._cleanup_running:
+                # Never overlap a stop: the running pass loops for this owner.
+                self._cleanup_dirty = True
+                return False
             self._cleanup_running = True
         attempted = set()
         try:
             while True:
-                with self._lock:
-                    pending = [owner for owner in reversed(self._cleanup_chain)
-                        if id(owner) not in self._retired_cleanup
-                        and id(owner) not in self._pending_cleanup
-                        and id(owner) not in attempted]
-                    if pending:
-                        owner = pending[0]
-                        attempted.add(id(owner)); self._pending_cleanup.add(id(owner))
-                    else: owner = None
-                if owner is None: break
-                stopped = False
-                try:
-                    allowance = self._budget.remaining()
-                    receipt = owner.stop_owned(allowance)
-                    stopped = (type(receipt) is dict
-                        and receipt.get('status') in ('STOPPED','EXITED')
-                        and receipt.get('runId',receipt.get('run_id')) == self.binding.runId)
-                except Exception: stopped = False
-                finally:
+                with self._lock: self._cleanup_dirty = False
+                while True:
                     with self._lock:
-                        self._pending_cleanup.discard(id(owner))
-                        if stopped:
-                            self._retired_cleanup.add(id(owner))
-                            self._cleanup_uncertain.discard(id(owner))
-                        else: self._cleanup_uncertain.add(id(owner))
-            observations_ok = self._observations_retired
-            if not observations_ok:
-                try:
-                    self._observations.cleanup_unresolved(); observations_ok = True
-                except Exception: observations_ok = False
+                        pending = [owner for owner in reversed(self._cleanup_chain)
+                            if id(owner) not in self._retired_cleanup
+                            and id(owner) not in self._pending_cleanup
+                            and id(owner) not in attempted]
+                        if pending:
+                            owner = pending[0]
+                            attempted.add(id(owner)); self._pending_cleanup.add(id(owner))
+                        else: owner = None
+                    if owner is None: break
+                    stopped = False
+                    try:
+                        allowance = self._budget.remaining()
+                        receipt = owner.stop_owned(allowance)
+                        stopped = (type(receipt) is dict
+                            and receipt.get('status') in ('STOPPED','EXITED')
+                            and receipt.get('runId',receipt.get('run_id')) == self.binding.runId)
+                    except Exception: stopped = False
+                    finally:
+                        with self._lock:
+                            self._pending_cleanup.discard(id(owner))
+                            if stopped:
+                                self._retired_cleanup.add(id(owner))
+                                self._cleanup_uncertain.discard(id(owner))
+                            else: self._cleanup_uncertain.add(id(owner))
+                observations_ok = self._observations_retired
+                if not observations_ok:
+                    try:
+                        self._observations.cleanup_unresolved(); observations_ok = True
+                    except Exception: observations_ok = False
+                    with self._lock:
+                        self._observations_retired = observations_ok
                 with self._lock:
-                    self._observations_retired = observations_ok
-            with self._lock:
-                complete = (not self._pending_acquisitions
-                    and not self._pending_cleanup and not self._cleanup_uncertain
-                    and self._observations_retired
-                    and all(id(owner) in self._retired_cleanup
-                            for owner in self._cleanup_chain))
-                self._cleanup_status = 'STOPPED' if complete else 'TIMEOUT'
-                return complete
-        finally:
+                    # A late owner retained by a concurrent settlement while this
+                    # pass ran is stopped here, never left for a later caller.
+                    if self._cleanup_dirty or any(
+                            id(owner) not in self._retired_cleanup
+                            and id(owner) not in self._pending_cleanup
+                            and id(owner) not in attempted
+                            for owner in self._cleanup_chain):
+                        continue
+                    complete = (not self._pending_acquisitions
+                        and not self._pending_cleanup and not self._cleanup_uncertain
+                        and self._observations_retired
+                        and all(id(owner) in self._retired_cleanup
+                                for owner in self._cleanup_chain))
+                    self._cleanup_status = 'STOPPED' if complete else 'TIMEOUT'
+                    # Released under the same lock as the dirty check.
+                    self._cleanup_running = False
+                    return complete
+        except BaseException:
             with self._lock: self._cleanup_running = False
+            raise
 
     def stop_owned(self, remaining_ms):
         if type(remaining_ms) is not int or not 0 <= remaining_ms <= 60000:
             _fail('CLEANUP_UNCERTAIN')
+        # A stop is a terminal event: clamp() starts the one shared end, then
+        # shortens it to this caller's cap, before any external stop callback.
+        # Reentry observes provisional TIMEOUT; it never launches an overlapping stop.
         self._budget.clamp(remaining_ms)
         self._invalidate_terminal('STOPPED')
-        # Freeze the one shared end before any external stop callback. Reentry
-        # observes provisional TIMEOUT; it never launches an overlapping stop.
         try: self._budget.remaining()
         except Exception: pass
         complete = self._cleanup_retained()
@@ -3055,8 +3158,10 @@ class _CollectionKernel:
         return owner
     def inspect(self, pid): return self.kernel.inspect(pid)
     def wait_owned(self, owner, deadline):
+        self.budget.start_terminal()  # cleanup of a retained child is terminal (C1)
         return self.budget.call(lambda remaining: self.kernel.wait_owned(owner, min(deadline, remaining)))
     def stop_owned(self, owner, deadline):
+        self.budget.start_terminal()  # cleanup of a retained child is terminal (C1)
         return self.budget.call(lambda remaining: self.kernel.stop_owned(owner, min(deadline, remaining)))
 
 
@@ -3078,11 +3183,11 @@ class Task8Collection:
         self.kernel = _CollectionKernel(config.kernel, self.budget)
 
     def bind_clock(self, clock):
-        if self.budget.clock is None and self.budget.deadline is None:
+        if self.budget.clock is None and not self.budget.started:
             self.budget.clock = clock
 
     def bind_cleanup_budget(self, budget):
-        if self.handoffs is not None or self.budget.deadline is not None:
+        if self.handoffs is not None or self.budget.started:
             _fail('ROLE_DENIED')
         self.budget = self.kernel.budget = budget
 
@@ -3125,6 +3230,7 @@ class Task8Collection:
             if self.retired: return
             self.cleanup_uncertain = True  # Pending is not a proven stop.
             self.retired = True
+        self.budget.start_terminal()  # collection cleanup is terminal (C1)
         uncertain = False
         for handoff in reversed(self.handoffs):
             try:

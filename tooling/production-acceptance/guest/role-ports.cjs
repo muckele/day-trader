@@ -42,6 +42,11 @@ function bindRoleBootstrap(authority, runId) {
     return handoff;
   }});
 }
+// Terminal-path allowance from an embedder budget: start its shared end first
+// when it supports the terminal-start rule (C1).
+function terminalRemaining(budget) {
+  return typeof budget.startTerminal==='function'?budget.startTerminal():budget.remaining();
+}
 function adoptRole(kind, handoff) {
   if (arguments.length !== 2 || !Object.hasOwn(kinds,kind) || !object(handoff)) fail('HANDOFF_DENIED');
   const r=handoffs.get(handoff);
@@ -54,7 +59,7 @@ function adoptRole(kind, handoff) {
   async function exit(operation, deadline, count) {
     const budget=r.authority.cleanupBudget;
     if (count !== 1 || !Number.isSafeInteger(deadline) || deadline < (budget ? 0 : 1) || deadline > 1200000) fail('EXIT_DENIED');
-    if (budget) deadline=Math.min(deadline,budget.remaining());
+    if (budget) deadline=Math.min(deadline,terminalRemaining(budget));
     let result;
     try { result=await r.authority[operation](r.expected.child,deadline); } catch { fail('EXIT_DENIED'); }
     if (!result || typeof result !== 'object' || Reflect.ownKeys(result).length !== 3 ||
@@ -83,14 +88,15 @@ function adoptRole(kind, handoff) {
       current('ACTIVATION_DENIED',false);
     } catch (cause) {
       let stopped;
-      try { stopped=await cleanup.stopOwned(r.authority.cleanupBudget ? r.authority.cleanupBudget.remaining() : 120000); } catch { /* explicitly uncertain below */ }
+      try { stopped=await cleanup.stopOwned(r.authority.cleanupBudget ? terminalRemaining(r.authority.cleanupBudget) : 120000); } catch { /* explicitly uncertain below */ }
       if (!stopped || !['STOPPED','EXITED'].includes(stopped.status)) {
         const e=new Error('CLEANUP_UNCERTAIN',{cause}); e.code='CLEANUP_UNCERTAIN'; e.cleanup=cleanup; throw e;
       }
       const e=new Error('ACTIVATION_DENIED',{cause});e.code='ACTIVATION_DENIED';throw e;
     }
     return privateHandle({privatePipe:r.expected.privatePipe,
-      cleanupRemaining(){const budget=r.authority.cleanupBudget;return budget?budget.remaining():120000;},
+      // Called only on browser close/stop paths (terminal).
+      cleanupRemaining(){const budget=r.authority.cleanupBudget;return budget?terminalRemaining(budget):120000;},
       waitExit:cleanup.waitExit, stopOwned:cleanup.stopOwned});
   }});
 }
@@ -170,38 +176,54 @@ function clockReader(clock) {
     catch{failed=true;fail('CLOCK');}
   };
 }
+// One shared cleanup end per side (C1). It is allocated only by startTerminal()
+// at the first terminal event (stop, cancel, failure, drift or expiry); routine
+// work never reads or starts it, and a later start never moves it.
 function cleanupBoundary(budget,sample) {
   if(!budget||typeof budget.remaining!=='function'||typeof budget.clamp!=='function')fail('CLEANUP_UNCERTAIN');
-  let end=null,realEnd=null,nonblocking=false;const busy=new Map();
+  let end=null,realEnd=null,nonblocking=false,started=false;const busy=new Map();
   function revokeWait() {
-    nonblocking=true;end=0;realEnd=0;
+    started=true;nonblocking=true;end=0;realEnd=0;
     // Admission clock loss must never disable the retained cleanup capability.
     // Zero is absolute, so even a later clock recovery cannot renew this end.
     try{budget.clamp(0);}catch{}
     return 0;
   }
+  function startTerminal() {
+    if(started)return remaining();
+    started=true;
+    const real=Number(process.hrtime.bigint()/1000000n);
+    try{
+      const now=sample()[1];
+      const allowance=integer(typeof budget.startTerminal==='function'?budget.startTerminal():budget.remaining(),0);
+      end=Math.min(now+Math.min(60000,allowance),integer(budget.deadline,0));
+      realEnd=real+Math.max(0,end-now);
+      return Math.max(0,Math.min(end-now,realEnd-real,allowance));
+    }catch{return revokeWait();}
+  }
   function remaining(delivered) {
+    if(!started)fail('CLEANUP_NOT_STARTED');
     if(delivered!==undefined)integer(delivered,0);
     if(nonblocking)return 0;
     const real=Number(process.hrtime.bigint()/1000000n);
     try{
       const now=sample()[1];
-      if(delivered!==undefined){budget.clamp(delivered);end=Math.min(end??delivered,delivered);}
+      if(delivered!==undefined){budget.clamp(delivered);end=Math.min(end,delivered);}
       const allowance=integer(budget.remaining(),0);
-      if(end===null)end=now+Math.min(60000,allowance);
       end=Math.min(end,integer(budget.deadline,0));
-      realEnd=Math.min(realEnd??Infinity,real+Math.max(0,end-now));
+      realEnd=Math.min(realEnd,real+Math.max(0,end-now));
       return Math.max(0,Math.min(end-now,realEnd-real,allowance));
     }catch{return revokeWait();}
   }
   async function call(owner,fn,requested=60000) {
+    startTerminal();
     if(busy.has(owner))fail('CLEANUP_UNCERTAIN');const ms=Math.min(integer(requested,0),remaining());
     let timer;const pending=Promise.resolve().then(()=>fn(ms));busy.set(owner,pending);
     pending.finally(()=>{if(busy.get(owner)===pending)busy.delete(owner);}).catch(()=>{});
     try {return await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('CLEANUP_UNCERTAIN'),{code:'CLEANUP_UNCERTAIN'})),ms);})]);}
     finally{clearTimeout(timer);}
   }
-  return {remaining,call,revokeWait,get deadline(){remaining();return end;}};
+  return {startTerminal,remaining,call,revokeWait,get deadline(){remaining();return end;}};
 }
 function browserApplicationPipe(runId,sendChunk,receiveChunk,isCurrent) {
   let outgoingStream=0,outgoingMessage=0,incomingStream=0,incomingMessage=0,writing=false,reading=false;
@@ -295,7 +317,7 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
     if(reading)return;reading=true;
     try{while(pending.size){const f=await wire.receive();exact(f.payload,['requestSequence','result']);const slot=pending.get(f.payload.requestSequence);
       if(!slot||f.action!=='RESULT'||f.role!==slot.role)fail('FRAME_DENIED');pending.delete(f.payload.requestSequence);slot.resolve(f.payload.result);}}
-    catch(e){terminal=true;if(e.code==='CHANNEL_EOF')cleanup.revokeWait();else cleanup.remaining();for(const slot of pending.values())slot.reject(e);pending.clear();}
+    catch(e){terminal=true;if(e.code==='CHANNEL_EOF')cleanup.revokeWait();else cleanup.startTerminal();for(const slot of pending.values())slot.reject(e);pending.clear();}
     finally{reading=false;}
   }
   async function request(role,action,payload,cleaning=false) {
@@ -342,8 +364,8 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
       if(['proofDigest','generation','expiresAtMs','monotonicDeadlineMs'].some(k=>result[k]!==p[k]))fail('AUTHORITY_LOST');
       const grant=privateHandle({});Object.assign(entry.r,{proof:p,grantId:result.grantId,used:false});grants.set(grant,entry.r);
       const tx=new ControllerBrowserTransaction(entry.port,grant,ms=>stop('BROWSER',ms),CONTROLLER_TRANSACTION_SEAL);transactions.set(tx,entry.r);return tx;
-    }catch(e){terminal=true;try{const receipt=await stop('BROWSER',cleanup.remaining());if(!['STOPPED','EXITED'].includes(receipt.status))fail('CLEANUP_UNCERTAIN');}catch{e.cleanup=privateHandle({stopOwned:ms=>stop('BROWSER',ms)});}throw e;}
-  },async cancel(){terminal=true;const result=await request('BROWSER','CANCEL',{generation:1,cleanupEndsAtMonotonicMs:cleanup.deadline},true);exact(result,['status','generation']);if(result.status!=='CANCELLED'||result.generation!==1)fail('FRAME_DENIED');return result;},stopOwned:ms=>stop('BROWSER',ms)});
+    }catch(e){terminal=true;try{const receipt=await stop('BROWSER',cleanup.startTerminal());if(!['STOPPED','EXITED'].includes(receipt.status))fail('CLEANUP_UNCERTAIN');}catch{e.cleanup=privateHandle({stopOwned:ms=>stop('BROWSER',ms)});}throw e;}
+  },async cancel(){terminal=true;cleanup.startTerminal();const result=await request('BROWSER','CANCEL',{generation:1,cleanupEndsAtMonotonicMs:cleanup.deadline},true);exact(result,['status','generation']);if(result.status!=='CANCELLED'||result.generation!==1)fail('FRAME_DENIED');return result;},stopOwned:ms=>stop('BROWSER',ms)});
 }
 
 async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
@@ -360,7 +382,7 @@ async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
       terminalRecorded=true;
       // The reported terminal instant also fixes the local absolute end. A
       // later cleanup sample can spend this budget, never start it again.
-      try{firstTerminalAt=sample()[1];cleanup.remaining(firstTerminalAt+60000);}
+      try{firstTerminalAt=sample()[1];cleanup.startTerminal();cleanup.remaining(firstTerminalAt+60000);}
       catch{cleanup.revokeWait();}
     }
   }
@@ -432,4 +454,4 @@ async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
     }catch(e){return failed(e,requestSequence);}
   },async cancel(record){try{cancel(wire.read(record));await cleanup.call(wire,acknowledgeCancel);return await stop(cleanup.remaining());}catch(e){return failed(e);}},stopOwned:stop});
 }
-module.exports = Object.freeze({bindRoleBootstrap,adoptRole,bindBootstrapComposition,bindBrowserWorkerChannel,claimBrowserRequestEvidence,inspectBrowserRequestEvidence});
+module.exports = Object.freeze({bindRoleBootstrap,adoptRole,bindBootstrapComposition,bindBrowserWorkerChannel,claimBrowserRequestEvidence,inspectBrowserRequestEvidence,cleanupBoundary});

@@ -30,9 +30,16 @@ class V1Clock:
 
 
 class V1Budget:
-    def __init__(self): self.clock=V1Clock(); self.deadline=None
+    """Same terminal-start rule as topology.CleanupBudget (C1): the one end is
+    allocated only by start_terminal/clamp_end; remaining() never allocates."""
+    def __init__(self): self.clock=V1Clock(); self.deadline=None; self.started=False
+    def start_terminal(self):
+        if not self.started: self.started=True; self.deadline=self.clock.mono+60000
+        return self.remaining()
+    def clamp_end(self,end):
+        self.start_terminal(); self.deadline=min(self.deadline,end)
     def remaining(self):
-        if self.deadline is None: self.deadline=self.clock.mono+60000
+        if not self.started: raise ValueError('CLEANUP_NOT_STARTED')
         return max(0,self.deadline-self.clock.mono)
     def call(self,op): return op(self.remaining())
 

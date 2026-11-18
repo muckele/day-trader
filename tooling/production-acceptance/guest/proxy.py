@@ -732,6 +732,8 @@ def qualify_composition_proxy(binding, *, child, pipe, child_id, pipe_id,
             or not callable(provenance_validator)
             or not callable(getattr(cleanup_budget, 'remaining', None))
             or not callable(getattr(cleanup_budget, 'call', None))
+            or not callable(getattr(cleanup_budget, 'start_terminal', None))
+            or not callable(getattr(cleanup_budget, 'clamp_end', None))
             or (runtime_sink is not None and not callable(runtime_sink))):
         raise ProxyError('ADMISSION_DENIED')
     run = admission_policy.binding
@@ -991,15 +993,9 @@ class ProxyCompositionContext:
         _NATIVE_INVENTORIES[transport] = self._inventory
 
     def _clamp(self, end):
-        budget = _CONTEXT_ORIGINALS[self][0].cleanup_budget
-        old = getattr(budget, 'deadline', None)
-        if old is None:
-            try:
-                budget.remaining()
-                old = getattr(budget, 'deadline', None)
-            except Exception:
-                old = 0
-        budget.deadline = end if old is None else min(old, end)
+        # Terminal only: clamp_end starts the one shared end first, then
+        # shortens it. The proxy never writes the budget deadline (C1).
+        _CONTEXT_ORIGINALS[self][0].cleanup_budget.clamp_end(end)
 
     def _invalidate(self, immediate=False):
         if immediate: self._clamp(0)
@@ -1015,7 +1011,7 @@ class ProxyCompositionContext:
             self._failed_at = self._last_mono
             self._real_end = time.monotonic_ns()//1000000 + 60000
             try:
-                policy.cleanup_budget.remaining()
+                policy.cleanup_budget.start_terminal()
                 real = getattr(policy.cleanup_budget, 'real_deadline', None)
                 if real is not None: self._real_end = min(self._real_end, real)
                 end = self._failed_at + 60000
@@ -1229,9 +1225,11 @@ class ProxyCompositionClient:
     def _fail(self, immediate=False, end=None):
         policy, clock = _CLIENT_ORIGINALS[self]
         budget = policy.cleanup_budget
+        # Every client failure is terminal: start the one shared end, then
+        # clamp it. No direct deadline write (C1).
         if immediate:
             self._terminal = True
-            budget.deadline = 0
+            budget.clamp_end(0)
             return
         if not self._terminal:
             self._terminal = True
@@ -1240,11 +1238,10 @@ class ProxyCompositionClient:
                 first_end = mono+60000
                 if first_end > _MAX_SAFE_INTEGER: first_end = 0
                 end = first_end if end is None else min(end, first_end)
-                budget.remaining()
+                budget.start_terminal()
             except Exception: end = 0
         if end is not None:
-            old = getattr(budget, 'deadline', None)
-            budget.deadline = end if old is None else min(old, end)
+            budget.clamp_end(end)
 
     def _request(self, kind, request_id, value):
         try:

@@ -545,8 +545,10 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
     @Test func v1_review_zero_shared_cleanup_budget_remains_typed() throws {
         let run=try BootstrapRunFixture().run, originals=runtimeRows()
         let lifecycle=BootstrapLifecycleFake(); lifecycle.beginError = .start
+        // The host terminal decision (third sample, monotonic 10) starts the shared
+        // end; it is already exhausted (60010) when the first stop is reserved.
         let clock=BootstrapTestClock([.init(wall:100,monotonic:10),.init(wall:100,monotonic:10),
-                                      .init(wall:100,monotonic:60010)])
+                                      .init(wall:100,monotonic:10),.init(wall:100,monotonic:60010)])
         let composition=try offlineComposition(run,
             probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
             lifecycle:lifecycle,clock:clock,originals:originals)
@@ -554,6 +556,40 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
             _=try OfflineVMHost.bootstrapCheck(run:run,composition:composition)
         }
         #expect(lifecycle.stops == 0)
+    }
+
+    @Test func v1_host_cleanup_budget_starts_at_terminal_decision() throws {
+        let run=try BootstrapRunFixture().run, originals=runtimeRows()
+        // Composition variant: a successful admission is routine and never starts the host end.
+        do {
+            let lifecycle=BootstrapLifecycleFake(), clock=BootstrapTestClock()
+            let q=try OfflineVMHost.bootstrapCheck(run:run,composition:offlineComposition(run,
+                probe:BootstrapProbeFake([try compositionHandoff(run,originals:originals)]),
+                lifecycle:lifecycle,clock:clock,originals:originals))
+            #expect(q.cleanupEnd == nil)
+            // A terminal decision 61000 ms after admission still gets the full window.
+            let drift=10 + 61000
+            clock.replace([.init(wall:100,monotonic:drift)])
+            lifecycle.triggerDrift()
+            #expect(q.cleanupEnd == drift + 60000)
+            #expect(lifecycle.stops == 1)
+            #expect(lifecycle.bounds.allSatisfy { $0 > 0 && $0 <= 60000 })
+            #expect(!q.cleanupUncertain)
+        }
+        // Literal-wire variant: the same terminal-start rule.
+        do {
+            let lifecycle=BootstrapLifecycleFake(), clock=BootstrapTestClock()
+            let q=try OfflineVMHost.bootstrapCheck(run:run,
+                probe:BootstrapProbeFake([try handoff(run),try handoff(run,sequence:2)]),
+                lifecycle:lifecycle,executables:try executableAuthority(run),clock:clock)
+            #expect(q.cleanupEnd == nil)
+            let drift=10 + 61000
+            clock.replace([.init(wall:100,monotonic:drift)])
+            lifecycle.triggerDrift()
+            #expect(q.cleanupEnd == drift + 60000)
+            #expect(lifecycle.stops == 1)
+            #expect(lifecycle.bounds.allSatisfy { $0 > 0 && $0 <= 60000 })
+        }
     }
 
     @Test func v1_review_population_substitution_and_member_drift_deny_before_effects() throws {

@@ -950,8 +950,12 @@ class CompositionHarness:
         self.fail_bind = self.fail_auth = self.fail_close = False
         self.fragment, self.write_fragment = 7, 13
         self.clients = []
+        # Terminal-start double (C1): a set deadline means started; remaining()
+        # never allocates. Tests may pre-set deadline to model an earlier start.
         self.budget = types.SimpleNamespace(clock=self.clock, deadline=None, real_deadline=None)
         self.budget.remaining = self.remaining
+        self.budget.start_terminal = self.start_terminal
+        self.budget.clamp_end = self.clamp_end
         self.budget.call = lambda fn: fn(self.remaining())
         bootstrap = json.loads(ProxyTests()._bootstrap_wire()[2:])
         initial = dict(version=2, kind='PROXY_COMPOSITION_INIT', binding=self.binding.copy(),
@@ -1025,8 +1029,13 @@ class CompositionHarness:
             fstat=self.fstat, listdir=lambda path: [str(fd) for fd in self.live],
             open=self.open, O_RDONLY=0, O_CLOEXEC=524288)
 
-    def remaining(self):
+    def start_terminal(self):
         if self.budget.deadline is None: self.budget.deadline = self.clock.mono + 60000
+        return self.remaining()
+    def clamp_end(self, end):
+        self.start_terminal(); self.budget.deadline = min(self.budget.deadline, end)
+    def remaining(self):
+        if self.budget.deadline is None: raise ValueError('CLEANUP_NOT_STARTED')
         return max(0, self.budget.deadline - self.clock.mono)
     def allocate(self):
         fd = self.next_fd; self.next_fd += 1

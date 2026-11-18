@@ -13,6 +13,7 @@ import tempfile
 from unittest import mock
 import contextlib
 import threading
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -217,7 +218,8 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
         for kind in ('wall','budget','monotonic'):
             with self.subTest(kind=kind):
                 setup=self.setup_epoch(); binding,channel,clock,budget,family=setup
-                if kind=='budget': budget.remaining()
+                # A terminal event elsewhere started the one shared end (E7).
+                if kind=='budget': budget.start_terminal()
                 original_end=budget.deadline
                 def expire(row):
                     if row['phase']=='BEFORE':
@@ -484,7 +486,8 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
     def test_v1_expired_shared_budget_keeps_original_owner_and_no_retry(self):
         setup=self.setup_epoch(); original=setup[4].fixtures.kernel.stop_owned; calls=[]
         def stop(owner,duration):
-            calls.append((owner,duration)); setup[2].mono+=60001
+            # A terminal event starts the one shared end; it then expires.
+            calls.append((owner,duration)); setup[3].start_terminal(); setup[2].mono+=60001
             return original(owner,duration)
         setup[4].fixtures.kernel.stop_owned=stop
         with self.assertRaises(p.ProbeCleanupFailure) as caught:
@@ -496,25 +499,38 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
         with self.assertRaises(p.ProbeCleanupFailure): owner.stop_owned(60000)
         self.assertEqual(len(calls),1)
 
-    def test_v1_expired_cleanup_end_forbids_the_next_probe_family(self):
-        setup=self.setup_epoch()
-        def mutate(row):
-            if row['phase']=='AFTER': setup[2].mono+=60001
-            return row
-        setup[1].mutate=mutate
-        with self.assertRaises(p.ProbeFailure): p.qualify_probe_epoch(setup[0],setup[4].fixtures,setup[3])
-        self.assertEqual(sum(event[0]=='spawn' for event in setup[4].events),1)
+    def test_v1_routine_family_stop_step_is_fixed_and_never_starts_shared_end(self):
+        self.assertEqual((t.PROBE_FAMILY_STOP_MS,p.PROBE_FAMILY_STOP_MS),(2000,2000))
+        clock=Clock(); budget=t.CleanupBudget(clock,real_clock=lambda: 5000); seen=[]
+        self.assertEqual(budget.routine_call(lambda allowance: seen.append(allowance) or 'done'),'done')
+        self.assertEqual(seen,[2000])
+        self.assertIs(budget.started,False); self.assertIsNone(budget.deadline)
+        with self.assertRaisesRegex(t.TopologyError,'^CLEANUP_NOT_STARTED$'): budget.remaining()
+        with self.assertRaisesRegex(t.TopologyError,'^CLEANUP_NOT_STARTED$'): budget.call(seen.append)
+        self.assertEqual(seen,[2000])
+        budget.start_terminal(); clock.mono+=59000
+        budget.routine_call(seen.append)
+        self.assertEqual(seen,[2000,1000])
+
+    def test_v1_expired_terminal_end_forbids_further_cleanup_calls(self):
+        clock=Clock(); budget=t.CleanupBudget(clock,real_clock=lambda: 5000); invoked=[]
+        self.assertEqual(budget.start_terminal(),60000)
+        clock.mono+=60001
+        with self.assertRaisesRegex(t.TopologyError,'^CLEANUP_UNCERTAIN$'): budget.call(invoked.append)
+        self.assertEqual(invoked,[])
 
 
 class BootstrapOwnedCompositionTests(unittest.TestCase):
     """Task 9 public boundary; full inert integration is built below this API."""
 
     class Harness:
-        def __init__(self, test):
+        def __init__(self, test, *, expires_at=190, real_clock=None):
+            # expires_at/real_clock are local test bindings; the exporters keep
+            # the default 190 ms binding and the default real clock.
             self.test=test;self.timeline=[];self.clock=Clock()
             self.clock.wall,self.clock.mono=100,10
             self.binding=c.CompositionBinding(
-                1,'1'*32,'b'*64,'a'*64,'c'*64,7,190)
+                1,'1'*32,'b'*64,'a'*64,'c'*64,7,expires_at)
             confinement_fixture.c=c;confinement_fixture.RUN=self.binding.runId
             self.role_finite=confinement_fixture.Kernel()
             self.role_kernel=c.NativeKernelPort(types.SimpleNamespace())
@@ -598,7 +614,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             self.role_kernel.write_role=write_role
             self.role_kernel.read_role=lambda owned,remaining:self.role_queue.pop(0)
             self.role_kernel.poll_role=lambda owned:bool(self.role_queue)
-            run=t._PROXY.RunBinding(self.binding.runId,b'7'*32,190,1,
+            run=t._PROXY.RunBinding(self.binding.runId,b'7'*32,expires_at,1,
                 self.binding.manifestDigest,self.binding.configIdentity,
                 (('FRONTEND','https://frontend.example'),('BACKEND','https://backend.example')))
             policy=t._PROXY.qualify_native_admission(run,
@@ -607,10 +623,11 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 handoff_validator=lambda value:value)
             self.expected=t.qualify_topology_authority(run_id=self.binding.runId,
                 manifest_identity=self.binding.manifestDigest,config_identity=self.binding.configIdentity,
-                expires_at=190,capability=b'7'*32,role_launches=tuple(launches),
+                expires_at=expires_at,capability=b'7'*32,role_launches=tuple(launches),
                 proxy_policy=policy,clock=self.clock,appliance_recheck=lambda:self.timeline.append('recheck'))
             self.roles=None
-            self.budget=t.CleanupBudget(self.clock)
+            self.budget=(t.CleanupBudget(self.clock) if real_clock is None
+                         else t.CleanupBudget(self.clock,real_clock=real_clock))
             inventory=[]
             for name,case in p.PROBES.items():
                 for operation in case.operations:
@@ -689,12 +706,26 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(proxy_fixture,'proxy',t._PROXY))
             stack.enter_context(mock.patch.object(topology_fixture,'topology',t))
             stack.enter_context(mock.patch.object(topology_fixture,'confinement',c))
+            if self.binding.expiresAtMs!=190:
+                # Local long-lived proxy admission matching this binding only.
+                proxy_config=proxy_fixture.config
+                def long_lived_config(sockets,clock=None,**changes):
+                    changes.setdefault('binding',t._PROXY.RunBinding('1'*32,b'\x07'*32,
+                        self.binding.expiresAtMs,1,'b'*64,'a'*64,proxy_fixture.ORIGINS))
+                    return proxy_config(sockets,clock,**changes)
+                stack.enter_context(mock.patch.object(proxy_fixture,'config',long_lived_config))
             def proxy_entry(*_):
                 ready,release=threading.Event(),threading.Event();box=[]
                 def sink(harness,owner):
                     self.timeline.append('proxy-loop-owner');box.append(owner);ready.set()
                     if not release.wait(5): raise AssertionError('bounded proxy loop release missing')
-                harness=proxy_fixture.CompositionHarness(self.test,commands=[],sink=sink)
+                expires=self.binding.expiresAtMs
+                def long_lived(initial):
+                    initial['binding']['expiresAtMs']=expires
+                    initial['proxyBootstrap']['expiresAt']=expires
+                harness=proxy_fixture.CompositionHarness(self.test,commands=[],sink=sink,
+                    mutate=None if expires==190 else long_lived)
+                harness.binding['expiresAtMs']=expires
                 thread=threading.Thread(target=harness.run,daemon=True);thread.start()
                 if not ready.wait(5): raise AssertionError('actual inherited proxy loop did not mint owner')
                 self.proxy_harness,self.proxy_thread,self.proxy_release=harness,thread,release
@@ -880,10 +911,12 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             h.role_kernel.write_role=write_cancelled
             controller=h.role_init['CONTROLLER'];row=next(value for value in
                 controller['roles'] if value['role']=='BROWSER')
-            h.budget.remaining()
+            # The controller's own first-terminal end; the bootstrap budget
+            # starts only when this authenticated cancel arrives (E7).
+            self.assertIs(h.budget.started,False)
             request=dict(version=1,binding=h.binding.to_record(),sequence=1,**row,
                 action='CANCEL',payload=dict(generation=1,
-                    cleanupEndsAtMonotonicMs=h.budget.deadline))
+                    cleanupEndsAtMonotonicMs=h.clock.mono+60000))
             request['mac']=hmac.new(bytes.fromhex(controller['channelKeyHex']),
                 b'acceptance:bootstrap-composition:v1\0CONTROLLER:TO_BOOTSTRAP\0'
                 +c._v1_canonical(request),hashlib.sha256).hexdigest()
@@ -1046,17 +1079,23 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def test_v1_stop_clamps_to_caller_and_never_widens_shared_budget(self):
         for supplied,shared_cap in ((0,None),(7,None),(60000,3)):
             with self.subTest(supplied=supplied,shared_cap=shared_cap):
-                h=self.Harness(self);composition,stack=h.build();allowances=[]
+                # Real time moves only through the injected real clock (M-1).
+                real=[time.monotonic_ns()//1000000]
+                h=self.Harness(self,real_clock=lambda:real[0])
+                composition,stack=h.build();allowances=[]
                 original=t.BootstrapEventOwner.stop_owned
                 def stop(owner,remaining):
                     allowances.append(remaining);return original(owner,remaining)
                 with stack:
                     composition.begin()
+                    self.assertIsNone(h.budget.deadline)
                     if shared_cap is not None:
-                        self.assertIsNotNone(h.budget.deadline)
+                        # An earlier terminal event already started the shared end.
+                        h.budget.start_terminal()
                         h.clock.mono=h.budget.deadline-shared_cap
                     with mock.patch.object(t.BootstrapEventOwner,'stop_owned',new=stop):
                         first=composition.stop_owned(supplied)
+                        self.assertIsNotNone(h.budget.deadline)
                         call_count=len(allowances)
                         repeated=composition.stop_owned(60000)
                     limit=supplied if shared_cap is None else shared_cap
@@ -1101,6 +1140,163 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 self.assertEqual(composition._budget.remaining(),0)
                 self.assertEqual(composition.stop_owned(60000)['status'],'STOPPED')
                 self.assertEqual(len(late.allowances),1)
+
+    LONG_LIVED_EXPIRES_MS=200000  # local only; never reaches an exported fixture
+
+    def test_v1_shared_cleanup_end_unarmed_after_successful_begin(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            self.assertIs(type(composition.begin()),t.AdmissionProof)
+            self.assertEqual(composition._state,'ADMITTED')
+            self.assertIs(h.budget.started,False)
+            self.assertIsNone(h.budget.deadline)
+
+    def test_v1_terminal_cleanup_gets_full_window_after_61s_of_normal_operation(self):
+        real=[time.monotonic_ns()//1000000]
+        h=self.Harness(self,expires_at=self.LONG_LIVED_EXPIRES_MS,real_clock=lambda:real[0])
+        composition,stack=h.build();allowances=[]
+        def recording(kind):
+            original=kind.stop_owned
+            def stop(owner,remaining):
+                allowances.append((owner,remaining));return original(owner,remaining)
+            return mock.patch.object(kind,'stop_owned',new=stop)
+        with stack:
+            composition.begin()
+            h.clock.wall+=61000;h.clock.mono+=61000;real[0]+=61000
+            retained=list(composition._cleanup_chain);mono=h.clock.mono
+            self.assertEqual([type(owner) for owner in retained],
+                [c.OriginalRoleSet,t._PROXY.ProxyRuntimeOwner,t.BootstrapEventOwner])
+            with recording(c.OriginalRoleSet),recording(t._PROXY.ProxyRuntimeOwner), \
+                    recording(t.BootstrapEventOwner):
+                receipt=composition.stop_owned(60000)
+            self.assertEqual(receipt,{'status':'STOPPED','runId':h.binding.runId})
+            self.assertEqual([id(owner) for owner,_ in allowances],
+                             [id(owner) for owner in reversed(retained)])
+            self.assertTrue(all(1<=value<=60000 for _,value in allowances),allowances)
+            self.assertEqual(h.budget.deadline,mono+60000)
+
+    def test_v1_probe_catalogue_longer_than_60s_still_qualifies(self):
+        real=[time.monotonic_ns()//1000000]
+        h=self.Harness(self,expires_at=self.LONG_LIVED_EXPIRES_MS,real_clock=lambda:real[0])
+        composition,stack=h.build();start=h.clock.mono
+        kernel=h.fixture.kernel;stop=kernel.stop_owned
+        def slow_family_stop(owner,duration):
+            h.clock.wall+=1000;h.clock.mono+=1000;real[0]+=1000
+            return stop(owner,duration)
+        kernel.stop_owned=slow_family_stop
+        with stack:
+            try:composition.begin()
+            except Exception as error:self.fail('a >60 s probe catalogue was denied: '+repr(error))
+            self.assertEqual(composition._state,'ADMITTED')
+            self.assertEqual(len(h.fixture.family_owners),91)
+            self.assertGreaterEqual(h.clock.mono-start,91000)
+            self.assertIs(h.budget.started,False)
+            self.assertIsNone(h.budget.deadline)
+
+    def test_v1_activation_deadline_not_capped_by_unstarted_cleanup(self):
+        h=self.Harness(self,expires_at=self.LONG_LIVED_EXPIRES_MS);composition,stack=h.build()
+        with stack:
+            composition.begin()
+            h.clock.wall+=61000;h.clock.mono+=61000;wall,mono=h.clock.wall,h.clock.mono
+            try:composition.prepare_browser()
+            except Exception as error:self.fail('activation capped by cleanup end: '+repr(error))
+            self.assertEqual(h.browser_prepare_payload['monotonicDeadlineMs'],
+                             mono+h.binding.expiresAtMs-wall)
+            self.assertIs(h.budget.started,False)
+            # E7: even a started shared end never caps the activation deadline (C8).
+            h.budget.start_terminal();h.clock.mono+=61000
+            self.assertEqual(composition._activation_deadline(),
+                             h.clock.mono+h.binding.expiresAtMs-h.clock.wall)
+
+    def test_v1_no_routine_path_arms_shared_end(self):
+        h=self.Harness(self);composition,stack=h.build();calls=[]
+        original=t.CleanupBudget.start_terminal
+        def spy(budget):
+            calls.append(budget);return original(budget)
+        def unarmed(step):
+            # State, not only the spy: a direct deadline write is also caught.
+            self.assertIs(h.budget.started,False,step)
+            self.assertIsNone(h.budget.deadline,step)
+            self.assertIsNone(h.budget.real_deadline,step)
+            if h.proxy_harness is not None:
+                self.assertIsNone(h.proxy_harness.budget.deadline,step)
+        with stack,mock.patch.object(t.CleanupBudget,'start_terminal',new=spy):
+            unarmed('built')
+            composition.begin();unarmed('begin')
+            for index in range(3):
+                composition.require_current();unarmed('current-%d'%index)
+            preparation=composition.prepare_browser();unarmed('prepare')
+            self.assertEqual(composition.commit_browser(preparation),
+                             {'status':'ACTIVE','generation':1})
+            unarmed('commit')
+            composition.require_current();unarmed('committed-current')
+        self.assertEqual([budget for budget in calls if budget is h.budget],[])
+
+    def test_v1_late_acquisition_racing_cleanup_is_stopped(self):
+        # Two-thread port of the Stage 1 reviewer's late_acquisition_race.py.
+        h=self.Harness(self);composition,stack=h.build();role_stops=[]
+        finite_stop=h.role_kernel.stop_owned
+        def counted_stop(owned,ms):
+            role_stops.append(owned.role);return finite_stop(owned,ms)
+        h.role_kernel.stop_owned=counted_stop
+        in_final,release,roles_entered=threading.Event(),threading.Event(),threading.Event()
+        original_unresolved=t.NativeTopologyBindings.cleanup_unresolved
+        def blocking_unresolved(bindings):
+            if threading.current_thread().name=='stopper':
+                in_final.set()
+                if not release.wait(5):raise AssertionError('stopper release missing')
+            return original_unresolved(bindings)
+        receipts,begin_errors=[],[]
+        with stack:
+            harness_bind=c.bind_original_roles
+            def bind(*args):
+                roles_entered.set()
+                if not in_final.wait(5):raise AssertionError('stopper never reached its final phase')
+                return harness_bind(*args)
+            with mock.patch.object(c,'bind_original_roles',side_effect=bind), \
+                    mock.patch.object(t.NativeTopologyBindings,'cleanup_unresolved',blocking_unresolved):
+                def run_begin():
+                    try:composition.begin()
+                    except Exception as error:begin_errors.append(error)
+                begin=threading.Thread(target=run_begin,name='begin',daemon=True);begin.start()
+                self.assertTrue(roles_entered.wait(5))
+                stopper=threading.Thread(target=lambda:receipts.append(composition.stop_owned(60000)),
+                                         name='stopper',daemon=True)
+                stopper.start();begin.join(10);release.set();stopper.join(10)
+                self.assertFalse(begin.is_alive());self.assertFalse(stopper.is_alive())
+            self.assertEqual(len(begin_errors),1)
+            self.assertTrue(any(owner is h.roles for owner in composition._cleanup_chain))
+            # No third stop: the running pass picked up the late original owner.
+            self.assertEqual(role_stops,['PROXY','VERIFIER','BROWSER','CONTROLLER'])
+            self.assertEqual(composition._cleanup_status,'STOPPED')
+            self.assertEqual(receipts,[{'status':'STOPPED','runId':h.binding.runId}])
+
+    def test_v1_bootstrap_clamps_to_worker_first_terminal_end(self):
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            composition.begin()
+            h.clock.mono+=5000;failed_at=h.clock.mono-5000
+            write=h.role_kernel.write_role
+            def fail_prepare(owned,data):
+                value=json.loads(data[4:])
+                if value.get('action')!='PREPARE':return write(owned,data)
+                h.worker_sequence+=1
+                response=dict(version=1,binding=h.binding.to_record(),
+                    sequence=h.worker_sequence,role='BROWSER',childId=value['childId'],
+                    pipeId=value['pipeId'],action='FAILED',payload=dict(
+                        requestSequence=value['sequence'],generation=1,
+                        code='LAUNCH_FAILED',failedAtMonotonicMs=failed_at))
+                response['mac']=hmac.new(bytes.fromhex(
+                    h.role_init['BROWSER']['channelKeyHex']),
+                    b'acceptance:bootstrap-composition:v1\0BROWSER:TO_BOOTSTRAP\0'
+                    +c._v1_canonical(response),hashlib.sha256).hexdigest()
+                h.role_queue.append(c._v1_encode(response))
+            h.role_kernel.write_role=fail_prepare
+            with self.assertRaisesRegex(Exception,'LAUNCH_FAILED'):composition.prepare_browser()
+            self.assertTrue(composition._terminal)
+            self.assertIs(h.budget.started,True)
+            # K6: the composition end never exceeds the worker's earliest terminal time.
+            self.assertLessEqual(h.budget.deadline,failed_at+60000)
 
     def test_v1_zero_stop_never_starts_unresolved_observation_cleanup(self):
         h=self.Harness(self);composition,stack=h.build();calls=[]
@@ -1229,9 +1425,10 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             controller_commit=request(3,'COMMIT_BROWSER',dict(
                 grantId=preparation['grantId'],generation=1))
             if cancel_at == 'PREPARED':
-                budget.remaining()
+                # The controller's own first-terminal end (E7); identical
+                # bytes to the controller's startTerminal() end at mono 100.
                 controller_final=request(3,'CANCEL',dict(generation=1,
-                    cleanupEndsAtMonotonicMs=budget.deadline))
+                    cleanupEndsAtMonotonicMs=budget.clock.mono+60000))
                 controller_final_result=roles.handle_controller(controller_final)
             elif cancel_at in ('REFRESH','CURRENT'):
                 window,release=threading.Event(),threading.Event();errors=[]
@@ -1260,9 +1457,8 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     except Exception as error:errors.append(error)
                 worker=threading.Thread(target=commit,daemon=True);worker.start()
                 self.assertTrue(window.wait(5),cancel_at+' cancellation window absent')
-                budget.remaining()
                 controller_final=request(4,'CANCEL',dict(generation=1,
-                    cleanupEndsAtMonotonicMs=budget.deadline))
+                    cleanupEndsAtMonotonicMs=budget.clock.mono+60000))
                 try:controller_final_result=roles.handle_controller(controller_final)
                 finally:release.set();worker.join(5)
                 self.assertFalse(worker.is_alive());self.assertEqual(len(errors),1)

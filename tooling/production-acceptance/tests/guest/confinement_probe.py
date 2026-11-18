@@ -23,6 +23,10 @@ from types import MappingProxyType
 
 ProbeCase = namedtuple('ProbeCase', 'operations denied receiver_count')
 
+# Fixed step for a routine (non-terminal) probe-family stop or helper reap. It
+# never starts the shared cleanup end (C1); topology.PROBE_FAMILY_STOP_MS mirrors it.
+PROBE_FAMILY_STOP_MS = 2000
+
 PROBES = MappingProxyType({
     'vsock_browser_controller_verifier_denied': ProbeCase(tuple(
         role+'.'+op for role in ('BROWSER','CONTROLLER','VERIFIER') for op in ('socket-AF_VSOCK','socketpair-AF_VSOCK')),True,0),
@@ -210,7 +214,9 @@ def qualify_probe_epoch(binding, fixtures, cleanup_budget):
             or type(getattr(fixtures,'receivers',None)) is not ReceiverAuthority
             or not callable(getattr(getattr(fixtures,'clock',None),'sample',None))
             or not callable(getattr(cleanup_budget,'call',None))
-            or not callable(getattr(cleanup_budget,'remaining',None))):
+            or not callable(getattr(cleanup_budget,'remaining',None))
+            or not callable(getattr(cleanup_budget,'routine_call',None))
+            or type(getattr(cleanup_budget,'started',None)) is not bool):
         raise RuntimeGateUnavailable('PROBE_EPOCH_UNAVAILABLE')
     if fixtures.config.run_id != binding.runId or fixtures._epoch_started:
         raise ProbeFailure('PROBE_EPOCH_DENIED')
@@ -238,7 +244,8 @@ def qualify_probe_epoch(binding, fixtures, cleanup_budget):
         if monotonic_end is None:
             monotonic_end=sample[1]+binding.expiresAtMs-sample[0]
         if sample[1] >= monotonic_end: raise ProbeFailure('PROBE_EPOCH_EXPIRED')
-        if getattr(cleanup_budget,'deadline',None) is not None and not cleanup_budget.remaining():
+        # Only a started (terminal) shared end forbids the next family.
+        if cleanup_budget.started and not cleanup_budget.remaining():
             raise ProbeFailure('PROBE_CLEANUP_DEADLINE')
         last = sample
     port, cases, correlations = NativeProbePort(fixtures), [], []
@@ -608,7 +615,9 @@ class NativeProbeContext:
                 # Still an unreaped DIRECT child: PID reuse is impossible.
                 try: b.os.kill(pid,b.signal.SIGKILL)
                 except ProcessLookupError: pass
-                allowance=2000 if self.cleanup_budget is None else min(2000,self.cleanup_budget.remaining())
+                budget=self.cleanup_budget
+                allowance=(PROBE_FAMILY_STOP_MS if budget is None or not budget.started
+                           else min(PROBE_FAMILY_STOP_MS,budget.remaining()))
                 until=b.monotonic()+allowance/1000
                 while b.monotonic()<until:
                     ended,_=b.os.waitpid(pid,b.os.WNOHANG)
@@ -686,12 +695,18 @@ class _ProbeFamilyOwner:
             self.cleaning = True
         if self.owned is None: raise ProbeCleanupFailure(self)
         if type(remaining_ms) is not int or remaining_ms <= 0: raise ProbeCleanupFailure(self)
-        self.receipt(self.fixtures.kernel.stop_owned(self.owned,min(2000,remaining_ms)),('STOPPED','EXITED'))
+        step=min(PROBE_FAMILY_STOP_MS,remaining_ms)
         b = self.fixtures.kernel.b
+        until=b.monotonic()+step/1000
+        self.receipt(self.fixtures.kernel.stop_owned(self.owned,step),('STOPPED','EXITED'))
         try: b.os.unlink(self.root+'/dev/null')
         except FileNotFoundError: pass
         for path in self.scopes:
-            if self.cleanup_budget is not None and not self.cleanup_budget.remaining(): raise ProbeCleanupFailure(self)
+            # Bounded by this fixed step, and by the shared end once a terminal
+            # event has started it. A routine stop never starts it (C1).
+            budget=self.cleanup_budget
+            if b.monotonic()>=until or (budget is not None and budget.started
+                                        and not budget.remaining()): raise ProbeCleanupFailure(self)
             try: b.os.rmdir(path)
             except FileNotFoundError: pass
         if b.os.path.lexists(self.root) or b.os.path.lexists(self.state): raise ProbeCleanupFailure(self)
@@ -772,8 +787,9 @@ class NativeProbeFixtures:
         finally:
             if owned is not None:
                 try:
-                    if self.cleanup_budget is None: family.stop_owned(2000)
-                    else: self.cleanup_budget.call(family.stop_owned)
+                    # Routine family stop: fixed bounded step, never the shared end.
+                    if self.cleanup_budget is None: family.stop_owned(PROBE_FAMILY_STOP_MS)
+                    else: self.cleanup_budget.routine_call(family.stop_owned,PROBE_FAMILY_STOP_MS)
                 except BaseException as error:
                     if isinstance(error,ProbeCleanupFailure): raise
                     raise ProbeCleanupFailure(family) from error

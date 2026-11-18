@@ -134,27 +134,36 @@ struct BootstrapExecutableAuthority: Sendable {
     }
 }
 
+// One shared host cleanup end (E7, C1). It starts only at the host's own
+// terminal decision (failure, drift, stop, cancel or expiry), never at check
+// start or during routine admission, and a later start never moves it.
 private final class BootstrapCleanupBudget: @unchecked Sendable {
     private let clock:any BrokerClock, lock = NSLock()
     private var end:Int?, last:Int?, realEnd:UInt64?
     init(clock:any BrokerClock) { self.clock=clock }
-    func start(at monotonic:Int) {
+    var terminalEnd:Int? { lock.withLock { end } }
+    func startTerminal(at monotonic:Int) {
         lock.withLock {
-            guard end == nil, monotonic >= 0, monotonic <= 9007199254680991 else { return }
+            guard end == nil else { return }
             let real=DispatchTime.now().uptimeNanoseconds / 1_000_000
+            // An unusable terminal instant permits nonblocking cleanup only.
+            guard monotonic >= 0, monotonic <= 9007199254680991 else { end=0; realEnd=real; return }
             last=monotonic; end=monotonic + 60000; realEnd=real + 60000
         }
     }
+    // The host's terminal decision instant from its own clock.
+    func startTerminalNow() { startTerminal(at:(try? clock.sample())?.monotonic ?? -1) }
     func remaining() -> Int {
         lock.withLock {
+            // Never allocates: before the terminal decision there is no end.
+            guard let current=end else { return 0 }
             let real = DispatchTime.now().uptimeNanoseconds / 1_000_000
             guard let sample = try? clock.sample(), sample.monotonic >= 0,
                   sample.monotonic <= 9007199254680991,
                   last == nil || sample.monotonic >= last! else { end=0; return 0 }
             last=sample.monotonic
-            if end == nil { end=sample.monotonic + 60000; realEnd=real + 60000 }
             guard let realEnd, real < realEnd else { return 0 }
-            return max(0,min(end! - sample.monotonic,Int(realEnd - real)))
+            return max(0,min(current - sample.monotonic,Int(realEnd - real)))
         }
     }
     private final class ResultBox: @unchecked Sendable {
@@ -640,6 +649,8 @@ public final class BootstrapQualification: BootstrapCleanupOwner, @unchecked Sen
             (failed && (!inFlight.isEmpty || roles.contains { !retired.contains(ObjectIdentifier($0)) }))
     }
     var cleanupUncertain:Bool { lock.withLock { hasUnresolvedCleanup } }
+    // Read-only observation of the shared host cleanup end (nil until started).
+    var cleanupEnd:Int? { cleanupBudget.terminalEnd }
     private var unresolvedRoles:[any BootstrapActivationTransaction] = []
     private var unresolvedLifecycles:[any BootstrapOwnedLifecycle] = []
     private var unresolvedQualifications:[any BootstrapCleanupOwner] = []
@@ -676,6 +687,8 @@ public final class BootstrapQualification: BootstrapCleanupOwner, @unchecked Sen
         }
     }
     fileprivate func latch() {
+        // Failure, drift, expiry and every terminal path funnel here (C1).
+        cleanupBudget.startTerminalNow()
         let owned = lock.withLock { () -> ([(any BootstrapOwnedLifecycle,BootstrapLifecycleStopSlot)],[any BootstrapActivationTransaction]) in
             failed = true; generation += 1; busy = nil
             let pending=roles.filter { !retired.contains(ObjectIdentifier($0)) && !pendingRoles.contains(ObjectIdentifier($0)) }
@@ -919,6 +932,7 @@ private final class BootstrapPendingAcquisition: BootstrapCleanupOwner, @uncheck
         }
     }
     func latch() {
+        budget.startTerminalNow()  // a failed acquisition is terminal (C1)
         let pending=lock.withLock { () -> [any BootstrapOwnedLifecycle] in
             let values=owners.filter { !retired.contains(ObjectIdentifier($0)) }
             values.forEach { retired.insert(ObjectIdentifier($0)) }
@@ -1076,7 +1090,8 @@ enum OfflineVMHost {
             let clock=composition.clock, before=try clock.sample()
             let authority=try RunAuthority(run:run,sample:before)
             _=try authority.check(before); try composition.recheck(run); try run.appliance.plan.validateResources()
-            let budget=BootstrapCleanupBudget(clock:clock); budget.start(at:before.monotonic)
+            // The shared end is not started here: admission is routine (E7, R9).
+            let budget=BootstrapCleanupBudget(clock:clock)
             let pending=BootstrapPendingAcquisition(budget:budget)
             pending.register(composition.eventOwner); pending.register(composition.lifecycle); acquisition=pending
             let handoff=try composition.capture(ids:BootstrapProbeID.allCases)

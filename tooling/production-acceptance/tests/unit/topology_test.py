@@ -636,16 +636,22 @@ class TopologyTests(unittest.TestCase):
         self.assertTrue(all(value == 0 for value in native.allowances))
         self.assertEqual(owner.stop_owned(60000)['status'], 'TIMEOUT')
 
+        # An earlier terminal event started the one shared end (C1); tests no
+        # longer write its deadline directly.
         owner, native, budget = self.install_events(AllowanceNative())
-        budget.deadline, budget.real_deadline = 1000, time.monotonic_ns() // 1000000 + 1000
+        budget.start_terminal(); budget.clamp_end(1000)
         self.assertEqual(owner.stop_owned(7)['status'], 'STOPPED')
         self.assertTrue(all(0 <= value <= 7 for value in native.allowances))
         self.assertLessEqual(budget.deadline, 17)
 
-        owner, native, budget = self.install_events(AllowanceNative())
-        budget.deadline, budget.real_deadline = 10, time.monotonic_ns() // 1000000
-        self.assertEqual(owner.stop_owned(50)['status'], 'TIMEOUT')
-        self.assertTrue(all(value == 0 for value in native.allowances))
+        for expired in ('monotonic', 'real'):
+            with self.subTest(expired=expired):
+                owner, native, budget = self.install_events(AllowanceNative())
+                budget.start_terminal()
+                if expired == 'monotonic': budget.clamp_end(10)
+                else: budget._real = lambda: budget.real_deadline
+                self.assertEqual(owner.stop_owned(50)['status'], 'TIMEOUT')
+                self.assertTrue(all(value == 0 for value in native.allowances))
 
     def test_v1_cleanup_requires_exact_original_descriptor_closed_facts(self):
         class BrokenClose(EventNative):
@@ -1212,10 +1218,13 @@ class TopologyTests(unittest.TestCase):
         supervisor = topology.select_native_supervisor(source, 'linux', 'aarch64')
         proxy_source = topology.select_task9_proxy_source(source, policy)
         probes = topology.Task8ProbeSource(object(), object(), source, topology._COMPOSITION_SEAL)
+        def terminal_call():
+            budget = topology.CleanupBudget(); budget.start_terminal()  # call() requires a started end (C1)
+            return budget.call(lambda remaining: source.beginOwned())
         for operation in (lambda: supervisor.begin('wire', lambda: None),
                           lambda: proxy_source.observe(policy),
                           lambda: probes.execute('BROWSER_IPV4_TCP'),
-                          lambda: topology.CleanupBudget().call(lambda remaining: source.beginOwned())):
+                          terminal_call):
             with self.subTest(operation=operation):
                 with self.assertRaises(topology.TopologyError) as caught: operation()
                 self.assertIs(caught.exception, failure)

@@ -112,7 +112,7 @@ function fixture(options={}) {
     },
     expire(){clock.mono=9000;},
     get reservation(){return reservation;},get outcome(){return workerOutcome;},get prepareBytes(){return prepareBytes;},
-    async init(){assert.equal(typeof worker.bindBrowserWorkerChannel,'function','separate worker launch authority is absent');workerBinding=await worker.bindBrowserWorkerChannel(workerChannel,workerFacts,clock,budget(clock));this.workerBinding=workerBinding;this.bound=await controller.bindBootstrapComposition(controllerChannel,runBinding,clock,budget(clock));return this;}};
+    async init(){assert.equal(typeof worker.bindBrowserWorkerChannel,'function','separate worker launch authority is absent');this.workerBudget=budget(clock);this.controllerBudget=budget(clock);workerBinding=await worker.bindBrowserWorkerChannel(workerChannel,workerFacts,clock,this.workerBudget);this.workerBinding=workerBinding;this.bound=await controller.bindBootstrapComposition(controllerChannel,runBinding,clock,this.controllerBudget);return this;}};
   return f;
 }
 
@@ -352,6 +352,22 @@ test('v1_unrepresentable_terminal_end_only_allows_nonblocking_cleanup',async()=>
   assert.equal(f.stops.find(v=>v[0]==='worker-family')[1],0,'an unsafe absolute end must not allocate a fresh window');
 });
 
+test('v1_cleanup_end_starts_at_first_terminal_event_only',async()=>{
+  const roles=context(),clock={wall:100,mono:100,sample(){return [this.wall,this.mono];}},inner=budget(clock);
+  assert.equal(typeof roles.cleanupBoundary,'function');
+  const boundary=roles.cleanupBoundary(inner,()=>clock.sample());
+  assert.throws(()=>boundary.remaining(),/CLEANUP_NOT_STARTED/);
+  assert.equal(inner.deadline,null,'a routine read must not arm the embedder budget');
+  const t0=clock.mono;assert.equal(boundary.startTerminal(),60000);
+  assert.equal(boundary.deadline,t0+60000);
+  clock.mono=t0+61000;assert.equal(boundary.remaining(),0);
+  boundary.startTerminal();assert.equal(boundary.deadline,t0+60000,'a second start never moves the end');
+  // A complete routine prepare/activate never starts either side's shared end.
+  const f=await fixture().init(),tx=await f.bound.prepareBrowser(f.proof);await tx.port.activateOnce(tx.grant);
+  assert.equal(f.launches.length,1);
+  assert.equal(f.controllerBudget.deadline,null);assert.equal(f.workerBudget.deadline,null);
+});
+
 test('v1_python_frames_adopt_original_role_and_guard_launch_once',async()=>{
   const transcript=pythonTranscript();
   if(transcript){
@@ -382,8 +398,8 @@ test('v1_python_expiry_between_worker_hops_denies_launch',async()=>{
   }
 });
 
-test('v1_python_authenticated_cancel_at_each_forwarder_window_is_terminal',async()=>{
-  const transcript=pythonTranscript();if(!transcript)return;
+test('v1_python_authenticated_cancel_at_each_forwarder_window_is_terminal',async t=>{
+  const transcript=pythonTranscript();if(!transcript){t.skip('BOOTSTRAP_V1_INPUT absent');return;}
   for(const hop of ['PREPARED','REFRESH','CURRENT']){
     const f=await fixture({transcript:transcript.cancelVariants[hop],
                            cancelAt:hop==='PREPARED'?undefined:hop}).init();
@@ -395,8 +411,8 @@ test('v1_python_authenticated_cancel_at_each_forwarder_window_is_terminal',async
   }
 });
 
-test('v1_python_transcript_each_hop_substitution_and_replay_are_denied',async()=>{
-  const transcript=pythonTranscript();if(!transcript)return;
+test('v1_python_transcript_each_hop_substitution_and_replay_are_denied',async t=>{
+  const transcript=pythonTranscript();if(!transcript){t.skip('BOOTSTRAP_V1_INPUT absent');return;}
   for(const variant of ['success','PREPARED','REFRESH','CURRENT']){
     const base=variant==='success'?transcript:transcript.cancelVariants[variant];
     for(const name of base.order){
