@@ -1,6 +1,11 @@
 # Stage 1 remediation — design decisions
 
-**Status: PROPOSED, 2026-11-17. Not yet approved.** These are the owner/design decisions that the Stage 1 independent review needs before remediation can be planned. The review records are in `.superpowers/sdd/2026-09-30-production-acceptance-controller/stage1-reviews/`.
+**Status: APPROVED by the owner, 2026-11-17.**
+- **Owner's words:** "Approve all", in reply to "Approve the recommended option for all seven design decisions?".
+- **Chosen options:** E1–E7 option **A** (the recommended option) in every case.
+- **What approval covers:** design direction only.
+
+These are the owner/design decisions that the Stage 1 independent review needs before remediation can be planned. The review records are in `.superpowers/sdd/2026-09-30-production-acceptance-controller/stage1-reviews/`.
 
 **Background.** On 2026-11-17 the owner chose to continue Path A after seeing the review outcome: 7 REJECT, 0 Critical, 47 Important. Each decision below lists the options and a recommendation. Approval covers **design direction only**. Implementation still follows the usual cycle: a written plan, tests first, independent review, and separate approvals for any VM, signing, network or production step.
 
