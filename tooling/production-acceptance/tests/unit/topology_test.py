@@ -2514,6 +2514,19 @@ class NamedTopologyPredicateTests(unittest.TestCase):
             'null entry with metric 0': LOOPBACK_ROW + ipv6_route_row(ANY6, 0, ANY6, 0, 1, 0x00200200, 'lo'),
             # The main-table ::1 prefix route a later NETDEV_UP of lo adds (addrconf.c:3555-3558).
             'extra third row': KERNEL_IPV6_ROUTE + ipv6_route_row(LOOPBACK6, 128, ANY6, 256, 1, 0x00000001, 'lo'),
+            # Fix round 1: every shape field is bound. A non-reject ::/0 metric ~0 on lo
+            # (possible through a nexthop object, which skips fib6_is_reject,
+            # route.c:3794-3812) is not the null entry: flags differ.
+            'non-reject ::/0 metric ffffffff on lo': LOOPBACK_ROW + ipv6_route_row(
+                ANY6, 0, ANY6, 0xffffffff, 1, 0x00000001, 'lo'),
+            # ::1/128 on lo without RTF_LOCAL is not the local route: flags differ.
+            '::1/128 without RTF_LOCAL': ipv6_route_row(
+                LOOPBACK6, 128, ANY6, 0, 2, 0x00200001, 'lo') + NULL_ENTRY_ROW,
+            # A local ::/0 on lo is not the ::1/128 local route: destination differs.
+            'local ::/0 on lo': ipv6_route_row(ANY6, 0, ANY6, 0, 2, 0x80200001, 'lo') + NULL_ENTRY_ROW,
+            # A reject 2001:db8::/32 metric ~0 on lo is not the null entry: destination differs.
+            'reject 2001:db8::/32 on lo': LOOPBACK_ROW + ipv6_route_row(
+                bytes.fromhex('20010db8' + '0' * 24), 32, ANY6, 0xffffffff, 1, 0x00200200, 'lo'),
         }
         for name, rows in cases.items():
             with self.subTest(case=name):
