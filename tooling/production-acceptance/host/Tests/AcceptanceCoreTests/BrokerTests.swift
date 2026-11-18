@@ -1241,6 +1241,24 @@ extension BrokerTests {
             catch { #expect(error is GuestStreamClosed) }
             let later = try await h.broker.accept(control: control(sequence: 2), stream: MemoryStream()); later.close()
         }
+        // (1b) Pump, after a host-first idle end: the logical EOF the ended slot owes the guest fails.
+        do {
+            let origin = StallingStream()
+            let h = try Harness(connector: FakeConnector(queued: [origin]))
+            let lane = FeedStream(setup, failAfter: 18)
+            let channel = RelayChannel(physical: lane, nonces: ConstantBrokerNonces(n))
+            let tunnel = try await h.broker.accept(request: try await channel.next())
+            let run = Task { try await tunnel.run() }
+            await lane.waitForBlockedReads(1); await origin.readEntered.wait()
+            await h.clock.waitForWaiters(2)
+            h.clock.set(160, 30); h.clock.tick()                                    // host-first idle end
+            await lane.failedWrite.wait()
+            lane.end()
+            try await run.value
+            do { _ = try await channel.next(); Issue.record("Lane reused after its write failed") }
+            catch { #expect(error is GuestStreamClosed) }
+            let later = try await h.broker.accept(control: control(sequence: 2), stream: MemoryStream()); later.close()
+        }
         // (2) Pending path: an idle pending slot's logical EOF cannot be written.
         do {
             let d = Deferred<[NumericAddress]>(), r = try FakeResolver([NumericAddress("8.8.8.8")], deferred: d)
