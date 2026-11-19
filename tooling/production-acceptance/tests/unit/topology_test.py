@@ -565,6 +565,14 @@ CHROME_IDENTITY = (0xfd, 0x01, 4711)
 KERNEL_DEFAULT = object()
 
 
+def audit_nlmsg(kind, payload, *, flags=0):
+    """An asynchronous audit record as the kernel unicasts it to the registered
+    receiver: audit_log_end sets nlmsg_len = skb->len - NLMSG_HDRLEN
+    (kernel/audit.c:2439) and only the multicast copy repairs it (:819-832).
+    Sequence 0, sender port 0 (nlmsg_put(..., 0, 0, type, 0, 0), :1799)."""
+    return struct.pack('<IHHII', len(payload), kind, flags, 0, 0) + payload
+
+
 def audit_text(serial, syscall, *, pid, ppid, exit_code=0, success=KERNEL_DEFAULT,
                argument0='0', items=0, tail=''):
     if success is KERNEL_DEFAULT:
@@ -580,14 +588,14 @@ def audit_text(serial, syscall, *, pid, ppid, exit_code=0, success=KERNEL_DEFAUL
 
 def audit_event(serial, syscall=201, *, pid=500, ppid=1, exit_code=0,
                 success=KERNEL_DEFAULT, argument0='0', items=0, tail=''):
-    return topology._event_nlmsg(1300, 0, audit_text(
+    return audit_nlmsg(1300, audit_text(
         serial, syscall, pid=pid, ppid=ppid, exit_code=exit_code, success=success,
         argument0=argument0, items=items, tail=tail).encode('ascii'))
 
 
 def audit_eoe(serial):
     """AUDIT_EOE: the bare record header (kernel/audit.c audit_log_start)."""
-    return topology._event_nlmsg(1320, 0, ('audit(1.000:%d): ' % serial).encode('ascii'))
+    return audit_nlmsg(1320, ('audit(1.000:%d): ' % serial).encode('ascii'))
 
 
 def audit_path(serial, *, name=None, item=0, inode=CHROME_IDENTITY[2],
@@ -597,7 +605,7 @@ def audit_path(serial, *, name=None, item=0, inode=CHROME_IDENTITY[2],
     text = ('audit(1.000:%d): item=%d name="%s" inode=%d dev=%s mode=0100755 ouid=0 '
             'ogid=0 rdev=00:00 nametype=%s cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 '
             'cap_frootid=0' % (serial, item, name, inode, dev, nametype))
-    return topology._event_nlmsg(1302, 0, text.encode('ascii'))
+    return audit_nlmsg(1302, text.encode('ascii'))
 
 
 def audit_execve(serial, argv=None):
@@ -605,7 +613,7 @@ def audit_execve(serial, argv=None):
     argv = (confinement.CHROME, '--headless') if argv is None else argv
     text = 'audit(1.000:%d): argc=%d' % (serial, len(argv))
     text += ''.join(' a%d="%s"' % (index, value) for index, value in enumerate(argv))
-    return topology._event_nlmsg(1309, 0, text.encode('ascii'))
+    return audit_nlmsg(1309, text.encode('ascii'))
 
 
 def audit_group(native, serial, syscall, *, pid, ppid, exit_code=0,
@@ -614,7 +622,7 @@ def audit_group(native, serial, syscall, *, pid, ppid, exit_code=0,
     return [native.message('AUDIT', audit_event(
                 serial, syscall, pid=pid, ppid=ppid, exit_code=exit_code,
                 success=success, argument0=argument0)),
-            native.message('AUDIT', topology._event_nlmsg(1327, 0, (
+            native.message('AUDIT', audit_nlmsg(1327, (
                 'audit(1.000:%d): proctitle=6368726F6D65' % serial).encode('ascii'))),
             native.message('AUDIT', audit_eoe(serial))]
 
@@ -630,13 +638,13 @@ def exec_group(native, serial, *, pid, ppid, syscall=221, name=None, argv0=None,
     rows = [audit_event(serial, syscall, pid=pid, ppid=ppid, items=2)]
     if execve:
         rows.append(audit_execve(serial, (argv0, '--headless')))
-    rows.append(topology._event_nlmsg(1307, 0, (
+    rows.append(audit_nlmsg(1307, (
         'audit(1.000:%d): cwd="/"' % serial).encode('ascii')))
     if paths:
         rows.append(audit_path(serial, name=name, inode=inode, dev=dev, nametype=nametype))
         rows.append(audit_path(serial, name='/lib/ld-linux-aarch64.so.1', item=1,
                                inode=interpreter_inode, dev=interpreter_dev))
-    rows.append(topology._event_nlmsg(1327, 0, (
+    rows.append(audit_nlmsg(1327, (
         'audit(1.000:%d): proctitle=6368726F6D65' % serial).encode('ascii')))
     rows.append(audit_eoe(serial))
     return [native.message('AUDIT', row) for row in rows]
@@ -647,13 +655,13 @@ def audit_sockaddr(serial, family='inet'):
               'inet6': '0a000c3800000000000000000000000000000001',
               'unix': '01002f72756e2f6261642e736f636b00'}
     text = ('audit(1.000:%d): saddr=%s' % (serial, values[family])).encode('ascii')
-    return topology._event_nlmsg(1306, 0, text)
+    return audit_nlmsg(1306, text)
 
 
 def audit_aux(serial, kind=1302, size=0):
     text = ('audit(1.000:%d): item=0 name="/fixed" ' % serial).encode('ascii')
     text += b'x' * size
-    return topology._event_nlmsg(kind, 0, text)
+    return audit_nlmsg(kind, text)
 
 
 _SELECTOR_KINDS = ('PROXY_STOP_SELECTOR', 'PROXY_CONNECT_SELECTOR')
@@ -931,8 +939,7 @@ class TopologyTests(unittest.TestCase):
             owner, native, _ = self.install_events()
             native.events += [native.message('AUDIT', audit_event(7, syscall=200)),
                               native.message('AUDIT', audit_sockaddr(7, endpoint)),
-                              native.message('AUDIT', topology._event_nlmsg(
-                                  1320, 0, b'audit(1.000:7): end'))]
+                              native.message('AUDIT', audit_nlmsg(1320, b'audit(1.000:7): end'))]
             with self.subTest(endpoint=endpoint), self.assertRaisesRegex(
                     topology.TopologyError, '^EVENT_DRIFT$'):
                 owner.barrier()
@@ -976,8 +983,7 @@ class TopologyTests(unittest.TestCase):
                 serial, syscall=syscall, exit_code=700 if syscall in (220, 435) else 0))]
             if syscall == 200:
                 rows.append(native.message('AUDIT', audit_sockaddr(serial, 'inet')))
-            rows.append(native.message('AUDIT', topology._event_nlmsg(
-                1320, 0, ('audit(1.000:%d): end' % serial).encode('ascii'))))
+            rows.append(native.message('AUDIT', audit_nlmsg(1320, ('audit(1.000:%d): end' % serial).encode('ascii'))))
             native.events.extend(rows)
             if syscall == 93:
                 # P58: exit ends one thread of an attributed role (pid= is the
@@ -993,8 +999,7 @@ class TopologyTests(unittest.TestCase):
                       'nonzero-return'):
             owner, native, _ = self.install_events(); serial = 80
             if fault == 'missing-pid':
-                raw = topology._event_nlmsg(1300, 0,
-                    b'audit(1.000:80): arch=c00000b7 syscall=40 success=yes exit=0 a0=0 '
+                raw = audit_nlmsg(1300, b'audit(1.000:80): arch=c00000b7 syscall=40 success=yes exit=0 a0=0 '
                     b'a1=0 a2=0 a3=0 items=0 ppid=1')
             else:
                 raw = audit_event(serial, syscall=200 if fault == 'missing-sockaddr' else 40,
@@ -1005,17 +1010,14 @@ class TopologyTests(unittest.TestCase):
             native.events.append(native.message('AUDIT', raw))
             if fault == 'duplicate-syscall':
                 native.events.append(native.message('AUDIT', raw))
-            native.events.append(native.message('AUDIT', topology._event_nlmsg(
-                1320, 0, b'audit(1.000:80): end')))
+            native.events.append(native.message('AUDIT', audit_nlmsg(1320, b'audit(1.000:80): end')))
             with self.subTest(fault=fault), self.assertRaisesRegex(
                     topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
                 owner.barrier()
         owner, native, _ = self.install_events()
-        native.events.extend((native.message('AUDIT', topology._event_nlmsg(
-            1300, 0, b'audit(1.000:81): arch=c00000b7 syscall=40 success=no '
+        native.events.extend((native.message('AUDIT', audit_nlmsg(1300, b'audit(1.000:81): arch=c00000b7 syscall=40 success=no '
                        b'exit=-1 a0=0 a1=0 a2=0 a3=0 items=0 ppid=1 pid=500')),
-            native.message('AUDIT', topology._event_nlmsg(
-                1320, 0, b'audit(1.000:81): end'))))
+            native.message('AUDIT', audit_nlmsg(1320, b'audit(1.000:81): end'))))
         self.assertEqual(owner.barrier().binding, event_binding())
 
     def test_v1_audit_stream_demux_and_fence_records_precede_checkpoint(self):
@@ -1025,8 +1027,7 @@ class TopologyTests(unittest.TestCase):
                 if request == 'HEALTH' and not getattr(self, 'injected', False):
                     self.injected = True
                     values[0:0] = [self.message('AUDIT', audit_event(90, syscall=40)),
-                        self.message('AUDIT', topology._event_nlmsg(
-                            1320, 0, b'audit(1.000:90): end'))]
+                        self.message('AUDIT', audit_nlmsg(1320, b'audit(1.000:90): end'))]
                 return tuple(values)
         with self.assertRaisesRegex(topology.TopologyError,
                                     '^(EVENT_DRIFT|EVENT_SOURCE_TERMINAL)$'):
@@ -1035,8 +1036,7 @@ class TopologyTests(unittest.TestCase):
         class FenceArrival(EventNative):
             def delivery_barrier(self, owners, wakeup, selector):
                 rows = (self.message('AUDIT', audit_event(91, syscall=40)),
-                        self.message('AUDIT', topology._event_nlmsg(
-                            1320, 0, b'audit(1.000:91): end')))
+                        self.message('AUDIT', audit_nlmsg(1320, b'audit(1.000:91): end')))
                 return topology.qualify_offline_fence_records(rows, True)
         owner, _, _ = self.install_events(FenceArrival())
         with self.assertRaisesRegex(topology.TopologyError,
@@ -1298,8 +1298,7 @@ class TopologyTests(unittest.TestCase):
             return (native.message('AUDIT', audit_event(serial, syscall,
                 pid=pid, ppid=ppid, exit_code=exit_code,
                 argument0=argument0)),
-                native.message('AUDIT', topology._event_nlmsg(
-                    1320, 0, ('audit(1.000:%d): end' % serial).encode())))
+                native.message('AUDIT', audit_nlmsg(1320, ('audit(1.000:%d): end' % serial).encode())))
 
         source, native = event_owner()
         self.assertTrue(hasattr(source, 'reserve_browser_transition'))
@@ -1308,7 +1307,7 @@ class TopologyTests(unittest.TestCase):
         source.commit_browser_transition(reservation)
         # Reservation and commit each observed the child through one bracket.
         self.assertEqual(child.reports, 4)
-        native.events.extend(group(native, 101, 220, 300, 1, 600))
+        native.events.extend(group(native, 101, 220, 300, 1, 2))
         with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
             source.barrier()
         # Task 11 (P18): no EXIT phase. The pinned-Chromium exec moves the
@@ -1405,7 +1404,7 @@ class TopologyTests(unittest.TestCase):
             source.commit_browser_transition(source.reserve_browser_transition(
                 binding, 1, browser, runtime_owners['BROWSER'], proxy_authority))
         if launch:
-            native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=600)
+            native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=2)
             native.events += exec_group(native, 102, pid=600, ppid=root)
             try:
                 source.barrier()
@@ -1454,6 +1453,88 @@ class TopologyTests(unittest.TestCase):
             with self.assertRaisesRegex(topology.TopologyError, '^AUDIT_RULES_DENIED$'):
                 self.install_events()
 
+    def test_v1_audit_unicast_framing_only_for_async_audit_records(self):
+        # P62: the registered unicast receiver gets nlmsg_len without the header
+        # (kernel/audit.c:2439, sent unrepaired at :715; only the multicast copy
+        # is repaired, :819-832). Exactly that form is accepted for asynchronous
+        # AUDIT records; replies and ROUTE keep nlmsg_len == len(data).
+        text = audit_text(7, 200, pid=500, ppid=1, success='no', exit_code=-13).encode('ascii')
+
+        def full(kind, payload, sequence=0):
+            return struct.pack('<IHHII', 16 + len(payload), kind, 0, sequence, 0) + payload
+
+        def bare(kind, payload, sequence=0):
+            return struct.pack('<IHHII', len(payload), kind, 0, sequence, 0) + payload
+
+        owner, native, _ = self.install_events()
+        native.events += [native.message('AUDIT', audit_nlmsg(1300, text)),
+                          native.message('AUDIT', audit_eoe(7))]
+        before = owner.sequence
+        self.assertEqual(self.assert_publishes(owner).sequence, before + 2)
+        faults = {
+            'audit-full-length': lambda n: [n.message('AUDIT', full(1300, text)),
+                                            n.message('AUDIT', audit_eoe(7))],
+            'audit-off-by-one': lambda n: [n.message('AUDIT', bare(1300, text)[:-1]),
+                                           n.message('AUDIT', audit_eoe(7))],
+            'route-bare-length': lambda n: [n.message('ROUTE', bare(16, b'\0' * 16))],
+        }
+        for fault, rows in faults.items():
+            owner, native, _ = self.install_events()
+            native.events += rows(native)
+            with self.subTest(fault=fault):
+                self.assert_terminal(owner)
+
+        class BareReply(EventNative):  # a reply in the unicast event form
+            def audit_health(self, owner, sequence):
+                sender, observed, raw = super().audit_health(owner, sequence)
+                return sender, observed, bare(1000, raw[16:], sequence)
+        with self.assertRaisesRegex(topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
+            self.install_events(BareReply())
+
+        for form, expected in ((audit_nlmsg, None), (lambda k, p: full(k, p), 'EVENT_SOURCE_TERMINAL')):
+            class Interleaved(EventNative):  # an async record inside a reply stream
+                def audit_request(self, owner, request, sequence, form=form):
+                    values = list(super().audit_request(owner, request, sequence))
+                    if request == 'HEALTH' and not getattr(self, 'done', False):
+                        self.done = True
+                        values[0:0] = [self.message('AUDIT', form(1300, text)),
+                                       self.message('AUDIT', form(1320, b'audit(1.000:7): '))]
+                    return tuple(values)
+            with self.subTest(interleaved=expected or 'accepted'):
+                if expected is None:
+                    owner, _, _ = self.install_events(Interleaved())
+                    self.assertEqual(self.assert_publishes(owner).generation, 1)
+                else:
+                    with self.assertRaisesRegex(topology.TopologyError, '^%s$' % expected):
+                        self.install_events(Interleaved())
+
+    def test_v1_audit_serials_unique_within_window_not_ordered(self):
+        # P63: serials are taken at the first log call and records are queued
+        # later (kernel/auditsc.c:2522-2528, kernel/audit.c:2442), so N+1 may
+        # arrive before N. A new serial is accepted once, within 1024 below the
+        # highest seen; a repeat or an older serial is terminal.
+        def group(native, serial):
+            text = audit_text(serial, 40, pid=500, ppid=1, success='no', exit_code=-1)
+            return [native.message('AUDIT', audit_nlmsg(1300, text.encode('ascii'))),
+                    native.message('AUDIT', audit_eoe(serial))]
+
+        owner, native, _ = self.install_events()
+        native.events += group(native, 8) + group(native, 7)
+        self.assertEqual(self.assert_publishes(owner).generation, 1)
+        native.events += group(native, 2000)
+        self.assertEqual(self.assert_publishes(owner).generation, 1)
+        native.events += group(native, 976)  # exactly the window
+        self.assertEqual(self.assert_publishes(owner).generation, 1)
+        native.events += group(native, 975)
+        self.assert_terminal(owner)
+        for repeat in (8, 976):
+            owner, native, _ = self.install_events()
+            native.events += group(native, 8) + group(native, 2000) + group(native, 976)
+            self.assert_publishes(owner)
+            native.events += group(native, repeat)
+            with self.subTest(repeat=repeat):
+                self.assert_terminal(owner)
+
     def test_v1_audit_lost_counter_increase_latches_terminal(self):
         owner, native, _ = self.install_events()
         self.assertEqual(self.assert_publishes(owner).lostCount, 0)
@@ -1473,22 +1554,19 @@ class TopologyTests(unittest.TestCase):
         text = audit_text(7, 200, pid=500, ppid=1, success='no', exit_code=-13)
         for flag in (4, 16):  # NLM_F_ACK, NLM_F_DUMP_INTR
             owner, native, _ = self.install_events()
-            native.events += [native.message('AUDIT', topology._event_nlmsg(
-                1300, 0, text.encode('ascii'), flags=flag)),
+            native.events += [native.message('AUDIT', audit_nlmsg(1300, text.encode('ascii'), flags=flag)),
                 native.message('AUDIT', audit_eoe(7))]
             with self.subTest(flag=flag):
                 self.assert_terminal(owner)
         owner, native, _ = self.install_events()
-        native.events += [native.message('AUDIT', topology._event_nlmsg(
-            1300, 0, text.encode('ascii'))), native.message('AUDIT', audit_eoe(7))]
+        native.events += [native.message('AUDIT', audit_nlmsg(1300, text.encode('ascii'))), native.message('AUDIT', audit_eoe(7))]
         self.assertEqual(self.assert_publishes(owner).generation, 1)
 
         class Interleaved(EventNative):
             def audit_request(self, owner, request, sequence):
                 values = list(super().audit_request(owner, request, sequence))
                 if request == 'HEALTH':
-                    values.insert(0, self.message('AUDIT', topology._event_nlmsg(
-                        1300, 0, text.encode('ascii'), flags=4)))
+                    values.insert(0, self.message('AUDIT', audit_nlmsg(1300, text.encode('ascii'), flags=4)))
                 return tuple(values)
         with self.assertRaisesRegex(topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
             self.install_events(Interleaved())
@@ -1501,7 +1579,7 @@ class TopologyTests(unittest.TestCase):
 
     def test_v1_exec_must_name_pinned_chromium_executable(self):
         source, native, root = self.browser_source()
-        native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=600)
+        native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=2)
         with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):  # E5
             source.barrier()
         self.assertEqual(source._browser_transition['phase'], 'EXEC')
@@ -1509,7 +1587,7 @@ class TopologyTests(unittest.TestCase):
         self.assertEqual(self.assert_publishes(source).generation, 1)
         self.assertEqual(source._browser_transition['phase'], 'ACTIVE')
         source, native, root = self.browser_source()
-        native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=600)
+        native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=2)
         native.events += exec_group(native, 102, pid=600, ppid=root, syscall=281)
         self.assertEqual(self.assert_publishes(source).generation, 1)
 
@@ -1527,48 +1605,91 @@ class TopologyTests(unittest.TestCase):
         }
         for fault, change in faults.items():
             source, native, root = self.browser_source()
-            native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=600)
+            native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=2)
             values = dict(pid=600, ppid=root); values.update(change)
             native.events += exec_group(native, 102, **values)
             with self.subTest(fault=fault):
                 self.assert_terminal(source)
         source, native, root = self.browser_source()
-        native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=600)
+        native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=2)
         rows = exec_group(native, 102, pid=600, ppid=root)
         rows.insert(3, native.message('AUDIT', audit_path(102)))  # two item-0 PATH records
         native.events += rows
         self.assert_terminal(source)
 
-    def test_v1_launch_exec_logged_before_root_clone_is_confirmed(self):
-        # P46 (K12): with a vfork-style spawn the launched child's exec is logged
-        # before the root's clone record. The exec of the pinned Chromium by a pid
-        # whose ppid is the root reaches ACTIVE; the later clone record confirms it.
-        source, native, root = self.browser_source()
-        native.events += exec_group(native, 101, pid=600, ppid=root)
-        self.assert_publishes(source)
-        transition = source._browser_transition
-        self.assertEqual((transition['phase'], transition['child']), ('ACTIVE', 600))
-        self.assertEqual(transition['provisional'], {600: root})
-        native.events += audit_group(native, 102, 220, pid=root, ppid=1, exit_code=600)
-        self.assert_publishes(source)
-        self.assertEqual((transition['family'], transition['provisional']), ({root, 600}, {}))
+    def test_v1_launch_exec_before_or_after_root_clone_record(self):
+        # P61 a: the launch is the first pinned exec by a non-root pid whose ppid
+        # is the root, in either order with the root's clone record. The clone's
+        # exit= (2, the child's number in the BROWSER PID namespace) is never the
+        # child's audit pid (600, initial namespace). Root clone3 records (Node
+        # threads) between commit and the exec are allowed (review M-2).
+        for order in ('exec-first', 'clone-first', 'thread-then-clone-first'):
+            source, native, root = self.browser_source()
+            if order == 'thread-then-clone-first':
+                native.events += audit_group(native, 99, 435, pid=root, ppid=1, exit_code=5)
+            if order != 'exec-first':
+                native.events += audit_group(native, 100, 220, pid=root, ppid=1, exit_code=2)
+                with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
+                    source.barrier()
+            native.events += exec_group(native, 101, pid=600, ppid=root)
+            if order == 'exec-first':
+                native.events += audit_group(native, 102, 220, pid=root, ppid=1, exit_code=2)
+            with self.subTest(order=order):
+                self.assert_publishes(source)
+                transition = source._browser_transition
+                self.assertEqual((transition['phase'], transition['child']), ('ACTIVE', 600))
+                self.assertEqual(transition['family'], {root, 600})
         faults = {
-            'not-the-root-child': [lambda n: exec_group(n, 101, pid=600, ppid=1)],
-            'grandchild-first': [lambda n: audit_group(n, 101, 435, pid=600, ppid=300, exit_code=601)],
+            'not-a-family-pid': [lambda n: exec_group(n, 101, pid=600, ppid=1)],
+            'non-root-clone-before-launch': [
+                lambda n: audit_group(n, 101, 435, pid=600, ppid=300, exit_code=3)],
             'other-binary': [lambda n: exec_group(n, 101, pid=600, ppid=300, name='/bin/sh')],
-            # 600 becomes provisional through a failed call; its child's exec is not the launch.
-            'not-a-root-child': [lambda n: audit_group(n, 100, 97, pid=600, ppid=300, success='no',
-                                                       exit_code=-1),
-                                 lambda n: exec_group(n, 101, pid=601, ppid=600)],
-            'clone-by-other-parent': [lambda n: exec_group(n, 101, pid=600, ppid=300),
-                                      lambda n: audit_group(n, 102, 220, pid=601, ppid=300,
-                                                            exit_code=600)],
+            # 600 joins through its ppid with a failed call; its child's exec has a
+            # family ppid that is not the root, so it is not the launch.
+            'grandchild-exec': [lambda n: audit_group(n, 100, 97, pid=600, ppid=300, success='no',
+                                                      exit_code=-1),
+                                lambda n: exec_group(n, 101, pid=601, ppid=600)],
+            'root-exec': [lambda n: exec_group(n, 101, pid=300, ppid=1)],
         }
         for fault, rows in faults.items():
             source, native, root = self.browser_source()
             for make in rows:
                 native.events += make(native)
             with self.subTest(fault=fault):
+                self.assert_terminal(source)
+
+    def test_v1_family_by_initial_namespace_pid_and_ppid_only(self):
+        # P61 b/c/d: a pid joins through its ppid; clone exit= values change
+        # nothing, even when they equal another process's audit pid; an orphan
+        # keeps a family ppid (its PID-namespace init); a family pid whose ppid is
+        # not a family pid is a reused pid and terminal; exit_group removes.
+        source, native, root = self.browser_source(launch=True)
+        family = source._browser_transition['family']
+        native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=3)
+        native.events += audit_group(native, 104, 435, pid=600, ppid=root, exit_code=500)
+        native.events += audit_group(native, 105, 220, pid=root, ppid=1, exit_code=600)
+        native.events += audit_group(native, 106, 51, pid=4101, ppid=600)       # child joins
+        native.events += audit_group(native, 107, 51, pid=4102, ppid=4101)      # grandchild
+        self.assertEqual(self.assert_publishes(source).generation, 1)
+        self.assertEqual(family, {root, 600, 4101, 4102})
+        # 4101 exits; its orphan 4102 reparents to the BROWSER namespace init
+        # (the root, kernel/exit.c:585-600, :690-706) and stays a member.
+        native.events += audit_group(native, 108, 94, pid=4101, ppid=600)
+        native.events += audit_group(native, 109, 51, pid=4102, ppid=root)
+        self.assertEqual(self.assert_publishes(source).generation, 1)
+        self.assertEqual(family, {root, 600, 4102})
+        # Reuse: the removed pid 4101 seen again with a non-family parent is not
+        # a member; a remaining member seen with a non-family parent is terminal.
+        for pid in (4101, 4102):
+            source, native, root = self.browser_source(launch=True)
+            native.events += audit_group(native, 103, 51, pid=4101, ppid=600)
+            native.events += audit_group(native, 104, 51, pid=4102, ppid=4101)
+            native.events += audit_group(native, 105, 94, pid=4101, ppid=600)
+            self.assert_publishes(source)
+            # A failed call adds no event, so attribution alone decides.
+            native.events += audit_group(native, 106, 97, pid=pid, ppid=1, success='no',
+                                         exit_code=-1)
+            with self.subTest(reused=pid):
                 self.assert_terminal(source)
 
     def test_v1_reserved_transition_stuck_in_clone_is_pending_then_terminal(self):
@@ -1585,7 +1706,7 @@ class TopologyTests(unittest.TestCase):
         self.assert_terminal(source)
         self.assertEqual(source.generation, 2)
         source, native, root = self.browser_source()
-        native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=600)
+        native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=2)
         for mono in range(10, 1011, 100):
             native.mono = mono
             with self.subTest(phase='EXEC', mono=mono), self.assertRaisesRegex(
@@ -1611,7 +1732,7 @@ class TopologyTests(unittest.TestCase):
             with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
                 source.barrier()
         native.mono = 370
-        native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=600)
+        native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=2)
         with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
             source.barrier()
         native.mono = 460
@@ -1626,8 +1747,8 @@ class TopologyTests(unittest.TestCase):
                 ' comm="chrome" exe="/opt/acceptance/runtime/chromium/chrome" key=(null)')
         for number in (93, 94):
             source, native, root = self.browser_source(launch=True)
-            native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=601)
-            native.events += [native.message('AUDIT', topology._event_nlmsg(1300, 0, (
+            native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=3)
+            native.events += [native.message('AUDIT', audit_nlmsg(1300, (
                 'audit(1.000:104): arch=c00000b7 syscall=%d a0=0 a1=7f00 a2=0 a3=0 items=0'
                 ' ppid=600 pid=601' % number + tail).encode('ascii'))),
                 native.message('AUDIT', audit_eoe(104))]
@@ -1645,23 +1766,21 @@ class TopologyTests(unittest.TestCase):
         }
         for fault, text in faults.items():
             source, native, root = self.browser_source(launch=True)
-            native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=601)
-            native.events += [native.message('AUDIT', topology._event_nlmsg(
-                1300, 0, text.encode('ascii'))), native.message('AUDIT', audit_eoe(104))]
+            native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=3)
+            native.events += [native.message('AUDIT', audit_nlmsg(1300, text.encode('ascii'))), native.message('AUDIT', audit_eoe(104))]
             with self.subTest(fault=fault):
                 self.assert_terminal(source)
 
     def test_v1_family_reexec_of_pinned_chromium_accepted_other_exec_terminal(self):
         source, native, root = self.browser_source(launch=True)
-        native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=601)
+        native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=3)
         native.events += exec_group(native, 104, pid=601, ppid=600)
-        # P46 order: 602's exec is logged before its parent's clone record.
+        # 602's exec is logged before its parent's clone record (K12); it joins
+        # through its ppid (P61).
         native.events += exec_group(native, 105, pid=602, ppid=601, syscall=281)
-        native.events += audit_group(native, 106, 435, pid=601, ppid=600, exit_code=602)
+        native.events += audit_group(native, 106, 435, pid=601, ppid=600, exit_code=4)
         self.assertEqual(self.assert_publishes(source).generation, 1)
-        transition = source._browser_transition
-        self.assertTrue({root, 600, 601, 602} <= transition['family'])
-        self.assertEqual((transition['provisional'], transition['exited']), ({}, {}))
+        self.assertEqual(source._browser_transition['family'], {root, 600, 601, 602})
         faults = {
             'other-binary': lambda n: exec_group(n, 107, pid=601, ppid=600, name='/bin/sh',
                                                  argv0='/bin/sh', inode=5000),
@@ -1678,7 +1797,7 @@ class TopologyTests(unittest.TestCase):
         }
         for fault, rows in faults.items():
             source, native, root = self.browser_source(launch=True)
-            native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=601)
+            native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=3)
             native.events += rows(native)
             with self.subTest(fault=fault):
                 self.assert_terminal(source)
@@ -1689,14 +1808,14 @@ class TopologyTests(unittest.TestCase):
         # name was passed; the launch itself still needs the literal path.
         for syscall in (221, 281):
             source, native, root = self.browser_source(launch=True)
-            native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=601)
+            native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=3)
             native.events += exec_group(native, 104, pid=601, ppid=600, syscall=syscall,
                                         name='/proc/self/exe', argv0='/proc/self/exe')
             with self.subTest(syscall=syscall):
                 self.assertEqual(self.assert_publishes(source).generation, 1)
         # Same name, different identity: terminal.
         source, native, root = self.browser_source(launch=True)
-        native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=601)
+        native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=3)
         native.events += exec_group(native, 104, pid=601, ppid=600, name='/proc/self/exe',
                                     argv0='/proc/self/exe', inode=5000)
         self.assert_terminal(source)
@@ -1704,29 +1823,32 @@ class TopologyTests(unittest.TestCase):
         for order in ('clone-first', 'exec-first'):
             source, native, root = self.browser_source()
             if order == 'clone-first':
-                native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=600)
+                native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=2)
             native.events += exec_group(native, 102, pid=600, ppid=root, name='/proc/self/exe',
                                         argv0='/proc/self/exe')
             with self.subTest(order=order):
                 self.assert_terminal(source)
 
     def test_v1_clone_only_from_browser_root_or_family(self):
-        # E13: the CLONE phase accepts only the root: not another role, and not a
-        # browser-family pid attributed through its ppid (P46).
+        # E13: before ACTIVE only the root clones: not another role, and not a
+        # browser-family pid that joined through its ppid (P61).
         for pid, ppid in ((500, 1), (502, 1), (503, 1), (650, 300)):
             source, native, root = self.browser_source()
-            native.events += audit_group(native, 101, 220, pid=pid, ppid=ppid, exit_code=600)
+            native.events += audit_group(native, 101, 220, pid=pid, ppid=ppid, exit_code=2)
             with self.subTest(phase='CLONE', pid=pid):
                 self.assert_terminal(source)
+        # ACTIVE: root and family clones change nothing (P61: exit= is a
+        # namespace-local number, never stored or compared), even when the
+        # number equals another process's audit pid.
         source, native, root = self.browser_source(launch=True)
-        native.events += audit_group(native, 103, 435, pid=root, ppid=1, exit_code=604)
-        native.events += audit_group(native, 104, 220, pid=600, ppid=root, exit_code=605)
+        for serial, (pid, ppid, child) in enumerate(
+                ((root, 1, 5), (600, root, 3), (600, root, 500), (600, root, 600),
+                 (600, root, 300)), 103):
+            native.events += audit_group(native, serial, 435, pid=pid, ppid=ppid, exit_code=child)
         self.assertEqual(self.assert_publishes(source).generation, 1)
-        self.assertTrue({604, 605} <= source._browser_transition['family'])
-        faults = {'controller': (500, 1, 606), 'verifier': (502, 1, 606),
-                  'proxy': (503, 1, 606), 'unattributed': (700, 1, 606),
-                  'known-role-pid': (600, root, 500), 'known-family-pid': (600, root, 600),
-                  'root-pid': (600, root, 300)}
+        self.assertEqual(source._browser_transition['family'], {root, 600})
+        faults = {'controller': (500, 1, 6), 'verifier': (502, 1, 6),
+                  'proxy': (503, 1, 6), 'unattributed': (700, 1, 6)}
         for fault, (pid, ppid, child) in faults.items():
             source, native, root = self.browser_source(launch=True)
             native.events += audit_group(native, 103, 220, pid=pid, ppid=ppid, exit_code=child)
@@ -1740,12 +1862,11 @@ class TopologyTests(unittest.TestCase):
             source, native, root = self.browser_source(launch=phase == 'ACTIVE')
             if phase == 'EXEC':
                 native.events += audit_group(native, 101, 220, pid=root, ppid=1,
-                                             exit_code=600)
+                                             exit_code=2)
             native.events += audit_group(native, 110, 94, pid=root, ppid=1)
             with self.subTest(phase=phase):
                 self.assert_terminal(source, 'BROWSER_EXITED')
-        # A family exit_group removes that process (provisional members too:
-        # test_v1_browser_sandbox_chroot_admitted_from_family_child).
+        # A family exit_group removes that process (P61 d).
         source, native, root = self.browser_source(launch=True)
         native.events += audit_group(native, 110, 94, pid=600, ppid=root)
         self.assertEqual(self.assert_publishes(source).generation, 1)
@@ -1758,7 +1879,7 @@ class TopologyTests(unittest.TestCase):
             source, native, root = self.browser_source(launch=phase == 'ACTIVE')
             if phase == 'EXEC':
                 native.events += audit_group(native, 101, 220, pid=root, ppid=1,
-                                             exit_code=600)
+                                             exit_code=2)
             native.events += audit_group(native, 110, 93, pid=root, ppid=1)
             with self.subTest(phase=phase):
                 if phase == 'ACTIVE':
@@ -1770,29 +1891,28 @@ class TopologyTests(unittest.TestCase):
                 self.assertIn(root, source._browser_transition['family'])
         source, native, root = self.browser_source(launch=True)
         native.events += audit_group(native, 111, 93, pid=600, ppid=root)
-        native.events += audit_group(native, 112, 93, pid=602, ppid=600)  # P46 provisional
-        native.events += audit_group(native, 113, 93, pid=500, ppid=1)    # another role's thread
+        native.events += audit_group(native, 112, 93, pid=4102, ppid=600)  # joins via ppid
+        native.events += audit_group(native, 113, 93, pid=500, ppid=1)     # another role's thread
         self.assertEqual(self.assert_publishes(source).generation, 1)
         transition = source._browser_transition
-        self.assertIn(600, transition['family'])
-        self.assertEqual((transition['provisional'], transition['exited']), ({602: 600}, {}))
-        # The provisional member's exit_group then removes it (P46).
-        native.events += audit_group(native, 114, 94, pid=602, ppid=600)
+        self.assertEqual(transition['family'], {root, 600, 4102})
+        # Its exit_group then removes it (P61 d).
+        native.events += audit_group(native, 114, 94, pid=4102, ppid=600)
         self.assertEqual(self.assert_publishes(source).generation, 1)
-        self.assertEqual((transition['provisional'], transition['exited']), ({}, {602: 600}))
+        self.assertEqual(transition['family'], {root, 600})
         owner, native, _ = self.install_events()  # no transition
         native.events += audit_group(native, 115, 93, pid=500, ppid=1)
         self.assertEqual(self.assert_publishes(owner).generation, 1)
 
     def test_v1_browser_sandbox_unshare_newuser_admitted_after_exec(self):
         source, native, root = self.browser_source()
-        native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=600)
+        native.events += audit_group(native, 101, 220, pid=root, ppid=1, exit_code=2)
         native.events += exec_group(native, 102, pid=600, ppid=root)
         self.assert_publishes(source)
         before = source.sequence
         native.events += audit_group(native, 103, 97, pid=600, ppid=root,
                                      argument0='10000000')
-        native.events += audit_group(native, 104, 220, pid=600, ppid=root, exit_code=601)
+        native.events += audit_group(native, 104, 220, pid=600, ppid=root, exit_code=3)
         native.events += audit_group(native, 105, 97, pid=601, ppid=600,
                                      argument0='10000000')
         checkpoint = self.assert_publishes(source)
@@ -1803,22 +1923,20 @@ class TopologyTests(unittest.TestCase):
 
     def test_v1_browser_sandbox_chroot_admitted_from_family_child(self):
         source, native, root = self.browser_source(launch=True)
-        native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=601)
+        native.events += audit_group(native, 103, 220, pid=600, ppid=root, exit_code=3)
         native.events += audit_group(native, 104, 51, pid=601, ppid=600)
         self.assertEqual(self.assert_publishes(source).generation, 1)
-        # P46 vfork order (K12): the helper's chroot and exit are logged before
-        # its parent's clone record.
+        # Vfork order (K12): the helper's chroot and exit are logged before its
+        # parent's clone record, whose exit= (4) is namespace-local (P61).
         native.events += audit_group(native, 105, 51, pid=602, ppid=601)
         native.events += audit_group(native, 106, 94, pid=602, ppid=601)
-        native.events += audit_group(native, 107, 220, pid=601, ppid=600, exit_code=602)
+        native.events += audit_group(native, 107, 220, pid=601, ppid=600, exit_code=4)
         before = source.sequence
         checkpoint = self.assert_publishes(source)
         self.assertEqual(checkpoint.sequence, before + 4)
-        transition = source._browser_transition
-        self.assertNotIn(602, transition['family'])
-        self.assertEqual((transition['provisional'], transition['exited']), ({}, {}))
-        # The consumed clone record did not re-add 602: a later record from it
-        # whose parent is not a family pid is terminal.
+        self.assertEqual(source._browser_transition['family'], {root, 600, 601})
+        # The clone record did not re-add 602: a later record from that pid whose
+        # parent is not a family pid is terminal.
         native.events += audit_group(native, 108, 51, pid=602, ppid=1)
         self.assert_terminal(source)
 
@@ -1827,7 +1945,7 @@ class TopologyTests(unittest.TestCase):
             source, native, root = self.browser_source(commit=commit, launch=launch)
             if clone:
                 native.events += audit_group(native, 101, 220, pid=root, ppid=1,
-                                             exit_code=600)
+                                             exit_code=2)
             native.events += rows(native)
             return source
 

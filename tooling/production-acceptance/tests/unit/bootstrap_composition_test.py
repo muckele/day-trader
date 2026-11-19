@@ -878,8 +878,10 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     if self.launch:
                         root=self.roles._handoffs['BROWSER'].attestation.pid
                         native=self.event_native
+                        # P61: the clone's exit= is the child's number in the
+                        # BROWSER PID namespace (2), never its audit pid.
                         native.events+=topology_fixture.audit_group(
-                            native,9001,220,pid=root,ppid=1,exit_code=root+100)
+                            native,9001,220,pid=root,ppid=1,exit_code=2)
                         native.events+=topology_fixture.exec_group(
                             native,9002,pid=root+100,ppid=root)
                     result_action='STARTED';result_payload={key:payload[key] for key in
@@ -1115,7 +1117,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
     def deliver_launch(h):
         """The kernel's records of the worker's launch: root clone, pinned exec."""
         root=h.roles._handoffs['BROWSER'].attestation.pid;native=h.event_native
-        native.events+=topology_fixture.audit_group(native,9001,220,pid=root,ppid=1,exit_code=root+100)
+        native.events+=topology_fixture.audit_group(native,9001,220,pid=root,ppid=1,exit_code=2)
         native.events+=topology_fixture.exec_group(native,9002,pid=root+100,ppid=root)
 
     def test_v1_launch_records_after_started_within_bound_succeed(self):

@@ -236,7 +236,7 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(sorted(EVENT_LITERAL_IDS - both), [])
         for ident in sorted(both):
             self.assertEqual(coverage[ident], reference[ident], ident)
-        for name in ('RTM_DELLINK', 'RTM_DELADDR', 'RTM_DELROUTE'):
+        for name in ('RTM_DELLINK', 'RTM_DELADDR', 'RTM_DELROUTE', 'NLMSG_HDRLEN'):
             self.assertNotIn(name, coverage)
             self.assertEqual(R13_LITERALS[name][0], reference[name], name)
 
@@ -413,6 +413,11 @@ R13_LITERALS = {
                         'enumerator after RTM_NEWADDR = 20 at :37'),
     'RTM_DELROUTE': (25, 'R13 (P57): linux-6.8/include/uapi/linux/rtnetlink.h:46 RTM_DELROUTE is the implicit '
                          'enumerator after RTM_NEWROUTE = 24 at :44'),
+    # Task 11 fix round 1 (P62): a layout value the deriver does not evaluate (sizeof); it also equals the committed
+    # event reference record NLMSG_HDRLEN (CoverageTests).
+    'NLMSG_HDRLEN': (16, 'R13 (P62): linux-6.8/include/uapi/linux/netlink.h:100 NLMSG_HDRLEN is '
+                         'NLMSG_ALIGN(sizeof(struct nlmsghdr)); struct nlmsghdr at :52-58 is __u32, __u16, __u16, '
+                         '__u32, __u32 (16 bytes, already a multiple of NLMSG_ALIGNTO 4 at :98)'),
 }
 # Task 10: literals of the guest probe catalogue that are probe choices, not ABI values. They are named only at
 # PROBE_FILE syscall sites and struct calls (never by build_filter, so POLICY_VALUES is unchanged).
@@ -879,7 +884,7 @@ class CodeBindingTests(unittest.TestCase):
     sockaddr_vm, sockaddr_in, sockaddr_in6 and the capset header and data: recorded with a justification each in
     LAYOUT_LITERALS, Task 10), the LP64 data model (sizeof long/pointer, 64-bit syscall registers),
     socket_state SS_* values (implicit enumerators; TCP_LISTEN and RTM_DELLINK/RTM_DELADDR/RTM_DELROUTE likewise,
-    bound only through R13_LITERALS, ruling P34),
+    bound only through R13_LITERALS, ruling P34; NLMSG_HDRLEN, a sizeof, likewise, ruling P62),
     and kernel text formats and behaviour (procfs field positions and number bases, the audit record text, inotify
     watch descriptor numbering, syscall success return values).
     """
@@ -1532,6 +1537,13 @@ class CodeBindingTests(unittest.TestCase):
                        'BootstrapEventOwner._verify_health_and_rules', ast.BinOp)
                        if isinstance(n.op, ast.BitAnd) and ast.unparse(n.left) == 'flags']
         self.assertEqual(multi_masks, [multi])
+        # P62: the netlink header length is one named constant; the framing helpers spell no 16.
+        self.assertEqual(_eval_int(self.module_assign('_NLMSG_HDRLEN')), self.resolve('NLMSG_HDRLEN'))
+        for qual in ('_event_nlmsg', '_event_header', '_parse_event_nlmsg'):
+            fn = self.nodes('topology.py', qual, ast.FunctionDef)
+            self.assertEqual(len(fn), 1, qual)
+            self.assertNotIn(self.resolve('NLMSG_HDRLEN'), _int_constants(fn[0]), qual)
+            self.assertIn('_NLMSG_HDRLEN', {n.id for n in ast.walk(fn[0]) if isinstance(n, ast.Name)}, qual)
         # R17 C4: the record arch is the kernel's lowercase %x of AUDIT_ARCH_AARCH64.
         arch = [n for n in self.nodes('topology.py', 'BootstrapEventOwner._audit_record', ast.Compare)
                 if ast.unparse(n.left) == "fields.get('arch')"]

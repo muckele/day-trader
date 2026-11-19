@@ -324,6 +324,14 @@ _SANDBOX_UNSHARE_FLAGS = 0x10000000
 # value holds a space. a0 is " a0=%lx": lowercase hex, no 0x, no leading zero
 # (lib/vsprintf.c), at most 16 digits on LP64. PATH inode is %lu and dev is
 # %02x:%02x of the kernel MAJOR/MINOR.
+# P62: NLMSG_ALIGN(sizeof(struct nlmsghdr)), include/uapi/linux/netlink.h:100
+# (struct nlmsghdr at :52-58 is two u32, two u16 and a u32: 16 bytes).
+_NLMSG_HDRLEN = 16
+# P63: audit serials are unique, not ordered (audit_serial, kernel/audit.c:
+# 1829-1834, taken at the first audit_log_start, kernel/auditsc.c:2522-2528;
+# the record is queued only at audit_log_end, kernel/audit.c:2442). A new group
+# may start below the highest serial seen, within this window, never twice.
+_AUDIT_SERIAL_WINDOW = 1024
 _AUDIT_FIELD = re.compile(r'(?:^| )([A-Za-z_][A-Za-z0-9_]*)=([^ ]+)')
 _AUDIT_A0 = re.compile(r'0|[1-9a-f][0-9a-f]{0,15}')
 _AUDIT_INODE = re.compile(r'[1-9][0-9]{0,19}')
@@ -353,17 +361,27 @@ def _event_nlmsg(kind, sequence, payload, *, flags=0):
             or type(flags) is not int or not 0 <= flags <= 65535
             or type(payload) is not bytes or len(payload) > 65520):
         _fail('EVENT_RECORD_DENIED')
-    return struct.pack('<IHHII', 16 + len(payload), kind, flags,
+    return struct.pack('<IHHII', _NLMSG_HDRLEN + len(payload), kind, flags,
                        sequence, 0) + payload
 
 
-def _parse_event_nlmsg(data):
-    if type(data) is not bytes or not 16 <= len(data) <= 65536:
+def _event_header(data):
+    if type(data) is not bytes or not _NLMSG_HDRLEN <= len(data) <= 65536:
         _fail('EVENT_RECORD_DENIED')
-    length, kind, flags, sequence, pid = struct.unpack_from('<IHHII', data)
-    if length != len(data) or length < 16 or pid != 0:
+    return struct.unpack_from('<IHHII', data)
+
+
+def _parse_event_nlmsg(data, *, audit_unicast=False):
+    """One netlink message. Strict nlmsg_len == len(data) for replies, ROUTE
+    and any multicast copy. P62: an asynchronous AUDIT record on the unicast
+    receiver path carries nlmsg_len = skb->len - NLMSG_HDRLEN
+    (kernel/audit.c:2439, sent unrepaired at :715; only the multicast copy is
+    repaired, :819-832), so exactly nlmsg_len + NLMSG_HDRLEN == len(data)."""
+    length, kind, flags, sequence, pid = _event_header(data)
+    whole = length + _NLMSG_HDRLEN if audit_unicast else length
+    if whole != len(data) or pid != 0:
         _fail('EVENT_RECORD_DENIED')
-    return kind, flags, sequence, data[16:]
+    return kind, flags, sequence, data[_NLMSG_HDRLEN:]
 
 
 @dataclass(frozen=True, slots=True)
@@ -494,7 +512,7 @@ class BootstrapEventOwner:
         self._pending_count, self._pending_bytes = 0, 0
         self._audit_sequence, self._lost, self._last_health = 0, None, None
         self._audit_pids = dict(self._port.audit_role_pids)
-        self._last_audit_serial = 0
+        self._highest_audit_serial, self._seen_audit_serials = 0, set()
         self._uevent_sequence = None
         self._drift = False
         self._last_clock = None
@@ -602,12 +620,18 @@ class BootstrapEventOwner:
             if source != 'AUDIT' or flags != 0:
                 self._terminate(failure_code)
             try:
-                kind, message_flags, message_sequence, payload = _parse_event_nlmsg(raw)
+                message_sequence = _event_header(raw)[3]
             except TopologyError:
                 self._terminate(failure_code)
             if message_sequence == 0:
+                # An asynchronous audit record interleaved with the replies (P62:
+                # unicast framing, parsed by _audit_record).
                 self._record(value)
                 continue
+            try:
+                kind, message_flags, message_sequence, payload = _parse_event_nlmsg(raw)
+            except TopologyError:
+                self._terminate(failure_code)
             total += len(raw)
             if (message_sequence != sequence or sender != 0
                     or type(observed) is not int or total > 65536):
@@ -749,35 +773,37 @@ class BootstrapEventOwner:
                 self._terminate('EVENT_SOURCE_TERMINAL')
             reservation._used = True
             root = reservation._handoff.attestation.pid
-            # Grammar CLONE -> EXEC -> ACTIVE (CB-I4). 'family' holds the root
-            # and the confirmed descendants; 'provisional' maps a pid first
-            # attributed through its ppid (P46) to that ppid; 'exited' maps a
-            # provisional pid that exited before its parent's clone record.
+            # Grammar CLONE -> EXEC -> ACTIVE (CB-I4). P61: 'family' holds only
+            # initial-namespace pids from audit pid=/ppid= (kernel/audit.c:
+            # 2257-2261): the root and every pid first seen with a family ppid.
             self._browser_transition = {
                 'phase': 'CLONE', 'root': root, 'child': None,
-                'family': {root}, 'provisional': {}, 'exited': {},
-                'committed': now,
+                'family': {root}, 'committed': now,
             }
 
     def _attribute(self, pid, ppid):
-        """Original role by pid; after commit the BROWSER family by pid, or (P46)
-        an unknown pid whose ppid is a family pid, as a provisional member."""
+        """P61: an original role by pid; after commit the BROWSER family by
+        initial-namespace pid=/ppid= only. An unknown pid whose ppid is a family
+        pid joins the family. A family pid (not the root) whose ppid is not a
+        family pid is terminal: genuine members keep a family ppid, because an
+        orphan reparents to a live thread of its parent, a subreaper in the same
+        PID namespace or the namespace's child reaper (kernel/exit.c:585-600,
+        :623-655, :690-706), and each of those is a family pid. So this catches
+        a pid reused by a non-family process. Any other unknown pid is terminal."""
         role = self._audit_pids.get(pid)
         if role is not None:
             return role
         transition = self._browser_transition
-        if transition is not None and pid not in transition['exited']:
-            if pid in transition['family'] or pid in transition['provisional']:
+        if transition is not None:
+            family = transition['family']
+            if pid in family:
+                if ppid not in family:
+                    self._terminate('EVENT_SOURCE_TERMINAL')
                 return 'BROWSER'
-            if ppid in transition['family'] or ppid in transition['provisional']:
-                transition['provisional'][pid] = ppid
+            if ppid in family:
+                family.add(pid)
                 return 'BROWSER'
         self._terminate('EVENT_SOURCE_TERMINAL')
-
-    def _known_pid(self, pid):
-        transition = self._browser_transition
-        return (pid in self._audit_pids or pid in transition['family']
-                or pid in transition['provisional'] or pid in transition['exited'])
 
     def _execs_pinned_chromium(self, group, *, launch):
         """EXEC evidence (P59). The executable is AUDIT_PATH item 0: execve and
@@ -790,9 +816,9 @@ class BootstrapEventOwner:
         interpreter is a later name (fs/binfmt_elf.c:893 open_exec ->
         getname_kernel, fs/exec.c:968 -> audit_getname, fs/namei.c:253), and
         items are numbered in that order (kernel/auditsc.c:1803-1807). Item 0
-        must carry the retained identity. The launch (EXEC, or the P46 exec-first
-        launch) also names confinement.CHROME literally in the PATH item and in
-        the EXECVE argv[0]; a family re-exec in ACTIVE may pass any name."""
+        must carry the retained identity. The launch (before ACTIVE, P61 a) also
+        names confinement.CHROME literally in the PATH item and in the EXECVE
+        argv[0]; a family re-exec in ACTIVE may pass any name."""
         paths = [row for row in group['paths'] if row.get('item') == '0']
         execves = [row for row in group['execves'] if 'argc' in row]
         if len(paths) != 1 or len(execves) != 1:
@@ -823,72 +849,41 @@ class BootstrapEventOwner:
             self._terminate('EVENT_SOURCE_TERMINAL')
         number, pid, phase = syscall['number'], syscall['pid'], transition['phase']
         root, family = transition['root'], transition['family']
-        provisional, exited = transition['provisional'], transition['exited']
         # E13: only the browser root or its family may clone, exec or exit here.
-        if (syscall['role'] != 'BROWSER'
-                or (pid not in family and pid not in provisional)):
+        if syscall['role'] != 'BROWSER' or pid not in family:
             self._terminate('EVENT_SOURCE_TERMINAL')
         if number == 94:
             # P18/P58: the root's exit_group is terminal; there is no EXIT
-            # phase. A family exit_group removes that process.
+            # phase. A family exit_group removes that process (P61 d).
             if pid == root:
                 self._terminate('BROWSER_EXITED')
             if phase != 'ACTIVE':
                 self._terminate('EVENT_SOURCE_TERMINAL')
-            if pid in provisional:
-                exited[pid] = provisional.pop(pid)
-            else:
-                family.discard(pid)
+            family.discard(pid)
             return
         if number in (220, 435):
-            child = syscall['exit']
+            # P61: exit= is the child's number in the caller's PID namespace
+            # (kernel_clone returns pid_vnr, kernel/fork.c:2915, kernel/pid.c:
+            # 489-491), never an audit pid, so it is never stored or compared.
+            # Before ACTIVE only the root clones (Node threads included).
+            if phase != 'ACTIVE' and pid != root:
+                self._terminate('EVENT_SOURCE_TERMINAL')
             if phase == 'CLONE':
-                if pid != root or self._known_pid(child):
-                    self._terminate('EVENT_SOURCE_TERMINAL')
-                transition['child'] = child
-                family.add(child)
                 transition['phase'] = 'EXEC'
-                return
-            if phase != 'ACTIVE':
-                self._terminate('EVENT_SOURCE_TERMINAL')
-            if child in provisional:
-                # P46: the parent's later clone record confirms its child.
-                if provisional[child] != pid:
-                    self._terminate('EVENT_SOURCE_TERMINAL')
-                family.add(child)
-                del provisional[child]
-                return
-            if child in exited:
-                # P46: the child already exited; its record is consumed and
-                # the pid is never re-added.
-                if exited[child] != pid:
-                    self._terminate('EVENT_SOURCE_TERMINAL')
-                del exited[child]
-                return
-            if self._known_pid(child):
-                self._terminate('EVENT_SOURCE_TERMINAL')
-            family.add(child)
             return
         if number in (221, 281):
-            if not self._execs_pinned_chromium(group, launch=phase != 'ACTIVE'):
+            if (not self._execs_pinned_chromium(group, launch=phase != 'ACTIVE')
+                    or pid == root):
                 self._terminate('EVENT_SOURCE_TERMINAL')
-            if phase == 'CLONE':
-                # P46 order: the launched child's exec is logged before the
-                # root's clone record; the clone record confirms it later.
-                if pid not in provisional or syscall['ppid'] != root:
+            if phase != 'ACTIVE':
+                # P61 a: the launch is the first pinned exec by a non-root pid
+                # whose ppid is the root, before or after the root's clone record.
+                if syscall['ppid'] != root:
                     self._terminate('EVENT_SOURCE_TERMINAL')
                 transition['child'] = pid
                 transition['phase'] = 'ACTIVE'
-                return
-            if phase == 'EXEC':
-                if pid != transition['child'] or syscall['ppid'] != root:
-                    self._terminate('EVENT_SOURCE_TERMINAL')
-                transition['phase'] = 'ACTIVE'
-                return
             # ACTIVE (P59): a family re-exec of the pinned Chromium identity,
             # by any name (Chromium execs /proc/self/exe); never the root.
-            if pid == root:
-                self._terminate('EVENT_SOURCE_TERMINAL')
             return
         self._terminate('EVENT_SOURCE_TERMINAL')
 
@@ -905,7 +900,10 @@ class BootstrapEventOwner:
                          and syscall['argument0'] == _SANDBOX_UNSHARE_FLAGS)))
 
     def _audit_record(self, raw, observed):
-        kind, flags, sequence, payload = _parse_event_nlmsg(raw)
+        # A malformed record latches the source terminal (it used to raise
+        # EVENT_RECORD_DENIED without latching).
+        try: kind, flags, sequence, payload = _parse_event_nlmsg(raw, audit_unicast=True)
+        except TopologyError: self._terminate('EVENT_SOURCE_TERMINAL')
         if flags & (16 | 4) or sequence != 0:
             self._terminate('EVENT_SOURCE_TERMINAL')
         try: text = payload.decode('ascii')
@@ -952,9 +950,18 @@ class BootstrapEventOwner:
         if kind not in (1300, 1302, 1305, 1306, 1307, 1309, 1327):
             self._terminate('EVENT_SOURCE_TERMINAL')
         if serial not in self._pending_groups:
-            if serial <= self._last_audit_serial:
+            # P63: a group serial is new exactly once, within the window below
+            # the highest serial seen; a repeat or an older serial is terminal.
+            highest = self._highest_audit_serial
+            if (serial in self._seen_audit_serials
+                    or highest - serial > _AUDIT_SERIAL_WINDOW):
                 self._terminate('EVENT_SOURCE_TERMINAL')
-            self._last_audit_serial = serial
+            self._seen_audit_serials.add(serial)
+            if serial > highest:
+                self._highest_audit_serial = serial
+                floor = serial - _AUDIT_SERIAL_WINDOW
+                self._seen_audit_serials = {
+                    seen for seen in self._seen_audit_serials if seen >= floor}
         group = self._pending_groups.setdefault(serial, {
             'first': observed, 'events': set(), 'count': 0, 'bytes': 0,
             'syscalls': [], 'sockaddrs': [], 'paths': [], 'execves': []})
@@ -1033,7 +1040,8 @@ class BootstrapEventOwner:
         if sender != 0: self._terminate('EVENT_SOURCE_TERMINAL')
         if source == 'AUDIT': self._audit_record(raw, observed); return
         if source == 'ROUTE':
-            kind, _, sequence, payload = _parse_event_nlmsg(raw)
+            try: kind, _, sequence, payload = _parse_event_nlmsg(raw)
+            except TopologyError: self._terminate('EVENT_SOURCE_TERMINAL')
             if kind not in (16, 17, 20, 21, 24, 25) or not payload:
                 self._terminate('EVENT_SOURCE_TERMINAL')
             # Multicast sequence zero is normal and nonzero is not treated as
