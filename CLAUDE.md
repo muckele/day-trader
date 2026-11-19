@@ -132,17 +132,18 @@ From the status handoff, plus local evidence checked on 2026-11-14:
     - Re-estimate: 2–4+ weeks of remediation before Stage 2, for a Path A total of roughly 6–10+ weeks.
   - **Owner decision, 2026-11-17: continue Path A** ("Continue Path A"), after being shown the 6–10+ week re-estimate and a recommendation to switch to Path B.
   - **Proposed design decisions E1–E7:** `docs/STAGE1_REMEDIATION_DECISIONS.md` on the Stage 1 branch (`2495ffa`). Status PROPOSED. **Approved 2026-11-17** ("Approve all"). Remediation plan: `docs/superpowers/plans/2026-11-17-stage1-remediation.md` on the Stage 1 branch: 18 tasks, rough estimate ≈ 40 working days, above the earlier 2–4+ weeks.
-  - **Remediation in progress** (owner: "Start, subagent-driven", 2026-11-18). Ledger: `$RM_EVIDENCE/progress.md`, under `~/day-trader-evidence/production-acceptance-tooling/20261117T002012Z-stage1/remediation-shhzhEl6/`. A pre-flight scan found 33 plan conflicts; rulings P1–P39 are in the ledger.
-    - **Done locally, each independently reviewed clean:** Tasks 1–6, `8f979c8..05488a4`, not pushed:
+  - **Remediation in progress** (owner: "Start, subagent-driven", 2026-11-18). Ledger: `$RM_EVIDENCE/progress.md`, under `~/day-trader-evidence/production-acceptance-tooling/20261117T002012Z-stage1/remediation-shhzhEl6/`. A pre-flight scan found 33 plan conflicts; rulings P1–P41 are in the ledger.
+    - **Done locally, each independently reviewed clean:** Tasks 1–6, `8f979c8..35daf35`, not pushed:
       - contract;
       - cleanup budget (E7);
       - host challenge and keys (E2);
       - topology predicates and IPv6 kernel rows;
       - proxy CONNECT and per-tunnel closes;
       - vsock challenge-response (E3).
-    - **Stopped at Task 6 (R7).** Waiting for the owner to accept the reviewed M2 broker diff (`d5c1a4b..05488a4`, `EgressBroker.swift`) and to decide the lane model:
-      - The broker's 16 fixed relay lanes retire one lane per ordinary guest tunnel end, so the 16th such end stops a run.
-      - Recommendation: redesign now to one lane per guest vsock connection.
+    - **Lane redesign done** (owner: "Redesign lanes now", 2026-11-18). Rulings P40/P41; commits `61c29bd`, `29c0fe8`, `35daf35`; independently reviewed clean after one fix round.
+      - The 16 relay pipe pairs are now reusable lanes, one guest vsock connection at a time, framed in launcher-authored records (OPEN/DATA/END). Ordinary tunnel ends no longer retire a lane.
+      - The real launcher side is Stage 2 work, bound by contract C10 obligations (a)–(e).
+    - **Stopped at Task 6 (R7), second time.** Waiting for the owner to accept the reviewed M2 broker diff `d5c1a4b..35daf35` (`EgressBroker.swift`). Owner summary: top of `task-6-report.md` in the plan workspace (copy in `$RM_EVIDENCE`). Tasks 7–18 start after acceptance.
 
 ### Next sequence when Day Trader resumes
 
