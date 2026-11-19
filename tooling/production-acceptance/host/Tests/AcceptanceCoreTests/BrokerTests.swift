@@ -1819,3 +1819,17 @@ extension BrokerTests {
         do { _ = try await first.stream.write(Data([9])); Issue.record("Old stream wrote into the next one") } catch { #expect(error as? BrokerFailure == .terminal) }
     }
 }
+
+// Fix round 3 (controller ruling M-6): relay supervision keeps a fail-closed backstop.
+extension BrokerTests {
+    @Test(.timeLimit(.minutes(1))) func run_relays_with_no_lanes_fails_run_transport() async throws {
+        // Lanes never retire (P40), so a lane task ends only by failing the run. If every lane task
+        // still returns, here because there are none, supervision fails the run as transport rather
+        // than return normally.
+        let h = try Harness()
+        do { try await BrokerExecutable.runRelays(broker: h.broker, physical: [], nonces: CountingBrokerNonces()); Issue.record("Relay supervision returned normally") }
+        catch { #expect(error as? BrokerFailure == .transport) }
+        do { _ = try await h.broker.accept(control: control(), stream: MemoryStream()); Issue.record("The run went on without relay supervision") }
+        catch { #expect(error as? BrokerFailure == .terminal) }
+    }
+}

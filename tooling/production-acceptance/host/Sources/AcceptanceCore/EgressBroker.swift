@@ -1225,6 +1225,11 @@ public enum BrokerExecutable {
                 await broker.fail(error as? BrokerFailure ?? .transport)
                 throw error
             }
+            // Fail-closed backstop (M-6): lanes never retire (P40), so a lane task ends only by
+            // failing the run. If every lane task still returns (today only with no lanes at all),
+            // the guest side is gone: transport loss for the run, never a normal return.
+            await broker.fail(.transport)
+            throw BrokerFailure.transport
         }
     }
 }
