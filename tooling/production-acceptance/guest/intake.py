@@ -13,8 +13,8 @@ Residuals, recorded rather than fixed:
   processes.  Nothing here can tell an operator from recording or unattended
   input on the host side (for example a PTY-driven automation or ``script``).
 - T11-M4: signal handlers are installed only when the intake runs on the main
-  thread.  A signal that arrives in the few instructions between the last
-  pending-signal drain and unblocking reaches the caller's restored handler.
+  thread.  A signal handled after the restore has finished (mask and handlers
+  back) reaches the caller's restored handler, as any later signal would.
 - Raw mode is set with TCSAFLUSH, which first waits for pending console output
   to drain; a console whose output is never read blocks that call.
 - Zeroing is best effort.  CPython, the kernel TTY layer and the host hold
@@ -450,41 +450,84 @@ def _install(cancel, previous):
         handler = signal.getsignal(number)
         if handler is None:  # installed outside Python; it could not be restored
             continue
+        previous[number] = handler  # recorded first, so whatever is installed is always restored
         try:
             signal.signal(number, latch)
-            previous[number] = handler
         except (OSError, ValueError):
             installed = False
     return None if installed else 'TERMINAL_LOST'
 
 
-def _restore(fd, original, previous, cancel):
-    """T11-M4: with the intake signals blocked, restores the terminal, then the handlers.  A signal that arrives
-    meanwhile stays pending, is drained and latches cancellation.  Returns whether every restore succeeded."""
-    restored = True
-    try:
-        mask = signal.pthread_sigmask(signal.SIG_BLOCK, _INTAKE_SIGNALS)
-    except (OSError, ValueError):
-        mask, restored = None, False
-    try:
-        termios.tcsetattr(fd, termios.TCSANOW, original)
-    except (OSError, termios.error):
-        restored = False
-    if mask is not None and _drain_pending():
-        cancel.set()
-    for number, handler in previous.items():
-        try:
-            signal.signal(number, handler)
-        except (OSError, ValueError, TypeError):
-            restored = False
-    if mask is not None:
-        if _drain_pending():
-            cancel.set()
-        try:
-            signal.pthread_sigmask(signal.SIG_SETMASK, mask)
-        except (OSError, ValueError):
-            restored = False
-    return restored
+class _Restore:
+    """The restore after an intake: steps that always all run (T11-M4; fix round 1, I1).
+
+    pthread_sigmask blocks the five intake signals for the calling thread only.  In a process with other threads,
+    a process-directed signal (kill(2), a terminal ^C) goes to an unblocked thread, and CPython then runs its
+    Python-level handler on the main thread whatever the main thread's mask.  Once a raising handler such as
+    default_int_handler is restored, it can raise in the middle of the restore.  So each step runs in its own try:
+    an interruption is remembered (a finite CANCELLED) and the remaining steps still run.  run() moves past a step
+    before running it, so an interrupted step is not retried; the caller calls run() again, in its finally, if an
+    interruption escapes between steps.
+
+    Order: zero the private copy; record the mask; block the intake signals; restore the terminal; drain; restore
+    every original handler; drain; restore the mask.  A signal that arrives while blocked stays pending, is
+    drained, and latches cancellation."""
+
+    def __init__(self, fd, original, previous, cancel):
+        self._fd, self._original, self._previous, self._cancel = fd, original, previous, cancel
+        self.secret = None
+        self.restored = True
+        self.interrupted = False
+        self._mask = None
+        self._steps = None
+        self._next = 0
+
+    def done(self):
+        return self._steps is not None and self._next >= len(self._steps)
+
+    def interrupt(self):
+        self.interrupted = True
+        self._cancel.set()
+
+    def run(self):
+        if self._steps is None:
+            self._steps = ((self._erase, self._record_mask, self._block, self._terminal, self._drain)
+                           + tuple(self._handler(number, handler) for number, handler in self._previous.items())
+                           + (self._drain, self._unblock))
+        while self._next < len(self._steps):
+            step = self._steps[self._next]
+            self._next += 1
+            try:
+                step()
+            except (OSError, ValueError, TypeError, termios.error):
+                self.restored = False
+            except BaseException:  # a Python-level signal handler raised during this step
+                self.interrupt()
+
+    def _erase(self):
+        if self.secret is not None:
+            _zero(self.secret)
+
+    def _record_mask(self):
+        self._mask = signal.pthread_sigmask(signal.SIG_BLOCK, ())  # the current mask, unchanged
+
+    def _block(self):
+        if self._mask is not None:  # never block without a recorded mask to restore
+            signal.pthread_sigmask(signal.SIG_BLOCK, _INTAKE_SIGNALS)
+
+    def _terminal(self):
+        termios.tcsetattr(self._fd, termios.TCSANOW, self._original)
+
+    def _drain(self):
+        if self._mask is not None and _drain_pending():
+            self._cancel.set()
+
+    def _handler(self, number, handler):
+        return lambda: signal.signal(number, handler)
+
+    def _unblock(self):
+        if self._mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, self._mask)
 
 
 def consume_credential(grant, tty_fd, sink):
@@ -509,13 +552,14 @@ def consume_credential(grant, tty_fd, sink):
     started = grant.claim()
     deadline = time.monotonic() + min(_MAX_INTAKE_MS, grant.expires_at_ms - started) / 1000
     previous = {}
+    restore = _Restore(tty_fd, original, previous, grant._cancel)
     value = failure = None
     stage = 'TERMINAL_LOST'
     try:
         failure = _install(grant._cancel, previous)
         if failure is None:
             try:
-                value = _read_credential(tty_fd, grant, started)
+                value = restore.secret = _read_credential(tty_fd, grant, started)
             except IntakeFailure as caught:
                 failure = caught.args[0]
         if failure is None:
@@ -530,17 +574,20 @@ def consume_credential(grant, tty_fd, sink):
                 sink.consume_private(grant.binding.run_id, memoryview(value), deadline)
             except IntakeFailure:
                 failure = 'SINK_FAILED'
-    except KeyboardInterrupt:
-        failure = failure or 'CANCELLED'
     except Exception:
         failure = failure or stage
+    except BaseException:  # a Python-level signal handler raised during the intake (KeyboardInterrupt and kin)
+        restore.interrupt()
     finally:
-        if value is not None:
-            _zero(value)
-        restored = _restore(tty_fd, original, previous, grant._cancel)
-    if not restored:
+        while not restore.done():
+            try:
+                restore.run()
+            except BaseException:  # an interruption that escaped between restore steps; run() resumes after it
+                restore.interrupt()
+    # Fix round 1 (I1): any interruption during the intake or the restore is a finite CANCELLED.
+    if not restore.restored:
         failure = 'TERMINAL_LOST'
-    elif failure is None and grant._cancel.is_set():
+    elif restore.interrupted or (failure is None and grant._cancel.is_set()):
         failure = 'CANCELLED'
     if failure is not None:
         raise _failure(failure)

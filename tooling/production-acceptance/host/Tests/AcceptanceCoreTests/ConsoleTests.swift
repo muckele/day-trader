@@ -92,8 +92,16 @@ private struct ConsoleHarness {
             consumer:consumer,destinations:destinations,issuedAt:issuedAt,expiresAt:expiresAt,
             now:clock.nowMilliseconds(),sink:sink)
     }
+    // Fix round 1 (I2): honest facts. A holder of the serial input's read end shows the read end's own st_dev and
+    // st_ino with O_RDONLY; on Darwin each pipe end has its own st_ino, so it never matches the write end the sink
+    // pins. A holder of the write end (an injector) shows the sink's own identity with O_WRONLY.
     func serialInputFact() -> DescriptorFacts {
-        DescriptorFacts(fd:5,kind:.pipe,direction:O_RDONLY,uid:501,device:sink.device,inode:sink.inode,tty:false)
+        var readEnd=stat(); _=fstat(serialRead,&readEnd)
+        return DescriptorFacts(fd:5,kind:.pipe,direction:O_RDONLY,uid:501,device:UInt64(UInt32(bitPattern:readEnd.st_dev)),
+            inode:UInt64(readEnd.st_ino),tty:false)
+    }
+    func serialWriteEndFact() -> DescriptorFacts {
+        DescriptorFacts(fd:6,kind:.pipe,direction:O_WRONLY,uid:501,device:sink.device,inode:sink.inode,tty:false)
     }
     func echoEnabled() -> Bool { var value=termios(); return tcgetattr(slave,&value)==0 && value.c_lflag & tcflag_t(ECHO) != 0 }
     func attributes() -> termios { var value=termios(); _=tcgetattr(slave,&value); return value }
@@ -272,19 +280,28 @@ private func safeFacts(_ tty:Bool=false) -> [DescriptorFacts] {
         #expect(h.output.values.isEmpty)
     }
 
-    // Over caller-supplied facts only (T11-I2): no real broker inventory is taken here.
+    // Over caller-supplied facts only (T11-I2): no real broker inventory is taken here. A broker holding the serial
+    // input's write end is refused. A holder of its read end is not visible in fstat facts (fix round 1, I2): the
+    // host-side peer check (proc_pidfdinfo PROC_PIDFDPIPEINFO pipe_peerhandle) is carried to Stage 2.
     @Test func broker_fd_inventory_no_TTY_over_supplied_facts() throws {
         let h=try ConsoleHarness(); defer { h.close() }
         #expect(throws:ConsoleFailure.descriptor) { _ = try h.console(brokerFacts:safeFacts(true)) }
-        #expect(throws:ConsoleFailure.descriptor) { _ = try h.console(brokerFacts:[h.serialInputFact()]) }
+        #expect(throws:ConsoleFailure.descriptor) { _ = try h.console(brokerFacts:[h.serialWriteEndFact()]) }
+        withKnownIssue("read-end holders are unbound on the host until the Stage 2 pipe-peer check") {
+            #expect(throws:ConsoleFailure.descriptor) { _ = try h.console(brokerFacts:[h.serialInputFact()]) }
+        }
         _ = try h.console(brokerFacts:safeFacts(false))
     }
 
-    // Over caller-supplied facts only (T11-I2): the automation child holds neither a TTY nor the serial input.
+    // Over caller-supplied facts only (T11-I2): the automation child holds neither a TTY nor the serial input's write
+    // end. Its read end is unbound here, as above (fix round 1, I2; carried to Stage 2).
     @Test func automation_child_no_console_access_over_supplied_facts() throws {
         let h=try ConsoleHarness(); defer { h.close() }
         #expect(throws:ConsoleFailure.descriptor) { _ = try h.console(automationFacts:safeFacts(true)) }
-        #expect(throws:ConsoleFailure.descriptor) { _ = try h.console(automationFacts:[h.serialInputFact()]) }
+        #expect(throws:ConsoleFailure.descriptor) { _ = try h.console(automationFacts:[h.serialWriteEndFact()]) }
+        withKnownIssue("read-end holders are unbound on the host until the Stage 2 pipe-peer check") {
+            #expect(throws:ConsoleFailure.descriptor) { _ = try h.console(automationFacts:[h.serialInputFact()]) }
+        }
         _ = try h.console(automationFacts:safeFacts(false))
     }
 }

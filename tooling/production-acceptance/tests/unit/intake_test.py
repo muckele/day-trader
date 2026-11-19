@@ -585,13 +585,13 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(self.code(run), 'TERMINAL_LOST')
         self.assertLess(run.elapsed, 1.0)
         self.assert_handlers(expected)
-        # SIGINT during the read cancels.  A second SIGINT arrives during the terminal restore, and a third right
-        # after SIGINT's handler is restored to default_int_handler (which would raise KeyboardInterrupt).  Both
-        # stay blocked and are drained: echo is restored and the failure is finite.
-        signal.signal(signal.SIGINT, signal.default_int_handler)
-        expected[signal.SIGINT] = signal.default_int_handler
         main = threading.main_thread().ident
         real_signal, real_setattr = signal.signal, termios.tcsetattr
+        mask = signal.pthread_sigmask(signal.SIG_BLOCK, ())
+        self.addCleanup(signal.pthread_sigmask, signal.SIG_SETMASK, mask)
+        # Thread-directed: SIGINT during the read cancels.  A second SIGINT (pthread_kill to the main thread)
+        # arrives during the terminal restore, and a third right after SIGINT's handler is restored.  Both stay
+        # blocked and are drained, so the restored handler (the recording sentinel) never runs.
         armed = {'terminal': True, 'handler': True}
 
         def setattr_then_signal(fd, when, attributes):
@@ -602,7 +602,7 @@ class IntakeTests(unittest.TestCase):
 
         def restore_then_signal(number, handler):
             previous = real_signal(number, handler)
-            if armed['handler'] and number == signal.SIGINT and handler is signal.default_int_handler:
+            if armed['handler'] and number == signal.SIGINT and handler is sentinel:
                 armed['handler'] = False
                 signal.pthread_kill(main, signal.SIGINT)
             return previous
@@ -624,6 +624,50 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(armed, {'terminal': False, 'handler': False})
         self.assertEqual(modes(terminal.slave), terminal.original)
         self.assertTrue(termios.tcgetattr(terminal.slave)[3] & termios.ECHO)
+        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, ()), mask)
+        self.assert_handlers(expected)
+        self.assertEqual(calls, [])
+        # Fix round 1 (I1), process-directed: os.kill(getpid) right after SIGINT's handler is restored to
+        # default_int_handler, while a bystander thread has SIGINT unblocked.  The kernel delivers it to that
+        # thread and CPython runs default_int_handler on the main thread whatever the main thread's mask, so a
+        # KeyboardInterrupt is raised inside the restore.  Every remaining step still runs: echo, the mask and
+        # every original handler are restored, and the result is a finite CANCELLED, never a raw
+        # KeyboardInterrupt.  (Reviewer probe review-scratch/probe_process_directed_restore.py.)
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        expected[signal.SIGINT] = signal.default_int_handler
+        stop = threading.Event()
+        bystander = threading.Thread(target=stop.wait, args=(4,), daemon=True)
+        bystander.start()
+        self.addCleanup(stop.set)
+        armed = {'process': True}
+
+        def restore_then_kill(number, handler):
+            previous = real_signal(number, handler)
+            if armed['process'] and number == signal.SIGINT and handler is signal.default_int_handler:
+                armed['process'] = False
+                os.kill(os.getpid(), signal.SIGINT)  # process-directed, as from kill(1) or a terminal ^C
+                time.sleep(.05)  # another thread takes it; CPython then runs the handler here, on the main thread
+            return previous
+        grant = self.grant()
+        terminal = self.terminal()
+        sink = self.sink(grant, self.private())
+
+        def typer():
+            terminal.wait_mode()
+            terminal.type(frame(b'synthetic-only-password'))
+        thread = threading.Thread(target=typer, daemon=True)
+        thread.start()
+        with mock.patch.object(intake.signal, 'signal', restore_then_kill):
+            outcome = capture_any(lambda: intake.consume_credential(grant, terminal.slave, sink))
+        thread.join(2)
+        self.assertIs(type(outcome), intake.IntakeFailure, repr(outcome))
+        self.assertEqual(str(outcome), 'CANCELLED')
+        self.assertIsNone(outcome.__context__)
+        self.assertIsNone(outcome.__cause__)
+        self.assertEqual(armed, {'process': False})
+        self.assertEqual(modes(terminal.slave), terminal.original)
+        self.assertTrue(termios.tcgetattr(terminal.slave)[3] & termios.ECHO)
+        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, ()), mask)
         self.assert_handlers(expected)
         self.assertEqual(calls, [])
 

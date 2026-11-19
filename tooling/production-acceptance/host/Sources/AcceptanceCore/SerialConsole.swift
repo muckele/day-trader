@@ -166,7 +166,10 @@ public final class SerialConsole: @unchecked Sendable {
     private let publicSink:any ConsolePublicSink, clock:any ConsoleClock, publicBudget=PublicRunBudget()
     private let stateLock=NSLock(); private var failed=false, active=false, credentialConsumed=false
     // brokerFacts and automationFacts are caller-supplied; nothing here inventories a real process.
-    // Neither the broker nor the automation child may hold a TTY or the serial input (P26).
+    // Neither the broker nor the automation child may hold a TTY or the serial input's write end (P26).
+    // A holder of the read end is NOT caught: on Darwin each pipe end has its own st_ino, so fstat facts
+    // cannot link it to the write end. proc_pidfdinfo PROC_PIDFDPIPEINFO (pipe_peerhandle) can; that
+    // host-side peer check is carried to Stage 2 (fix round 1, I2).
     public init(binding:RunBinding,proof:AdmissionProof,ttyFD:Int32,sink:ConsoleSerialInput,
                 authorization:any ConsolePhaseAuthority,receiptSource:any ConsoleReceiptSource,
                 publicSink:any ConsolePublicSink,clock:any ConsoleClock,
