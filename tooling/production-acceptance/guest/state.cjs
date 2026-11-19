@@ -297,6 +297,8 @@ function reduce(state, event, nowMs) {
 
   if (state.phase === 'DONE') {
     if (event.type === 'readResult') return advance(state, event, nowMs, {}, [EFFECTS.READ_RESULT]);
+    // A tick is a deadline evaluation, not a stray event; DONE has no deadlines.
+    if (event.type === 'tick') return advance(state, event, nowMs, {}, []);
     return advance(state, event, nowMs, { postTerminalAnomaly: true }, []);
   }
 

@@ -564,3 +564,32 @@ test('tick_enforces_deadlines', () => {
   assert.equal(early.nextState.cleanupFailed, false);
   assert.equal(early.nextState.revocation, 'PENDING');
 });
+
+test('late_safe_sign_out_route_and_result_after_cleanup_window', () => {
+  const failed = trustedAbortInBefore().nextState;
+  const late = failed.cleanupStartedAtMs + LIMITS.CLEANUP_MS;
+  // Route after the window: not forwarded, revocation lapses to UNCONFIRMED.
+  let result = step(failed, 'safeSignOutRoute', late, { outcome: 'ELIGIBLE' });
+  assert.deepEqual(result.effects, []);
+  assert.equal(result.nextState.safeSignOutRouted, false);
+  assert.equal(result.nextState.revocation, 'UNCONFIRMED');
+  // Just inside the window it is still forwarded.
+  result = step(failed, 'safeSignOutRoute', late - 1, { outcome: 'ELIGIBLE' });
+  assert.deepEqual(result.effects, [EFFECTS.FORWARD_ROUTE]);
+  // Result after the window cannot record CONFIRMED.
+  const routed = result.nextState;
+  result = step(routed, 'safeSignOutResult', late, { outcome: 'REVOKED' });
+  assert.equal(result.nextState.revocation, 'UNCONFIRMED');
+  assert.equal(result.nextState.failure, 'OBSERVATION_FAILED');
+  result = step(routed, 'safeSignOutResult', late - 1, { outcome: 'REVOKED' });
+  assert.equal(result.nextState.revocation, 'CONFIRMED');
+});
+
+test('tick_in_done_is_a_no_op_other_events_still_flag', () => {
+  const done = toDone();
+  const result = step(done, 'tick', done.lastEventAtMs + 1, {});
+  assert.equal(result.nextState.phase, 'DONE');
+  assert.equal(result.nextState.postTerminalAnomaly, false);
+  assert.deepEqual(result.effects, []);
+  assert.equal(step(done, 'outage', done.lastEventAtMs + 1, { source: 'VM' }).nextState.postTerminalAnomaly, true);
+});
