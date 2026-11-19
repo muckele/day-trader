@@ -5,6 +5,8 @@ unattested exec, incorrect UID/view/FD setup, TSYNC continuation and foreign rea
 Numeric expectations are independently transcribed from approved Linux 6.8 /
 glibc 2.39 / AAPCS64 evidence, coverage SHA256 7c8714c95a67d8a2e6c1b4c8b8481525a61976c81dfe2037c251add071ac9898.
 """
+import ast
+import builtins
 import dataclasses
 import hashlib
 import hmac
@@ -581,7 +583,10 @@ def helper_branch(launch,fault,cleanup='reaped',install=None):
 
     Fixed original child701, foreign999. No real fork, signal, FD or wait.
     Faults happen before the named effect. An exit sentinel ends simulation.
-    install(b,events), if given, adds recorders to the bindings before the run.
+    fault 'foreign-pid': the helper's wait loop sees foreign999; 'bad-frame':
+    the stop pipe yields a non-STOP frame; cleanup 'foreign': the post-signal
+    wait sees foreign999. install(b,events), if given, adds recorders to the
+    bindings before the run and may return the bindings object the port uses.
     """
     b=InertBindings(); events=[]; failed=False; signalled=False
     pairs=iter(((20,21),(22,23),(24,25),(26,27))); forks=iter((0,701))
@@ -601,7 +606,9 @@ def helper_branch(launch,fault,cleanup='reaped',install=None):
     def setup(fd,blocking): events.append(('setup',fd,blocking)); fail_once('stop-setup')
     def select(read,write,error,timeout):
         events.append(('select',tuple(read),timeout)); fail_once('stop-select'); return ([24],[],[])
-    def read(fd,size): events.append(('read',fd,size)); fail_once('stop-read'); return b'STOP'
+    def read(fd,size):
+        events.append(('read',fd,size)); fail_once('stop-read')
+        return b'HALT' if fault=='bad-frame' else b'STOP'
     def kill(pid,sig):
         nonlocal signalled
         events.append(('kill',pid,sig)); signalled=True
@@ -612,10 +619,12 @@ def helper_branch(launch,fault,cleanup='reaped',install=None):
         if flags is not b.os.WNOHANG: raise AssertionError('helper wait must remain bounded/nonblocking')
         fail_once('wait'); fail_once('lost-child')
         if fault=='natural-exit': return (701,0)
+        if fault=='foreign-pid' and not signalled: return (999,0)
         if signalled:
             if cleanup=='reaped': return (701,0)
             if cleanup=='lost-child': raise ChildProcessError('inert cleanup ownership lost')
             if cleanup=='wait-error': raise OSError('inert cleanup wait failure')
+            if cleanup=='foreign': return (999,0)
         return (0,0)
     def leave(code):
         # Real _exit cannot return/throw. Record only its first semantic exit;
@@ -626,10 +635,45 @@ def helper_branch(launch,fault,cleanup='reaped',install=None):
     b.os.pipe2=lambda flags:next(pairs); b.os.fork=fork; b.os.close=close
     b.os.set_blocking=setup; b.os.read=read; b.os.kill=kill; b.os.waitpid=wait; b.os._exit=leave
     b.syscall=syscall; b.select=select
-    if install is not None: install(b,events)
-    try: c.NativeKernelPort(b).spawn_waiting(launch,lambda port:None)
+    port=install(b,events) if install is not None else None
+    try: c.NativeKernelPort(b if port is None else port).spawn_waiting(launch,lambda port:None)
     except ExecBoundary: pass
     return b,events
+
+
+class StrictSurface:
+    """Test-only proxy. While state['armed'], every attribute read or write through it is appended to log as a
+    dotted name BEFORE it is resolved, so a missing attribute is recorded too and the caller's broad exception
+    handler cannot hide it. Namespace and module attributes are wrapped the same way; other values are returned
+    unwrapped (any call needs an attribute read first). Unarmed, it only forwards."""
+    def __init__(self,target,name,log,state):
+        object.__setattr__(self,'_surface',(target,name,log,state))
+    def __getattr__(self,attr):
+        target,name,log,state=object.__getattribute__(self,'_surface')
+        dotted=name+'.'+attr
+        if state['armed']: log.append(dotted)
+        value=getattr(target,attr)
+        if isinstance(value,(types.SimpleNamespace,types.ModuleType)): return StrictSurface(value,dotted,log,state)
+        return value
+    def __setattr__(self,attr,value):
+        target,name,log,state=object.__getattribute__(self,'_surface')
+        if state['armed']: log.append(name+'.'+attr+'=')
+        setattr(target,attr,value)
+
+
+# K5 (Task 8b, fix round 1): the exact binding surface the outer helper may touch from its inner fork call until
+# its _exit, derived from guest/confinement.py NativeKernelPort.spawn_waiting (outer-helper branch after
+# `inner=b.os.fork()`, reap_inner, the except BaseException handler and the final _exit; file:line in the Task 8b
+# report). None of these takes a path.
+OUTER_HELPER_POST_FORK = frozenset({
+    'b.os', 'b.os.close', 'b.os.set_blocking', 'b.os.waitpid', 'b.os.WNOHANG', 'b.os.read', 'b.os.kill',
+    'b.os._exit', 'b.signal', 'b.signal.SIGKILL', 'b.select', 'b.monotonic', 'b.sleep'})
+# Every helper_branch fault and cleanup mode; together they reach each helper error branch.
+HELPER_FAULTS = ('before-inner', 'inner-fork', 'pin-close', 'stop-setup', 'stop-select', 'stop-read', 'wait',
+                 'lost-child', 'foreign-pid', 'bad-frame', 'natural-exit', 'STOP')
+HELPER_CLEANUPS = ('reaped', 'timeout', 'kill-error', 'kill-unexpected', 'wait-error', 'lost-child', 'foreign')
+# Builtins confinement.py could name to reach a path or load code without going through its bindings.
+PATH_BUILTINS = ('open', '__import__', 'exec', 'eval', 'compile')
 
 
 class Kernel:
@@ -1238,23 +1282,66 @@ class ConfinementTests(unittest.TestCase):
                     self.assertEqual([e for e in b.calls if e[0] in ('chroot',51)],[])
     def test_outer_helper_makes_no_path_call_after_inner_fork(self):
         # K5 (Task 8b design note): pivot_root moves the root and cwd of every task on the old root, the outer
-        # helper included, into the role view. The helper must resolve no path after its inner fork.
+        # helper included, into the role view, so the helper must resolve no path after its inner fork. Fix round 1:
+        # from its inner fork call until its _exit, the helper may touch only OUTER_HELPER_POST_FORK. Every
+        # attribute read or write through its bindings, through the module objects confinement.py imports, and
+        # every call of a PATH_BUILTINS name, is recorded and checked here; nothing is left to raise inside the
+        # helper, whose except BaseException would swallow it. All helper_branch fault and cleanup modes run.
         launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
-        names=('open','stat','lstat','listdir','readlink','makedirs','chown','chdir','chroot','rmdir','unlink')
-        def install(b,events):
-            for name in names: setattr(b.os,name,lambda *a,name=name:events.append(('path',name,a)))
-            b.os.path=types.SimpleNamespace(isfile=lambda *a:events.append(('path','path.isfile',a)),
-                                            lexists=lambda *a:events.append(('path','path.lexists',a)))
-            b.read_file=lambda *a:events.append(('path','read_file',a))
-        for fault in ('STOP','natural-exit'):
-            with self.subTest(fault=fault):
-                b,events=helper_branch(launch,fault,install=install)
-                self.assertIn(('fork',701),events)
-                after=events[events.index(('fork',701))+1:]
-                self.assertEqual([e for e in after if e[0]=='path'],[])
-                self.assertEqual([e for e in events if e[0]=='exit'],[('exit',0)])
-                # The recorders are the ones the helper used: a probe call after the run is recorded.
-                b.os.stat('/probe'); self.assertEqual(events[-1],('path','stat',('/probe',)))
+        namespace=vars(c)
+        self.assertIs(c.NativeKernelPort.spawn_waiting.__globals__,namespace)
+        with self.subTest(check='no import statement in spawn_waiting'):
+            # An import statement binds through the frame's builtins, which no module-level shadow can intercept.
+            tree=ast.parse((ROOT/'guest/confinement.py').read_text())
+            port=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='NativeKernelPort')
+            spawn=next(n for n in port.body if isinstance(n,ast.FunctionDef) and n.name=='spawn_waiting')
+            self.assertEqual([ast.unparse(n) for n in ast.walk(spawn) if isinstance(n,(ast.Import,ast.ImportFrom))],[])
+        modules=sorted(name for name,value in namespace.items() if isinstance(value,types.ModuleType))
+        self.assertTrue(modules)
+        snapshot=dict(namespace)
+        for fault in HELPER_FAULTS:
+            for cleanup in HELPER_CLEANUPS:
+                with self.subTest(fault=fault,cleanup=cleanup):
+                    log=[]; state={'armed':False,'opened':False}
+                    def install(b,events,state=state,log=log):
+                        fork,leave,calls=b.os.fork,b.os._exit,[]
+                        def counted_fork():
+                            # helper_branch's second fork is the inner fork: the window opens at its call,
+                            # before it can fail.
+                            calls.append(None)
+                            if len(calls)==2: state['armed']=state['opened']=True
+                            return fork()
+                        def closing_exit(code):
+                            # The helper process ends at _exit; what the simulation runs after it is not helper code.
+                            state['armed']=False
+                            return leave(code)
+                        b.os.fork,b.os._exit=counted_fork,closing_exit
+                        return StrictSurface(b,'b',log,state)
+                    def shadow(name,real,state=state,log=log):
+                        def call(*args,**kwargs):
+                            if state['armed']:
+                                log.append('builtins.'+name); raise PermissionError('test: '+name+' after inner fork')
+                            return real(*args,**kwargs)
+                        return call
+                    saved={name:namespace[name] for name in modules+list(PATH_BUILTINS) if name in namespace}
+                    try:
+                        for name in modules: namespace[name]=StrictSurface(saved[name],name,log,state)
+                        for name in PATH_BUILTINS: namespace[name]=shadow(name,getattr(builtins,name))
+                        b,events=helper_branch(launch,fault,cleanup,install=install)
+                    finally:
+                        for name in modules+list(PATH_BUILTINS):
+                            if name in saved: namespace[name]=saved[name]
+                            else: namespace.pop(name,None)
+                    self.assertEqual([name for name in log if name not in OUTER_HELPER_POST_FORK],[])
+                    self.assertEqual(len([e for e in events if e[0]=='exit']),1)
+                    self.assertFalse(state['armed'])  # the window closed at the helper's own _exit
+                    if fault=='before-inner':
+                        self.assertFalse(state['opened'])  # unshare failed: no inner fork, no pivot
+                    else:
+                        self.assertTrue(state['opened']); self.assertIn('b.os._exit',log)
+        # Every shadow is gone: the module globals are exactly the objects they were before the run.
+        self.assertEqual(set(namespace),set(snapshot))
+        self.assertEqual([name for name in snapshot if namespace[name] is not snapshot[name]],[])
     def test_R1_descriptor_close_ranges_keep_only_audited_and_CLOEXEC_pins(self):
         self.assertTrue(hasattr(c,'NativeChildPort'),'native close-range source absent')
         b=InertBindings(); launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
