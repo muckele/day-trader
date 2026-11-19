@@ -79,6 +79,8 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
   - Other roles are unchanged.
   - No `NEW_LISTENER`, TRACE or USER_NOTIF.
   - Stage 2 must show the sandbox starts on a real VM.
+  - E-1 (finding 2026-11-19; owner: 'Add the task now'): a chroot-based view blocks E1, because Linux 6.8 refuses a user namespace to a chrooted caller (kernel/user_namespace.c:104-106). Every role now enters its view by pivot_root inside its private mount namespace: self-bind of the view root, `pivot_root(".", ".")`, `umount2(".", MNT_DETACH)`, before seccomp. No role calls chroot. R1 is unchanged. (Task 8b)
+  - E-1b: after the browser transition reaches ACTIVE, a successful `unshare` whose a0 is exactly `CLONE_NEWUSER`, or a successful `chroot`, by a BROWSER-family pid other than the transition root, is admitted without an event. Every other successful audited namespace/mount/device call still drifts, and is terminal while a transition exists. This reconciles composition amendment §7 ('namespace … mutation fails') for these two calls only. Decided in Task 8b; implemented in Task 11 (P-new-11a/11b).
 - **Owning task:** Task 8 (P27: Task 10 relabels the two affected probes).
 
 ## C7. Per-role storage (E5)
@@ -147,6 +149,9 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
   - fork from a multi-threaded bootstrap (Task 8 review note 5)
   - `filter_digest` read-back
   - a real Chromium sandbox start
+  - Task 8b view: on the real guest the root is not the initramfs rootfs and its parent mount is not shared (fs/namespace.c:4216-4219, 4231-4234); pivot_root and the detach succeed; the outer helper performs no path lookup after its root moves into the view.
+  - User namespaces: a BROWSER-family process can create one (no LSM refusal, kernel/user_namespace.c:117; ucount limit > 0, :94-96).
+  - Chromium ASSUMPTIONS A1–A9 (task-8b design note) confirmed on the pinned Chromium. Any sandbox call outside the admitted set drifts the run and needs a new owner decision, never a silent widening.
   - the host VZ relay forwarding bytes only
   - C5 current checks under proxy traffic: a PROXY descriptor change between report A and report B is terminal (C5). Stage 2 must show that no current check runs while the proxy serves clients, or each such race ends the run.
   - P40 (owner decision "Redesign lanes now", 2026-11-18; launcher obligation (c) as amended by P41), the relay lane protocol between the Stage 2 launcher and the broker. It replaces P39 (i)-(iii); the offline broker implements the broker side.

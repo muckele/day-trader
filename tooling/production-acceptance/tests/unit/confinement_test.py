@@ -576,11 +576,12 @@ class InertBindings:
     def advance(self,seconds): self.clock+=seconds
 
 
-def helper_branch(launch,fault,cleanup='reaped'):
+def helper_branch(launch,fault,cleanup='reaped',install=None):
     """Run real helper control flow over finite inert process/pipe effects.
 
     Fixed original child701, foreign999. No real fork, signal, FD or wait.
     Faults happen before the named effect. An exit sentinel ends simulation.
+    install(b,events), if given, adds recorders to the bindings before the run.
     """
     b=InertBindings(); events=[]; failed=False; signalled=False
     pairs=iter(((20,21),(22,23),(24,25),(26,27))); forks=iter((0,701))
@@ -625,6 +626,7 @@ def helper_branch(launch,fault,cleanup='reaped'):
     b.os.pipe2=lambda flags:next(pairs); b.os.fork=fork; b.os.close=close
     b.os.set_blocking=setup; b.os.read=read; b.os.kill=kill; b.os.waitpid=wait; b.os._exit=leave
     b.syscall=syscall; b.select=select
+    if install is not None: install(b,events)
     try: c.NativeKernelPort(b).spawn_waiting(launch,lambda port:None)
     except ExecBoundary: pass
     return b,events
@@ -1161,7 +1163,98 @@ class ConfinementTests(unittest.TestCase):
         self.assertIn((40,(b'/opt',b'/run/acceptance/browser/.root/opt',None,4096,None)),raw)
         self.assertIn((40,(None,b'/run/acceptance/browser/.root/opt',None,4129,None)),raw)
         self.assertIn((40,(b'proc',b'/proc',b'proc',14,None)),raw)
-        self.assertIn(('chroot',('/run/acceptance/browser/.root',)),b.calls)
+        self.assertNotIn('chroot',[x[0] for x in b.calls])
+        self.assertIn((41,(b'.',b'.')),raw)
+    def view_port(self,role,fail=None):
+        """NativeChildPort over InertBindings recording every establish_views effect in b.calls: makedirs as
+        ('mkdir',...), chdir, chown, chroot, open (returns 99), raw syscalls as (nr,args). fail(entry) True records
+        that effect, then raises OSError from it."""
+        b=InertBindings(); launch=c.prepare_role(role,c.RoleConfig(self.config(),c.role_fds(role,RUN)))
+        def record(entry,result=None):
+            b.calls.append(entry)
+            if fail is not None and fail(entry): raise OSError(1,'inert view fault')
+            return result
+        b.os.makedirs=lambda path,mode,exist_ok:record(('mkdir',(path,mode,exist_ok)))
+        b.os.chdir=lambda path:record(('chdir',(path,)))
+        b.os.chown=lambda *a:record(('chown',a))
+        b.os.chroot=lambda path:record(('chroot',(path,)))
+        b.os.open=lambda *a:record(('open',a),99)
+        b.syscall=lambda nr,*args:record((nr,args),0)
+        return b,launch,c.NativeChildPort(b,launch,{})
+    def test_establish_views_pivots_into_self_bound_root_and_detaches_old_root(self):
+        # E-1 (C6, Task 8b): a chrooted caller cannot create a user namespace (Linux 6.8
+        # kernel/user_namespace.c:104-106), so every role enters its view by pivot_root in its private mount
+        # namespace: self-bind of the view root, pivot_root(".", "."), umount2(".", MNT_DETACH). No chroot.
+        for role in c.UIDS:
+            with self.subTest(role=role):
+                b,launch,p=self.view_port(role)
+                p.establish_views(launch.views)
+                R='/run/acceptance/'+role.lower()+'/.root'; RB=R.encode()
+                raw=[x for x in b.calls if type(x[0]) is int]
+                self.assertEqual(raw[0],(40,(None,b'/',None,278528,None)))
+                self.assertEqual(raw[1],(40,(RB,RB,None,4096,None)))
+                self.assertIn(('chdir',(R,)),b.calls)
+                bind=b.calls.index(raw[1]); enter=b.calls.index(('chdir',(R,)))
+                self.assertIn(('mkdir',(R,0o755,False)),b.calls[:bind])
+                def under(value):
+                    return (type(value) is str and (value==R or value.startswith(R+'/'))) or (
+                        type(value) is bytes and (value==RB or value.startswith(RB+b'/')))
+                def paths(entry):
+                    if entry[0]=='mkdir': return (entry[1][0],)
+                    if entry[0]==40: return entry[1][:2]
+                    return ()
+                self.assertEqual([e for e in b.calls[:bind] if e!=('mkdir',(R,0o755,False)) and
+                                  any(under(v) for v in paths(e))],[])
+                inside=[i for i,e in enumerate(b.calls) if e[0]==40 and i!=bind and under(e[1][1])]
+                self.assertTrue(inside)
+                self.assertEqual([i for i in inside if not bind<i<enter],[])
+                self.assertEqual(b.calls[enter:],[
+                    ('chdir',(R,)),(41,(b'.',b'.')),(39,(b'.',2)),('chdir',('/',)),
+                    (40,(b'proc',b'/proc',b'proc',14,None)),
+                    ('setrlimit',(b.resource.RLIMIT_CORE,(0,0))),('setrlimit',(b.resource.RLIMIT_NOFILE,(4096,4096)))])
+                self.assertEqual([e for e in b.calls if e[0]==41],[(41,(b'.',b'.'))])
+                self.assertEqual([e for e in b.calls if e[0]==39],[(39,(b'.',2))])
+                self.assertEqual([e for e in b.calls if e[0] in ('chroot',51)],[])
+    def test_establish_views_failure_codes_stop_the_sequence(self):
+        # Each new effect fails closed with its own code; nothing after it runs and nothing falls back to chroot.
+        for role in c.UIDS:
+            R='/run/acceptance/'+role.lower()+'/.root'; RB=R.encode()
+            for effect,target,code in ((4,(40,(RB,RB,None,4096,None)),'VIEW_ROOT_BIND_FAILED'),
+                                       (6,('chdir',(R,)),'VIEW_PIVOT_FAILED'),
+                                       (7,(41,(b'.',b'.')),'VIEW_PIVOT_FAILED'),
+                                       (8,(39,(b'.',2)),'VIEW_OLD_ROOT_DETACH_FAILED'),
+                                       (9,('chdir',('/',)),'VIEW_PIVOT_FAILED')):
+                with self.subTest(role=role,effect=effect):
+                    b,launch,p=self.view_port(role,fail=lambda entry,target=target:entry==target)
+                    try: p.establish_views(launch.views)
+                    except Exception as error: raised=error
+                    else: raised=None
+                    self.assertIs(type(raised),c.ConfinementError)
+                    self.assertEqual(raised.args,(code,))
+                    self.assertEqual(b.calls[-1],target)
+                    self.assertEqual(b.calls.count(target),1)
+                    self.assertNotIn((40,(b'proc',b'/proc',b'proc',14,None)),b.calls)
+                    self.assertEqual([e for e in b.calls if e[0]=='setrlimit'],[])
+                    self.assertEqual([e for e in b.calls if e[0] in ('chroot',51)],[])
+    def test_outer_helper_makes_no_path_call_after_inner_fork(self):
+        # K5 (Task 8b design note): pivot_root moves the root and cwd of every task on the old root, the outer
+        # helper included, into the role view. The helper must resolve no path after its inner fork.
+        launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
+        names=('open','stat','lstat','listdir','readlink','makedirs','chown','chdir','chroot','rmdir','unlink')
+        def install(b,events):
+            for name in names: setattr(b.os,name,lambda *a,name=name:events.append(('path',name,a)))
+            b.os.path=types.SimpleNamespace(isfile=lambda *a:events.append(('path','path.isfile',a)),
+                                            lexists=lambda *a:events.append(('path','path.lexists',a)))
+            b.read_file=lambda *a:events.append(('path','read_file',a))
+        for fault in ('STOP','natural-exit'):
+            with self.subTest(fault=fault):
+                b,events=helper_branch(launch,fault,install=install)
+                self.assertIn(('fork',701),events)
+                after=events[events.index(('fork',701))+1:]
+                self.assertEqual([e for e in after if e[0]=='path'],[])
+                self.assertEqual([e for e in events if e[0]=='exit'],[('exit',0)])
+                # The recorders are the ones the helper used: a probe call after the run is recorded.
+                b.os.stat('/probe'); self.assertEqual(events[-1],('path','stat',('/probe',)))
     def test_R1_descriptor_close_ranges_keep_only_audited_and_CLOEXEC_pins(self):
         self.assertTrue(hasattr(c,'NativeChildPort'),'native close-range source absent')
         b=InertBindings(); launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))

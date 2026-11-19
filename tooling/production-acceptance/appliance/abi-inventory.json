@@ -1300,6 +1300,16 @@
       "memberPath": "linux-6.8/include/linux/net.h",
       "signed": true,
       "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_FS_H"
+      ],
+      "id": "MNT_DETACH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/fs.h",
+      "signed": true,
+      "width": 32
     }
   ],
   "version": 1

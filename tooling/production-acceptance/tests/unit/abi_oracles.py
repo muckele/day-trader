@@ -141,4 +141,5 @@ ORACLES = {
     'CLONE_NEWNET': 1073741824,  # linux-6.8/include/uapi/linux/sched.h:33 #define CLONE_NEWNET 0x40000000
     'AF_PACKET': 17,  # linux-6.8/include/linux/socket.h:208 #define AF_PACKET 17
     'SOCK_RAW': 3,  # linux-6.8/include/linux/net.h:67 SOCK_RAW = 3, in enum sock_type under #ifndef ARCH_HAS_SOCKET_TYPES (net.h:48); arm64 does not define it (see record)
+    'MNT_DETACH': 2,  # linux-6.8/include/linux/fs.h:1156 #define MNT_DETACH	0x00000002	/* Just detach from the tree */
 }

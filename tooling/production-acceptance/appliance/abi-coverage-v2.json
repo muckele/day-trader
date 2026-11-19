@@ -425,6 +425,20 @@
     },
     {
       "conditions": [
+        "#ifndef _LINUX_FS_H"
+      ],
+      "declaration": "#define MNT_DETACH\t0x00000002\t/* Just detach from the tree */",
+      "firstLine": 1156,
+      "id": "MNT_DETACH",
+      "lastLine": 1156,
+      "memberPath": "linux-6.8/include/linux/fs.h",
+      "memberSHA256": "8526ac1acaf5534946e98d64a8b448ccf45a7925e5661b388f285d7153b794ee",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
         "#ifndef _UAPI_LINUX_MOUNT_H"
       ],
       "declaration": "#define MS_BIND\t\t4096",

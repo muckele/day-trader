@@ -180,7 +180,9 @@ class KernelPort(Protocol):
     only private inherited pipe capabilities. On failure it raises
     RoleStartFailure(owned); it never loses an unreaped child. entry runs on a
     single-threaded child-bound port. establish_views establishes separate
-    PID/mount/proc/device views and role-only 0700 tmpfs before UID drop.
+    PID/mount/proc/device views and role-only 0700 tmpfs before UID drop; it
+    enters the view by pivot_root inside the role's private mount namespace
+    and detaches the old root; no chroot.
     close_unaudited_fds closes every nonlisted descriptor and audits endpoints,
     direction and CLOEXEC inheritance, not merely integer FD names.
     drop_credentials clears supplementary groups, ambient/bounding caps while
@@ -955,7 +957,7 @@ def select_native_kernel(mode, *, runtime_identity, validate_runtime, bindings_f
 def _native_apis(os_api,signal_api,resource_api):
     names=('fork','execve','pipe2','waitpid','waitstatus_to_exitcode','setsid','kill','open','read','write','close','dup2','dup',
            'set_inheritable','set_blocking','readlink','listdir','stat','fstat','makedirs','chown',
-           'chroot','chdir','getpid','getppid','rmdir','unlink','_exit')
+           'chdir','getpid','getppid','rmdir','unlink','_exit')
     if (any(not callable(getattr(os_api,name,None)) for name in names) or
         not hasattr(os_api,'WNOHANG') or not hasattr(signal_api,'SIGKILL') or
         not callable(getattr(getattr(os_api,'path',None),'isfile',None)) or
@@ -1101,6 +1103,10 @@ class NativeChildPort:
         b.os.setsid() # detach inherited controlling terminal before any worker
         b.syscall(40,None,b'/',None,262144|16384,None) # recursive private propagation
         b.os.makedirs(root,mode=0o755,exist_ok=False)
+        # pivot_root needs the new root to be a mount root: bind it onto itself
+        # (Linux 6.8 fs/namespace.c:4174-4177, 4235-4238).
+        try: b.syscall(40,root.encode(),root.encode(),None,4096,None)
+        except OSError: _fail('VIEW_ROOT_BIND_FAILED')
         # Read-only base is never copied to a writable overlay. Role mutable
         # state remains on the already bounded guest-private /run tmpfs.
         for directory in ('opt','usr','lib','lib64','etc'):
@@ -1117,7 +1123,20 @@ class NativeChildPort:
         b.os.makedirs(root+'/proc',mode=0o755,exist_ok=False)
         null=b.os.open(root+'/dev/null',64|128|524288|32768,0o600); b.os.close(null)
         b.syscall(40,b'/dev/null',(root+'/dev/null').encode(),None,4096,None)
-        b.os.chroot(root); b.os.chdir('/')
+        # E-1 (C6): enter the view by pivot_root inside this role's private
+        # mount namespace, never chroot: Linux 6.8 refuses a user namespace to
+        # a chrooted caller (kernel/user_namespace.c:104-106), which would stop
+        # Chromium's namespace sandbox. pivot_root(".", ".") stacks the old
+        # root on "."; umount2(".", MNT_DETACH) detaches that whole old tree.
+        # Runs before seccomp. No fallback after any failure.
+        try: b.os.chdir(root)
+        except OSError: _fail('VIEW_PIVOT_FAILED')
+        try: b.syscall(41,b'.',b'.')
+        except OSError: _fail('VIEW_PIVOT_FAILED')
+        try: b.syscall(39,b'.',2)
+        except OSError: _fail('VIEW_OLD_ROOT_DETACH_FAILED')
+        try: b.os.chdir('/')
+        except OSError: _fail('VIEW_PIVOT_FAILED')
         b.syscall(40,b'proc',b'/proc',b'proc',2|4|8,None)
         b.resource.setrlimit(b.resource.RLIMIT_CORE,(0,0))
         b.resource.setrlimit(b.resource.RLIMIT_NOFILE,(4096,4096))

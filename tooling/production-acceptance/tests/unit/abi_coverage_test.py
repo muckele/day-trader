@@ -29,7 +29,7 @@ ARCHIVE = Path('/Users/Matt/day-trader-references/m4-linux-aarch64-offline-repai
 ARCHIVE_SHA = 'c969dea4e8bb6be991bbf7c010ba0e0a5643a3a8d8fb0a2aaa053406f1e965f3'
 INVENTORY = ROOT / 'appliance/abi-inventory.json'
 COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
-COVERAGE_V2_SHA = '51e78770688460ab53a66152ff71557efdf56bfe753d908adfd5cff146c3a4d9'
+COVERAGE_V2_SHA = '440574980e85720c6d9aea1a14bda9fae30c5c26d544ea4abc2b990a107d89f7'
 EVENT_REFERENCE = ROOT / 'appliance/bootstrap-event-reference.json'
 EVENT_REFERENCE_SHA = 'a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d'
 ORACLES_PATH = Path(__file__).resolve().parent / 'abi_oracles.py'
@@ -290,11 +290,13 @@ SYSCALL_SITES = {
     '__NR_close_range': frozenset({'confinement.py'}),
     '__NR_fcntl': frozenset({'confinement.py'}),
     '__NR_mount': frozenset({'confinement.py'}),
+    '__NR_pivot_root': frozenset({'confinement.py'}),
     '__NR_prctl': frozenset({'confinement.py'}),
     '__NR_seccomp': frozenset({'confinement.py'}),
     '__NR_setgroups': frozenset({'confinement.py'}),
     '__NR_setresgid': frozenset({'confinement.py'}),
     '__NR_setresuid': frozenset({'confinement.py'}),
+    '__NR_umount2': frozenset({'confinement.py'}),
     '__NR_unshare': frozenset({'confinement.py'}),
 }
 
@@ -314,6 +316,7 @@ ARG_SYMBOLS = {
                                  'SECCOMP_MODE_FILTER'})},
     '__NR_seccomp': {0: frozenset({'SECCOMP_SET_MODE_FILTER'}),
                      1: frozenset({'SECCOMP_FILTER_FLAG_TSYNC', 'SECCOMP_FILTER_FLAG_SPEC_ALLOW'})},
+    '__NR_umount2': {1: frozenset({'MNT_DETACH'})},
     '__NR_unshare': {0: frozenset({'CLONE_NEWNS', 'CLONE_NEWPID', 'CLONE_NEWIPC'})},
     '__NR_socket': _SOCKET_ARGS,
     '__NR_socketpair': _SOCKET_ARGS,
@@ -372,10 +375,13 @@ SITE_ARGS = {
     ('confinement.py', 'LinuxBindings.pin_sample', 0): ('__NR_fcntl', {1: _s('F_DUPFD_CLOEXEC'), 2: 'FD_FLOOR'}),
     ('confinement.py', 'NativeChildPort.establish_views', 0): ('__NR_mount', {3: _s('MS_PRIVATE', 'MS_REC')}),
     ('confinement.py', 'NativeChildPort.establish_views', 1): ('__NR_mount', {3: _s('MS_BIND')}),
-    ('confinement.py', 'NativeChildPort.establish_views', 2): ('__NR_mount', {3: _s('MS_BIND', 'MS_REMOUNT', 'MS_RDONLY')}),
-    ('confinement.py', 'NativeChildPort.establish_views', 3): ('__NR_mount', {3: _s('MS_BIND')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 2): ('__NR_mount', {3: _s('MS_BIND')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 3): ('__NR_mount', {3: _s('MS_BIND', 'MS_REMOUNT', 'MS_RDONLY')}),
     ('confinement.py', 'NativeChildPort.establish_views', 4): ('__NR_mount', {3: _s('MS_BIND')}),
-    ('confinement.py', 'NativeChildPort.establish_views', 5): ('__NR_mount', {3: _s('MS_NOSUID', 'MS_NODEV', 'MS_NOEXEC')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 5): ('__NR_mount', {3: _s('MS_BIND')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 6): ('__NR_pivot_root', {}),
+    ('confinement.py', 'NativeChildPort.establish_views', 7): ('__NR_umount2', {1: _s('MNT_DETACH')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 8): ('__NR_mount', {3: _s('MS_NOSUID', 'MS_NODEV', 'MS_NOEXEC')}),
     ('confinement.py', 'NativeChildPort.close_unaudited_fds', 0): ('__NR_close_range', {2: 'CLOSE_RANGE_NO_FLAGS'},
                                                                    {1: ('CLOSE_RANGE_INCLUSIVE_END',)}),
     ('confinement.py', 'NativeChildPort.close_unaudited_fds', 1): ('__NR_close_range', {1: 'CLOSE_RANGE_MAX', 2: 'CLOSE_RANGE_NO_FLAGS'}),
@@ -1031,7 +1037,7 @@ class CodeBindingTests(unittest.TestCase):
                     self.assertEqual(literal[idx], acc, where)
                     self.assertLessEqual(want, ARG_SYMBOLS[sym][idx], where)
                 checked += 1
-        self.assertEqual(checked, 31)  # every int-literal argument at every site
+        self.assertEqual(checked, 33)  # every int-literal argument at every site
 
     def test_capability_literals_are_covered(self):
         tree = self.trees['confinement.py']
