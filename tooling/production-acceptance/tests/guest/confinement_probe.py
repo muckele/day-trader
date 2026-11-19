@@ -14,9 +14,13 @@ tell the outer filter from DAC, a sysctl or an LSM (T8-12). The BROWSER filter
 allows capset, the set*id family and chroot (E1), so those denials are the
 kernel's capability check, KERNEL_CREDENTIAL_CHECK (P27, P48). The bootstrap
 contract and TSYNC cases re-check library code in a probe family, not a
-kernel/FD boundary: LIBRARY_RECHECK (T8-13). SECCOMP_KILL is a SIGSYS death and
-CONFIG_COMPAT_ABSENT an observed ENOEXEC exec refusal (T8-02). OBSERVED is the
-probe's own observation of /proc, its descriptor table or the outcome.
+kernel/FD boundary: LIBRARY_RECHECK (T8-13). SECCOMP_KILL is a SIGSYS death of
+the alternate-entry sample; for AArch32 the outcome decides (P53): a SIGSYS
+death after the sample started is SECCOMP_ARCH_KILL, and an ENOEXEC exec refusal
+observed in this module's own pre-exec child is AARCH32_EXEC_UNAVAILABLE (no
+AArch32 process can exist: no CONFIG_COMPAT, or no 32-bit EL0 on the CPU).
+OBSERVED is the probe's own observation of /proc, its descriptor table or the
+outcome.
 
 Residual fixture trust (compA M-8), recorded, not resolved: for exec-helper
 positions (basis HELPER_EXIT) "attempted" and "denied" rest only on the pinned
@@ -24,6 +28,17 @@ sample's own FD4 marker and its exit code 23. The IP families have no audit
 correlation and the receiver after-count proves only non-delivery, so a sample
 that writes ATTEMPTED and exits 23 without attempting reads as DENIED. Add
 seccomp/audit correlation for helper attempts before Stage 2 relies on them.
+Likewise a pinned AArch32 sample that ends with exit 24 and no marker reads as
+AARCH32_EXEC_UNAVAILABLE (review M-5).
+
+Residual native fixture trust of the UNIX-name probes (P54), recorded, not
+resolved: before and after each donor or trusted-name family the trusted parent
+asks the fixture authority's confirm_reachable(name) whether that name exists
+and is reachable from outside the family (the donor listening and ready to send
+its descriptor, the trusted name accepting a connection); a False answer is
+FIXTURE_UNAVAILABLE, so the family's ENOENT/ECONNREFUSED counts as isolation
+only for a confirmed target. The probe cannot observe that control itself: it
+trusts the authority's answer and the donor's promise to send one descriptor.
 """
 from collections import namedtuple
 import dataclasses
@@ -69,7 +84,20 @@ _CREDENTIAL_DENIAL = (_EPERM,)
 # The node is absent from the role's view.
 _ABSENT_OR_DENIED = (_EPERM, _EACCES, _ENOENT)
 # No reachable listener of that UNIX name: absent path or unbound abstract name.
+# Counted as isolation only after the parent's positive control (P54).
 _UNIX_REFUSED = (_EPERM, _EACCES, _ENOENT, _ECONNREFUSED)
+# P52: reopening another process's descriptor through its /proc magic link,
+# following the link (never O_NOFOLLOW: an fd entry is S_IFLNK,
+# linux-6.8/fs/proc/fd.c:206, and may_open answers ELOOP, fs/namei.c:3247-3248).
+# The 6.8 kernel refuses a non-owner with EACCES: the fd directory is
+# S_IRUSR|S_IXUSR (fs/proc/base.c:3250) and proc_fd_permission
+# (fs/proc/fd.c:332-349) falls back to generic_permission (fs/namei.c:400,
+# -EACCES :442) unless same_thread_group (:343-344); following the link,
+# proc_pid_get_link (fs/proc/base.c:1738-1759) answers -EACCES unless
+# proc_fd_access_allowed (:674-688, ptrace_may_access READ_FSCREDS). A pid not
+# visible in the caller's /proc namespace is ENOENT (proc_pid_lookup,
+# fs/proc/base.c:3449, :3458-3462). Nothing else; ELOOP and EPERM are not refusals.
+_PROC_FD_REFUSED = (_EACCES, _ENOENT)
 
 # R13 layout literals (LP64 AArch64), each justified in abi_coverage_test
 # LAYOUT_LITERALS. _FRAME_LENGTH is this module's own frame prefix, not Linux ABI.
@@ -140,48 +168,44 @@ HELPER_SAMPLES = MappingProxyType({
 })
 
 # The basis of each operation's result (module docstring). AArch32-audit alone
-# may instead be CONFIG_COMPAT_ABSENT, exactly when kernel_feature('CONFIG_COMPAT')
-# is False.
+# may instead be AARCH32_EXEC_UNAVAILABLE, decided by the observed outcome (P53).
 BASIS = MappingProxyType({
     **{name: 'KERNEL_ERRNO' for name in (
         'socket-AF_VSOCK','socketpair-AF_VSOCK','io_uring_setup','io_uring_register','io_uring_enter',
         'parent.socket-AF_VSOCK','parent.socket-IPV4-TCP','parent.socket-IPV6-TCP',
         'controller-SCM_RIGHTS','proxy-SCM_RIGHTS','trusted-unix-names-unreachable','proc-controller-fd',
         'proc-proxy-fd','pidfd_open-getfd','ptrace-attach','ptrace-seize','process_vm_readv','process_vm_writev',
-        'dev-console-open','dev-hvc-open',
+        'dev-console-open','dev-hvc-open','proc-console-reopen',
         'socket-IPV4-TCP','socket-IPV6-TCP','socket-IPV4-UDP','DNS-TCP','DNS-UDP')},
     **{position+'.socket-'+family: 'HELPER_EXIT' for family in ('AF_VSOCK','IPV4-TCP','IPV6-TCP')
        for position in ('fork','exec','network','gpu','crash','helper')},
     'setuid-helper': 'HELPER_EXIT', 'capability-file': 'HELPER_EXIT',
-    'AArch32-audit': 'SECCOMP_KILL', 'alternate-syscall-entry': 'SECCOMP_KILL',
+    'AArch32-audit': 'SECCOMP_ARCH_KILL', 'alternate-syscall-entry': 'SECCOMP_KILL',
     **{name: 'KERNEL_CREDENTIAL_CHECK' for name in (
         'initial-namespace-capability','setresuid-root','chroot-initial-namespace')},
     **{name: 'LIBRARY_RECHECK' for name in (
         'arbitrary-executable','arbitrary-argv','arbitrary-uid','arbitrary-fd',
         'invalid-filter-einval','TSYNC-unsynchronized-tid')},
     **{name: 'OBSERVED' for name in (
-        'fixed-vsock-CID2-port4050','inherited-ring','proc-enumeration-family-only','proc-console-reopen',
+        'fixed-vsock-CID2-port4050','inherited-ring','proc-enumeration-family-only',
         'unaudited-bridge-fd','exact-uid-capability-view-fd-inventory','unshare-CLONE_NEWUSER')},
 })
-BASES = frozenset(BASIS.values()) | {'CONFIG_COMPAT_ABSENT'}
+BASES = frozenset(BASIS.values()) | {'AARCH32_EXEC_UNAVAILABLE'}
 
 # The one operation the bootstrap-side parent observes itself (T8-03).
 _PARENT_OBSERVED = 'exact-uid-capability-view-fd-inventory'
 
 
-def expected_basis(name, compat):
-    """The one basis a result of NAME may carry, given kernel_feature('CONFIG_COMPAT')."""
-    if name == 'AArch32-audit' and compat is False: return 'CONFIG_COMPAT_ABSENT'
-    return BASIS[name]
-
-
-def _allowed_bases(name):
-    return (BASIS[name],'CONFIG_COMPAT_ABSENT') if name == 'AArch32-audit' else (BASIS[name],)
+def allowed_bases(name):
+    """The bases a result of NAME may carry: its own, and for AArch32-audit also the
+    observed exec refusal (P53; the outcome decides, no kernel-feature answer)."""
+    return (BASIS[name],'AARCH32_EXEC_UNAVAILABLE') if name == 'AArch32-audit' else (BASIS[name],)
 
 
 def _denial_errnos(name):
     if name in ('initial-namespace-capability','setresuid-root','chroot-initial-namespace'): return _CREDENTIAL_DENIAL
-    if name in ('dev-console-open','dev-hvc-open','proc-console-reopen'): return _ABSENT_OR_DENIED
+    if name=='proc-console-reopen': return _PROC_FD_REFUSED
+    if name in ('dev-console-open','dev-hvc-open'): return _ABSENT_OR_DENIED
     if name in ('controller-SCM_RIGHTS','proxy-SCM_RIGHTS','trusted-unix-names-unreachable'): return _UNIX_REFUSED
     return _KERNEL_DENIAL
 
@@ -405,9 +429,6 @@ def qualify_probe_epoch(binding, fixtures, cleanup_budget):
             if (getattr(pin,'path',None) != '/opt/acceptance/tests/fixtures/'+HELPER_SAMPLES[name]
                     or getattr(pin,'sha256',None) != receiver.sampleDigest):
                 raise ProbeFailure('HELPER_PIN_MISMATCH')
-    # The parent's own answer; a child that observed the other one fails (T8-02).
-    compat = fixtures.authority.kernel_feature('CONFIG_COMPAT')
-    if type(compat) is not bool: raise RuntimeGateUnavailable('KERNEL_FEATURE_UNAVAILABLE')
     last, monotonic_end = None, None
     def current():
         nonlocal last, monotonic_end
@@ -450,7 +471,7 @@ def qualify_probe_epoch(binding, fixtures, cleanup_budget):
                     or row['operation'] != operation or row['attempted'] is not True
                     or row['denied'] is not case.denied or type(row['receiver_count']) is not int
                     or row['receiver_count'] != 0 or after-before != case.receiver_count
-                    or row['basis'] != expected_basis(operation_name,compat)):
+                    or row['basis'] not in allowed_bases(operation_name)):
                 raise ProbeFailure('PROBE_BOUNDARY_FAILED')
             rows.append((operation,True,case.denied,after-before,row['basis']))
             correlations.append((receiver.to_record(),nonce,before,after))
@@ -531,7 +552,7 @@ def run_case(name, port):
         if (type(actual) is not dict or set(actual) != {'operation','attempted','denied','receiver_count','basis'} or
             actual['operation'] != expected or actual['attempted'] is not True or actual['denied'] is not case.denied or
             type(actual['receiver_count']) is not int or actual['receiver_count'] != case.receiver_count or
-            actual['basis'] not in _allowed_bases(expected.partition('.')[2])):
+            actual['basis'] not in allowed_bases(expected.partition('.')[2])):
             raise ProbeFailure('PROBE_BOUNDARY_FAILED')
     return observations
 
@@ -562,8 +583,8 @@ class NativeProbePort:
         A helper's proven boundary carries the basis its proof established.
         """
         if type(error) is _HelperBoundaryDenied:
-            if (BASIS[name] not in ('HELPER_EXIT','SECCOMP_KILL')
-                    or error.strerror not in _allowed_bases(name)): raise ProbeFailure('UNEXPECTED_KERNEL_ERROR') from None
+            if (BASIS[name] not in ('HELPER_EXIT','SECCOMP_KILL','SECCOMP_ARCH_KILL')
+                    or error.strerror not in allowed_bases(name)): raise ProbeFailure('UNEXPECTED_KERNEL_ERROR') from None
             return error.strerror
         if error.errno not in _denial_errnos(name): raise ProbeFailure('UNEXPECTED_KERNEL_ERROR') from None
         return BASIS[name]
@@ -605,7 +626,7 @@ class NativeProbePort:
         if name=='proc-enumeration-family-only': return ctx.family_only_processes()
         if name in ('controller-SCM_RIGHTS','proxy-SCM_RIGHTS'):
             ctx.inherited_endpoint_not_socket()
-            return ctx.donor_unreachable('CONTROLLER' if name=='controller-SCM_RIGHTS' else 'PROXY')
+            return ctx.donor_unreachable()
         if name=='trusted-unix-names-unreachable': return ctx.trusted_names_unreachable()
         if name in ('proc-controller-fd','proc-proxy-fd'):
             pid=ctx.foreign_process('CONTROLLER' if name=='proc-controller-fd' else 'PROXY')
@@ -639,7 +660,7 @@ class NativeProbePort:
             except OSError: raise ProbeFailure('USER_NAMESPACE_UNAVAILABLE') from None
             if result!=0: raise ProbeFailure('USER_NAMESPACE_UNAVAILABLE')
             return
-        paths={'dev-console-open':'/dev/console','dev-hvc-open':'/dev/hvc0','proc-console-reopen':'/proc/1/fd/0'}
+        paths={'dev-console-open':'/dev/console','dev-hvc-open':'/dev/hvc0'}
         if name in paths:
             # T8-12: a node that refuses reads but takes writes is still a
             # console, so both directions are attempted.
@@ -649,11 +670,26 @@ class NativeProbePort:
                 except OSError as error:
                     self._denial(name,error); refused=error
                     continue
-                try:
-                    if name!='proc-console-reopen': raise ProbeFailure('CONSOLE_OPENED')
-                    if ctx.fd_link(fd)!='/dev/null': raise ProbeFailure('CONSOLE_REOPENED')
-                finally: ctx.close(fd)
-            if name=='proc-console-reopen': raise PermissionError(_EPERM,'NO_CONSOLE_NODE')
+                ctx.close(fd)
+                raise ProbeFailure('CONSOLE_OPENED')
+            raise refused
+        if name=='proc-console-reopen':
+            # P52: the real reopen attack, following the magic link (an fd
+            # entry is S_IFLNK; O_NOFOLLOW would only ever give ELOOP). The
+            # console is the CONTROLLER role's (appliance consoleRole). This
+            # family's /proc is its own PID namespace (linux-6.8/fs/proc/root.c
+            # :252), where pid 1 is this family itself, so the target is the
+            # controller-UID fixture process there, its fd 0, for reading and
+            # for writing (T8-12). Only _PROC_FD_REFUSED denies.
+            pid=ctx.foreign_process('CONTROLLER')
+            refused=None
+            for write in (False,True):
+                try: fd=ctx.open_following('/proc/'+str(pid)+'/fd/0',write)
+                except OSError as error:
+                    self._denial(name,error); refused=error
+                    continue
+                ctx.close(fd)
+                raise ProbeFailure('CONSOLE_REACHED')
             raise refused
         if name=='unaudited-bridge-fd':
             if len(ctx.fd_links())!=5: raise ProbeFailure('UNAUDITED_FD_PRESENT')
@@ -687,6 +723,8 @@ class NativeProbeContext:
     def __init__(self,port,authority,operation,confinement=None):
         self.port,self.authority,self.operation,self.c=port,authority,operation,confinement
         self.receiver_binding,self.nonce,self.cleanup_budget = None,None,None
+        # P54: the UNIX names the trusted parent confirmed reachable for this family.
+        self.unix_targets=None
     def syscall(self,nr,*args): return self.port.b.syscall(nr,*args)
     def memory(self,data):
         # Provided explicitly by the trusted embedding; no dynamic path import.
@@ -700,6 +738,11 @@ class NativeProbeContext:
     def open_denied(self,path,write=False):
         if write: return self.port.b.os.open(path,1|32768|524288)
         return self.port.b.os.open(path,32768|524288)
+    def open_following(self,path,write=False):
+        """P52: open a /proc magic link following it (no O_NOFOLLOW); following
+        the link is the reopen under test."""
+        if write: return self.port.b.os.open(path,1|524288)
+        return self.port.b.os.open(path,524288)
     def fd_link(self,fd): return self.port.b.os.readlink('/proc/self/fd/'+str(fd))
     def fd_links(self):
         fds=self.port.b.os.listdir('/proc/self/fd')
@@ -712,10 +755,6 @@ class NativeProbeContext:
     def receiver_count(self):
         value=self.authority.receiver_count(self.operation)
         if type(value) is not int or not 0<=value<=1: raise ProbeFailure('RECEIVER_WITNESS_INVALID')
-        return value
-    def kernel_feature(self,name):
-        value=self.authority.kernel_feature(name)
-        if type(value) is not bool: raise RuntimeGateUnavailable('KERNEL_FEATURE_UNAVAILABLE')
         return value
     def foreign_process(self,role):
         """A fixture-owned process of ROLE's UID inside this family's own PID
@@ -786,10 +825,13 @@ class NativeProbeContext:
             self.close(fd)
             raise
         return fd
-    def donor_unreachable(self,role):
-        """Connect to ROLE's fixture donor, which sends one descriptor to any
-        peer. Only a refused connect is a denial; reaching it is a finding."""
-        fd=self.connect_unix(self.authority.scm_rights_donor(role))
+    def donor_unreachable(self):
+        """Connect to the fixture donor the trusted parent confirmed reachable
+        (P54), which sends one descriptor to any peer. Only a refused connect is
+        a denial; reaching it is a finding."""
+        targets=self.unix_targets
+        if type(targets) is not tuple or len(targets)!=1: raise RuntimeGateUnavailable('FIXTURE_UNAVAILABLE')
+        fd=self.connect_unix(targets[0])
         try:
             try: rights=self.receive_rights(fd)
             except OSError: rights=()
@@ -797,12 +839,12 @@ class NativeProbeContext:
         for received in rights: self.close(received)
         raise ProbeFailure('FD_DONOR_REACHED' if rights else 'DONOR_ENDPOINT_REACHED')
     def trusted_names_unreachable(self):
-        """Every abstract or path UNIX name a trusted role creates refuses this
-        family. A bound name of another socket type answers EPROTOTYPE, which is
-        not an accepted refusal: it fails closed."""
-        names=self.authority.trusted_unix_names()
-        if type(names) is not tuple or not names or len(names)>64 or len(set(names))!=len(names):
-            raise RuntimeGateUnavailable('TRUSTED_UNIX_NAMES_UNAVAILABLE')
+        """Every abstract or path UNIX name a trusted role creates, each confirmed
+        reachable by the trusted parent (P54), refuses this family. A bound name
+        of another socket type answers EPROTOTYPE, which is not an accepted
+        refusal: it fails closed."""
+        names=self.unix_targets
+        if type(names) is not tuple or not names: raise RuntimeGateUnavailable('FIXTURE_UNAVAILABLE')
         refused=None
         for name in names:
             try: fd=self.connect_unix(name)
@@ -854,9 +896,10 @@ class NativeProbeContext:
         if name=='parent.socket-AF_VSOCK': return self.syscall(198,40,1,0)
         if name not in samples and name not in ('fork.socket-AF_VSOCK','fork.socket-IPV4-TCP','fork.socket-IPV6-TCP'):
             raise ProbeFailure('HELPER_DENIED')
-        # T8-02: without CONFIG_COMPAT the kernel refuses the AArch32 sample at
-        # exec (ENOEXEC); that refusal, observed, is the evidence instead.
-        refusal = name=='AArch32-audit' and self.kernel_feature('CONFIG_COMPAT') is False
+        # P53: for AArch32 the observed outcome decides. The kernel refuses an
+        # AArch32 exec with ENOEXEC without CONFIG_COMPAT or without 32-bit EL0
+        # on the CPU (linux-6.8/arch/arm64/kernel/process.c:601-620); seen by
+        # this module's own pre-exec child, it means no AArch32 process can exist.
         fd=None; marker=None; target=None; pid=None; terminal=False
         try:
             if name in samples:
@@ -900,7 +943,7 @@ class NativeProbeContext:
                     b.syscall(436,5,fd-1,0); b.syscall(436,fd+1,4294967295,0)
                     b.os.set_inheritable(fd,False)
                     try: b.os.execve(fd,(path,),{})
-                    except OSError as error: b.os._exit(24 if refusal and error.errno==_ENOEXEC else 78)
+                    except OSError as error: b.os._exit(24 if name=='AArch32-audit' and error.errno==_ENOEXEC else 78)
                     b.os._exit(78)
                 except Exception: b.os._exit(78)
             b.os.close(marker[1]); marker=(marker[0],None)
@@ -921,17 +964,17 @@ class NativeProbeContext:
                         if not part: break
                         proof.extend(part)
                     code=b.os.waitstatus_to_exitcode(status)
-                    if refusal:
-                        # The exec refusal is observed by this module's own
-                        # pre-exec child: no sample ran, so no marker exists.
-                        if proof or code!=24: raise ProbeFailure('EXEC_REFUSAL_UNPROVED')
-                        raise _HelperBoundaryDenied(_ENOEXEC,'CONFIG_COMPAT_ABSENT')
+                    if name=='AArch32-audit' and not proof and code==24:
+                        # The exec refusal, observed by this module's own
+                        # pre-exec child: no sample code ran, so no marker.
+                        raise _HelperBoundaryDenied(_ENOEXEC,'AARCH32_EXEC_UNAVAILABLE')
                     if proof!=b'ATTEMPTED\n': raise ProbeFailure('HELPER_ATTEMPT_UNPROVED')
                     if name in ('AArch32-audit','alternate-syscall-entry'):
                         # KILL_PROCESS ends the task with SIGSYS; any other end,
                         # an exit code included, is not this denial (T8-02, D1).
                         if -code!=_SIGSYS: raise ProbeFailure('ABI_ATTEMPT_UNPROVED')
                         if self.authority.audit_abi_termination(name,pid,status) is not self.authority: raise ProbeFailure('ABI_ATTEMPT_UNPROVED')
+                        if name=='AArch32-audit': raise _HelperBoundaryDenied(_EPERM,'SECCOMP_ARCH_KILL')
                         raise _HelperBoundaryDenied(_EPERM,'SECCOMP_KILL')
                     if code==23: raise _HelperBoundaryDenied(_EPERM,'HELPER_EXIT')
                     if code!=0: raise ProbeFailure('HELPER_OPERATION_FAILED')
@@ -1052,9 +1095,11 @@ class _ProbeFamilyOwner:
 # Every method is required; absence is unavailability. foreign_pid (a pid of
 # the bootstrap's namespace) and audit(port) (a self-reported inventory) are
 # replaced by foreign_uid_process_in_role_ns and correlate_inventory (T8-01, T8-03).
+# confirm_reachable is the parent's positive control (P54); kernel_feature is
+# retired with the CONFIG_COMPAT keying (P53).
 _FIXTURE_AUTHORITY = ('receiver_count','helper_pin','audit_abi_termination','unsynchronized_thread','memory',
-                      'foreign_uid_process_in_role_ns','trusted_unix_names','scm_rights_donor','kernel_feature',
-                      'correlate_inventory')
+                      'foreign_uid_process_in_role_ns','trusted_unix_names','scm_rights_donor',
+                      'confirm_reachable','correlate_inventory')
 
 
 def _fact_record(value):
@@ -1079,6 +1124,25 @@ class _ProbeFixturesCore:
         self._epoch_started=False
         self.cleanup_budget=None
         self.family_owners=[]
+
+    def _confirm_reachable(self,operation):
+        """P54: the trusted parent's positive control for the donor and trusted-
+        name probes, from outside the family: every target exists and is
+        reachable now (confirm_reachable answers True), else FIXTURE_UNAVAILABLE,
+        never a denial. The family attempts exactly these targets. None for
+        every other operation."""
+        name=operation.partition('.')[2]
+        if name in ('controller-SCM_RIGHTS','proxy-SCM_RIGHTS'):
+            targets=(self.authority.scm_rights_donor('CONTROLLER' if name=='controller-SCM_RIGHTS' else 'PROXY'),)
+        elif name=='trusted-unix-names-unreachable':
+            targets=self.authority.trusted_unix_names()
+            if type(targets) is not tuple or not targets or len(targets)>64 or len(set(targets))!=len(targets):
+                raise RuntimeGateUnavailable('TRUSTED_UNIX_NAMES_UNAVAILABLE')
+        else: return None
+        for target in targets:
+            _unix_address(target)
+            if self.authority.confirm_reachable(target) is not True: raise RuntimeGateUnavailable('FIXTURE_UNAVAILABLE')
+        return targets
 
     def _observe_waiting_family(self,launch,owned,family):
         """T8-03 (D4): the bootstrap-side exact check of a waiting probe family,
@@ -1112,6 +1176,8 @@ class _ProbeFixturesCore:
         root,state=launch.views.root+'/.root',launch.views.root+'/.state'
         if b.os.path.lexists(root) or b.os.path.lexists(state):
             raise RuntimeGateUnavailable('PROBE_SCOPE_ALREADY_EXISTS')
+        # P54: before any family effect, the parent confirms the UNIX targets.
+        targets=self._confirm_reachable(operation)
         family=_ProbeFamilyOwner(self,operation,role,root,state,self.cleanup_budget)
         self.family_owners.append(family)
         def child(port):
@@ -1128,6 +1194,7 @@ class _ProbeFixturesCore:
                 port.b.os.write(4,b'WAITING\n')
                 context=NativeProbeContext(port,self.authority,operation,c)
                 context.cleanup_budget=self.cleanup_budget
+                context.unix_targets=targets
                 data=json.dumps(attempt(context),separators=(',',':')).encode('ascii')
                 if len(data)>512: raise ProbeFailure('PROBE_RESULT_LIMIT')
                 if port.b.os.write(4,struct.pack(_FRAME_LENGTH,len(data))+data)!=len(data)+4: raise ProbeFailure('PROBE_RESULT_LIMIT')
@@ -1157,6 +1224,10 @@ class _ProbeFixturesCore:
             self.kernel.b.os.write(owned.command,b'EXIT')
             family.receipt(self.kernel.wait_owned(owned,2000),('EXITED',))
             family.exited=True
+            # P54: the same targets are still confirmed after the family, so a
+            # target that vanished during the attempt is never read as isolation.
+            if targets is not None and self._confirm_reachable(operation)!=targets:
+                raise RuntimeGateUnavailable('FIXTURE_UNAVAILABLE')
             return result
         finally:
             if owned is not None:

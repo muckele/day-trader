@@ -70,9 +70,9 @@ class InertFamily:
     """Drive the actual confined child/result/cleanup code with finite OS effects.
 
     Task 10: the authority supplies fixture processes of the controller and proxy UIDs in each family's PID
-    namespace, the trusted UNIX names, the SCM_RIGHTS donors, CONFIG_COMPAT present and a rubber-stamp inventory
-    correlation. The inert kernel refuses every attempt with EPERM except: AF_UNIX sockets open (E1) and their
-    connects are refused; recvmsg on the FD3 pipe is ENOTSOCK; unshare(CLONE_NEWUSER) succeeds (P49); the AArch32 and
+    namespace, the trusted UNIX names, the SCM_RIGHTS donors, a positive reachability control (P54) and a
+    rubber-stamp inventory correlation. The inert kernel refuses every attempt with EPERM except: AF_UNIX sockets
+    open (E1) and their connects are refused; recvmsg on the FD3 pipe is ENOTSOCK; unshare(CLONE_NEWUSER) succeeds (P49); the AArch32 and
     alternate-entry samples die by SIGSYS; nodes are absent and foreign /proc/<pid>/fd is EACCES. The parent observes
     each waiting exact-inventory family through literal Linux /proc (confinement_test.LiteralProc).
     """
@@ -92,7 +92,7 @@ class InertFamily:
             foreign_uid_process_in_role_ns=lambda role: self.FOREIGN[role],
             trusted_unix_names=lambda: ('\0acceptance-trusted', '/run/acceptance/controller/trusted.sock'),
             scm_rights_donor=lambda role: '/run/acceptance/' + role.lower() + '/donor',
-            kernel_feature=lambda name: True,
+            confirm_reachable=lambda name: True,
             correlate_inventory=lambda role, digest: self.authority)
         self.elapsed = 0
         def mono(): self.elapsed += .001; return self.elapsed
@@ -117,7 +117,7 @@ class InertFamily:
             if self.proc is not None: return self.proc.stat(path)
             raise FileNotFoundError(2, path)
         def open_(path, *args):
-            if path in ('/proc/7/fd/3', '/proc/8/fd/3'): raise PermissionError(13, 'inert foreign descriptor')
+            if path.startswith(('/proc/7/fd/', '/proc/8/fd/')): raise PermissionError(13, 'inert foreign descriptor')
             raise FileNotFoundError(2, 'inert absent node')
         def listdir(path):
             if path == '/proc': return ['1', 'self', 'thread-self']

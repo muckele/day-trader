@@ -562,6 +562,9 @@ OPEN_FLAG_SITES = {
     # Task 10 (T8-12): the console probes open each node for writing as well as for reading.
     (PROBE_FILE, 'NativeProbeContext.open_denied', 'open', 0): _s('O_WRONLY', 'O_NOFOLLOW', 'O_CLOEXEC'),
     (PROBE_FILE, 'NativeProbeContext.open_denied', 'open', 1): _s('O_NOFOLLOW', 'O_CLOEXEC'),
+    # P52: the console reopen follows the /proc magic link, so these two carry no O_NOFOLLOW.
+    (PROBE_FILE, 'NativeProbeContext.open_following', 'open', 0): _s('O_WRONLY', 'O_CLOEXEC'),
+    (PROBE_FILE, 'NativeProbeContext.open_following', 'open', 1): _s('O_CLOEXEC'),
     (PROBE_FILE, 'NativeProbeContext._helper', 'pipe2', 0): _s('O_CLOEXEC'),
     (PROBE_FILE, 'NativeProbeContext._helper', 'pipe2', 1): _s('O_CLOEXEC'),
 }
@@ -615,8 +618,11 @@ PROBE_DENIAL_SETS = {
     '_CREDENTIAL_DENIAL': ('_EPERM',),
     '_ABSENT_OR_DENIED': ('_EPERM', '_EACCES', '_ENOENT'),
     '_UNIX_REFUSED': ('_EPERM', '_EACCES', '_ENOENT', '_ECONNREFUSED'),
+    # P52: exactly the 6.8 refusals of a /proc fd magic link to a non-owner or an invisible pid; never EPERM or ELOOP.
+    '_PROC_FD_REFUSED': ('_EACCES', '_ENOENT'),
 }
-PROBE_DENIAL_RETURNS = ('_CREDENTIAL_DENIAL', '_ABSENT_OR_DENIED', '_UNIX_REFUSED', '_KERNEL_DENIAL')
+PROBE_DENIAL_RETURNS = ('_CREDENTIAL_DENIAL', '_PROC_FD_REFUSED', '_ABSENT_OR_DENIED', '_UNIX_REFUSED',
+                        '_KERNEL_DENIAL')
 # Every comparison in the probe whose left operand is an errno, the helper's exit code or signal, or a control
 # message's (level, kind): qualname -> [(left, operator, comparator)] in source order. Exit codes 0, 23 and 24 are this
 # module's own child protocol; the only signal is SIGSYS (T8-02).
@@ -625,16 +631,16 @@ PROBE_ABI_COMPARES = {
     'NativeProbeContext.receive_rights': [('(level, kind)', 'NotEq', '(_SOL_SOCKET, _SCM_RIGHTS)')],
     'NativeProbeContext.inherited_endpoint_not_socket': [('error.errno', 'NotEq', '_ENOTSOCK')],
     'NativeProbeContext._helper': [('error.errno', 'Eq', '_EPERM'), ('error.errno', 'Eq', '_ENOEXEC'),
-                                   ('code', 'NotEq', '24'), ('-code', 'NotEq', '_SIGSYS'), ('code', 'Eq', '23'),
+                                   ('code', 'Eq', '24'), ('-code', 'NotEq', '_SIGSYS'), ('code', 'Eq', '23'),
                                    ('code', 'NotEq', '0')],
 }
 # Every errno the probe raises itself: (qualname, exception, errno argument, text) in source order.
 PROBE_ERRNO_RAISES = (
     ('NativeProbePort._operation', 'PermissionError', '_EPERM', 'FD_INVENTORY_BOUNDARY'),
-    ('NativeProbePort._operation', 'PermissionError', '_EPERM', 'NO_CONSOLE_NODE'),
     ('NativeProbePort._operation', 'PermissionError', '_EPERM', 'FD_INVENTORY_BOUNDARY'),
     ('NativeProbeContext.family_only_processes', 'PermissionError', '_EPERM', 'FAMILY_ONLY'),
-    ('NativeProbeContext._helper', '_HelperBoundaryDenied', '_ENOEXEC', 'CONFIG_COMPAT_ABSENT'),
+    ('NativeProbeContext._helper', '_HelperBoundaryDenied', '_ENOEXEC', 'AARCH32_EXEC_UNAVAILABLE'),
+    ('NativeProbeContext._helper', '_HelperBoundaryDenied', '_EPERM', 'SECCOMP_ARCH_KILL'),
     ('NativeProbeContext._helper', '_HelperBoundaryDenied', '_EPERM', 'SECCOMP_KILL'),
     ('NativeProbeContext._helper', '_HelperBoundaryDenied', '_EPERM', 'HELPER_EXIT'),
     ('NativeProbeContext.bootstrap_rejection', 'PermissionError', '_EPERM', 'BOOTSTRAP_BOUNDARY_DENIED'),

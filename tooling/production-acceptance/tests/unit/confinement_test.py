@@ -1978,10 +1978,10 @@ def probe_module(name):
 
 # Linux 6.8 values the Task 10 probe tests name, transcribed from the pinned archive; abi_coverage_test binds the
 # probe's own literals to coverage v2. include/uapi/linux/ptrace.h:22,53; include/uapi/asm-generic/errno-base.h:6,12,
-# 13,17; include/uapi/asm-generic/errno.h:71,94; include/uapi/asm-generic/signal.h:22,46; include/linux/socket.h:177,
+# 13,17,26; include/uapi/asm-generic/errno.h:21,71,94; include/uapi/asm-generic/signal.h:22,46; include/linux/socket.h:177,
 # 332; include/uapi/asm-generic/socket.h:9; include/uapi/linux/sched.h:31.
 PTRACE_ATTACH, PTRACE_SEIZE = 16, 0x4206
-EPERM, ENOENT, ENOEXEC, EBADF, EACCES, EINVAL, ENOTSOCK, ECONNREFUSED = 1, 2, 8, 9, 13, 22, 88, 111
+EPERM, ENOENT, ENOEXEC, EBADF, EACCES, EINVAL, ELOOP, ENOTSOCK, ECONNREFUSED = 1, 2, 8, 9, 13, 22, 40, 88, 111
 SIGSEGV, SIGSYS = 11, 31
 SOL_SOCKET, SCM_RIGHTS, MSG_CMSG_CLOEXEC, CLONE_NEWUSER = 1, 1, 0x40000000, 0x10000000
 # Task 10 fixture processes of other roles' UIDs inside the probing family's own PID namespace.
@@ -2022,8 +2022,9 @@ class ProbeRecorder:
 
 def probe_authority(**changes):
     """Inert fixture authority with every Task 10 method (absence is unavailability). correlate_inventory is a
-    rubber stamp: it always returns the authority, so only the probe's own observation can refuse. foreign_pid and
-    audit are the retired Task 8 methods; the probe must not depend on either."""
+    rubber stamp: it always returns the authority, so only the probe's own observation can refuse. confirm_reachable
+    (P54) answers True and is recorded. foreign_pid and audit are the retired Task 8 methods; the probe must not
+    depend on either. kernel_feature (retired by P53) is absent, so any remaining use of it fails."""
     calls = []
     authority = types.SimpleNamespace(
         calls=calls, receiver_count=lambda operation: 0, helper_pin=lambda name: None,
@@ -2031,7 +2032,7 @@ def probe_authority(**changes):
         unsynchronized_thread=lambda port: None, memory=lambda value: value,
         foreign_uid_process_in_role_ns=lambda role: FOREIGN[role],
         trusted_unix_names=lambda: TRUSTED_NAMES, scm_rights_donor=lambda role: DONORS[role],
-        kernel_feature=lambda name: True,
+        confirm_reachable=lambda name: calls.append(('confirm_reachable', name)) or True,
         correlate_inventory=lambda role, digest: calls.append(('correlate_inventory', role, digest)) or authority,
         foreign_pid=lambda role: 500, audit=lambda port: None)
     authority.approve_offline_fixtures = lambda config: authority
@@ -2050,9 +2051,10 @@ class ProbeFamily:
     one literal fact before the parent reads it. Nothing forks, opens or signals."""
     BOOTSTRAP_ARGV = ('/opt/acceptance/runtime/python/bin/python3', '/opt/acceptance/guest/bootstrap.py')
 
-    def __init__(self, probe, authority, change=None):
-        self.change, self.buffer = change, bytearray()
+    def __init__(self, probe, authority, change=None, syscall=None):
+        self.change, self.buffer, self.spawns = change, bytearray(), 0
         self.b = b = InertBindings()
+        if syscall is not None: b.syscall = syscall
         b.os.write, b.os.read, b.os.close = self.write, lambda fd, size: b'EXIT', lambda fd: None
         b.os.unlink = b.os.rmdir = lambda path: None
         b.os.path = types.SimpleNamespace(lexists=lambda path: False)
@@ -2064,6 +2066,7 @@ class ProbeFamily:
         self.fixtures = probe.OfflineProbeFixtures(c, self.kernel, ConfinementTests().config(self.kernel), authority)
 
     def spawn(self, launch, entry):
+        self.spawns += 1
         proc = LiteralProc(launch.role)
         proc.cmdline = list(self.BOOTSTRAP_ARGV)
         if self.change: self.change(proc)
@@ -2107,10 +2110,16 @@ class ProbeHonestyTests(unittest.TestCase):
     def setUp(self):
         self.probe = probe_module('task10_probe_honesty')
 
-    def context(self, name, answer=None, authority=None, role='BROWSER', **recorder):
+    # The UNIX targets the trusted parent confirms for a family (P54), as run_confined hands them to the child.
+    TARGETS = {'controller-SCM_RIGHTS': (DONORS['CONTROLLER'],), 'proxy-SCM_RIGHTS': (DONORS['PROXY'],),
+               'trusted-unix-names-unreachable': TRUSTED_NAMES}
+
+    def context(self, name, answer=None, authority=None, role='BROWSER', targets=None, **recorder):
         rec = ProbeRecorder(answer, **recorder)
-        return rec, self.probe.NativeProbeContext(types.SimpleNamespace(b=rec.b), authority or probe_authority(),
-                                                  role + '.' + name, c)
+        ctx = self.probe.NativeProbeContext(types.SimpleNamespace(b=rec.b), authority or probe_authority(),
+                                            role + '.' + name, c)
+        ctx.unix_targets = self.TARGETS.get(name) if targets is None else targets
+        return rec, ctx
 
     def port(self):
         return self.probe.NativeProbePort(types.SimpleNamespace(run_confined=lambda *args: None))
@@ -2260,10 +2269,12 @@ class ProbeHonestyTests(unittest.TestCase):
                           struct.pack('<H108s', 1, b'/run/acceptance/controller/trusted.sock\0')])
         rec, ctx = self.context('trusted-unix-names-unreachable', names(b'\0acceptance-trusted'))
         self.assertFailure(self.attempt('trusted-unix-names-unreachable', ctx), 'TRUSTED_UNIX_NAME_REACHED')
-        rec, ctx = self.context('trusted-unix-names-unreachable',
-                                authority=probe_authority(trusted_unix_names=lambda: ()))
-        self.assertOutcome(self.attempt('trusted-unix-names-unreachable', ctx), 'RuntimeGateUnavailable',
-                           'TRUSTED_UNIX_NAMES_UNAVAILABLE')
+        # Without targets confirmed by the trusted parent (P54) the family attempts nothing.
+        for name in ('trusted-unix-names-unreachable', 'controller-SCM_RIGHTS'):
+            with self.subTest(unconfirmed=name):
+                rec, ctx = self.context(name, denied(ENOTSOCK), targets=())  # FD3 is the pipe; then no target
+                self.assertOutcome(self.attempt(name, ctx), 'RuntimeGateUnavailable', 'FIXTURE_UNAVAILABLE')
+                self.assertEqual([call[0] for call in rec.calls if call[0] != 212], [])
 
     def test_proc_enumeration_reports_non_family_pid(self):
         rec, ctx = self.context('proc-enumeration-family-only', listing=('1', 'self', 'thread-self', 'sys', 'meminfo'))
@@ -2273,9 +2284,10 @@ class ProbeHonestyTests(unittest.TestCase):
                 rec, ctx = self.context('proc-enumeration-family-only', listing=listing)
                 self.assertFailure(self.attempt('proc-enumeration-family-only', ctx), 'NON_FAMILY_PROCESS_VISIBLE')
 
-    def abi_helper(self, name, code, *, compat=True, marker=b'ATTEMPTED\n'):
-        """The probe's real helper control flow for NAME over the Task 8 reviewer's D1 bindings: the forked sample
-        writes MARKER and ends with waitstatus_to_exitcode CODE; the termination audit is a rubber stamp."""
+    def abi_helper(self, name, code, *, marker=b'ATTEMPTED\n'):
+        """The probe's real helper control flow for NAME over the Task 8 reviewer's D1 bindings: the forked process
+        writes MARKER and ends with waitstatus_to_exitcode CODE; the termination audit is a rubber stamp. The
+        authority has no kernel_feature: the outcome alone decides (P53)."""
         os_ns = types.SimpleNamespace(pipe2=lambda flags: (31, 32), fork=lambda: 4242, close=lambda fd: None,
                                       read=lambda fd, size: marker[:size], waitpid=lambda pid, flags: (4242, 0),
                                       waitstatus_to_exitcode=lambda status: code, WNOHANG=1, kill=lambda *args: None,
@@ -2285,15 +2297,15 @@ class ProbeHonestyTests(unittest.TestCase):
                                   pin_sample=lambda path, sha: 19, syscall=lambda *args: 0)
         sample = {'AArch32-audit': 'aarch32-syscall', 'alternate-syscall-entry': 'alternate-entry'}[name]
         pin = c.ProgramPin('/opt/acceptance/tests/fixtures/' + sample, 'a' * 64)
-        authority = probe_authority(helper_pin=lambda name: pin, kernel_feature=lambda feature: compat)
+        authority = probe_authority(helper_pin=lambda name: pin)
         ctx = self.probe.NativeProbeContext(types.SimpleNamespace(b=b), authority, 'BROWSER.' + name, c)
         try: ctx.helper(name)
         except OSError as error: return (True, self.denial(name, error)), authority.calls
         except Exception as error: return error, authority.calls
         return (False, None), authority.calls
 
-    def aarch32_child_exit(self, compat, code):
-        """The exit status the helper's forked pre-exec child chooses when exec of the AArch32 sample fails with
+    def exec_child_exit(self, name, code):
+        """The exit status the helper's forked pre-exec child chooses when exec of NAME's pinned sample fails with
         CODE (the child branch of the real helper, fork returning 0)."""
         exits = []
         def leave(status): exits.append(status); raise ChildExit()
@@ -2304,26 +2316,27 @@ class ProbeHonestyTests(unittest.TestCase):
         b = types.SimpleNamespace(os=os_ns, signal=types.SimpleNamespace(SIGKILL=9), monotonic=lambda: 0.0,
                                   select=lambda r, w, e, t: (r, [], []), sleep=lambda s: None,
                                   pin_sample=lambda path, sha: 19, syscall=lambda *args: 0)
-        pin = c.ProgramPin('/opt/acceptance/tests/fixtures/aarch32-syscall', 'a' * 64)
-        authority = probe_authority(helper_pin=lambda name: pin, kernel_feature=lambda feature: compat)
-        ctx = self.probe.NativeProbeContext(types.SimpleNamespace(b=b), authority, 'BROWSER.AArch32-audit', c)
-        try: ctx.helper('AArch32-audit')
+        sample = {'AArch32-audit': 'aarch32-syscall', 'alternate-syscall-entry': 'alternate-entry'}[name]
+        pin = c.ProgramPin('/opt/acceptance/tests/fixtures/' + sample, 'a' * 64)
+        ctx = self.probe.NativeProbeContext(types.SimpleNamespace(b=b), probe_authority(helper_pin=lambda name: pin),
+                                            'BROWSER.' + name, c)
+        try: ctx.helper(name)
         except ChildExit: pass
         except Exception as error: return error
         return exits[0] if exits else None
 
     def test_abi_probe_requires_sigsys(self):
-        for name in ('AArch32-audit', 'alternate-syscall-entry'):
-            # D1: a sample that dies by any other signal (SIGSEGV, SIGKILL), or exits, even with code 23, is not the
-            # KILL_PROCESS denial; the rubber-stamp termination audit is never consulted.
-            for code in (-SIGSEGV, -9, 23, 0):
+        for name, kill in (('AArch32-audit', 'SECCOMP_ARCH_KILL'), ('alternate-syscall-entry', 'SECCOMP_KILL')):
+            # D1: a sample that dies by any other signal (SIGSEGV, SIGKILL), or exits, even with code 23 or the exec
+            # refusal status 24, is not the KILL_PROCESS denial; the rubber-stamp termination audit is never consulted.
+            for code in (-SIGSEGV, -9, 23, 24, 0):
                 with self.subTest(op=name, code=code):
                     outcome, calls = self.abi_helper(name, code)
                     self.assertFailure(outcome, 'ABI_ATTEMPT_UNPROVED')
                     self.assertEqual(calls, [])
             with self.subTest(op=name, code=-SIGSYS):
                 outcome, calls = self.abi_helper(name, -SIGSYS)
-                self.assertEqual(outcome, (True, 'SECCOMP_KILL'))
+                self.assertEqual(outcome, (True, kill))
                 self.assertEqual(calls, [('audit_abi_termination', name, 4242, 0)])
             with self.subTest(op=name, unproved='no marker'):
                 outcome, calls = self.abi_helper(name, -SIGSYS, marker=b'')
@@ -2347,31 +2360,41 @@ class ProbeHonestyTests(unittest.TestCase):
         self.assertEqual({key: p.HELPER_SAMPLES[key] for key in ('AArch32-audit', 'alternate-syscall-entry')},
                          {'AArch32-audit': 'aarch32-syscall', 'alternate-syscall-entry': 'alternate-entry'})
 
-    def test_aarch32_without_compat_requires_observed_exec_refusal(self):
+    def test_aarch32_outcome_requires_sigsys_or_observed_exec_refusal(self):
+        # P53 (I-2; replaces the CONFIG_COMPAT-keyed test_aarch32_without_compat_requires_observed_exec_refusal): the
+        # observed outcome decides. linux-6.8/arch/arm64/kernel/process.c:601-620 refuses an AArch32 exec with ENOEXEC
+        # without CONFIG_COMPAT or without 32-bit EL0 on the CPU, so no fixture answer can predict it.
         p = self.probe
-        # No sample ran (no marker) and the pre-exec child's fixed refusal exit 24: an observed ENOEXEC refusal.
-        outcome, calls = self.abi_helper('AArch32-audit', 24, compat=False, marker=b'')
-        self.assertEqual(outcome, (True, 'CONFIG_COMPAT_ABSENT'))
+        self.assertNotIn('kernel_feature', p._FIXTURE_AUTHORITY)
+        self.assertFalse(hasattr(p.NativeProbeContext, 'kernel_feature'))
+        self.assertEqual(p.allowed_bases('AArch32-audit'), ('SECCOMP_ARCH_KILL', 'AARCH32_EXEC_UNAVAILABLE'))
+        self.assertEqual(p.allowed_bases('alternate-syscall-entry'), ('SECCOMP_KILL',))
+        # No sample code ran (no marker) and the pre-exec child's fixed refusal exit 24: the observed exec refusal.
+        outcome, calls = self.abi_helper('AArch32-audit', 24, marker=b'')
+        self.assertEqual(outcome, (True, 'AARCH32_EXEC_UNAVAILABLE'))
         self.assertEqual(calls, [])
-        # Without compat, a sample that ran (marker, even SIGSYS) or any other end is not an observed refusal.
-        for code, marker in ((-SIGSYS, b'ATTEMPTED\n'), (24, b'ATTEMPTED\n'), (78, b''), (23, b''), (0, b'')):
-            with self.subTest(compat=False, code=code, marker=marker):
-                outcome, calls = self.abi_helper('AArch32-audit', code, compat=False, marker=marker)
-                self.assertFailure(outcome, 'EXEC_REFUSAL_UNPROVED')
-        # With compat the refusal exit is no denial: the sample must run and die by SIGSYS.
-        outcome, calls = self.abi_helper('AArch32-audit', 24, compat=True, marker=b'')
+        # The sample started and died by SIGSYS: the filter's arch kill.
+        outcome, calls = self.abi_helper('AArch32-audit', -SIGSYS)
+        self.assertEqual(outcome, (True, 'SECCOMP_ARCH_KILL'))
+        # Every other outcome fails: a marker-less end other than 24, a refusal status after the sample started,
+        # SIGSEGV or any other signal, any exit code, success.
+        for code, marker, failure in ((78, b'', 'HELPER_ATTEMPT_UNPROVED'), (23, b'', 'HELPER_ATTEMPT_UNPROVED'),
+                                      (0, b'', 'HELPER_ATTEMPT_UNPROVED'), (-SIGSYS, b'', 'HELPER_ATTEMPT_UNPROVED'),
+                                      (-SIGSEGV, b'', 'HELPER_ATTEMPT_UNPROVED'),
+                                      (24, b'ATTEMPTED\n', 'ABI_ATTEMPT_UNPROVED'),
+                                      (-SIGSEGV, b'ATTEMPTED\n', 'ABI_ATTEMPT_UNPROVED'),
+                                      (0, b'ATTEMPTED\n', 'ABI_ATTEMPT_UNPROVED')):
+            with self.subTest(code=code, marker=marker):
+                outcome, calls = self.abi_helper('AArch32-audit', code, marker=marker)
+                self.assertFailure(outcome, failure)
+        # The alternate-entry sample is native AArch64: an exec refusal is never its denial.
+        outcome, calls = self.abi_helper('alternate-syscall-entry', 24, marker=b'')
         self.assertFailure(outcome, 'HELPER_ATTEMPT_UNPROVED')
-        # The pre-exec child maps exactly an ENOEXEC exec failure to 24, and only when compat is absent.
-        for compat, code, status in ((False, ENOEXEC, 24), (False, EACCES, 78), (False, EINVAL, 78), (True, ENOEXEC, 78)):
-            with self.subTest(child_compat=compat, errno=code):
-                self.assertEqual(self.aarch32_child_exit(compat, code), status)
-        # An unanswered feature is unavailability; the parent's basis follows its own answer.
-        outcome, calls = self.abi_helper('AArch32-audit', -SIGSYS, compat=None)
-        self.assertOutcome(outcome, 'RuntimeGateUnavailable', 'KERNEL_FEATURE_UNAVAILABLE')
-        self.assertTrue(hasattr(p, 'expected_basis'), 'no expected basis per operation')
-        self.assertEqual(p.expected_basis('AArch32-audit', False), 'CONFIG_COMPAT_ABSENT')
-        self.assertEqual(p.expected_basis('AArch32-audit', True), 'SECCOMP_KILL')
-        self.assertEqual(p.expected_basis('alternate-syscall-entry', False), 'SECCOMP_KILL')
+        # The pre-exec child maps exactly an ENOEXEC exec failure of the AArch32 sample to 24.
+        for name, code, status in (('AArch32-audit', ENOEXEC, 24), ('AArch32-audit', EACCES, 78),
+                                   ('AArch32-audit', EINVAL, 78), ('alternate-syscall-entry', ENOEXEC, 78)):
+            with self.subTest(child=name, errno=code):
+                self.assertEqual(self.exec_child_exit(name, code), status)
 
     def test_exact_fd_inventory_probe_observes_parent_side(self):
         p = self.probe
@@ -2431,14 +2454,55 @@ class ProbeHonestyTests(unittest.TestCase):
                 rec, ctx = self.context(name, write_only)
                 self.assertFailure(self.attempt(name, ctx), 'CONSOLE_OPENED')
                 self.assertEqual(rec.closed, [40])
-        # proc-console-reopen: both directions reach only /dev/null; any other node is a reopened console.
-        rec, ctx = self.context('proc-console-reopen', lambda kind, args: 41)
-        self.assertEqual(self.attempt('proc-console-reopen', ctx), (True, 'OBSERVED'))
-        self.assertEqual(rec.opens, [('/proc/1/fd/0', read_flags), ('/proc/1/fd/0', write_flags)])
-        self.assertEqual(rec.closed, [41, 41])
-        def console_on_write(kind, args): return 42 if args[1] & 3 == 1 else 41
-        rec, ctx = self.context('proc-console-reopen', console_on_write, links={'/proc/self/fd/42': '/dev/hvc0'})
-        self.assertFailure(self.attempt('proc-console-reopen', ctx), 'CONSOLE_REOPENED')
+        # proc-console-reopen is attempted in both directions too; it follows the magic link (P52, the next test).
+        rec, ctx = self.context('proc-console-reopen', denied(EACCES))
+        self.assertEqual(self.attempt('proc-console-reopen', ctx), (True, 'KERNEL_ERRNO'))
+        self.assertEqual([flags & 3 for path, flags in rec.opens], [0, 1])
+        def write_reached(kind, args):
+            if args[1] & 3 == 1: return 42
+            raise PermissionError(EACCES, 'inert read refusal')
+        rec, ctx = self.context('proc-console-reopen', write_reached)
+        self.assertFailure(self.attempt('proc-console-reopen', ctx), 'CONSOLE_REACHED')
+        self.assertEqual(rec.closed, [42])
+
+    def test_console_reopen_follows_the_console_roles_magic_link(self):
+        # P52 (I-1): the real reopen attack. The console is the CONTROLLER role's (appliance consoleRole); a family's
+        # /proc is its own PID namespace, where pid 1 is the family itself (linux-6.8/fs/proc/root.c:252), so the
+        # target is the controller-UID fixture process's fd 0, through its magic link, FOLLOWED: without O_NOFOLLOW,
+        # which on an S_IFLNK fd entry (fs/proc/fd.c:206) only ever gives ELOOP (fs/open.c:1307-1308,
+        # fs/namei.c:3247-3248). Only the 6.8 refusals of a non-owner (EACCES: proc_fd_permission fs/proc/fd.c:332-349,
+        # proc_pid_get_link fs/proc/base.c:1738-1759) or an invisible pid (ENOENT: proc_pid_lookup fs/proc/base.c:3449)
+        # deny; an open reaches the console.
+        nofollow, cloexec, wronly = 0o100000, 0o2000000, 1
+        target = '/proc/%d/fd/0' % FOREIGN['CONTROLLER']
+        for errno_ in (EACCES, ENOENT):
+            with self.subTest(refused=errno_):
+                rec, ctx = self.context('proc-console-reopen', denied(errno_))
+                self.assertEqual(self.attempt('proc-console-reopen', ctx), (True, 'KERNEL_ERRNO'))
+                self.assertEqual(rec.opens, [(target, cloexec), (target, wronly | cloexec)])
+                self.assertFalse(any(flags & nofollow for path, flags in rec.opens))
+        for errno_ in (ELOOP, EPERM, EBADF, EINVAL):
+            with self.subTest(unexpected=errno_):
+                rec, ctx = self.context('proc-console-reopen', denied(errno_))
+                self.assertFailure(self.attempt('proc-console-reopen', ctx), 'UNEXPECTED_KERNEL_ERROR')
+        for direction, answer in (('read', lambda kind, args: 43),
+                                  ('write', lambda kind, args: 43 if args[1] & 3 == 1 else
+                                   (_ for _ in ()).throw(PermissionError(EACCES, 'inert')))):
+            with self.subTest(reached=direction):
+                rec, ctx = self.context('proc-console-reopen', answer)
+                self.assertFailure(self.attempt('proc-console-reopen', ctx), 'CONSOLE_REACHED')
+                self.assertEqual(rec.closed, [43])
+        # The target is really the console role's: another owner, or no such process, is unavailability before any
+        # open; pid 1, this family itself, is never the target.
+        for name, owners in (('another uid', {'/proc/7': c.UIDS['VERIFIER']}), ('absent', {})):
+            with self.subTest(foreign=name):
+                rec, ctx = self.context('proc-console-reopen', owners=owners)
+                self.assertOutcome(self.attempt('proc-console-reopen', ctx), 'RuntimeGateUnavailable',
+                                   'FOREIGN_IDENTITY_UNAVAILABLE')
+                self.assertEqual(rec.opens, [])
+        rec, ctx = self.context('proc-console-reopen', denied(EACCES))
+        self.attempt('proc-console-reopen', ctx)
+        self.assertNotIn('/proc/1/fd/0', [path for path, flags in rec.opens])
 
     def test_check_appliance_uses_last_mountinfo_row(self):
         # T8-12: path lookup reaches only the last mount on a mount point; an earlier row proves nothing.
@@ -2527,14 +2591,128 @@ class ProbeHonestyTests(unittest.TestCase):
                 rec, ctx = self.context('unshare-CLONE_NEWUSER', answer)
                 self.assertFailure(self.attempt('unshare-CLONE_NEWUSER', ctx), 'USER_NAMESPACE_UNAVAILABLE')
 
+    def unix_family(self, operation, authority, syscall):
+        """OPERATION run through the real OfflineProbeFixtures.run_confined (P54: the parent's control happens there)
+        over the ProbeFamily transport, the child answering every syscall with SYSCALL. Returns the parent's outcome,
+        the probe failure the child raised (if any), and the family."""
+        try: family = ProbeFamily(self.probe, authority, syscall=syscall)
+        except Exception as error: self.fail('offline fixtures refused the P54 authority: ' + repr(error))
+        port = self.probe.NativeProbePort(family.fixtures)
+        raised = []
+        def attempt(context):
+            try: denied, basis = self.probe._outcome(port, operation.partition('.')[2], context)
+            except self.probe.ProbeFailure as failure: raised.append(str(failure)); raise
+            return dict(operation=operation, attempted=True, denied=denied, receiver_count=0, basis=basis)
+        try: outcome = family.fixtures.run_confined('BROWSER', operation, attempt)
+        except Exception as error: outcome = error
+        return outcome, raised, family
+
+    @staticmethod
+    def unix_kernel(reached=(), fds=()):
+        """Inert kernel for the UNIX-name probes: FD3 is the pipe (ENOTSOCK), an AF_UNIX socket is fd 20, a connect
+        to an address in REACHED succeeds and every other one is ECONNREFUSED; a reached donor sends FDS."""
+        calls = []
+        def syscall(nr, *args):
+            calls.append((nr, args))
+            if nr == 212 and args[0] == 3: raise OSError(ENOTSOCK, 'inert pipe')
+            if nr == 198: return 20
+            if nr == 203:
+                if args[1] in reached: return 0
+                raise OSError(ECONNREFUSED, 'inert refusal')
+            if nr == 212:
+                message = args[1]
+                if fds:
+                    message.pointers[32].data[:20] = (struct.pack('<Qii', 20, SOL_SOCKET, SCM_RIGHTS)
+                                                      + struct.pack('<i', fds[0]))
+                struct.pack_into('<Q', message.data, 40, 24 if fds else 0)
+                return 1
+            raise AssertionError(nr)
+        syscall.calls = calls
+        return syscall
+
+    def test_donor_probe_requires_parent_positive_control(self):
+        # P54 (I-3): only after the trusted parent confirmed the donor exists and is reachable does the family's
+        # ENOENT/ECONNREFUSED count as isolation; a failed control is FIXTURE_UNAVAILABLE, never a denial.
+        donor = lambda role: struct.pack('<H108s', 1, DONORS[role].encode() + (b'' if DONORS[role][0] == '\0' else b'\0'))
+        for name, role in (('controller-SCM_RIGHTS', 'CONTROLLER'), ('proxy-SCM_RIGHTS', 'PROXY')):
+            operation = 'BROWSER.' + name
+            with self.subTest(op=name, donor='absent'):
+                authority = probe_authority(confirm_reachable=lambda target: False)
+                kernel = self.unix_kernel()
+                outcome, raised, family = self.unix_family(operation, authority, kernel)
+                self.assertOutcome(outcome, 'RuntimeGateUnavailable', 'FIXTURE_UNAVAILABLE')
+                self.assertEqual((family.spawns, kernel.calls), (0, []))
+            with self.subTest(op=name, donor='present, child refused'):
+                authority = probe_authority()
+                kernel = self.unix_kernel()
+                outcome, raised, family = self.unix_family(operation, authority, kernel)
+                self.assertEqual((outcome.get('denied'), outcome.get('basis')), (True, 'KERNEL_ERRNO'), outcome)
+                # Confirmed before and after the family, for this role's own donor; the child attempts exactly it.
+                self.assertEqual([call for call in authority.calls if call[0] == 'confirm_reachable'],
+                                 [('confirm_reachable', DONORS[role])] * 2)
+                self.assertEqual([call[1][1] for call in kernel.calls if call[0] == 203], [donor(role)])
+            with self.subTest(op=name, donor='present, descriptor received'):
+                kernel = self.unix_kernel(reached=(donor(role),), fds=(55,))
+                outcome, raised, family = self.unix_family(operation, probe_authority(), kernel)
+                self.assertEqual(raised, ['FD_DONOR_REACHED'])
+                self.assertFailure(outcome, 'PROBE_OPERATION_FAILED')
+            with self.subTest(op=name, donor='vanished during the family'):
+                answers = iter((True, False))
+                authority = probe_authority(confirm_reachable=lambda target: next(answers))
+                outcome, raised, family = self.unix_family(operation, authority, self.unix_kernel())
+                self.assertOutcome(outcome, 'RuntimeGateUnavailable', 'FIXTURE_UNAVAILABLE')
+                self.assertEqual(family.spawns, 1)
+            with self.subTest(op=name, control='answers truthy, not True'):
+                authority = probe_authority(confirm_reachable=lambda target: 1)
+                outcome, raised, family = self.unix_family(operation, authority, self.unix_kernel())
+                self.assertOutcome(outcome, 'RuntimeGateUnavailable', 'FIXTURE_UNAVAILABLE')
+                self.assertEqual(family.spawns, 0)
+
+    def test_trusted_name_probe_requires_parent_positive_control(self):
+        # P54 (I-3): the same three outcomes for the trusted UNIX names.
+        operation = 'BROWSER.trusted-unix-names-unreachable'
+        address = lambda name: struct.pack('<H108s', 1, name.encode() + (b'' if name[0] == '\0' else b'\0'))
+        with self.subTest(name='one absent'):
+            authority = probe_authority(confirm_reachable=lambda target: target != TRUSTED_NAMES[1])
+            kernel = self.unix_kernel()
+            outcome, raised, family = self.unix_family(operation, authority, kernel)
+            self.assertOutcome(outcome, 'RuntimeGateUnavailable', 'FIXTURE_UNAVAILABLE')
+            self.assertEqual((family.spawns, kernel.calls), (0, []))
+        with self.subTest(name='present, child refused'):
+            authority = probe_authority()
+            kernel = self.unix_kernel()
+            outcome, raised, family = self.unix_family(operation, authority, kernel)
+            self.assertEqual((outcome.get('denied'), outcome.get('basis')), (True, 'KERNEL_ERRNO'), outcome)
+            self.assertEqual([call[1] for call in authority.calls if call[0] == 'confirm_reachable'],
+                             list(TRUSTED_NAMES) * 2)
+            self.assertEqual([call[1][1] for call in kernel.calls if call[0] == 203],
+                             [address(name) for name in TRUSTED_NAMES])
+        with self.subTest(name='present, child connects'):
+            kernel = self.unix_kernel(reached=(address(TRUSTED_NAMES[0]),))
+            outcome, raised, family = self.unix_family(operation, probe_authority(), kernel)
+            self.assertEqual(raised, ['TRUSTED_UNIX_NAME_REACHED'])
+            self.assertFailure(outcome, 'PROBE_OPERATION_FAILED')
+        for name, names in (('empty', ()), ('duplicate', (TRUSTED_NAMES[0],) * 2), ('list', list(TRUSTED_NAMES))):
+            with self.subTest(names=name):
+                authority = probe_authority(trusted_unix_names=lambda: names)
+                outcome, raised, family = self.unix_family(operation, authority, self.unix_kernel())
+                self.assertOutcome(outcome, 'RuntimeGateUnavailable', 'TRUSTED_UNIX_NAMES_UNAVAILABLE')
+                self.assertEqual(family.spawns, 0)
+        # Other operations ask the control nothing.
+        authority = probe_authority()
+        family = ProbeFamily(self.probe, authority)
+        self.assertIsNone(family.fixtures._confirm_reachable('BROWSER.ptrace-attach'))
+        self.assertEqual(authority.calls, [])
+
     def test_result_basis_is_bound_for_every_operation(self):
         p = self.probe
         operations = {op.partition('.')[2] for case in p.PROBES.values() for op in case.operations}
         basis = getattr(p, 'BASIS', {})
         self.assertEqual(set(basis), operations)
-        self.assertEqual(set(basis.values()), {'KERNEL_ERRNO', 'KERNEL_CREDENTIAL_CHECK', 'SECCOMP_KILL', 'HELPER_EXIT',
-                                               'LIBRARY_RECHECK', 'OBSERVED'})
-        # run_case accepts only the operation's own basis (AArch32 alone may say CONFIG_COMPAT_ABSENT).
+        self.assertEqual(set(basis.values()), {'KERNEL_ERRNO', 'KERNEL_CREDENTIAL_CHECK', 'SECCOMP_KILL',
+                                               'SECCOMP_ARCH_KILL', 'HELPER_EXIT', 'LIBRARY_RECHECK', 'OBSERVED'})
+        self.assertEqual(p.BASES, frozenset(basis.values()) | {'AARCH32_EXEC_UNAVAILABLE'})
+        # run_case accepts only the operation's own basis (AArch32 alone may also say AARCH32_EXEC_UNAVAILABLE).
         def port(label):
             return types.SimpleNamespace(attempt=lambda case: tuple(
                 {'operation': op, 'attempted': True, 'denied': True, 'receiver_count': 0, 'basis': label(op)}
@@ -2543,18 +2721,20 @@ class ProbeHonestyTests(unittest.TestCase):
         try: outcome = len(p.run_case('privilege_gain_denied', port(own)))
         except Exception as error: outcome = error
         self.assertEqual(outcome, 5)
-        for wrong in ('KERNEL_ERRNO', 'CONFIG_COMPAT_ABSENT', None):
+        for wrong in ('KERNEL_ERRNO', 'AARCH32_EXEC_UNAVAILABLE', 'CONFIG_COMPAT_ABSENT', None):
             with self.subTest(basis=wrong):
                 try: p.run_case('privilege_gain_denied', port(lambda op: wrong))
                 except Exception as error: outcome = error
                 else: outcome = None
                 self.assertFailure(outcome, 'PROBE_BOUNDARY_FAILED')
-        for label in ('SECCOMP_KILL', 'CONFIG_COMPAT_ABSENT'):
+        for label, admitted in (('SECCOMP_ARCH_KILL', True), ('AARCH32_EXEC_UNAVAILABLE', True),
+                                ('SECCOMP_KILL', False), ('CONFIG_COMPAT_ABSENT', False)):
             with self.subTest(aarch32=label):
                 labels = {'BROWSER.AArch32-audit': label, 'BROWSER.alternate-syscall-entry': 'SECCOMP_KILL'}
                 try: outcome = len(p.run_case('alternate_ABI_denied', port(labels.get)))
                 except Exception as error: outcome = error
-                self.assertEqual(outcome, 2)
+                if admitted: self.assertEqual(outcome, 2)
+                else: self.assertFailure(outcome, 'PROBE_BOUNDARY_FAILED')
 
     def test_gated_guest_driver_covers_catalogue_and_stays_unavailable(self):
         # The gated native driver names every catalogue case, the P49 case included, and without an injected
