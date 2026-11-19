@@ -200,6 +200,18 @@ class Terminal:
             time.sleep(.001)
         return False
 
+    def unread(self):
+        """Bytes still queued on the slave, partial canonical lines included: FIONREAD counts only complete lines
+        in canonical mode, so the count is taken in non-canonical mode (TCSANOW keeps the queues), then the
+        original mode comes back."""
+        attributes = termios.tcgetattr(self.slave)
+        attributes[3] &= ~termios.ICANON
+        termios.tcsetattr(self.slave, termios.TCSANOW, attributes)
+        try:
+            return struct.unpack('i', fcntl.ioctl(self.slave, termios.FIONREAD, struct.pack('i', 0)))[0]
+        finally:
+            termios.tcsetattr(self.slave, termios.TCSANOW, self.original)
+
     def lose_master(self):
         self._lose.set()
         self._lost.wait(1)
@@ -484,6 +496,12 @@ class IntakeTests(unittest.TestCase):
         reader_gone.lose_reader()
         run = self.run_intake(self.grant(), frame(CANARY), private=reader_gone)
         self.assert_clean_failure('consume sink', run.outcome, 'SINK_FAILED')
+
+        def leaking_sink(_sink, _run_id, value, _deadline):
+            raise RuntimeError(bytes(value))  # an unexpected sink error that captured the private bytes
+        with mock.patch.object(intake.PrivatePipeSink, 'consume_private', leaking_sink):
+            run = self.run_intake(self.grant(), frame(CANARY))
+        self.assert_clean_failure('consume unexpected sink error', run.outcome, 'SINK_FAILED')
         # The same two events at the inner raise sites, _read_credential and PrivatePipeSink.consume_private.
         grant = self.grant()
         terminal = self.terminal()
@@ -560,6 +578,7 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(self.code(run), 'CREDENTIAL_INVALID')
         self.assertEqual(run.private, b'')
         self.assertEqual(modes(run.terminal.slave), run.terminal.original)
+        self.assertEqual(run.terminal.unread(), 0)  # T11-M1: the 16 unread bytes are flushed, not left queued
         self.assert_handlers(expected)
         # Terminal loss: the master closes while the intake waits for the header.
         run = self.run_intake(self.grant(expires=1000 + 3000), lose=True)
