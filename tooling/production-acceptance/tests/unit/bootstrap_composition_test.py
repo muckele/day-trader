@@ -1448,6 +1448,28 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
         value=json.loads(proof.handoff);value['payload']['composition']['binding']['epoch']=2
         with self.assertRaises(t.TopologyError):t.verify_bootstrap_handoff_v1(resigned(value),h.expected,h.binding,composition)
 
+    def test_v1_owned_consumer_rejects_rows_that_differ_from_retained_originals(self):
+        # T10 divergence (Swift twin: canonical original equality): a validly MAC'd
+        # handoff whose runtime rows differ from the bootstrap's retained records.
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:proof=composition.begin(TEST_HOST_CHALLENGE)
+        key=c.derive_channel_key(h.expected.capability,'topology-admission')
+        def resigned(value):
+            value['mac']=hmac.new(key,t.BOOTSTRAP_HANDOFF_DOMAIN+t._canonical(value['payload']),hashlib.sha256).hexdigest()
+            return t._canonical(value).decode()
+        self.assertEqual(t.verify_bootstrap_handoff_v1(proof.handoff,h.expected,h.binding,composition)['runId'],h.binding.runId)
+        for index,field,value in ((3,'ownerId','d'*32),(3,'inode','4242'),(0,'ownerId','d'*32)):
+            with self.subTest(role=index,field=field):
+                envelope=json.loads(proof.handoff)
+                row=envelope['payload']['composition']['roleRuntime'][index]['currentFDs'][-1]
+                row[field]=value
+                wire=resigned(envelope)
+                # Structurally valid: the ownerless consumer accepts it ...
+                self.assertEqual(t.verify_bootstrap_handoff_v1(wire,h.expected,h.binding)['runId'],h.binding.runId)
+                # ... the owned consumer compares it with the retained original record.
+                with self.assertRaisesRegex(t.TopologyError,'^HANDOFF_DENIED$'):
+                    t.verify_bootstrap_handoff_v1(wire,h.expected,h.binding,composition)
+
     def test_v1_capture_failure_at_each_acquisition_keeps_original_cleanup(self):
         h=self.Harness(self);composition,stack=h.build()
         h.observations.observation_port.open_owned=lambda *args:(_ for _ in ()).throw(OSError('inert capture'))
