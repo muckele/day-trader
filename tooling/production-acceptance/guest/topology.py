@@ -227,6 +227,9 @@ _PROXY = _dependency('proxy.py', '_acceptance_topology_proxy')
 _PROBES = _fixed_dependency(pathlib.Path(__file__).resolve().parents[1] /
     'tests/guest/confinement_probe.py', '_acceptance_topology_confinement_probe')
 RuntimeGateUnavailable = _PROBES.RuntimeGateUnavailable
+# The two kernel port types a consumer accepts, by exact type, never isinstance
+# (T8-05, P11). Only NativeKernelPort counts as native.
+_KERNEL_PORTS = (_CONFINEMENT.NativeKernelPort, _CONFINEMENT.OfflineKernelPort)
 _RUN = re.compile(r'[0-9a-f]{32}')
 _DIGEST = re.compile(r'[0-9a-f]{64}')
 _MAX = 9007199254740991
@@ -660,8 +663,7 @@ class BootstrapEventOwner:
                     or binding is not self.binding or generation != self.generation
                     or type(browser_handoff) is not _CONFINEMENT.RoleHandoff
                     or browser_handoff.launch.role != 'BROWSER'
-                    or not isinstance(browser_handoff._kernel,
-                                      _CONFINEMENT.NativeKernelPort)
+                    or type(browser_handoff._kernel) not in _KERNEL_PORTS
                     or self._audit_pids.get(browser_handoff.attestation.pid)
                         != 'BROWSER'
                     or type(proxy_authority) is not ProxyChildAuthority):
@@ -1039,7 +1041,7 @@ class ProxyChildAuthority:
         originals = (_PROXY._CLIENT_ORIGINALS.get(client)
                      if type(client) is _PROXY.ProxyCompositionClient else None)
         if (seal is not _PROXY_CHILD_SEAL or originals is None
-                or type(kernel) is not _CONFINEMENT.NativeKernelPort
+                or type(kernel) not in _KERNEL_PORTS
                 or type(handoff) is not _CONFINEMENT.RoleHandoff
                 or handoff.launch.role != 'PROXY' or handoff._kernel is not kernel
                 or type(binding) is not _CONFINEMENT.CompositionBinding
@@ -1060,6 +1062,11 @@ class ProxyChildAuthority:
     @property
     def runtime_id(self):
         return self._runtime_id
+
+    @property
+    def native(self):
+        """Derived from the kernel's exact type (P11): an offline port is never native."""
+        return type(self._kernel) is _CONFINEMENT.NativeKernelPort
 
     def _live(self):
         originals = _PROXY_CHILD_AUTHORITIES.get(self)
@@ -1199,7 +1206,7 @@ def observe_current_roles(handoffs, runtime_owners, proxy_authority, binding):
     for handoff, role in zip(handoffs, expected_roles):
         if (type(handoff) is not _CONFINEMENT.RoleHandoff
                 or handoff.launch.role != role
-                or not isinstance(handoff._kernel, _CONFINEMENT.NativeKernelPort)):
+                or type(handoff._kernel) not in _KERNEL_PORTS):
             _fail('ROLE_DENIED')
         owner = runtime_owners[role]
         if role == 'PROXY' and (owner is not proxy_authority
@@ -2820,15 +2827,24 @@ class _CompositionCurrentSource:
 
 
 class BootstrapComposition:
-    """One terminal owner for the fixed probe→role→proxy→event→snapshot chain."""
+    """One terminal owner for the fixed probe→role→proxy→event→snapshot chain.
+
+    `native` is False whenever its fixtures are offline (T8-05). Native fixtures
+    need the sealed NativeKernelPort as both the fixture and the role kernel;
+    offline fixtures the OfflineKernelPort as both. No mixed chain is built.
+    """
     def __init__(self, *, binding, expected, role_config, fixtures, proxy_entry,
                  observations, host_devices, events, cleanup_budget, seal=None):
+        native = type(fixtures) is _PROBES.NativeProbeFixtures
+        port = _CONFINEMENT.NativeKernelPort if native else _CONFINEMENT.OfflineKernelPort
         if (seal is not _BOOTSTRAP_COMPOSITION_OWNER_SEAL
                 or type(binding) is not _CONFINEMENT.CompositionBinding
                 or type(expected) is not TopologyAuthority
                 or type(role_config) is not _CONFINEMENT.BootstrapConfig
                 or role_config.run_id != binding.runId
-                or type(fixtures) is not _PROBES.NativeProbeFixtures
+                or type(fixtures) not in (_PROBES.NativeProbeFixtures, _PROBES.OfflineProbeFixtures)
+                or type(getattr(fixtures, 'kernel', None)) is not port
+                or type(role_config.kernel) is not port
                 or (expected.run_id, expected.manifest_identity,
                     expected.config_identity, expected.expires_at) !=
                    (binding.runId, binding.manifestDigest,
@@ -2866,6 +2882,11 @@ class BootstrapComposition:
         self._host_challenges = set()
         self._admission_key = _admission_key(expected)
         _BOOTSTRAP_COMPOSITIONS.add(self)
+
+    @property
+    def native(self) -> bool:
+        """False whenever the fixtures are offline; never upgraded later."""
+        return type(self._fixtures) is _PROBES.NativeProbeFixtures
 
     def _retain_cleanup(self, owner):
         if owner is None or not callable(getattr(owner, 'stop_owned', None)):
@@ -3004,7 +3025,7 @@ class BootstrapComposition:
     def _bind_runtime_owners(self):
         for role in _CONFINEMENT.UIDS:
             handoff = self._roles._handoffs[role]
-            if not isinstance(handoff._kernel, _CONFINEMENT.NativeKernelPort):
+            if type(handoff._kernel) not in _KERNEL_PORTS:
                 _fail('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')
             if role == 'PROXY':
                 continue  # bound to its child authority while waiting (_activate_proxy)
@@ -3133,7 +3154,9 @@ class BootstrapComposition:
                 self._state = 'PROBING'
             token, probe_epoch = self._acquire('probe', lambda:
                 _PROBES.qualify_probe_epoch(self.binding, self._fixtures, self._budget))
-            if type(probe_epoch) is not _PROBES.CompletedProbeEpoch:
+            # The epoch's provenance must be this composition's (compA part A note).
+            if (type(probe_epoch) is not _PROBES.CompletedProbeEpoch
+                    or probe_epoch.native is not self.native):
                 _fail('PROBE_EPOCH_DENIED')
             self._publish(token, _probe_epoch=probe_epoch, _state='PROBES_EXITED')
             token, roles = self._acquire('roles', lambda:

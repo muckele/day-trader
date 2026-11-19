@@ -179,6 +179,9 @@ struct BootstrapExecutableMember: Hashable, Sendable {
 }
 struct BootstrapExecutableAuthority: Sendable {
     let pins:[String:String], manifestIdentity:String?
+    // compA M-4: no memberwise construction. Only qualify (a native inventory)
+    // and offlineLiteral (manifestIdentity nil, never native) mint one.
+    private init(pins:[String:String],manifestIdentity:String?) { self.pins=pins; self.manifestIdentity=manifestIdentity }
     static let requiredPaths = [
         "/opt/acceptance/guest/browser-worker.cjs", "/opt/acceptance/guest/controller.cjs",
         "/opt/acceptance/guest/proxy.py", "/opt/acceptance/guest/verifier.cjs",
@@ -557,7 +560,8 @@ enum BootstrapHandoff {
             for key in ["uids","gids"] { let values = try array(row[key]); guard values.count == 3 && values.allSatisfy({ integer($0,1,Int(UInt32.max)) == expected.1 }) else { throw VMFailure.admissionUnavailable } }
             guard try array(row["groups"]).isEmpty else { throw VMFailure.admissionUnavailable }
             let capabilities = try array(row["capabilities"]); guard capabilities.count == 5 && capabilities.allSatisfy({ integer($0,0,Int(UInt32.max)) == 0 }) else { throw VMFailure.admissionUnavailable }
-            let fds = try array(row["fds"]), peer = expected.0 == "CONTROLLER" ? "BOOTSTRAP":"CONTROLLER"
+            // T8-10: the bootstrap parent is FD0..4's physical peer for every role.
+            let fds = try array(row["fds"]), peer = "BOOTSTRAP"
             guard fds.count == 5 else { throw VMFailure.admissionUnavailable }
             for (index,rawFD) in fds.enumerated() {
                 let fd = try object(rawFD), purpose = ["stdin","stdout","stderr","command","result"][index]
@@ -1066,11 +1070,11 @@ final class BootstrapCompositionV1: BootstrapProbePort, @unchecked Sendable {
                      lifecycle:any BootstrapLifecyclePort & BootstrapOwnedLifecycle,
                      population:OfflineBootstrapPopulationAuthority,
                      eventOwner:OfflineBootstrapEventOwner,clock:any BrokerClock,
-                     expectation:BootstrapCompositionExpectation,nonces:any BootstrapNonceSource) {
+                     expectation:BootstrapCompositionExpectation,nonces:any BootstrapNonceSource) throws {
         self.run=run; self.probe=probe; self.lifecycle=lifecycle; self.population=population
         self.eventOwner=eventOwner; self.clock=clock; self.expectation=expectation
         challenges=BootstrapChallengeIssuer(nonces:nonces)
-        executables=BootstrapExecutableAuthority(pins:population.pins,manifestIdentity:nil)
+        executables=try BootstrapExecutableAuthority.offlineLiteral(pins:population.pins)
         channelOwners=(run.channels.broker + run.channels.console).map(ObjectIdentifier.init)
     }
     var eventOwnerOwnsActiveCapture:Bool { eventOwner.ownsActiveCapture }
@@ -1178,7 +1182,7 @@ enum OfflineVMHost {
             epoch:epoch,generation:generation,probeEpochDigest:probeEpochDigest,
             fixtureInventoryDigest:fixtureInventoryDigest,eventSourceID:eventOwner.sourceID,
             proxyRuntimeID:proxyRuntimeID,originalRoleRuntime:retainedRuntime)
-        return BootstrapCompositionV1(run:run,probe:probe,lifecycle:lifecycle,
+        return try BootstrapCompositionV1(run:run,probe:probe,lifecycle:lifecycle,
             population:population,eventOwner:eventOwner,clock:clock,expectation:expectation,nonces:nonces)
     }
 

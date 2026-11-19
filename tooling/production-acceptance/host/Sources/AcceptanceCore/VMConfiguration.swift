@@ -242,6 +242,9 @@ final class InstalledExecutableInventory: @unchecked Sendable {
         guard let inventory=value as? InstalledExecutableInventory else { throw ApplianceFailure.qualificationUnavailable }
         return inventory
     }
+    // compA M-5: unexercised. No test executes pins(manifest:), because no
+    // reviewed native population adapter can construct this type yet; that
+    // adapter's review must add tests that execute it.
     func pins(manifest:ApplianceManifest) throws -> [String:String] {
         try manifest.requireComposition()
         guard manifest.digest == appliance.manifest.digest, manifest.digest == members.manifestDigest,

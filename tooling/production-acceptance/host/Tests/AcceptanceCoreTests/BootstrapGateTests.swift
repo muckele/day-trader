@@ -1367,6 +1367,51 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         #expect(throws:VMFailure.admissionUnavailable) { _ = try VMHost.bootstrapCheck(run:run) }
     }
 
+    // compA M-4: BootstrapExecutableAuthority has a private init. Only offlineLiteral (manifestIdentity nil, never
+    // native) and qualify(manifest:inventory:) mint one, and no offline path can supply the native inventory that
+    // qualify needs. The source scan binds the private init and that no code constructs the type directly.
+    @Test func v1_offline_executable_authority_never_native() throws {
+        let run = try BootstrapRunFixture().run
+        #expect(try BootstrapExecutableAuthority.offlineLiteral(pins:pythonProgramPins).manifestIdentity == nil)
+        #expect(throws:VMFailure.admissionUnavailable) { _ = try unapprovedExecutableAuthority(run) }
+        let sources = URL(fileURLWithPath:#filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/AcceptanceCore")
+        var constructions:[String] = [], privateInits = 0, files = 0
+        for name in try FileManager.default.contentsOfDirectory(atPath:sources.path).sorted() where name.hasSuffix(".swift") {
+            let text = try String(contentsOf:sources.appendingPathComponent(name),encoding:.utf8); files += 1
+            constructions += text.components(separatedBy:"\n").filter { $0.contains("BootstrapExecutableAuthority(") }
+                .map { name + ": " + $0.trimmingCharacters(in:.whitespaces) }
+            privateInits += text.components(separatedBy:"private init(pins:[String:String],manifestIdentity:String?)").count - 1
+        }
+        #expect(files > 0)
+        #expect(constructions.isEmpty, "direct constructions: \(constructions)")
+        #expect(privateInits == 1)
+    }
+
+    // T8-10: FD0..4's physical peer is the bootstrap parent for every role. The Python producer exports exactly
+    // that, the host admits it, and a CONTROLLER (old rule) or PROXY peer on any role's descriptor is refused.
+    @Test func v1_descriptor_peer_is_bootstrap_for_every_role() throws {
+        let roles = try #require(try pythonFixture()["roles"] as? [[String:Any]])
+        #expect(roles.count == 4)
+        for row in roles {
+            let fds = try #require(row["fds"] as? [[String:Any]])
+            #expect(fds.count == 5 && fds.allSatisfy { $0["peer"] as? String == "BOOTSTRAP" }, "\(row["role"] ?? "")")
+        }
+        let run = try BootstrapRunFixture().run
+        #expect(throws:Never.self) {
+            _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([try handoff(run)]),
+                lifecycle:BootstrapLifecycleFake(),executables:try executableAuthority(run),clock:BootstrapTestClock()) }
+        for (role,fd,peer) in [(0,3,"CONTROLLER"),(1,3,"CONTROLLER"),(2,4,"CONTROLLER"),(3,3,"CONTROLLER"),(1,0,"PROXY")] {
+            let run = try BootstrapRunFixture().run  // one sequence-1 handoff per run
+            let bad = try handoff(run,mutate:{ value in
+                var x=value; var r=x["roles"] as! [[String:Any]]; var f=r[role]["fds"] as! [[String:Any]]
+                f[fd]["peer"]=peer; r[role]["fds"]=f; x["roles"]=r; return x })
+            #expect(throws:VMFailure.admissionUnavailable, "role \(role) fd \(fd) peer \(peer)") {
+                _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([bad]),lifecycle:BootstrapLifecycleFake(),
+                    executables:try executableAuthority(run),clock:BootstrapTestClock()) }
+        }
+    }
+
     @Test func fixed_probe_and_full_inventory_handoff_admit() throws {
         let run = try BootstrapRunFixture().run, probe = BootstrapProbeFake([try handoff(run)])
         let lifecycle = BootstrapLifecycleFake(), clock = BootstrapTestClock()

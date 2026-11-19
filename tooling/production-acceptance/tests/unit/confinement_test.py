@@ -19,6 +19,7 @@ import sys
 import threading
 import types
 import unittest
+from unittest import mock
 
 
 def v1_bytes(value):
@@ -93,10 +94,10 @@ class V1RoleTests(unittest.TestCase):
         calls=[];result=object();owned=c.NativeOwned(201,RUN,'BROWSER',object(),result)
         bindings=types.SimpleNamespace(select=lambda reads,writes,errors,timeout:
             (calls.append((reads,writes,errors,timeout)) or ([result],[],[])))
-        self.assertIs(c.NativeKernelPort(bindings).poll_role(owned),True)
+        self.assertIs(c.OfflineKernelPort(bindings).poll_role(owned),True)
         self.assertEqual(calls,[([result],[],[],0)])
         bindings.select=lambda reads,writes,errors,timeout:([],[],[])
-        self.assertIs(c.NativeKernelPort(bindings).poll_role(owned),False)
+        self.assertIs(c.OfflineKernelPort(bindings).poll_role(owned),False)
 
     def test_v1_fixed_frames_reject_unknown_and_ancillary_data(self):
         for mutate in ('unknown','ancillary','gap','mac','depth','duplicate'):
@@ -153,7 +154,7 @@ class V1RoleTests(unittest.TestCase):
         b.os.stat=stat;b.os.fstat=lambda fd:types.SimpleNamespace(st_dev=2,st_ino=50)
         proxy=c.NativeOwned(300,RUN,'PROXY',owned.command,owned.result,owned.identity)
         del k._owned[owned];k._owned[proxy]=s
-        handoff=c.RoleHandoff(launch,c.RoleAttestation(**dict(pid=300,run_id=RUN,role='PROXY',uids=(10004,)*3,gids=(10004,)*3,groups=(),capabilities=(0,)*5,no_new_privs=1,seccomp=2,filter_digest=s['digest'],fds=launch.fds,views=launch.views,waiting=True,programs=launch.programs)),k,proxy)
+        handoff=c.RoleHandoff(launch,c.RoleAttestation(**dict(pid=300,run_id=RUN,role='PROXY',uids=(10004,)*3,gids=(10004,)*3,groups=(),capabilities=(0,)*5,no_new_privs=1,seccomp=2,filter_digest=s['digest'],fds=launch.fds,views=launch.views,waiting=True,programs=launch.programs,seccomp_filters=1,tty_nr=0)),k,proxy)
         return k,handoff,b
 
     def test_v1_literal_proc_proxy_listener_is_current_not_inherited(self):
@@ -246,7 +247,7 @@ class V1RoleTests(unittest.TestCase):
             part=bytes(pending[:n]);del pending[:n];reads.append(fd);return part
         b=types.SimpleNamespace(monotonic=lambda:0,select=lambda r,w,e,t:(r,[],[]),
                                 os=types.SimpleNamespace(read=consume))
-        k=c.NativeKernelPort(b);owned=c.NativeOwned(204,RUN,'PROXY',object(),result)
+        k=c.OfflineKernelPort(b);owned=c.NativeOwned(204,RUN,'PROXY',object(),result)
         k._owned[owned]={'terminal':None}
         def read(data):
             pending[:]=data;reads.clear()
@@ -428,7 +429,7 @@ class V1RoleTests(unittest.TestCase):
         self.assertTrue(getattr(owner,'_committed',False),'STARTED must retain the sole authorized browser lifecycle transition')
 
     def test_v1_native_zero_budget_only_polls_original_owner(self):
-        b=InertBindings();k=c.NativeKernelPort(b);owned=c.NativeOwned(201,RUN,'BROWSER',20,21)
+        b=InertBindings();k=c.OfflineKernelPort(b);owned=c.NativeOwned(201,RUN,'BROWSER',20,21)
         k._owned[owned]={'outer':100,'terminal':None,'stop':22,'ready':23}
         b.os.write=lambda fd,data:len(data)
         b.os.waitpid=lambda pid,flags:(0,0)
@@ -512,7 +513,7 @@ def role_handoffs():
         attestation=c.RoleAttestation(**dict(pid=401+index,run_id=RUN,role=role,uids=(launch.uid,)*3,
             gids=(launch.uid,)*3,groups=(),capabilities=(0,)*5,no_new_privs=1,seccomp=2,
             filter_digest=hashlib.sha256(c.filter_bytes(launch.filter)).hexdigest(),fds=launch.fds,
-            views=launch.views,waiting=True,programs=launch.programs))
+            views=launch.views,waiting=True,programs=launch.programs,seccomp_filters=1,tty_nr=0))
         handoffs.append(c.RoleHandoff(launch,attestation,object(),c.NativeOwned(401+index,RUN,role,object(),object())))
     return tuple(handoffs)
 
@@ -636,7 +637,7 @@ def helper_branch(launch,fault,cleanup='reaped',install=None):
     b.os.set_blocking=setup; b.os.read=read; b.os.kill=kill; b.os.waitpid=wait; b.os._exit=leave
     b.syscall=syscall; b.select=select
     port=install(b,events) if install is not None else None
-    try: c.NativeKernelPort(b if port is None else port).spawn_waiting(launch,lambda port:None)
+    try: c.OfflineKernelPort(b if port is None else port).spawn_waiting(launch,lambda port:None)
     except ExecBoundary: pass
     return b,events
 
@@ -662,7 +663,7 @@ class StrictSurface:
 
 
 # K5 (Task 8b, fix round 1): the exact binding surface the outer helper may touch from its inner fork call until
-# its _exit, derived from guest/confinement.py NativeKernelPort.spawn_waiting (outer-helper branch after
+# its _exit, derived from guest/confinement.py _KernelPortCore.spawn_waiting (outer-helper branch after
 # `inner=b.os.fork()`, reap_inner, the except BaseException handler and the final _exit; file:line in the Task 8b
 # report). None of these takes a path.
 OUTER_HELPER_POST_FORK = frozenset({
@@ -723,7 +724,8 @@ class ChildKernel:
                       'uids': (0, 0, 0), 'gids': (0, 0, 0), 'groups': (0,),
                       'capabilities': (1, 1, 1, 1, 1), 'no_new_privs': 0,
                       'seccomp': 0, 'filter_digest': '', 'fds': (),
-                      'views': None, 'waiting': False, 'programs': launch.programs}
+                      'views': None, 'waiting': False, 'programs': launch.programs,
+                      'seccomp_filters': 0, 'tty_nr': 0}
     def establish_views(self, views):
         self.events.append('views'); self.facts['views'] = views
     def close_unaudited_fds(self, fds):
@@ -743,9 +745,10 @@ class ChildKernel:
     def no_new_privs(self):
         self.events.append('nnp'); self.facts['no_new_privs'] = 1
     def install_seccomp(self, program, flags):
+        # T8-08: the filter is reported installed whatever the TSYNC result, so the attestation cannot mask a
+        # missing TSYNC result check (only exec_role's own check can refuse 901, -1 or True).
         self.events.append(('filter', flags))
-        if self.parent.tsync == 0:
-            self.facts.update(seccomp=2, filter_digest=hashlib.sha256(b''.join(struct.pack('<HBBI', *i) for i in program)).hexdigest())
+        self.facts.update(seccomp=2, seccomp_filters=1, filter_digest=hashlib.sha256(b''.join(struct.pack('<HBBI', *i) for i in program)).hexdigest())
         return self.parent.tsync
     def inspect(self): return dict(self.facts, **self.parent.drift)
     def exec_pinned(self, argv, programs):
@@ -786,11 +789,15 @@ class ConfinementTests(unittest.TestCase):
     def observed_native(self,drift=None):
         b=InertBindings(); launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
         base='/proc/300'; readonly=('opt','usr','lib','lib64','etc')
-        files={base+'/status':b'Uid:\t10002 10002 10002 10002\nGid:\t10002 10002 10002 10002\nGroups:\nCapEff:\t0\nCapPrm:\t0\nCapInh:\t0\nCapAmb:\t0\nCapBnd:\t0\nNoNewPrivs:\t1\nSeccomp:\t2\n',
+        files={base+'/status':b'Uid:\t10002 10002 10002 10002\nGid:\t10002 10002 10002 10002\nGroups:\nCapEff:\t0\nCapPrm:\t0\nCapInh:\t0\nCapAmb:\t0\nCapBnd:\t0\nNoNewPrivs:\t1\nSeccomp:\t2\nSeccomp_filters:\t1\n',
+               base+'/stat':b'300 (node) S 1 300 300 0 -1 4194560\n',
                base+'/fdinfo/3':b'flags:\t00\n',base+'/fdinfo/4':b'flags:\t01\n',
                base+'/cmdline':b'/opt/acceptance/runtime/node/bin/node\0/opt/acceptance/guest/browser-worker.cjs\0--inherited\0'}
-        mounts=''.join('1 0 0:1 / /'+d+' '+('rw' if drift=='readonly' and d=='opt' else 'ro')+' - ext4 base ro\n' for d in readonly)
+        # The Task 8b view (P47): the self-bound root, the read-only base, role state, /dev/null and /proc.
+        mounts='1 0 0:2 /acceptance/browser/.root / rw - tmpfs base rw\n'
+        mounts+=''.join('1 0 0:1 / /'+d+' '+('rw' if drift=='readonly' and d=='opt' else 'ro')+' - ext4 base ro\n' for d in readonly)
         mounts+=''.join('1 0 0:2 / /'+d+' rw - '+('ext4' if drift=='tmpfs' else 'tmpfs')+' base rw\n' for d in ('tmp','var','run/acceptance/browser','dev/shm'))
+        mounts+='1 0 0:5 /null /dev/null rw - devtmpfs udev rw\n1 0 0:30 / /proc rw - proc proc rw\n'
         files[base+'/mountinfo']=mounts.encode()
         b.read_file=lambda path,*a:files[path]; b.run_device=2
         b.os.listdir=lambda path:['0','1','2','3','4'] if path==base+'/fd' else ['null','shm'] if path==base+'/root/dev' else ['browser']
@@ -800,7 +807,7 @@ class ConfinementTests(unittest.TestCase):
         b.os.readlink=link
         b.os.stat=lambda path:types.SimpleNamespace(st_dev=1 if path.endswith('/exe') or path.endswith('/root') or path.endswith('/.root') else 2,
             st_ino=999 if path.endswith('/exe') else 555,st_mode=0o700,st_uid=10002,st_gid=10002)
-        k=c.NativeKernelPort(b); owned=c.NativeOwned(300,RUN,'BROWSER',object(),object())
+        k=c.OfflineKernelPort(b); owned=c.NativeOwned(300,RUN,'BROWSER',object(),object())
         k._owned[owned]={'outer':200,'child':300,'terminal':None,'launch':launch,'digest':'e'*64,
             'links':('pipe:[30]','pipe:[40]'),'exec_identity':(1,777)}
         return k
@@ -835,20 +842,29 @@ class ConfinementTests(unittest.TestCase):
         for role in ('BROWSER', 'CONTROLLER', 'VERIFIER'):
             for nr in (198, 199):
                 self.assertEqual(evaluate(self.api().build_filter(role), nr, (40, 1, 0)), DENY)
-    def test_child_fork_exec_network_gpu_crash_helper_inherits(self):
+    def test_filter_identical_for_every_helper_position_offline_proxy(self):
+        # T8-07: an offline proxy only. A seccomp filter is inherited across fork and exec, so every helper position
+        # of a role runs that role's one launch program; this evaluates that program per position and models no
+        # descendant. Native inheritance is the gated guest probe child_fork_exec_network_gpu_crash_helper_inherits.
         h = self.api().start_roles(self.config())
-        browser = h['BROWSER']
-        p = browser.launch.filter
-        for kind in ('parent', 'fork', 'exec', 'network', 'gpu', 'crash'):
-            with self.subTest(descendant=kind):
-                self.assertEqual(evaluate(p, 198, (40, 1, 0)), DENY)
+        for role, positions in (('BROWSER', ('parent', 'fork', 'exec', 'network', 'gpu', 'crash')),
+                                ('CONTROLLER', ('helper',)), ('VERIFIER', ('helper',))):
+            program = h[role].launch.filter
+            self.assertEqual(program, c.build_filter(role))
+            self.assertEqual(h[role].attestation.filter_digest, hashlib.sha256(c.filter_bytes(program)).hexdigest())
+            for position in positions:
+                with self.subTest(role=role, position=position):
+                    self.assertEqual(evaluate(program, 198, (40, 1, 0)), DENY)
+        p = h['BROWSER'].launch.filter
         self.assertEqual(evaluate(p, 220, (17,)), ALLOW)
         self.assertEqual(evaluate(p, 221), ALLOW)
-        self.assertEqual(browser.attestation.capabilities, (0,)*5)
+        self.assertEqual(h['BROWSER'].attestation.capabilities, (0,)*5)
     def test_proxy_fixed_vsock_positive(self):
+        # P15: the deleted proxy_endpoint() had no caller; the fixed destination is proxy.py's own _HOST_CID and
+        # _VSOCK_SERVICE, bound by abi_coverage_test VSOCK_CID_SITES ('proxy.py', '<module>').
         m = self.api()
+        self.assertFalse(hasattr(m, 'proxy_endpoint'))
         self.assertEqual(evaluate(m.build_filter('PROXY'), 198, (40, 1, 0)), ALLOW)
-        self.assertEqual(m.proxy_endpoint(), (2, 4050))
         self.assertEqual(evaluate(m.build_filter('PROXY'), 199, (40, 1, 0)), DENY)
     def test_socket_domain_type_protocol_and_high_words(self):
         p = self.api().build_filter('BROWSER')
@@ -868,9 +884,13 @@ class ConfinementTests(unittest.TestCase):
         for role in ('CONTROLLER','BROWSER','VERIFIER','PROXY'):
             for nr in (425,426,427):
                 self.assertEqual(evaluate(self.api().build_filter(role),nr,(9,)),DENY)
-        config = self.config()
-        with self.assertRaises(c.ConfinementError):
-            c.prepare_role('BROWSER',c.RoleConfig(config, (c.Descriptor(7,'io_uring','ring','BROWSER',RUN),)))
+        # T8-07: an inherited ring inside an otherwise valid inherited tuple, as an extra FD5 or replacing FD4's kind.
+        config = self.config(); fds = c.role_fds('BROWSER',RUN)
+        c.prepare_role('BROWSER',c.RoleConfig(config,fds))  # control: the valid tuple is admitted
+        ring = c.Descriptor(5,'io_uring','ring','BOOTSTRAP',RUN)
+        for name,changed in (('extra fd5',fds+(ring,)),('fd4 kind',fds[:4]+(dataclasses.replace(fds[4],kind='io_uring'),))):
+            with self.subTest(ring=name), self.assertRaisesRegex(c.ConfinementError,'^FD_DENIED$'):
+                c.prepare_role('BROWSER',c.RoleConfig(config,changed))
     def test_alternate_ABI_denied(self):
         p = self.api().build_filter('BROWSER')
         for arch in (0x40000028,0xc000003e,0,0x800000b7):
@@ -881,12 +901,19 @@ class ConfinementTests(unittest.TestCase):
         m = self.api()
         for nr in (117,270,271,438,434):
             self.assertEqual(evaluate(m.build_filter('BROWSER'),nr),DENY)
-        with self.assertRaises(m.ConfinementError): m.validate_channel_message(b'fixed',((1,1,b'fd'),),0)
-        with self.assertRaises(m.ConfinementError): m.validate_channel_message(b'fixed',(),8)
+        # P15 (T8-07): the deleted validate_channel_message had no caller. Every role frame the bootstrap reads passes
+        # _v1_decode, which refuses any ancillary record (an SCM_RIGHTS pretence) and any nonzero recvmsg flags.
+        self.assertFalse(hasattr(m,'validate_channel_message'))
+        frame=m._v1_encode({'version':1})
+        self.assertEqual(m._v1_decode(frame),{'version':1})
+        for ancillary,flags in ((((1,1,b'fd'),),0),((),8)):
+            with self.subTest(ancillary=ancillary,flags=flags), self.assertRaisesRegex(m.ConfinementError,'^FRAME_DENIED$'):
+                m._v1_decode(frame,ancillary,flags)
+        # The launch contract; native observation of these views is bound by NativeAttestationTests.
         browser = m.start_roles(self.config())['BROWSER']
-        self.assertEqual(browser.attestation.views.visible_roles,('BROWSER',))
-        self.assertFalse(browser.attestation.views.console)
-        self.assertEqual(browser.attestation.views.private_mode,0o700)
+        self.assertEqual(browser.launch.views.visible_roles,('BROWSER',))
+        self.assertFalse(browser.launch.views.console)
+        self.assertEqual(browser.launch.views.private_mode,0o700)
     def test_privilege_gain_denied(self):
         # E1 (C6): capset, the set*id family, setgroups and chroot are allowed for BROWSER only (Chromium's
         # namespace sandbox, BrowserSandboxFilterTests); every other role still denies them. setns, mount,
@@ -910,11 +937,41 @@ class ConfinementTests(unittest.TestCase):
         # An added inner policy cannot override the outer AF_VSOCK denial.
         self.assertEqual(evaluate(p,198,(40,1,0)),DENY)
     def test_no_console_or_bridge_fd(self):
+        # T8-07: only `kind` varies, inside an otherwise valid inherited tuple; the unchanged tuple is admitted.
+        m = self.api(); fds = m.role_fds('BROWSER',RUN)
+        m.prepare_role('BROWSER',m.RoleConfig(self.config(),fds))
+        for index in (3,4):
+            for kind in ('console','tty','vsock','bridge','socket','io_uring'):
+                with self.subTest(fd=index,kind=kind), self.assertRaisesRegex(m.ConfinementError,'^FD_DENIED$'):
+                    changed=list(fds); changed[index]=dataclasses.replace(fds[index],kind=kind)
+                    m.prepare_role('BROWSER',m.RoleConfig(self.config(),tuple(changed)))
+    def test_descriptor_peer_is_bootstrap_for_every_role(self):
+        # T8-10: the physical peer of FD0..4 is the bootstrap parent for every role, including its relay for the
+        # browser (OriginalRoleSet). The exported handoff rows carry it to the host (VMHost validateRoles).
         m = self.api()
-        for kind in ('console','tty','vsock','bridge','socket','io_uring'):
-            with self.subTest(kind=kind):
-                with self.assertRaises(m.ConfinementError):
-                    m.prepare_role('BROWSER',m.RoleConfig(self.config(),(m.Descriptor(3,kind,'command','CONTROLLER',RUN),)))
+        for role in m.UIDS:
+            with self.subTest(role=role):
+                fds = m.role_fds(role,RUN)
+                self.assertEqual([d.peer for d in fds],['BOOTSTRAP']*5)
+                self.assertEqual([d.peer for d in m.prepare_role(role,m.RoleConfig(self.config(),fds)).fds],['BOOTSTRAP']*5)
+                for peer in ('CONTROLLER',role,'PROXY'):
+                    for index in (0,3,4):
+                        changed=list(fds); changed[index]=dataclasses.replace(fds[index],peer=peer)
+                        with self.subTest(peer=peer,fd=index), self.assertRaisesRegex(m.ConfinementError,'^FD_DENIED$'):
+                            m.prepare_role(role,m.RoleConfig(self.config(),tuple(changed)))
+    def test_tsync_result_checked_independently_of_seccomp_mode(self):
+        # T8-08: the double reports the installed filter (seccomp 2 and its digest) whatever install_seccomp returns,
+        # so only exec_role's own TSYNC result check can stop these execs.
+        launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
+        for result in (901,-1,True):
+            with self.subTest(result=result):
+                child=ChildKernel(Kernel(tsync=result),201,launch)
+                with self.assertRaisesRegex(c.ConfinementError,'^TSYNC_FAILED$'): c.exec_role(launch,kernel=child)
+                self.assertEqual(child.facts['seccomp'],2)
+                self.assertFalse(any(type(e) is tuple and e[0]=='exec' for e in child.events))
+        child=ChildKernel(Kernel(),201,launch)
+        with self.assertRaises(ExecBoundary): c.exec_role(launch,kernel=child)
+        self.assertEqual(child.events[-1][0],'exec')
     def test_bootstrap_arbitrary_argv_denied(self):
         m=self.api()
         with self.assertRaises(m.ConfinementError):
@@ -1031,20 +1088,27 @@ class ConfinementTests(unittest.TestCase):
                 return owned
         with self.assertRaises(c.ConfinementError): c.start_roles(self.config(NumericEndpoints()))
     def test_R1_native_selection_requires_mode_runtime_identity_and_validation(self):
+        # T8-05: no injected factory exists. To show that a failed gate precedes every effect, the test replaces
+        # the module name LinuxBindings with a recorder (observation only) and checks it is never reached.
         self.assertTrue(hasattr(c,'select_native_kernel'),'required gated native KernelPort source absent')
+        identity=c.GuestRuntimeIdentity(c.ProgramPin(c.PYTHON,'a'*64),
+                                        c.ProgramPin('/usr/lib/aarch64-linux-gnu/libc.so.6','b'*64),'c'*64)
+        def refuse(value): raise RuntimeError('inert validator failure')
         effect=[]
-        factory=lambda identity:effect.append(identity)
-        for mode,identity,validator in [('worker',object(),lambda x:x),('bootstrap-check',None,lambda x:x),
-                                        ('bootstrap-check',object(),lambda x:None)]:
-            with self.assertRaisesRegex(c.ConfinementError,'NATIVE_GATE_DENIED'):
-                c.select_native_kernel(mode,runtime_identity=identity,validate_runtime=validator,bindings_factory=factory)
+        with mock.patch.object(c,'LinuxBindings',side_effect=lambda runtime:effect.append(runtime)):
+            for mode,value,validator in [('worker',identity,lambda x:x),('bootstrap-check',None,lambda x:x),
+                                         ('bootstrap-check',object(),lambda x:None),('bootstrap-check',identity,lambda x:None),
+                                         ('bootstrap-check',identity,lambda x:dataclasses.replace(x)),
+                                         ('bootstrap-check',identity,refuse)]:
+                with self.subTest(mode=mode,validator=validator),self.assertRaisesRegex(c.ConfinementError,'NATIVE_GATE_DENIED'):
+                    c.select_native_kernel(mode,runtime_identity=value,validate_runtime=validator)
         self.assertEqual(effect,[])
     def test_R1_native_selector_rejects_boolean_or_unpinned_guest_identity(self):
         effects=[]
-        for value in (True,object(),{'python':'unreviewed'}):
-            with self.assertRaisesRegex(c.ConfinementError,'NATIVE_GATE_DENIED'):
-                c.select_native_kernel('bootstrap-check',runtime_identity=value,validate_runtime=lambda x:x,
-                    bindings_factory=lambda identity:effects.append(identity))
+        with mock.patch.object(c,'LinuxBindings',side_effect=lambda runtime:effects.append(runtime)):
+            for value in (True,object(),{'python':'unreviewed'}):
+                with self.assertRaisesRegex(c.ConfinementError,'NATIVE_GATE_DENIED'):
+                    c.select_native_kernel('bootstrap-check',runtime_identity=value,validate_runtime=lambda x:x)
         self.assertEqual(effects,[])
     def test_R1_native_required_named_APIs_fail_closed_when_missing(self):
         self.assertTrue(hasattr(c,'_native_apis'),'Linux named stdlib API validation absent')
@@ -1075,7 +1139,7 @@ class ConfinementTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from('<Q',buffers[4352].raw,8)[0],4096)
         self.assertEqual(buffers[4096].raw,bytes.fromhex('0600000000000080'))
     def test_R1_stop_retries_are_nonblocking_and_send_one_fixed_frame(self):
-        b=InertBindings(); k=c.NativeKernelPort(b); owned=c.NativeOwned(201,RUN,'BROWSER',object(),object())
+        b=InertBindings(); k=c.OfflineKernelPort(b); owned=c.NativeOwned(201,RUN,'BROWSER',object(),object())
         k._owned[owned]={'outer':201,'stop':11,'closed':False,'terminal':None}
         b.os.write=lambda fd,data:b.calls.append(('write',(fd,data))) or 4
         k.stop_owned(owned,1); k.stop_owned(owned,1)
@@ -1106,7 +1170,7 @@ class ConfinementTests(unittest.TestCase):
         b.answer=-1; self.assertEqual(p.install_seccomp(program,1),-1)
     def test_R1_owned_reaping_uses_named_apis_no_live_attestation_or_recycled_pid(self):
         self.assertTrue(hasattr(c,'NativeKernelPort'),'native owned process boundary absent')
-        b=InertBindings(); k=c.NativeKernelPort(b)
+        b=InertBindings(); k=c.OfflineKernelPort(b)
         owned=c.NativeOwned(201,RUN,'BROWSER',object(),object())
         k._owned[owned]= {'outer':201,'stop':11,'closed':False,'terminal':None}
         b.os.write=lambda fd,data:b.calls.append(('write',(fd,data))) or len(data)
@@ -1127,7 +1191,7 @@ class ConfinementTests(unittest.TestCase):
         pairs=iter(((20,21),(22,23),(24,25),(26,27)))
         b.os.pipe2=lambda flags:next(pairs); b.os.fork=lambda:501
         b.os.close=lambda fd: (_ for _ in ()).throw(OSError(9,'inert post-fork fault'))
-        k=c.NativeKernelPort(b); launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
+        k=c.OfflineKernelPort(b); launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
         with self.assertRaises(c.RoleStartFailure) as failure: k.spawn_waiting(launch,lambda port:None)
         self.assertEqual(k._owned[failure.exception.owned]['outer'],501)
         self.assertEqual(failure.exception.owned.run_id,RUN)
@@ -1171,7 +1235,7 @@ class ConfinementTests(unittest.TestCase):
         self.assertFalse(any(e[0]=='kill' for e in events))
         self.assertEqual([e for e in events if e[0]=='exit'],[('exit',0)])
     def test_R1_inner_pid_is_single_observed_direct_child_not_a_racy_shared_pipe_frame(self):
-        k=c.NativeKernelPort(InertBindings())
+        k=c.OfflineKernelPort(InertBindings())
         self.assertTrue(callable(getattr(k,'_child_pid',None)),'independent owned child PID observation absent')
         paths=[]
         k.b.read_file=lambda path,limit:paths.append((path,limit)) or b'701\n'
@@ -1289,11 +1353,11 @@ class ConfinementTests(unittest.TestCase):
         # helper, whose except BaseException would swallow it. All helper_branch fault and cleanup modes run.
         launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
         namespace=vars(c)
-        self.assertIs(c.NativeKernelPort.spawn_waiting.__globals__,namespace)
+        self.assertIs(c._KernelPortCore.spawn_waiting.__globals__,namespace)
         with self.subTest(check='no import statement in spawn_waiting'):
             # An import statement binds through the frame's builtins, which no module-level shadow can intercept.
             tree=ast.parse((ROOT/'guest/confinement.py').read_text())
-            port=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='NativeKernelPort')
+            port=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='_KernelPortCore')
             spawn=next(n for n in port.body if isinstance(n,ast.FunctionDef) and n.name=='spawn_waiting')
             self.assertEqual([ast.unparse(n) for n in ast.walk(spawn) if isinstance(n,(ast.Import,ast.ImportFrom))],[])
         modules=sorted(name for name,value in namespace.items() if isinstance(value,types.ModuleType))
@@ -1374,8 +1438,8 @@ class ConfinementTests(unittest.TestCase):
     def test_R1_probe_fixture_setup_failure_reaps_original_owned_family(self):
         s=importlib.util.spec_from_file_location('task8_fixture_cleanup',ROOT/'tests/guest/confinement_probe.py')
         probe=importlib.util.module_from_spec(s); s.loader.exec_module(probe)
-        self.assertTrue(hasattr(probe,'NativeProbeFixtures'),'native fixture subprocess source absent')
-        b=InertBindings(); k=c.NativeKernelPort(b); config=self.config(k); stopped=[]
+        self.assertTrue(hasattr(probe,'OfflineProbeFixtures'),'offline fixture subprocess source absent')
+        b=InertBindings(); k=c.OfflineKernelPort(b); config=self.config(k); stopped=[]
         b.os.path=types.SimpleNamespace(lexists=lambda path:False)
         b.os.unlink=lambda path:None; b.os.rmdir=lambda path:None
         owned=c.NativeOwned(501,RUN,'BROWSER',object(),object())
@@ -1383,8 +1447,8 @@ class ConfinementTests(unittest.TestCase):
         k.stop_owned=lambda child,deadline:stopped.append(child) or {'status':'STOPPED','pid':501,'run_id':RUN}
         authority=types.SimpleNamespace(**{n:lambda *a:None for n in
             ('receiver_count','foreign_pid','audit','helper_pin','audit_abi_termination','unsynchronized_thread','memory')})
-        authority.approve_native_fixtures=lambda config:authority
-        fixture=probe.NativeProbeFixtures(c,k,config,authority)
+        authority.approve_offline_fixtures=lambda config:authority
+        fixture=probe.OfflineProbeFixtures(c,k,config,authority)
         with self.assertRaises(c.RoleStartFailure): fixture.run_confined('BROWSER','BROWSER.socket-AF_VSOCK',lambda context:None)
         self.assertEqual(stopped,[owned])
         b.os.path.lexists=lambda path:True
@@ -1463,7 +1527,328 @@ class ConfinementTests(unittest.TestCase):
         with self.assertRaises(probe.ProbeFailure): probe.run_case('proxy_fixed_vsock_positive',port)
         port.attempt=lambda case:({'operation':'PROXY.fixed-vsock-CID2-port4050','attempted':True,'denied':False,'receiver_count':1},)
         self.assertEqual(len(probe.run_case('proxy_fixed_vsock_positive',port)),1)
+    def test_native_kernel_port_requires_seal(self):
+        # T8-05 (review demonstration D5): NativeKernelPort over injected bindings used to pass as native.
+        with self.subTest(construct='D5: NativeKernelPort(SimpleNamespace())'):
+            with self.assertRaisesRegex(c.ConfinementError, '^NATIVE_GATE_DENIED$'):
+                c.NativeKernelPort(types.SimpleNamespace())
+        unvalidated = c.LinuxBindings.__new__(c.LinuxBindings)
+        for name, make in (('inert bindings', lambda: c.NativeKernelPort(InertBindings())),
+                           ('foreign seal', lambda: c.NativeKernelPort(InertBindings(), seal=object())),
+                           ('seal over inert bindings',
+                            lambda: c.NativeKernelPort(InertBindings(), seal=c._NATIVE_KERNEL_SEAL)),
+                           ('seal over unvalidated LinuxBindings',
+                            lambda: c.NativeKernelPort(unvalidated, seal=c._NATIVE_KERNEL_SEAL))):
+            with self.subTest(construct=name), self.assertRaisesRegex(c.ConfinementError, '^NATIVE_GATE_DENIED$'):
+                make()
+        with self.subTest(construct='subclass'), self.assertRaises(TypeError):
+            type('ForgedNative', (c.NativeKernelPort,), {})
+        # Only select_native_kernel seals, over its own LinuxBindings; it takes no injected factory, and offline
+        # (this host is not the pinned Linux guest) its own loader refuses before any effect.
+        self.assertNotIn('bindings_factory', inspect.signature(c.select_native_kernel).parameters)
+        identity = c.GuestRuntimeIdentity(c.ProgramPin(c.PYTHON, 'a' * 64),
+                                          c.ProgramPin('/usr/lib/aarch64-linux-gnu/libc.so.6', 'b' * 64), 'c' * 64)
+        with self.assertRaisesRegex(c.ConfinementError, '^NATIVE_GATE_DENIED$'):
+            c.select_native_kernel('bootstrap-check', runtime_identity=identity, validate_runtime=lambda value: value)
+        # The offline port is a distinct, unsealed type: never a NativeKernelPort, never a subclass of it.
+        offline = c.OfflineKernelPort(InertBindings())
+        self.assertIsNot(type(offline), c.NativeKernelPort)
+        self.assertNotIsInstance(offline, c.NativeKernelPort)
+        self.assertFalse(issubclass(c.NativeKernelPort, c.OfflineKernelPort))
+        # NativeProbeFixtures accepts only the sealed native port; OfflineProbeFixtures only the offline one.
+        spec = importlib.util.spec_from_file_location('task9_seal_probe', ROOT / 'tests/guest/confinement_probe.py')
+        probe = importlib.util.module_from_spec(spec); spec.loader.exec_module(probe)
+        authority = types.SimpleNamespace(**{n: (lambda *a: None) for n in (
+            'receiver_count', 'foreign_pid', 'audit', 'helper_pin', 'audit_abi_termination', 'unsynchronized_thread',
+            'memory')})
+        authority.approve_native_fixtures = authority.approve_offline_fixtures = lambda config: authority
+        config = self.config(offline)
+        with self.subTest(fixtures='native over offline port'):
+            with self.assertRaisesRegex(probe.RuntimeGateUnavailable, '^NATIVE_FIXTURES_UNAVAILABLE$'):
+                probe.NativeProbeFixtures(c, offline, config, authority)
+        self.assertIs(type(probe.OfflineProbeFixtures(c, offline, config, authority)), probe.OfflineProbeFixtures)
+        class SubPort(c.OfflineKernelPort): pass
+        for name, kernel in (('subclass of the offline port', SubPort(InertBindings())), ('finite double', Kernel())):
+            with self.subTest(fixtures=name):
+                with self.assertRaisesRegex(probe.RuntimeGateUnavailable, '^OFFLINE_FIXTURES_UNAVAILABLE$'):
+                    probe.OfflineProbeFixtures(c, kernel, config, authority)
 
+
+class LiteralProc:
+    """Literal Linux 6.8 /proc text and view stat facts for one confined role (Task 9: T8-04, T8-09, P47).
+
+    Read only through the bindings a port reads: read_file, os.listdir, os.readlink and os.stat. The parent view is
+    the role child pid 300 as the bootstrap sees it: /proc/<pid>/root is the role's self-bound view root (Task 8b)
+    and the bootstrap's own /proc/self/ns are the initial namespaces. local=True is the child's own view after
+    pivot_root (pid 201, the InertBindings getpid), with the bootstrap's initial namespaces kept on the bindings.
+    Formats: fs/proc/array.c proc_pid_status and do_task_stat (tty_nr is the fifth field after the closing
+    parenthesis of comm, which may itself hold ')' and spaces); fs/proc_namespace.c show_mountinfo (mount points
+    relative to the target task's root). Tests change exactly one fact before the port reads it.
+    """
+    INITIAL = {'pid': 'pid:[4026531836]', 'mnt': 'mnt:[4026531841]', 'user': 'user:[4026531837]'}
+    ROLE = {'pid': 'pid:[4026532301]', 'mnt': 'mnt:[4026532300]', 'user': 'user:[4026531837]'}
+    RUN_DEV = 25
+    SOURCES = {'tmpfs': 'tmpfs', 'ext4': '/dev/vda', 'devtmpfs': 'devtmpfs', 'proc': 'proc', 'sysfs': 'sysfs'}
+
+    def __init__(self, role='BROWSER', *, local=False):
+        self.role, self.local, self.name = role, local, role.lower()
+        self.uid, self.pid = c.UIDS[role], 201 if local else 300
+        self.base = '/proc/%d' % self.pid
+        self.launch = c.prepare_role(role, c.RoleConfig(ConfinementTests().config(), c.role_fds(role, RUN)))
+        self.digest = hashlib.sha256(c.filter_bytes(self.launch.filter)).hexdigest()
+        ids = '\t'.join((str(self.uid),) * 4)
+        self.status = {'Name': 'node', 'Umask': '0022', 'State': 'S (sleeping)', 'Tgid': str(self.pid), 'Ngid': '0',
+                       'Pid': str(self.pid), 'PPid': '1', 'TracerPid': '0', 'Uid': ids, 'Gid': ids, 'FDSize': '64',
+                       'Groups': ' ', 'CapInh': '0' * 16, 'CapPrm': '0' * 16, 'CapEff': '0' * 16, 'CapBnd': '0' * 16,
+                       'CapAmb': '0' * 16, 'NoNewPrivs': '1', 'Seccomp': '2', 'Seccomp_filters': '1',
+                       'Speculation_Store_Bypass': 'thread vulnerable'}
+        self.comm, self.tty_nr = 'node', 0
+        self.cmdline = list(self.launch.argv)
+        # fd -> (link, st_dev, st_ino, fdinfo flags): /dev/null on devtmpfs, the FD3 read end, the FD4 write end.
+        self.fds = {0: ('/dev/null', 5, 6, 2), 1: ('/dev/null', 5, 6, 2), 2: ('/dev/null', 5, 6, 2),
+                    3: ('pipe:[30]', 13, 30, 0), 4: ('pipe:[40]', 13, 40, 1)}
+        self.namespaces = dict(self.ROLE)                                   # /proc/<pid>/ns
+        self.self_namespaces = dict(self.ROLE if local else self.INITIAL)  # /proc/self/ns of the reader
+        self.initial = dict(self.INITIAL)                                  # bindings.initial_namespaces
+        self.root = self.view_root = (self.RUN_DEV, 555)
+        self.dev, self.run = ['null', 'shm'], [self.name]
+        state = ('/tmp', '/var', '/run/acceptance/' + self.name, '/dev/shm')
+        self.tmpfs = {path: dict(mode=0o40700, uid=self.uid, gid=self.uid, dev=self.RUN_DEV) for path in state}
+        # (mount point, root within its filesystem, mount options, fstype, st_dev text): the Task 8b view.
+        self.mounts = ([('/', '/acceptance/' + self.name + '/.root', 'rw,relatime', 'tmpfs', '0:25')] +
+                       [('/' + d, '/' + d, 'ro,relatime', 'ext4', '254:0') for d in ('opt', 'usr', 'lib', 'lib64', 'etc')] +
+                       [(p, '/acceptance/' + self.name + '/.state' + p, 'rw,relatime', 'tmpfs', '0:25') for p in state] +
+                       [('/dev/null', '/null', 'rw,nosuid', 'devtmpfs', '0:5'),
+                        ('/proc', '/', 'rw,nosuid,nodev,noexec,relatime', 'proc', '0:30')])
+
+    def mountinfo(self):
+        return ''.join('%d %d %s %s %s %s - %s %s %s\n' % (
+            200 + index, 199 if index == 0 else 200, devno, root, point, options, fstype, self.SOURCES[fstype],
+            'ro' if options.startswith('ro') else 'rw')
+            for index, (point, root, options, fstype, devno) in enumerate(self.mounts)).encode('ascii')
+
+    def files(self):
+        tail = ['S', '1', str(self.pid), str(self.pid), str(self.tty_nr), '-1', '4194560'] + ['0'] * 43
+        files = {self.base + '/status': ''.join(k + ':\t' + v + '\n' for k, v in self.status.items()).encode('ascii'),
+                 self.base + '/stat': ('%d (%s) %s\n' % (self.pid, self.comm, ' '.join(tail))).encode('ascii'),
+                 self.base + '/cmdline': b''.join(arg.encode() + b'\0' for arg in self.cmdline),
+                 self.base + '/mountinfo': self.mountinfo()}
+        for fd, (link, dev, ino, flags) in self.fds.items():
+            files[self.base + '/fdinfo/%d' % fd] = (
+                'pos:\t0\nflags:\t0%o\nmnt_id:\t%d\nino:\t%d\n' % (flags, dev, ino)).encode('ascii')
+        return files
+
+    def read_file(self, path, limit=65536):
+        data = self.files().get(path)
+        if data is None: raise FileNotFoundError(path)
+        if len(data) > limit: raise c.ConfinementError('OBSERVATION_LIMIT')
+        return data
+
+    def listdir(self, path):
+        view = '' if self.local else self.base + '/root'
+        # Locally the held node pin is fd 19, and listing opens one transient directory fd (7) that is gone again.
+        listing = {self.base + '/fd': [str(fd) for fd in sorted(self.fds)] + (['19', '7'] if self.local else []),
+                   view + '/dev': list(self.dev), view + '/run/acceptance': list(self.run)}
+        if path not in listing: raise FileNotFoundError(path)
+        return listing[path]
+
+    def readlink(self, path):
+        if path.startswith('/proc/self/ns/'): return self.self_namespaces[path[len('/proc/self/ns/'):]]
+        if path.startswith(self.base + '/ns/'): return self.namespaces[path[len(self.base + '/ns/'):]]
+        if path.startswith(self.base + '/fd/'):
+            fd = int(path.rsplit('/', 1)[1])
+            if fd in self.fds: return self.fds[fd][0]
+            if self.local and fd == 19: return c.NODE
+        raise FileNotFoundError(path)
+
+    def stat(self, path):
+        def node(dev, ino, mode=0o40755, uid=0, gid=0):
+            return types.SimpleNamespace(st_dev=dev, st_ino=ino, st_mode=mode, st_uid=uid, st_gid=gid)
+        view = '' if self.local else self.base + '/root'
+        if path == self.base + '/root': return node(*self.root)
+        if path == self.launch.views.root + '/.root': return node(*self.view_root)
+        if path == self.base + '/exe': return node(254, 999, 0o100755)
+        if path.startswith(self.base + '/fd/') and int(path.rsplit('/', 1)[1]) in self.fds:
+            link, dev, ino, flags = self.fds[int(path.rsplit('/', 1)[1])]
+            return node(dev, ino, 0o10600)
+        for name, fact in self.tmpfs.items():
+            if path == view + name: return node(fact['dev'], 600, fact['mode'], fact['uid'], fact['gid'])
+        raise FileNotFoundError(path)
+
+    def bind(self, b):
+        b.read_file, b.run_device = self.read_file, self.RUN_DEV
+        b.os.listdir, b.os.readlink, b.os.stat = self.listdir, self.readlink, self.stat
+        if self.local: b.initial_namespaces = dict(self.initial)
+        return b
+
+    def port(self):
+        """An OfflineKernelPort holding this child as its unbound original, in the state spawn_waiting leaves."""
+        k = c.OfflineKernelPort(self.bind(InertBindings()))
+        owned = c.NativeOwned(self.pid, RUN, self.role, object(), object())
+        k._owned[owned] = {'outer': 200, 'child': self.pid, 'terminal': None, 'launch': self.launch,
+                           'digest': self.digest, 'links': ('pipe:[30]', 'pipe:[40]'), 'exec_identity': (254, 999)}
+        return k, owned
+
+    def handoff(self, k, owned, pid=None):
+        attestation = c._attestation(k.inspect(self.pid))
+        if pid is not None: attestation = dataclasses.replace(attestation, pid=pid)
+        return c.RoleHandoff(self.launch, attestation, k, owned)
+
+    def child(self):
+        """The role's own NativeChildPort (local view) after its filter is installed."""
+        port = c.NativeChildPort(self.bind(InertBindings()), self.launch, {c.NODE: 19})
+        port.digest = self.digest
+        return port
+
+
+class NativeAttestationTests(unittest.TestCase):
+    """T8-04, T8-09 and P47 (Task 9): every native attestation check, bound by literal /proc through OfflineKernelPort.
+
+    Each subtest changes exactly one literal kernel fact and expects that check's own code. The control subtests
+    admit the unchanged facts, so no case can pass because the fixture itself is broken. No inspect is replaced.
+    """
+    def setUp(self):
+        self.assertTrue(hasattr(c, 'OfflineKernelPort'), 'no unsealed OfflineKernelPort for literal /proc tests')
+
+    def parent(self, change=None, *, waiting=True):
+        proc = LiteralProc()
+        if change: change(proc)
+        k, owned = proc.port()
+        c._check(c._attestation(k.inspect(proc.pid)), proc.launch, waiting=waiting)
+
+    def local(self, change=None):
+        proc = LiteralProc(local=True)
+        if change: change(proc)
+        c._check(c._attestation(proc.child().inspect()), proc.launch, waiting=False)
+
+    @staticmethod
+    def remount(point, options):
+        def change(proc):
+            proc.mounts = [(m[0], m[1], options if m[0] == point else m[2], m[3], m[4]) for m in proc.mounts]
+        return change
+
+    def test_native_observe_rejects_each_attestation_drift(self):
+        def drop(point):
+            return lambda proc: setattr(proc, 'mounts', [m for m in proc.mounts if m[0] != point])
+        def stack(point):
+            return lambda proc: proc.mounts.append(next(m for m in proc.mounts if m[0] == point))
+        def attach(row):
+            return lambda proc: proc.mounts.append(row)
+        def status(**values):
+            return lambda proc: proc.status.update(values)
+        uid = str(c.UIDS['BROWSER'])
+        parent_cases = (
+            ('M1 extra /dev entry', lambda p: p.dev.append('console'), 'VIEW_DENIED'),
+            ('M2 pid namespace equals the parent', lambda p: p.namespaces.update(pid=p.INITIAL['pid']), 'VIEW_DENIED'),
+            ('M2 mnt namespace equals the parent', lambda p: p.namespaces.update(mnt=p.INITIAL['mnt']), 'VIEW_DENIED'),
+            ('M3 user namespace differs', lambda p: p.namespaces.update(user='user:[4026532302]'), 'VIEW_DENIED'),
+            ('M4 /proc/<pid>/root inode differs', lambda p: setattr(p, 'root', (p.RUN_DEV, 556)), 'VIEW_DENIED'),
+            ('M4 /proc/<pid>/root device differs', lambda p: setattr(p, 'root', (26, 555)), 'VIEW_DENIED'),
+            *(('M5 fd%d is not /dev/null' % fd, lambda p, fd=fd: p.fds.update({fd: ('/dev/console',) + p.fds[fd][1:]}),
+               'FD_DENIED') for fd in (0, 1, 2)),
+            ('M7 cmdline differs from argv', lambda p: p.cmdline.append('--no-sandbox'), 'PROGRAM_DENIED'),
+            ('M8 extra /run/acceptance entry', lambda p: p.run.append('controller'), 'VIEW_DENIED'),
+            ('M9 tmpfs directory mode 0755', lambda p: p.tmpfs['/tmp'].update(mode=0o40755), 'VIEW_DENIED'),
+            ('M9 tmpfs directory uid', lambda p: p.tmpfs['/tmp'].update(uid=0), 'VIEW_DENIED'),
+            ('M9 tmpfs directory gid', lambda p: p.tmpfs['/tmp'].update(gid=0), 'VIEW_DENIED'),
+            ('M9 tmpfs directory st_dev', lambda p: p.tmpfs['/tmp'].update(dev=26), 'VIEW_DENIED'),
+            ('M10 extra fd 5', lambda p: p.fds.update({5: ('socket:[50]', 8, 50, 2)}), 'FD_DENIED'),
+            ('M14 non-empty groups', status(Groups=uid + ' '), 'ATTESTATION_FAILED'),
+            ('M15 wrong gids', status(Gid='\t'.join((uid, '0', uid, uid))), 'ATTESTATION_FAILED'),
+            *(('M16 %s nonzero' % cap, status(**{cap: '0000000000000001'}), 'ATTESTATION_FAILED')
+              for cap in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')),
+            ('M18 /etc bind left rw', self.remount('/etc', 'rw,relatime'), 'VIEW_DENIED'),
+            # P47: exactly the twelve view mounts, each once.
+            ('P47 missing / row', drop('/'), 'VIEW_DENIED'),
+            ('P47 missing /proc row', drop('/proc'), 'VIEW_DENIED'),
+            ('P47 missing /dev/null row', drop('/dev/null'), 'VIEW_DENIED'),
+            ('P47 duplicate / row (a mount stacked on the root)', stack('/'), 'VIEW_DENIED'),
+            ('P47 duplicate /proc row', stack('/proc'), 'VIEW_DENIED'),
+            ('M19 old-root /run left attached', attach(('/run', '/', 'rw,nosuid,nodev,relatime', 'tmpfs', '0:25')),
+             'VIEW_DENIED'),
+            ('M19 old-root /dev left attached', attach(('/dev', '/', 'rw,nosuid,relatime', 'devtmpfs', '0:5')),
+             'VIEW_DENIED'),
+            ('M19 /sys left attached', attach(('/sys', '/', 'rw,nosuid,nodev,noexec,relatime', 'sysfs', '0:20')),
+             'VIEW_DENIED'),
+        )
+        with self.subTest(case='control parent view'): self.parent()
+        with self.subTest(case='control local view'): self.local()
+        for name, change, code in parent_cases:
+            with self.subTest(case=name), self.assertRaisesRegex(c.ConfinementError, '^' + code + '$'):
+                self.parent(change)
+        # M11: the child's own namespaces against the bootstrap's initial ones (local view).
+        for name, change in (
+                ('M11 pid namespace is the initial one', lambda p: p.self_namespaces.update(pid=p.INITIAL['pid'])),
+                ('M11 mnt namespace is the initial one', lambda p: p.self_namespaces.update(mnt=p.INITIAL['mnt'])),
+                ('M11 user namespace is not the initial one',
+                 lambda p: p.self_namespaces.update(user='user:[4026532302]'))):
+            with self.subTest(case=name), self.assertRaisesRegex(c.ConfinementError, '^VIEW_DENIED$'):
+                self.local(change)
+        # M17: an exit receipt names the original owned child; one for any other pid is denied.
+        proc = LiteralProc(); k, owned = proc.port()
+        with self.subTest(case='control exit receipt'):
+            self.assertEqual(dict(proc.handoff(k, owned).wait_exit(1)), {'status': 'TIMEOUT', 'pid': 300, 'run_id': RUN})
+        with self.subTest(case='M17 exit receipt for a pid other than the attested one'):
+            with self.assertRaisesRegex(c.ConfinementError, '^EXIT_DENIED$'):
+                proc.handoff(k, owned, pid=301).wait_exit(1)
+
+    def test_waiting_attestation_requires_seccomp_filters_1_and_observed_tty(self):
+        # T8-09: Seccomp_filters and tty_nr are observed from /proc, never echoed from the launch.
+        for filters, waiting in (('1', True), ('2', False), ('0', False)):
+            with self.subTest(unbound_filters=filters):
+                proc = LiteralProc(); proc.status['Seccomp_filters'] = filters
+                k, owned = proc.port(); facts = k.inspect(proc.pid)
+                # An unbound runtime's waiting is observed (one filter over the exact inherited set), never forced.
+                self.assertIs(facts['waiting'], waiting)
+                self.assertEqual(facts['seccomp_filters'], int(filters))
+                if waiting:
+                    c._check(c._attestation(facts), proc.launch, waiting=True)
+                else:
+                    with self.assertRaisesRegex(c.ConfinementError, '^ATTESTATION_FAILED$'):
+                        c._check(c._attestation(facts), proc.launch, waiting=True)
+        # _check: a waiting attestation needs exactly one filter; any other needs at least one.
+        proc = LiteralProc(); k, owned = proc.port(); facts = k.inspect(proc.pid)
+        for filters, waiting, admitted in ((1, True, True), (2, True, False), (0, True, False),
+                                           (1, False, True), (3, False, True), (0, False, False)):
+            with self.subTest(check_filters=filters, waiting=waiting):
+                attestation = c._attestation(dict(facts, seccomp_filters=filters, waiting=waiting))
+                if admitted:
+                    c._check(attestation, proc.launch, waiting=waiting)
+                else:
+                    with self.assertRaisesRegex(c.ConfinementError, '^ATTESTATION_FAILED$'):
+                        c._check(attestation, proc.launch, waiting=waiting)
+        # tty_nr is read from /proc/<pid>/stat after the last ')'; a comm holding ')' and digits cannot supply it.
+        for comm, tty, admitted in (('node', 0, True), ('node', 1088, False),
+                                    ('x) S 1 1 1 7 0', 0, True), ('x) S 1 1 1 0 0', 1088, False)):
+            with self.subTest(comm=comm, tty_nr=tty):
+                proc = LiteralProc(); proc.comm, proc.tty_nr = comm, tty
+                k, owned = proc.port(); facts = k.inspect(proc.pid)
+                self.assertEqual(facts['tty_nr'], tty)
+                if admitted:
+                    c._check(c._attestation(facts), proc.launch, waiting=True)
+                else:
+                    with self.assertRaisesRegex(c.ConfinementError, '^ATTESTATION_FAILED$'):
+                        c._check(c._attestation(facts), proc.launch, waiting=True)
+        # Bound runtimes: lifecycle WAITING needs exactly one filter; SERVICE admits a stacked one, never none.
+        proc = LiteralProc(); k, owned = proc.port(); handoff = proc.handoff(k, owned); owner = object()
+        k.bind_runtime_owner(handoff, 'WAITING', owner, '1' * 32, '2' * 32, 1)
+        self.assertEqual(k.inspect_runtime(handoff, 'WAITING', owner)['lifecycle'], 'WAITING')
+        self.assertIs(k.inspect(proc.pid)['waiting'], True)
+        proc.status['Seccomp_filters'] = '2'
+        with self.subTest(bound='WAITING', filters=2), self.assertRaisesRegex(c.ConfinementError, '^ATTESTATION_FAILED$'):
+            k.inspect_runtime(handoff, 'WAITING', owner)
+        # Task 7 carried observation: CONTROLLER is bound as SERVICE through observed facts, not a forced waiting.
+        proc = LiteralProc('CONTROLLER'); k, owned = proc.port(); handoff = proc.handoff(k, owned); owner = object()
+        k.bind_runtime_owner(handoff, 'SERVICE', owner, '3' * 32, '4' * 32, 1)
+        for filters, admitted in (('1', True), ('3', True), ('0', False)):
+            proc.status['Seccomp_filters'] = filters
+            with self.subTest(bound='SERVICE', filters=filters):
+                if admitted:
+                    self.assertEqual(k.inspect_runtime(handoff, 'SERVICE', owner)['lifecycle'], 'SERVICE')
+                    self.assertIs(k.inspect(proc.pid)['waiting'], False)
+                else:
+                    with self.assertRaisesRegex(c.ConfinementError, '^ATTESTATION_FAILED$'):
+                        k.inspect_runtime(handoff, 'SERVICE', owner)
 
 COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
 

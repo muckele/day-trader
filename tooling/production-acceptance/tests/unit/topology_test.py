@@ -231,7 +231,7 @@ def launches_and_handoffs():
             filter_digest=__import__('hashlib').sha256(
                 confinement.filter_bytes(launch.filter)).hexdigest(),
             fds=launch.fds, views=launch.views, waiting=True,
-            programs=launch.programs)
+            programs=launch.programs, seccomp_filters=1, tty_nr=0)
         owned = Owned(attestation.pid, RUN, role)
         launches.append(launch)
         handoffs.append(confinement.RoleHandoff(launch, attestation, kernel, owned))
@@ -536,7 +536,7 @@ _SELECTOR_KINDS = ('PROXY_STOP_SELECTOR', 'PROXY_CONNECT_SELECTOR')
 
 def literal_runtime_role(confinement_fixture, role, lifecycle, runtime_owner,
                          desired_rows=(), *, bind=True):
-    """Actual NativeKernelPort + a literal /proc table for one original child.
+    """Actual OfflineKernelPort + a literal /proc table for one original child.
 
     `table` maps each FD to its kernel facts {fd, kind, device, inode, flags,
     tfds}; `active['fds']` is the listed FD set. Tests mutate both to model
@@ -614,7 +614,8 @@ def literal_runtime_role(confinement_fixture, role, lifecycle, runtime_owner,
         pid=300, run_id=RUN, role=role, uids=(launch.uid,) * 3,
         gids=(launch.uid,) * 3, groups=(), capabilities=(0,) * 5,
         no_new_privs=1, seccomp=2, filter_digest=state['digest'], fds=launch.fds,
-        views=launch.views, waiting=True, programs=launch.programs)), kernel, owned)
+        views=launch.views, waiting=True, programs=launch.programs,
+        seccomp_filters=1, tty_nr=0)), kernel, owned)
     if bind:
         marker = {'CONTROLLER': '1', 'BROWSER': '3', 'VERIFIER': '5', 'PROXY': '7'}[role]
         kernel.bind_runtime_owner(handoff, lifecycle, runtime_owner,

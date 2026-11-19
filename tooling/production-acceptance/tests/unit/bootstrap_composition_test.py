@@ -73,7 +73,7 @@ class InertFamily:
         self.wait_status, self.scope_failure = 'EXITED', False
         self.pid, self.buffer = 200, bytearray()
         self.authority = types.SimpleNamespace(
-            approve_native_fixtures=lambda config: self.authority,
+            approve_offline_fixtures=lambda config: self.authority,
             receiver_count=lambda operation: 987, # must never be trusted by v1
             foreign_pid=lambda role: 500, audit=lambda port: None,
             helper_pin=lambda name: c.ProgramPin('/opt/acceptance/tests/fixtures/' + p.HELPER_SAMPLES[name], 'f'*64),
@@ -104,7 +104,7 @@ class InertFamily:
                 fork=lambda: 901, pipe2=lambda flags: (31,32), WNOHANG=1,
                 waitpid=lambda pid, flags: (pid,23<<8), waitstatus_to_exitcode=lambda status: status>>8,
                 kill=lambda pid, sig: self.events.append(('kill',pid)), _exit=end))
-        kernel = c.NativeKernelPort(self.b)
+        kernel = c.OfflineKernelPort(self.b)
         def spawn(launch, entry):
             self.pid += 1; self.current = launch
             owned = c.NativeOwned(self.pid, binding.runId, launch.role, object(), object())
@@ -113,7 +113,8 @@ class InertFamily:
                 uids=(launch.uid,)*3, gids=(launch.uid,)*3, groups=(), capabilities=(0,)*5,
                 no_new_privs=1, seccomp=2, filter_digest=hashlib.sha256(b''.join(
                     struct.pack('<HBBI', *row) for row in launch.filter)).hexdigest(),
-                fds=launch.fds, views=launch.views, waiting=False, programs=launch.programs)
+                fds=launch.fds, views=launch.views, waiting=False, programs=launch.programs,
+                seccomp_filters=1, tty_nr=0)
             port = types.SimpleNamespace(b=self.b, launch=launch, pins={}, ready_fd=30, digest='d'*64,
                 establish_views=lambda value: None, close_unaudited_fds=lambda value: None,
                 drop_credentials=lambda *args: None, clear_capabilities=lambda: None,
@@ -133,7 +134,7 @@ class InertFamily:
         kernel.wait_owned = lambda owner, duration: receipt(owner, duration, 'wait')
         kernel.stop_owned = lambda owner, duration: receipt(owner, duration, 'stop')
         config = c.BootstrapConfig(kernel, binding.runId, tuple(c.ProgramPin(path, 'a'*64) for path in sorted(c.PROGRAM_PATHS)))
-        self.fixtures = p.NativeProbeFixtures(c, kernel, config, self.authority)
+        self.fixtures = p.OfflineProbeFixtures(c, kernel, config, self.authority)
         self.fixtures.receivers = receivers
         self.fixtures.clock = clock
 
@@ -300,6 +301,25 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
         except Exception as error: self.fail('complete original families must qualify offline: ' + str(error))
         self.assertIs(type(result), p.CompletedProbeEpoch)
         return result
+
+    def test_offline_epoch_is_never_native(self):
+        # compA part A note (T8-05): an epoch minted from offline fixtures carries its provenance; it is never
+        # type-identical to a native one and never says native.
+        self.assertTrue(hasattr(p, 'OfflineProbeFixtures'), 'no distinct offline probe fixtures (compA part A)')
+        setup = self.setup_epoch()
+        self.assertIs(type(setup[4].fixtures), p.OfflineProbeFixtures)
+        self.assertIs(type(setup[4].fixtures.kernel), c.OfflineKernelPort)
+        epoch = self.complete(setup)
+        self.assertIs(epoch.native, False)
+        self.assertIs(epoch.require_current(setup[0], epoch.fixture_inventory_digest, 0), epoch)
+        # Only the completed sequence mints an epoch, and its provenance is a bool, never a truthy stand-in.
+        values = (epoch.binding, epoch.cases, epoch.task10_projection, epoch.fixture_inventory_digest, epoch.digest,
+                  epoch.family_proofs)
+        for native in (1, 'false', None):
+            with self.subTest(native=native), self.assertRaisesRegex(p.ProbeFailure, '^PROBE_EPOCH_DENIED$'):
+                p.CompletedProbeEpoch(*values, native, _seal=p._EPOCH_SEAL)
+        with self.assertRaisesRegex(p.ProbeFailure, '^PROBE_EPOCH_DENIED$'):
+            p.CompletedProbeEpoch(*values, False)
 
     def test_v1_receiver_endpoint_nonce_epoch_mismatch_denied(self):
         self.complete(self.setup_epoch())
@@ -528,7 +548,7 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
 class LiveProxyChannel:
     """The original PROXY FD3/FD4 pipe pair between the bootstrap and its stand-in child.
 
-    Bootstrap writes (NativeKernelPort.write_proxy_frame) reach the child's FD3; the
+    Bootstrap writes (the port's write_proxy_frame) reach the child's FD3; the
     child's FD4 bytes are read back by the bootstrap's real read_proxy_frame through
     its kernel bindings. The child's own 'WAITING\\n' is consumed as spawn does.
     """
@@ -568,7 +588,7 @@ class LiveProxyChannel:
 
 
 class LiteralRoleProc:
-    """Literal /proc for the four original children: the NativeKernelPort bindings seam.
+    """Literal /proc for the four original children: the OfflineKernelPort bindings seam.
 
     Each child's inherited FD0..4 are per-role literals; the PROXY child's table is
     its stand-in's own inert descriptor table (fd -> [device, inode, flags], plus each
@@ -612,12 +632,18 @@ class LiteralRoleProc:
         uid=launch.uid
         if rest=='/status':
             return ('Uid:\t%d %d %d %d\nGid:\t%d %d %d %d\nGroups:\nCapEff:\t0\nCapPrm:\t0\nCapInh:\t0\n'
-                    'CapAmb:\t0\nCapBnd:\t0\nNoNewPrivs:\t1\nSeccomp:\t2\n'%((uid,)*8)).encode()
+                    'CapAmb:\t0\nCapBnd:\t0\nNoNewPrivs:\t1\nSeccomp:\t2\nSeccomp_filters:\t1\n'%((uid,)*8)).encode()
+        if rest=='/stat':
+            pid=path.split('/')[2]
+            return ('%s (node) S 1 %s %s 0 -1 4194560\n'%(pid,pid,pid)).encode()
         if rest=='/cmdline':return b'\0'.join(arg.encode() for arg in launch.argv)+b'\0'
         if rest=='/mountinfo':
-            mounts=''.join('1 0 0:1 / /'+d+' ro - ext4 base ro\n' for d in ('opt','usr','lib','lib64','etc'))
-            return (mounts+''.join('1 0 0:2 / /'+d+' rw - tmpfs base rw\n' for d in
-                    ('tmp','var','run/acceptance/'+role.lower(),'dev/shm'))).encode()
+            # The Task 8b view (P47): self-bound root, read-only base, role state, /dev/null and /proc.
+            mounts='1 0 0:2 /acceptance/'+role.lower()+'/.root / rw - tmpfs base rw\n'
+            mounts+=''.join('1 0 0:1 / /'+d+' ro - ext4 base ro\n' for d in ('opt','usr','lib','lib64','etc'))
+            mounts+=''.join('1 0 0:2 / /'+d+' rw - tmpfs base rw\n' for d in
+                            ('tmp','var','run/acceptance/'+role.lower(),'dev/shm'))
+            return (mounts+'1 0 0:5 /null /dev/null rw - devtmpfs udev rw\n1 0 0:30 / /proc rw - proc proc rw\n').encode()
         if rest.startswith('/fdinfo/'):
             dev,inode,flags,targets,link=self.facts(path)
             text='pos:\t0\nflags:\t0%o\nmnt_id:\t15\nino:\t%d\n'%(flags,inode)
@@ -673,10 +699,10 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 1,'1'*32,'b'*64,'a'*64,'c'*64,7,expires_at)
             confinement_fixture.c=c;confinement_fixture.RUN=self.binding.runId
             self.role_finite=confinement_fixture.Kernel()
-            # E4: the actual NativeKernelPort observes each original child through a
+            # E4: the actual (offline) kernel port observes each original child through a
             # literal /proc (its bindings seam); no observation method is replaced.
             self.role_proc=LiteralRoleProc(self)
-            self.role_kernel=c.NativeKernelPort(self.role_proc)
+            self.role_kernel=c.OfflineKernelPort(self.role_proc)
             self.proxy_channel=LiveProxyChannel();self.proxy_endpoints=None
             spawn_waiting=self.role_finite.spawn_waiting
             def spawn_identified(launch,entry):
@@ -694,7 +720,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             self.role_kernel.spawn_waiting=spawn_identified
             def stop_owned(owned,deadline):
                 # Stopping the original PROXY child ends its stand-in loop (FD3 EOF).
-                # A proven stop is cached in the kernel state, as NativeKernelPort._exit does.
+                # A proven stop is cached in the kernel state, as the port's _exit does.
                 if owned.role=='PROXY':self.proxy_channel.close_command()
                 receipt=self.role_finite.stop_owned(owned,deadline)
                 state=self.role_kernel._owned.get(owned)
@@ -845,6 +871,57 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 observations=self.observations,host_devices=self.host,events=self.events,
                 cleanup_budget=self.budget)
             return composition,stack
+
+    def test_topology_consumers_never_count_an_offline_port_as_native(self):
+        # T8-05 (P11): offline ports and fixtures run the offline composition, and no consumer counts them as native.
+        self.assertTrue(hasattr(c, 'OfflineKernelPort'), 'no distinct offline kernel port (T8-05)')
+        h = self.Harness(self); composition, stack = h.build()
+        self.assertIs(type(h.role_kernel), c.OfflineKernelPort)
+        self.assertIs(type(h.fixture), p.OfflineProbeFixtures)
+        self.assertIs(composition.native, False)
+        with stack:
+            composition.begin(TEST_HOST_CHALLENGE)
+            self.assertIs(composition._probe_epoch.native, False)
+            self.assertIs(type(composition._proxy_authority._kernel), c.OfflineKernelPort)
+            self.assertIs(composition._proxy_authority.native, False)
+        # Provenance must agree across the chain: native fixtures need the sealed native role kernel, offline
+        # fixtures the offline one. Each mismatch is refused when the composition is built, before any effect.
+        def compose(harness, **changes):
+            values = dict(binding=harness.binding, expected=harness.expected, role_config=harness.role_config,
+                          fixtures=harness.fixture, proxy_entry=lambda *args: None, observations=harness.observations,
+                          host_devices=harness.host, events=harness.events, cleanup_budget=harness.budget)
+            values.update(changes)
+            return t.compose_bootstrap_v1(**values)
+        class SubPort(c.OfflineKernelPort): pass
+        forged = object.__new__(p.NativeProbeFixtures); forged.__dict__.update(vars(self.Harness(self).fixture))
+        def swapped(harness):
+            harness.fixture.kernel = SubPort(harness.fixture.kernel.b)
+            return dict(fixtures=harness.fixture)
+        for name, change in (
+                ('forged native fixtures over offline ports', lambda harness: dict(fixtures=forged)),
+                ('offline fixtures holding a subclassed kernel', swapped),
+                ('offline fixtures, finite role kernel',
+                 lambda harness: dict(role_config=dataclasses.replace(harness.role_config,
+                                                                      kernel=confinement_fixture.Kernel()))),
+                ('offline fixtures, subclassed role kernel',
+                 lambda harness: dict(role_config=dataclasses.replace(harness.role_config,
+                                                                      kernel=SubPort(harness.role_proc))))):
+            harness = self.Harness(self)
+            with self.subTest(compose=name), self.assertRaisesRegex(t.TopologyError, '^ADAPTER_DENIED$'):
+                compose(harness, **change(harness))
+        # An epoch claiming native for an offline composition is refused before any role starts.
+        h = self.Harness(self); composition, stack = h.build(); original = p.qualify_probe_epoch
+        def native_claim(*args):
+            epoch = original(*args)
+            return p.CompletedProbeEpoch(epoch.binding, epoch.cases, epoch.task10_projection,
+                                         epoch.fixture_inventory_digest, epoch.digest, epoch.family_proofs, True,
+                                         _seal=p._EPOCH_SEAL)
+        with stack:
+            stack.enter_context(mock.patch.object(p, 'qualify_probe_epoch', side_effect=native_claim))
+            with self.assertRaisesRegex(t.TopologyError, '^PROBE_EPOCH_DENIED$'):
+                composition.begin(TEST_HOST_CHALLENGE)
+            self.assertNotIn('roles', h.timeline)
+            self.assertIsNone(composition._roles)
 
     def test_v1_foreign_probe_module_is_rejected_before_persistent_effects(self):
         h=self.Harness(self);original,stack=h.build()
@@ -1496,7 +1573,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
 
     def test_v1_complete_guest_composition_uses_actual_accepted_modules(self):
         # E4 (P12): nothing on the observation path is replaced. The composition's
-        # own NativeKernelPort reads a literal /proc per original child; the PROXY
+        # own (offline) kernel port reads a literal /proc per original child; the PROXY
         # child's table is its stand-in's inert descriptor table at its own attested
         # PID, and the actual serve_proxy runs in another thread standing in for that
         # child. Labelled (RB5): literal /proc and a thread, never native evidence;
@@ -1507,7 +1584,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
         for name in ('bind_runtime_owner','inspect_runtime','runtime_lifecycle',
                      'observe_child_descriptors','read_proxy_frame','write_proxy_frame'):
             self.assertNotIn(name,vars(h.role_kernel),name)
-            self.assertIs(getattr(h.role_kernel,name).__func__,getattr(c.NativeKernelPort,name),name)
+            self.assertIs(getattr(h.role_kernel,name).__func__,getattr(c._KernelPortCore,name),name)
         with stack:
             self.assertIs(t.observe_current_roles,ORIGINAL_OBSERVE_CURRENT_ROLES)
             proof=composition.begin(TEST_HOST_CHALLENGE)
@@ -1608,10 +1685,15 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             return topology_fixture.literal_proxy_client(handoff._owned,binding,topology_fixture.Clock())
         same_process=dataclasses.replace(handoff,attestation=dataclasses.replace(
             handoff.attestation,pid=os.getpid()))
-        class SubKernel(c.NativeKernelPort):pass
+        class SubKernel(c.OfflineKernelPort):pass
         used=client();used._sent=1
         browser=dataclasses.replace(handoff,launch=dataclasses.replace(handoff.launch,role='BROWSER'))
+        # Task 7 review M3: only the kernel's exact type is wrong here; the handoff names that same kernel,
+        # so nothing but the type gate can refuse it.
+        sub=SubKernel(kernel.b);typed=dataclasses.replace(handoff,_kernel=sub)
+        self.assertEqual(t.ProxyChildAuthority(handoff,client(),kernel,binding,seal=t._PROXY_CHILD_SEAL).native,False)
         for name,args,seal in (('same-process',(same_process,client(),kernel,binding),t._PROXY_CHILD_SEAL),
+                               ('kernel-type-only',(typed,client(),sub,binding),t._PROXY_CHILD_SEAL),
                                ('unsealed',(handoff,client(),kernel,binding),None),
                                ('foreign-client',(handoff,types.SimpleNamespace(),kernel,binding),t._PROXY_CHILD_SEAL),
                                ('used-client',(handoff,used,kernel,binding),t._PROXY_CHILD_SEAL),
@@ -1698,10 +1780,10 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
         for name in ('register_runtime_descriptor','retire_runtime_descriptor'):
             self.assertFalse(hasattr(c.NativeKernelPort,name),name)
         h=self.Harness(self);composition,stack=h.build();adopted=[]
-        adopt=c.NativeKernelPort._adopt_child_inventory
+        adopt=c._KernelPortCore._adopt_child_inventory
         def spy(kernel,handoff,owner,report):
             adopted.append([row['kind'] for row in report]);return adopt(kernel,handoff,owner,report)
-        with stack,mock.patch.object(c.NativeKernelPort,'_adopt_child_inventory',new=spy):
+        with stack,mock.patch.object(c.OfflineKernelPort,'_adopt_child_inventory',new=spy):
             first=composition.begin(TEST_HOST_CHALLENGE)
             before=json.loads(first.handoff)['payload']['composition']['roleRuntime'][3]['currentFDs']
             stand_in=h.proxy_harness;stand_in.clients.append([STAND_IN_CONNECT])

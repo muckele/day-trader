@@ -394,7 +394,7 @@ SITE_ARGS = {
         0: ('_LINUX_CAPABILITY_VERSION_3', 'CAPSET_HEADER_PID'), 1: ('CAPSET_DATA_BYTES',)}),
     ('confinement.py', 'NativeChildPort.no_new_privs', 0): ('__NR_prctl', {0: _s('PR_SET_NO_NEW_PRIVS'), 1: 'NNP_ENABLE', **_PRCTL_ZERO}),
     ('confinement.py', 'NativeChildPort.install_seccomp', 0): ('__NR_seccomp', {0: _s('SECCOMP_SET_MODE_FILTER')}),
-    ('confinement.py', 'NativeKernelPort.spawn_waiting', 0): ('__NR_unshare', {0: _s('CLONE_NEWNS', 'CLONE_NEWPID', 'CLONE_NEWIPC')}),
+    ('confinement.py', '_KernelPortCore.spawn_waiting', 0): ('__NR_unshare', {0: _s('CLONE_NEWNS', 'CLONE_NEWPID', 'CLONE_NEWIPC')}),
 }
 # SYSCALL_SITES is derived from the per-site table (nr symbol -> files); the test also checks it against the AST.
 
@@ -453,15 +453,14 @@ OPEN_FLAG_SITES = {
     ('confinement.py', 'LinuxBindings.pin_programs', 'open', 0): _s('O_CLOEXEC', 'O_NOFOLLOW'),
     ('confinement.py', 'LinuxBindings.pin_sample', 'open', 0): _s('O_CLOEXEC', 'O_NOFOLLOW'),
     ('confinement.py', 'NativeChildPort.establish_views', 'open', 0): _s('O_CREAT', 'O_EXCL', 'O_CLOEXEC', 'O_NOFOLLOW'),
-    ('confinement.py', 'NativeKernelPort.spawn_waiting', 'pipe2', 0): _s('O_CLOEXEC'),
-    ('confinement.py', 'NativeKernelPort.spawn_waiting', 'open', 0): _s('O_RDWR', 'O_CLOEXEC', 'O_NOFOLLOW'),
+    ('confinement.py', '_KernelPortCore.spawn_waiting', 'pipe2', 0): _s('O_CLOEXEC'),
+    ('confinement.py', '_KernelPortCore.spawn_waiting', 'open', 0): _s('O_RDWR', 'O_CLOEXEC', 'O_NOFOLLOW'),
     ('topology.py', 'NativeTopologyBindings._read', 'open_owned', 0): ('OPTIONAL_CLOEXEC_ABSENT',),
 }
 
 # AF_VSOCK host CID literals: (file, qualname) -> count. A CID literal is the element right before the policy service
 # port in a tuple, list or call, the value paired with a 'hostCID'/'hostCid' key, or the value bound to _HOST_CID.
 VSOCK_CID_SITES = {
-    ('confinement.py', 'proxy_endpoint'): 1,
     ('proxy.py', '<module>'): 1,
     ('proxy.py', 'ProxyRuntimeOwner._check'): 1,
     ('proxy.py', '_observation_record'): 1,

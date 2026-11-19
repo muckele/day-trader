@@ -2,8 +2,10 @@
 
 The native adapter is selected only by trusted bootstrap-check embedding with
 a caller-validated pinned guest runtime. Import and the default CLI do nothing
-native. Offline tests inject inert bindings and never qualify a guest.
-KernelPort is trusted process code; fake observations never qualify a guest.
+native. Only select_native_kernel constructs the sealed NativeKernelPort, over
+its own LinuxBindings. Offline tests and offline composition use the distinct,
+unsealed OfflineKernelPort over inert bindings; it never qualifies a guest
+(T8-05). KernelPort is trusted process code; fake observations never qualify.
 
 Reference binding: corrected Linux 6.8 / glibc 2.39 / AAPCS64 map SHA256
 7c8714c95a67d8a2e6c1b4c8b8481525a61976c81dfe2037c251add071ac9898;
@@ -171,6 +173,10 @@ class RoleAttestation:
     views: RoleViews
     waiting: bool
     programs: tuple
+    # Observed, never echoed from the launch (T8-09): /proc/<pid>/status
+    # Seccomp_filters and /proc/<pid>/stat tty_nr.
+    seccomp_filters: int
+    tty_nr: int
 
 
 class KernelPort(Protocol):
@@ -219,9 +225,10 @@ PROGRAM_PATHS = frozenset((NODE, PYTHON, CHROME, *(argv[1] for argv in ARGV.valu
 
 
 def role_fds(role, run_id):
+    # T8-10: the physical peer of FD0..4 is the bootstrap parent for every role
+    # (it relays the browser's frames itself, OriginalRoleSet). VMHost agrees.
     if role not in UIDS or not _run(run_id): _fail('ROLE_DENIED')
-    peer = 'BOOTSTRAP' if role == 'CONTROLLER' else 'CONTROLLER'
-    return tuple(Descriptor(fd, kind, purpose, peer, run_id) for fd, kind, purpose in (
+    return tuple(Descriptor(fd, kind, purpose, 'BOOTSTRAP', run_id) for fd, kind, purpose in (
         (0, 'null', 'stdin'), (1, 'null', 'stdout'), (2, 'null', 'stderr'),
         (3, 'pipe', 'command'), (4, 'pipe', 'result')))
 
@@ -332,22 +339,6 @@ def build_filter(role):
     return tuple(code)
 
 
-def proxy_endpoint():
-    """Trusted proxy code must use this one endpoint; BPF cannot inspect sockaddr."""
-    return (2, 4050)
-
-
-def validate_channel_message(data, ancillary, flags):
-    """Only bounded bytes on private role pipes; reject all ancillary/truncation.
-
-    Actual fixed command decoding/authentication belongs to the consuming role.
-    This never accepts a SCM_RIGHTS pretense or a generic FD donation message.
-    """
-    if type(data) is not bytes or not 0 < len(data) <= 4096 or type(ancillary) is not tuple or ancillary or type(flags) is not int or flags != 0:
-        _fail('CHANNEL_DENIED')
-    return data
-
-
 def prepare_role(role, config):
     if type(config) is not RoleConfig or role not in UIDS: _fail('ROLE_DENIED')
     b = config.bootstrap
@@ -368,6 +359,7 @@ def _attestation(facts):
             if type(vector) is not tuple or any(type(x) is not int or x < 0 for x in vector): _fail('ATTESTATION_FAILED')
         if len(a.uids) != 3 or len(a.gids) != 3 or len(a.capabilities) != 5: _fail('ATTESTATION_FAILED')
         if type(a.no_new_privs) is not int or type(a.seccomp) is not int or type(a.waiting) is not bool: _fail('ATTESTATION_FAILED')
+        if any(type(x) is not int or x < 0 for x in (a.seccomp_filters, a.tty_nr)): _fail('ATTESTATION_FAILED')
         if type(a.fds) is not tuple or any(type(d) is not Descriptor or type(d.fd) is not int for d in a.fds) or type(a.views) is not RoleViews or type(a.filter_digest) is not str: _fail('ATTESTATION_FAILED')
         if any(type(getattr(a.views,n)) is not bool for n in ('console','separate_pid','separate_mount','initial_user_namespace','controlling_tty','read_only_base','private_tmpfs','no_external_ip_interface','no_fd_donor')): _fail('ATTESTATION_FAILED')
         if type(a.views.private_mode) is not int or type(a.views.visible_roles) is not tuple or type(a.views.device_nodes) is not tuple: _fail('ATTESTATION_FAILED')
@@ -377,9 +369,12 @@ def _attestation(facts):
 
 
 def _check(a, launch, *, waiting):
+    # T8-09: while waiting exactly one filter (ours, no inner filter yet);
+    # otherwise at least one (Chromium may stack its own). No controlling tty.
     if (a.run_id != launch.run_id or a.role != launch.role or a.uids != (launch.uid,)*3 or
         a.gids != (launch.uid,)*3 or a.groups != () or a.capabilities != (0,)*5 or
         a.no_new_privs != 1 or a.seccomp != 2 or a.filter_digest != hashlib.sha256(filter_bytes(launch.filter)).hexdigest() or
+        (a.seccomp_filters != 1 if waiting else a.seccomp_filters < 1) or a.tty_nr != 0 or
         a.fds != launch.fds or a.views != launch.views or a.waiting is not waiting or _programs(a.programs) != launch.programs):
         _fail('ATTESTATION_FAILED')
 
@@ -764,7 +759,7 @@ class OriginalRoleSet:
             _v1_exact(response['payload'],('requestSequence',*p));_v1_int(response['payload']['requestSequence']);_v1_int(response['payload']['generation'])
             if response['action']!='STARTED' or response['payload']!=dict(requestSequence=seq,**p): _fail('AUTHORITY_LOST')
             self._check(owner._proof);owner._committed=True
-            if isinstance(self._config.kernel,NativeKernelPort):self._config.kernel._commit_browser_runtime(owner)
+            if type(self._config.kernel) in (NativeKernelPort,OfflineKernelPort):self._config.kernel._commit_browser_runtime(owner)
             return {'status':'ACTIVE','generation':1}
         except Exception as error:
             self._failed(error);raise
@@ -933,11 +928,12 @@ class _ValidatedRuntime:
     seal: object
 
 
-def select_native_kernel(mode, *, runtime_identity, validate_runtime, bindings_factory=None):
+def select_native_kernel(mode, *, runtime_identity, validate_runtime):
     """No ambient env/CLI boolean grants native authority. The trusted caller
     must validate its pinned image/Python/libc/runtime identity and return that
     same nominal identity. A missing/failed validation precedes ALL effects.
-    Injecting a factory is only a unit boundary, never qualification evidence.
+    The only constructor of the sealed NativeKernelPort, over its own
+    LinuxBindings loader; no injected factory exists (T8-05).
     """
     if (mode != 'bootstrap-check' or type(runtime_identity) is not GuestRuntimeIdentity or
         type(runtime_identity.python) is not ProgramPin or runtime_identity.python.path!=PYTHON or
@@ -951,7 +947,7 @@ def select_native_kernel(mode, *, runtime_identity, validate_runtime, bindings_f
     try:
         if validate_runtime(runtime_identity) is not runtime_identity: _fail('NATIVE_GATE_DENIED')
     except Exception: _fail('NATIVE_GATE_DENIED')
-    return NativeKernelPort((bindings_factory or LinuxBindings)(_ValidatedRuntime(runtime_identity,_NATIVE_SEAL)))
+    return NativeKernelPort(LinuxBindings(_ValidatedRuntime(runtime_identity,_NATIVE_SEAL)),seal=_NATIVE_KERNEL_SEAL)
 
 
 def _native_apis(os_api,signal_api,resource_api):
@@ -1196,14 +1192,47 @@ class NativeChildPort:
         _fail('EXEC_RETURNED')
 
 
+def _view_mount_points(role):
+    """P47: the role's whole mount table after pivot_root (Task 8b view), each once.
+
+    Mount points are relative to the role's own root (Linux 6.8
+    fs/proc_namespace.c show_mountinfo, root taken at open). Task 14 adds
+    /run/acceptance/crash (P50).
+    """
+    return ('/','/opt','/usr','/lib','/lib64','/etc','/tmp','/var',
+            '/run/acceptance/'+role.lower(),'/dev/shm','/dev/null','/proc')
+
+
+def _proc_decimal(value):
+    """One canonical /proc decimal field (signed, as seq_put_decimal_ll prints)."""
+    if type(value) is not str or re.fullmatch('0|-?[1-9][0-9]{0,18}',value) is None: _fail('ATTESTATION_FAILED')
+    return int(value)
+
+
 def _native_observe(b,pid,launch,digest,pins,waiting,local=False,current_fds=None):
-    """Read kernel facts, never a self-authored `confined: true` receipt."""
+    """Read kernel facts, never a self-authored `confined: true` receipt.
+
+    uids, gids, groups, capabilities, no_new_privs, seccomp, seccomp_filters
+    and tty_nr are observed here. fds, views and programs are the launch
+    contract, returned only after the checks below observed each of them;
+    filter_digest is the installed program's digest (T8-09). waiting None is
+    an unbound runtime's: it is observed as exactly one seccomp filter over
+    the exact inherited descriptor set checked below, never a caller's bool.
+    """
     base='/proc/'+str(pid)
     fields={}
     for line in b.read_file(base+'/status').decode('ascii').splitlines():
         key,_,value=line.partition(':'); fields[key]=value.strip()
     uid=tuple(map(int,fields['Uid'].split()[:3])); gid=tuple(map(int,fields['Gid'].split()[:3]))
     caps=tuple(int(fields[k],16) for k in ('CapEff','CapPrm','CapInh','CapAmb','CapBnd'))
+    filters=_proc_decimal(fields.get('Seccomp_filters'))
+    # /proc/<pid>/stat: comm sits in parentheses and may itself hold ')' and
+    # spaces; tty_nr is the fifth field after the last ')' (fs/proc/array.c
+    # do_task_stat: state, ppid, pgid, sid, tty_nr).
+    stat=b.read_file(base+'/stat',4096)
+    after=stat[stat.rfind(b')')+1:].decode('ascii').split() if b')' in stat else []
+    if len(after)<5: _fail('ATTESTATION_FAILED')
+    tty_nr=_proc_decimal(after[4])
     listed=set(b.os.listdir(base+'/fd'))
     expected={str(fd) for fd in range(5)}
     if local:
@@ -1236,13 +1265,18 @@ def _native_observe(b,pid,launch,digest,pins,waiting,local=False,current_fds=Non
         for namespace in ('pid','mnt'):
             if b.os.readlink(base+'/ns/'+namespace)==b.os.readlink('/proc/self/ns/'+namespace): _fail('VIEW_DENIED')
         if b.os.readlink(base+'/ns/user')!=b.os.readlink('/proc/self/ns/user'): _fail('VIEW_DENIED')
-        if b.os.stat(base+'/root').st_ino!=b.os.stat(launch.views.root+'/.root').st_ino: _fail('VIEW_DENIED')
+        root,view=b.os.stat(base+'/root'),b.os.stat(launch.views.root+'/.root')
+        if (root.st_dev,root.st_ino)!=(view.st_dev,view.st_ino): _fail('VIEW_DENIED')
     devices=set(b.os.listdir(('/' if local else base+'/root/')+'dev'))
     if devices!={'null','shm'}: _fail('VIEW_DENIED')
     prefix='' if local else base+'/root'
-    mounts={}
+    mounts={};points=[]
     for line in b.read_file(base+'/mountinfo').decode('ascii').splitlines():
-        left,right=line.split(' - ',1); mount_fields=left.split(); mounts[mount_fields[4]]=(set(mount_fields[5].split(',')),right.split()[0])
+        left,right=line.split(' - ',1); mount_fields=left.split(); points.append(mount_fields[4])
+        mounts[mount_fields[4]]=(set(mount_fields[5].split(',')),right.split()[0])
+    # P47: a missing, stacked (duplicate) or extra row, such as an old-root
+    # /run, /dev or /sys left attached, is a view other than the pivoted one.
+    if sorted(points)!=sorted(_view_mount_points(launch.role)): _fail('VIEW_DENIED')
     if any('ro' not in mounts.get('/'+directory,(set(),None))[0] for directory in ('opt','usr','lib','lib64','etc')): _fail('VIEW_DENIED')
     for path in ('/tmp','/var','/run/acceptance/'+launch.role.lower(),'/dev/shm'):
         if mounts.get(path,(None,None))[1]!='tmpfs': _fail('VIEW_DENIED')
@@ -1255,10 +1289,12 @@ def _native_observe(b,pid,launch,digest,pins,waiting,local=False,current_fds=Non
         if (any(b.os.readlink('/proc/self/ns/'+name)==initial.get(name) for name in ('pid','mnt')) or
             b.os.readlink('/proc/self/ns/user')!=initial.get('user')): _fail('VIEW_DENIED')
     if digest is None: _fail('ATTESTATION_FAILED')
+    if waiting is None: waiting=filters==1
     return dict(pid=pid,run_id=launch.run_id,role=launch.role,uids=uid,gids=gid,
         groups=tuple(map(int,fields['Groups'].split())),capabilities=caps,
         no_new_privs=int(fields['NoNewPrivs']),seccomp=int(fields['Seccomp']),filter_digest=digest,
-        fds=launch.fds,views=launch.views,waiting=waiting,programs=launch.programs)
+        fds=launch.fds,views=launch.views,waiting=waiting,programs=launch.programs,
+        seccomp_filters=filters,tty_nr=tty_nr)
 
 
 def _native_fd_exists(b,base,fd):
@@ -1391,8 +1427,12 @@ def validate_runtime_observation(value,handoff,lifecycle,*,originals=None,_allow
     return row
 
 
-class NativeKernelPort:
+class _KernelPortCore:
     """Root bootstrap parent + fixed per-role direct-parent reaper.
+
+    The shared logic of both kernel ports (T8-05): NativeKernelPort is this over
+    the sealed LinuxBindings, OfflineKernelPort this over injected inert
+    bindings. Consumers tell them apart by exact type, never isinstance.
 
     The helper owns its unreaped inner child in the new PID namespace. A STOP
     frame has no PID/argv fields; only that direct child can be signalled. Parent
@@ -1405,6 +1445,9 @@ class NativeKernelPort:
         """Trusted acquisition handoff; never populated from a runtime report.
 
         Capture inherited identities while the original child is still waiting.
+        That check is observed (exactly one filter over exactly FD0..4, T8-09).
+        PROXY is bound before its initializer; CONTROLLER after its BOOTSTRAP_INIT,
+        which holds because a non-PROXY SERVICE inventory is exactly FD0..4 too.
         PROXY runtime descriptors are never registered: each bracketed observation
         of the child (`_adopt_child_inventory`) carries its complete inventory.
         Unknown Node/Chromium internals remain unavailable.
@@ -1564,7 +1607,7 @@ class NativeKernelPort:
         if (type(data) is not bytes or getattr(owned,'role',None)!='PROXY'
                 or not (data==b'STOP' or (len(data)>=3 and int.from_bytes(data[:2],'big')==len(data)-2<=4096))):
             _fail('CHANNEL_DENIED')
-        NativeKernelPort.write_role(self,owned,data)
+        _KernelPortCore.write_role(self,owned,data)
 
     def read_proxy_frame(self,owned,remaining_ms):
         """One PROXY v2 FD4 frame: a two-byte length, then 1..16384 bytes (amendment 6.1).
@@ -1734,7 +1777,7 @@ class NativeKernelPort:
             runtime=runtimes[0]
             observed=self.inspect_runtime(runtime['handoff'],runtime['lifecycle'],runtime['owner'])
             a=_native_observe(self.b,pid,s['launch'],s['digest'],{},runtime['lifecycle']=='WAITING',current_fds=observed['currentFDs'])
-        else:a=_native_observe(self.b,pid,s['launch'],s['digest'],{},True)
+        else:a=_native_observe(self.b,pid,s['launch'],s['digest'],{},None)  # waiting observed (T8-09)
         executable=self.b.os.stat('/proc/'+str(pid)+'/exe')
         if (executable.st_dev,executable.st_ino)!=s.get('exec_identity'): _fail('PROGRAM_DENIED')
         links=tuple(self.b.os.readlink('/proc/'+str(pid)+'/fd/'+str(fd)) for fd in (3,4))
@@ -1785,6 +1828,31 @@ class NativeKernelPort:
 
     def wait_owned(self,owned,deadline): return self._exit(owned,deadline,False)
     def stop_owned(self,owned,deadline): return self._exit(owned,deadline,True)
+
+
+_NATIVE_KERNEL_SEAL=object()
+
+
+class NativeKernelPort(_KernelPortCore):
+    """The sealed native port (T8-05, D5): only select_native_kernel builds it.
+
+    It holds the LinuxBindings that select_native_kernel loaded over a validated
+    runtime identity, never injected bindings, and it has no subclasses.
+    Consumers count a kernel as native only when `type(k) is NativeKernelPort`.
+    """
+    def __init_subclass__(cls,**kwargs): raise TypeError('NativeKernelPort is final')
+
+    def __init__(self,bindings,*,seal=None):
+        runtime=getattr(bindings,'_runtime',None)
+        if (seal is not _NATIVE_KERNEL_SEAL or type(bindings) is not LinuxBindings
+                or type(runtime) is not _ValidatedRuntime or runtime.seal is not _NATIVE_SEAL):
+            _fail('NATIVE_GATE_DENIED')
+        super().__init__(bindings)
+
+
+class OfflineKernelPort(_KernelPortCore):
+    """The unsealed port over injected inert bindings: offline tests and offline
+    composition only. Never native evidence; no consumer counts it as native."""
 
 
 if __name__ == '__main__':

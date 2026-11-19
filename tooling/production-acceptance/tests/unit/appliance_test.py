@@ -380,6 +380,24 @@ class ApplianceTests(unittest.TestCase):
         changed=members.rows; changed[0]['installedPath']='/wrong'
         self.assertEqual(members.rows[0]['installedPath'],MEMBER_MAPPING[members.rows[0]['componentId']][1])
 
+    def test_archive_member_without_exec_bit_denied(self):
+        # compA M-6: every executable archive member needs an exec bit. A 0o644 member (no group/world write, no
+        # setuid, so it passes every other archive rule) is refused when the inputs are validated: _archive's
+        # REQUIRED_FILES check gives MISSING_RUNTIME before any ApprovedInputs exists. derive_executable_members
+        # accepts only ApprovedInputs from that validation, fingerprint-retained, so its own exec-bit recheck
+        # (ARCHIVE_UNSAFE, assemble.py derive_executable_members) is unreachable defence in depth (Task 9 report).
+        self.f.complete(); members=a.derive_executable_members(self.f.validate())
+        self.assertEqual(sorted(row['memberPath'] for row in members.rows if row['memberPath']),
+                         ['bin/node','bin/python3','chrome'])
+        for id,path in (('node','bin/node'),('python','bin/python3'),('chromium','chrome')):
+            for mode in (0o644,0o600,0o444):
+                with self.subTest(member=path,mode=oct(mode)):
+                    f=Fixture(Path(tempfile.mkdtemp(dir=self.root))); f.complete()
+                    f.replace(id,archive([(path,('SYNTHETIC NONBOOTABLE '+id+'\n').encode(),'file','',mode)]))
+                    self.denied('MISSING_RUNTIME',f.validate)
+                    f.replace(id,archive([(path,('SYNTHETIC NONBOOTABLE '+id+'\n').encode(),'file','',mode|0o100)]))
+                    self.assertIn(path,[row['memberPath'] for row in a.derive_executable_members(f.validate()).rows])
+
     def test_v1_member_snapshot_substitution_denied(self):
         self.assertTrue(callable(getattr(a,'derive_executable_members',None)),'retained member snapshots required')
         self.f.complete(); checked=self.f.validate(); members=a.derive_executable_members(checked)

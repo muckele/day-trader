@@ -2,6 +2,8 @@
 
 run_case invokes only an explicitly injected trusted ProbePort. Offline doubles
 may test observation validation; their output is NOT kernel/runtime evidence.
+NativeProbeFixtures takes only the sealed NativeKernelPort; OfflineProbeFixtures
+the offline port. An epoch says which it came from and offline is never native.
 The independently approved native harness must demonstrate each actual
 attempt, denial at kernel/FD boundary, and owned receiver observation. Absence
 of that harness is a failed/unavailable gate, never a skipped or mocked PASS.
@@ -189,12 +191,17 @@ _EPOCHS = weakref.WeakSet()
 
 
 class CompletedProbeEpoch:
-    """Only the completed original-fixture sequence can mint this sealed value."""
-    __slots__ = ('binding','cases','task10_projection','fixture_inventory_digest','digest','family_proofs','__weakref__')
+    """Only the completed original-fixture sequence can mint this sealed value.
+
+    `native` is its provenance (compA part A note): True only for an epoch from
+    NativeProbeFixtures over the sealed NativeKernelPort, False from offline ones.
+    """
+    __slots__ = ('binding','cases','task10_projection','fixture_inventory_digest','digest','family_proofs','native',
+                 '__weakref__')
     def __init__(self, *args, _seal=None):
         if _seal is not _EPOCH_SEAL: raise ProbeFailure('PROBE_EPOCH_DENIED')
-        if len(args) != 6: raise ProbeFailure('PROBE_EPOCH_DENIED')
-        for key,value in zip(self.__slots__[:6],args): object.__setattr__(self,key,value)
+        if len(args) != 7 or type(args[6]) is not bool: raise ProbeFailure('PROBE_EPOCH_DENIED')
+        for key,value in zip(self.__slots__[:7],args): object.__setattr__(self,key,value)
         _EPOCHS.add(self)
 
     def __setattr__(self, name, value): raise AttributeError('immutable completed epoch')
@@ -210,7 +217,8 @@ class CompletedProbeEpoch:
 
 
 def qualify_probe_epoch(binding, fixtures, cleanup_budget):
-    if (type(binding) is not _confinement().CompositionBinding or type(fixtures) is not NativeProbeFixtures
+    if (type(binding) is not _confinement().CompositionBinding
+            or type(fixtures) not in (NativeProbeFixtures, OfflineProbeFixtures)
             or type(getattr(fixtures,'receivers',None)) is not ReceiverAuthority
             or not callable(getattr(getattr(fixtures,'clock',None),'sample',None))
             or not callable(getattr(cleanup_budget,'call',None))
@@ -293,7 +301,7 @@ def qualify_probe_epoch(binding, fixtures, cleanup_budget):
                        exited=owner.exited,emptyScopes=owner.scopes) for owner in fixtures.family_owners])
     digest = hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode('ascii')).hexdigest()
     return CompletedProbeEpoch(binding,tuple(cases),projection,receivers.digest,digest,
-                               tuple(fixtures.family_owners),_seal=_EPOCH_SEAL)
+                               tuple(fixtures.family_owners),type(fixtures) is NativeProbeFixtures,_seal=_EPOCH_SEAL)
 
 
 class ProbeFailure(ValueError):
@@ -714,19 +722,23 @@ class _ProbeFamilyOwner:
         return dict(status='STOPPED',pid=self.owned.pid,run_id=self.owned.run_id)
 
 
-class NativeProbeFixtures:
+_FIXTURE_AUTHORITY = ('receiver_count','foreign_pid','audit','helper_pin','audit_abi_termination',
+                      'unsynchronized_thread','memory')
+
+
+class _ProbeFixturesCore:
     """Concrete finite subprocess transport for separately approved fixtures.
 
-    Construct only after explicit native selector + pinned fixture approval.
-    The authority supplies independently owned receiver and executable samples,
-    not canned attempt dictionaries. Missing fixture callbacks fail closed.
-    Every observation below is generated inside a freshly confined process.
+    The one run_confined shared by both fixture kinds (P29), as _KernelPortCore
+    is for ports. The authority supplies independently owned receiver and
+    executable samples, not canned attempt dictionaries. Missing fixture
+    callbacks fail closed. Every observation below is generated inside a freshly
+    confined process.
     """
-    def __init__(self,confinement,kernel,config,authority):
-        if not isinstance(kernel,confinement.NativeKernelPort) or any(not callable(getattr(authority,n,None)) for n in
-            ('approve_native_fixtures','receiver_count','foreign_pid','audit','helper_pin','audit_abi_termination','unsynchronized_thread','memory')):
-            raise RuntimeGateUnavailable('NATIVE_FIXTURES_UNAVAILABLE')
-        if authority.approve_native_fixtures(config) is not authority: raise RuntimeGateUnavailable('NATIVE_FIXTURES_UNAPPROVED')
+    def _bind(self,confinement,kernel,config,authority,approval,unavailable,unapproved):
+        if any(not callable(getattr(authority,n,None)) for n in (approval,)+_FIXTURE_AUTHORITY):
+            raise RuntimeGateUnavailable(unavailable)
+        if getattr(authority,approval)(config) is not authority: raise RuntimeGateUnavailable(unapproved)
         self.c,self.kernel,self.config,self.authority=confinement,kernel,config,authority
         self._epoch_started=False
         self.cleanup_budget=None
@@ -793,6 +805,24 @@ class NativeProbeFixtures:
                 except BaseException as error:
                     if isinstance(error,ProbeCleanupFailure): raise
                     raise ProbeCleanupFailure(family) from error
+
+
+class NativeProbeFixtures(_ProbeFixturesCore):
+    """Native fixtures: only over the sealed NativeKernelPort (T8-05), after the
+    explicit native selector and pinned native fixture approval."""
+    def __init__(self,confinement,kernel,config,authority):
+        if type(kernel) is not confinement.NativeKernelPort: raise RuntimeGateUnavailable('NATIVE_FIXTURES_UNAVAILABLE')
+        self._bind(confinement,kernel,config,authority,'approve_native_fixtures',
+                   'NATIVE_FIXTURES_UNAVAILABLE','NATIVE_FIXTURES_UNAPPROVED')
+
+
+class OfflineProbeFixtures(_ProbeFixturesCore):
+    """Offline fixtures over the unsealed OfflineKernelPort: offline tests and the
+    offline composition. Their epoch is never native (compA part A note)."""
+    def __init__(self,confinement,kernel,config,authority):
+        if type(kernel) is not confinement.OfflineKernelPort: raise RuntimeGateUnavailable('OFFLINE_FIXTURES_UNAVAILABLE')
+        self._bind(confinement,kernel,config,authority,'approve_offline_fixtures',
+                   'OFFLINE_FIXTURES_UNAVAILABLE','OFFLINE_FIXTURES_UNAPPROVED')
 
 
 def select_native_probe(mode,*,confinement,config,runtime_identity,validate_runtime,fixture_authority):
