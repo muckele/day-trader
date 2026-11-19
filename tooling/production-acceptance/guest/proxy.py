@@ -1019,12 +1019,42 @@ class _RuntimeDescriptors:
         row['flags'] |= 2048
         self.pending_nonblocking.remove(id(endpoint))
 
+    def _listing(self):
+        """Names in /proc/self/fd minus exactly this call's own descriptors (P43).
+
+        The listing is read through a directory FD opened here. The pinned CPython
+        os.listdir(fd) reads through a private dup of it (closedir would close the
+        FD it is given), and dup takes the lowest free number, reserved just before
+        by the same dup-and-close. Both are this function's own, opened and closed
+        inside the call. The reserved number is excluded only if it is closed again
+        once the listing returns; otherwise it stays visible, so a wrong reservation
+        fails closed. Every other unknown FD stays visible.
+        """
+        os_module = self.os
+        directory = os_module.open('/proc/self/fd', os_module.O_RDONLY | os_module.O_DIRECTORY
+                                   | os_module.O_CLOEXEC)
+        try:
+            reserved = os_module.dup(directory)
+            os_module.close(reserved)
+            listed = list(os_module.listdir(directory))
+        finally:
+            os_module.close(directory)
+        if listed.count(str(directory)) != 1:
+            raise ProxyError('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')
+        listed.remove(str(directory))
+        try:
+            os_module.fstat(reserved)
+        except OSError:
+            if listed.count(str(reserved)) == 1:
+                listed.remove(str(reserved))
+        return listed
+
     def retire(self, endpoint):
         original = self.endpoints.get(id(endpoint))
         if original is None or original[0] is not endpoint:
             raise ProxyError('CLEANUP_UNCERTAIN')
         fd = original[3]
-        if endpoint.fileno() != -1 or str(fd) in self.os.listdir('/proc/self/fd'):
+        if endpoint.fileno() != -1 or str(fd) in self._listing():
             raise ProxyError('CLEANUP_UNCERTAIN')
         self.endpoints.pop(id(endpoint)); self.rows.pop(fd, None)
         self.pending_nonblocking.discard(id(endpoint))
@@ -1036,7 +1066,7 @@ class _RuntimeDescriptors:
                     or owner.inventory is not self or _NATIVE_INVENTORIES.get(owner) is not self
                     or getattr(owner, 'closing', False) or getattr(owner, 'cleanup_uncertain', False)):
                 raise ProxyError('CLEANUP_UNCERTAIN')
-        listed = self.os.listdir('/proc/self/fd')
+        listed = self._listing()
         # Strict (P7): exactly the ledger's FDs, each once; an unknown extra FD fails.
         if set(listed) != {str(fd) for fd in self.rows} or len(listed) != len(self.rows):
             raise ProxyError('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')

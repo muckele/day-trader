@@ -2069,9 +2069,17 @@ class CompositionHarness:
         self.time = types.SimpleNamespace(time=lambda: (self.clock.wall+.5)/1000,
             monotonic=lambda: (self.clock.mono+.5)/1000, sleep=self.sleep)
         self.files, self.fd_closes = {}, []
+        # P43: /proc/self/fd is listed through a directory FD the inventory opens and
+        # closes itself; os.listdir(fd) reads through a private dup, as the pinned
+        # CPython does. Both take the lowest free number, as the kernel allocates.
+        self.directories, self.directory_closes, self.listings, self.dups = set(), [], [], set()
+        self.directory_opens, self.on_listdir = 0, None
+        # Fault models: a runtime whose listdir(fd) makes no private dup, and a
+        # foreign descriptor that takes (keeps) the reserved number.
+        self.listdir_dups, self.foreign_reserved = True, False
         self.os = types.SimpleNamespace(read=self.read, write=self.write, close=self.close,
-            fstat=self.fstat, listdir=lambda path: [str(fd) for fd in self.live],
-            open=self.open, O_RDONLY=0, O_CLOEXEC=524288)
+            fstat=self.fstat, listdir=self.listdir, dup=self.dup,
+            open=self.open, O_RDONLY=0, O_CLOEXEC=524288, O_DIRECTORY=65536)
 
     def start_terminal(self):
         if self.budget.deadline is None: self.budget.deadline = self.clock.mono + 60000
@@ -2095,7 +2103,38 @@ class CompositionHarness:
             text += 'tfd: %8d events: %8x data: %16x  pos:0 ino:%x sdev:%x\n' % (
                 registered, 4, registered, self.live.get(registered, [0, 0])[1], 1)
         return text.encode()
+    def lowest_free(self):
+        fd = 0
+        while fd in self.live: fd += 1
+        return fd
+    def dup(self, fd):
+        if fd not in self.live: raise OSError('inert missing descriptor')
+        copy = self.lowest_free(); self.live[copy] = list(self.live[fd]); self.dups.add(copy); return copy
+    def listdir(self, target):
+        """Linux /proc/self/fd as seen by CPython: listing by path shows the opendir
+        FD; listing an open directory FD shows it and the private dup read through."""
+        if target == '/proc/self/fd':
+            private = self.lowest_free(); self.live[private] = [1, 9500 + private, 0]
+            try: return [str(fd) for fd in self.live]
+            finally: del self.live[private]
+        if type(target) is not int or target not in self.directories:
+            raise OSError('inert listdir of an unknown directory')
+        private = None
+        if self.listdir_dups:
+            private = self.dup(target); self.dups.discard(private)
+        try:
+            if self.on_listdir: self.on_listdir()
+            names = [str(fd) for fd in self.live]
+            self.listings.append((target, private, list(names)))
+            return names
+        finally:
+            if private is not None: del self.live[private]
     def open(self, path, flags):
+        if path == '/proc/self/fd':
+            if flags != self.os.O_RDONLY | self.os.O_DIRECTORY | self.os.O_CLOEXEC:
+                raise OSError('inert /proc/self/fd open flags')
+            fd = self.lowest_free(); self.live[fd] = [1, 9000 + fd, flags]
+            self.directories.add(fd); self.directory_opens += 1; return fd
         target = int(path.rsplit('/', 1)[1]); fd = 4000
         self.files[fd] = bytearray(self.fdinfo(target))
         return fd
@@ -2115,6 +2154,12 @@ class CompositionHarness:
         return len(part)
     def close(self, fd):
         if fd in self.files: del self.files[fd]
+        elif fd in self.directories:
+            self.directories.discard(fd); self.live.pop(fd, None); self.directory_closes.append(fd)
+        elif fd in self.dups:
+            self.dups.discard(fd)
+            if self.foreign_reserved: self.live[fd] = [1, 8888, 0]  # another descriptor takes it
+            else: self.live.pop(fd, None)
         else: self.fd_closes.append(fd)
     def sleep(self, seconds):
         if self.channel is not None: self.channel.idle()
@@ -2231,6 +2276,87 @@ class ProxyCompositionTests(unittest.TestCase):
         h = CompositionHarness(self, sink=sink).run(); self.ready(h)
         self.assertEqual(seen, [True])
         self.assertNotIn('PROXY_CURRENT', [f['kind'] for f in h.frames])
+
+    def test_p43_listing_own_directory_fd_and_private_dup_are_excluded(self):
+        # P43: the native /proc/self/fd listing shows its own directory FD and the
+        # private dup CPython's listdir(fd) reads through. Exactly those two are
+        # excluded, both are closed again, and the strict current() succeeds.
+        seen = []
+        def sink(h, owner):
+            rows = owner.observe_current(h.nominal_binding).to_record()['currentFDs']
+            directory, private, names = h.listings[-1]
+            self.assertEqual((directory, private), (7, 8))
+            self.assertTrue({'7', '8'} <= set(names))
+            self.assertEqual([r['fd'] for r in rows], [0, 1, 2, 3, 4, 5, 6])
+            self.assertEqual((h.directories, h.dups), (set(), set()))
+            self.assertEqual(h.directory_closes[-1], directory)
+            self.assertNotIn(directory, h.live); self.assertNotIn(private, h.live)
+            seen.append(True)
+        h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+        self.assertEqual(seen, [True])
+        self.assertEqual(h.directory_opens, len(h.directory_closes))
+
+    def test_p43_other_extra_fd_and_foreign_reserved_number_still_fail(self):
+        # Any descriptor that is not the listing's own stays visible: an unknown FD
+        # at the number the listing would have used, or a foreign descriptor that
+        # took the reserved number (with or without a private dup).
+        for case in ('unknown-at-lowest-free', 'foreign-reserved', 'foreign-reserved-no-dup'):
+            with self.subTest(case=case):
+                seen = []
+                def sink(h, owner, case=case):
+                    self.assertEqual(owner.observe_current(h.nominal_binding).to_record()['status'], 'CURRENT')
+                    if case == 'unknown-at-lowest-free': h.live[h.lowest_free()] = [1, 777, 0]
+                    else:
+                        h.foreign_reserved = True
+                        h.listdir_dups = case == 'foreign-reserved'
+                    with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+                    self.assertEqual(h.directories, set())
+                    seen.append(True)
+                h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+                self.assertEqual(seen, [True])
+                self.assertNotIn('PROXY_CURRENT', [f['kind'] for f in h.frames])
+
+    def test_p43_closed_fd_check_not_fooled_by_the_listing_reusing_its_number(self):
+        # Retiring a closed endpoint lists /proc/self/fd while its number is the
+        # lowest free one, so the listing's own directory FD takes that number.
+        seen = []
+        def sink(h, owner):
+            stream = owner._transport.open(2, 4050, owner._config.binding)
+            socket_fd, connector_fd = stream.socket.fileno(), stream.connector.fileno()
+            self.assertEqual((socket_fd, connector_fd), (7, 8))
+            stream.close()
+            self.assertTrue(stream.closed)
+            self.assertEqual([listing[0] for listing in h.listings[-2:]], [connector_fd, socket_fd])
+            self.assertFalse({socket_fd, connector_fd} & set(owner._context._inventory.rows))
+            self.assertEqual(owner.observe_current(h.nominal_binding).to_record()['status'], 'CURRENT')
+            seen.append(True)
+        h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+        self.assertEqual(seen, [True])
+
+    def test_p43_directory_fd_closed_on_success_and_error(self):
+        for fault in ('none', 'listdir', 'dup'):
+            with self.subTest(fault=fault):
+                seen = []
+                def sink(h, owner, fault=fault):
+                    before = h.directory_opens
+                    if fault == 'listdir':
+                        def fail(): raise OSError('inert listing failure')
+                        h.on_listdir = fail
+                    elif fault == 'dup':
+                        h.os.dup = lambda fd: (_ for _ in ()).throw(OSError('inert dup failure'))
+                    if fault == 'none':
+                        self.assertEqual(owner.observe_current(h.nominal_binding).to_record()['status'], 'CURRENT')
+                    else:
+                        with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+                    h.on_listdir = None
+                    h.os.dup = h.dup
+                    self.assertEqual(h.directory_opens, before + 1)
+                    self.assertEqual((h.directories, h.dups), (set(), set()))
+                    self.assertFalse(any(row[1] >= 9000 for row in h.live.values()))
+                    seen.append(True)
+                h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+                self.assertEqual(seen, [True])
+                self.assertEqual(h.directory_opens, len(h.directory_closes))
 
     def test_v1_foreign_binding_observe_current_denied(self):
         # P6 (compB I-7): only the original composition binding may observe.
