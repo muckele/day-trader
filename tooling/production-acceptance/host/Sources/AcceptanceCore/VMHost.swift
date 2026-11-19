@@ -477,10 +477,16 @@ enum BootstrapHandoff {
                     guard role == "PROXY", let limit = limits[kind] else { throw VMFailure.admissionUnavailable }
                     let identity = "\(fd["device"]!):\(fd["inode"]!)"
                     if kind == "PROXY_STOP_SELECTOR" || kind == "PROXY_CONNECT_SELECTOR" {
-                        // Linux epoll files share an anonymous inode. Their original
-                        // acquisitions remain distinct through ownerId, FD and the
-                        // exact current-to-original comparison above. This exception
-                        // cannot alias an inherited pipe or an ordinary socket.
+                        // Distinct epoll selectors may share one anonymous inode, so
+                        // device:inode cannot tell a substituted selector at the same FD
+                        // from the original here; ownerId, FD and the canonical original
+                        // equality above are not selector provenance (compA M-3). That
+                        // provenance is bound in the guest (E4, C5): the bootstrap checks
+                        // each selector's tfd: target set in the PROXY child's /proc
+                        // fdinfo against two MAC'd proxy reports, and any change is
+                        // terminal drift before a row reaches this host. Here a selector
+                        // may share only another selector's identity, never an inherited
+                        // pipe's or a socket's.
                         guard !runtimeIdentities.contains(identity) else { throw VMFailure.admissionUnavailable }
                         selectorIdentities.insert(identity)
                     } else {

@@ -531,9 +531,21 @@ def audit_aux(serial, kind=1302, size=0):
     return topology._event_nlmsg(kind, 0, text)
 
 
+_SELECTOR_KINDS = ('PROXY_STOP_SELECTOR', 'PROXY_CONNECT_SELECTOR')
+
+
 def literal_runtime_role(confinement_fixture, role, lifecycle, runtime_owner,
-                         desired_rows=()):
-    """Actual NativeKernelPort + literal /proc facts, with inert byte owners."""
+                         desired_rows=(), *, bind=True):
+    """Actual NativeKernelPort + a literal /proc table for one original child.
+
+    `table` maps each FD to its kernel facts {fd, kind, device, inode, flags,
+    tfds}; `active['fds']` is the listed FD set. Tests mutate both to model
+    descriptor churn. Above FD4 the fd link names the object class (an epoll
+    selector or a socket) and a selector's fdinfo carries its tfd: lines. The
+    bootstrap's own descriptor table (`fstat`) deliberately holds unrelated
+    identities, so nothing can pass by reading it. With bind=False the caller
+    binds the runtime owner and then lists the extra FDs.
+    """
     legacy = confinement_fixture.ConfinementTests()
     kernel = legacy.observed_native()
     original, state = next(iter(kernel._owned.items()))
@@ -545,17 +557,25 @@ def literal_runtime_role(confinement_fixture, role, lifecycle, runtime_owner,
                      confinement.filter_bytes(launch.filter)).hexdigest())
     old_read, old_list = bindings.read_file, bindings.os.listdir
     old_link, old_stat = bindings.os.readlink, bindings.os.stat
-    rows = {row['fd']: row for row in desired_rows}
     role_index = list(confinement.UIDS).index(role)
-    inherited = {fd:types.SimpleNamespace(
-        st_dev=2,st_ino=1000 + role_index * 10 + fd) for fd in range(5)}
+    table = {fd: dict(fd=fd, kind='NULL' if fd < 3 else 'COMMAND' if fd == 3 else 'RESULT',
+                      device='2', inode=str(1000 + role_index * 10 + fd),
+                      flags=1 if fd == 4 else 0, tfds=[]) for fd in range(5)}
+    for row in desired_rows:
+        if row['fd'] >= 5:
+            table[row['fd']] = dict(fd=row['fd'], kind=row['kind'], device=row['device'],
+                                    inode=row['inode'], flags=row['flags'],
+                                    tfds=list(row.get('tfds', ())))
     active = {'fds': [0, 1, 2, 3, 4]}
 
     def read(path, *args):
         if '/fdinfo/' in path:
-            fd = int(path.rsplit('/', 1)[1])
-            flags = rows.get(fd, {}).get('flags', 1 if fd == 4 else 0)
-            return ('flags:\t%s\n' % oct(flags)[2:]).encode('ascii')
+            row = table[int(path.rsplit('/', 1)[1])]
+            text = 'pos:\t0\nflags:\t0%o\nmnt_id:\t15\n' % row['flags']
+            for target in row['tfds']:
+                text += 'tfd: %8d events: %8x data: %16x  pos:0 ino:%x sdev:%x\n' % (
+                    target, 4, target, 1, 1)
+            return text.encode('ascii')
         if path.endswith('/cmdline'):
             return b'\0'.join(value.encode() for value in launch.argv) + b'\0'
         return old_read(path, *args).replace(
@@ -568,16 +588,16 @@ def literal_runtime_role(confinement_fixture, role, lifecycle, runtime_owner,
 
     def linked(path):
         if '/fd/' in path and int(path.rsplit('/', 1)[1]) >= 5:
-            return 'socket:[%s]' % rows[int(path.rsplit('/', 1)[1])]['inode']
+            row = table[int(path.rsplit('/', 1)[1])]
+            return ('anon_inode:[eventpoll]' if row['kind'] in _SELECTOR_KINDS
+                    else 'socket:[%s]' % row['inode'])
         return old_link(path)
 
     def stated(path):
         if '/fd/' in path:
-            fd = int(path.rsplit('/', 1)[1])
-            row = rows.get(fd)
+            row = table.get(int(path.rsplit('/', 1)[1]))
             if row is not None:
                 return types.SimpleNamespace(st_dev=int(row['device']), st_ino=int(row['inode']))
-            if fd in inherited:return inherited[fd]
         value = old_stat(path)
         if path.endswith('/exe'):
             return types.SimpleNamespace(st_dev=1, st_ino=999)
@@ -586,8 +606,7 @@ def literal_runtime_role(confinement_fixture, role, lifecycle, runtime_owner,
 
     bindings.read_file, bindings.os.listdir = read, listed
     bindings.os.readlink, bindings.os.stat = linked, stated
-    bindings.os.fstat = lambda fd: types.SimpleNamespace(
-        st_dev=int(rows[fd]['device']), st_ino=int(rows[fd]['inode']))
+    bindings.os.fstat = lambda fd: types.SimpleNamespace(st_dev=9, st_ino=90000 + fd)
     owned = confinement.NativeOwned(300, RUN, role, original.command,
                                     original.result, original.identity)
     del kernel._owned[original]; kernel._owned[owned] = state
@@ -596,18 +615,120 @@ def literal_runtime_role(confinement_fixture, role, lifecycle, runtime_owner,
         gids=(launch.uid,) * 3, groups=(), capabilities=(0,) * 5,
         no_new_privs=1, seccomp=2, filter_digest=state['digest'], fds=launch.fds,
         views=launch.views, waiting=True, programs=launch.programs)), kernel, owned)
-    marker = {'CONTROLLER': '1', 'BROWSER': '3', 'VERIFIER': '5', 'PROXY': '7'}[role]
-    kernel.bind_runtime_owner(handoff, lifecycle, runtime_owner,
-                              marker * 32, hex(int(marker, 16) + 1)[2:] * 32, 1)
-    endpoints = []
-    for row in desired_rows:
-        if row['fd'] < 5: continue
-        endpoint = types.SimpleNamespace(fileno=lambda fd=row['fd']: fd)
-        endpoints.append(endpoint)
-        kernel.register_runtime_descriptor(
-            handoff, runtime_owner, endpoint, row['kind'], 1)
-    active['fds'] = sorted(rows) if rows else [0, 1, 2, 3, 4]
-    return handoff, kernel, active, endpoints
+    if bind:
+        marker = {'CONTROLLER': '1', 'BROWSER': '3', 'VERIFIER': '5', 'PROXY': '7'}[role]
+        kernel.bind_runtime_owner(handoff, lifecycle, runtime_owner,
+                                  marker * 32, hex(int(marker, 16) + 1)[2:] * 32, 1)
+        active['fds'] = sorted(table)
+    return handoff, kernel, active, table
+
+
+class LiteralProxyChild:
+    """A literal PROXY child for the C5 bracket: MAC'd v2 frames over one /proc table.
+
+    No proxy loop runs. Each CURRENT request is answered from the listed table
+    (or from `report_rows(index)`), and `on_report(index)` runs after report
+    `index` is queued, so a test can change the table between report A and the
+    bootstrap's /proc read, or make report B differ.
+    """
+    DOMAIN = b'acceptance:bootstrap-composition:v1\0PROXY:'
+
+    def __init__(self, table, active, binding, child_id, pipe_id, key, clock):
+        self.table, self.active, self.binding, self.clock = table, active, binding, clock
+        self.child_id, self.pipe_id, self.key = child_id, pipe_id, key
+        self.sent = self.received = self.observation = self.reports = 0
+        self.runtime_id, self.queue, self.writes = 'c' * 32, [], []
+        self.report_rows = self.on_report = None
+        self.closed = False
+
+    def rows(self):
+        return [dict(fd=fd, kind=self.table[fd]['kind'], device=self.table[fd]['device'],
+                     inode=self.table[fd]['inode'], flags=self.table[fd]['flags'],
+                     tfds=list(self.table[fd]['tfds'])) for fd in sorted(self.active['fds'])]
+
+    def send(self, kind, payload):
+        self.sent += 1
+        value = dict(version=2, kind=kind, binding=self.binding.to_record(), childId=self.child_id,
+                     pipeId=self.pipe_id, sequence=self.sent, payload=payload)
+        value['mac'] = hmac.new(self.key, self.DOMAIN + b'TO_BOOTSTRAP\0' + topology._canonical(value),
+                                hashlib.sha256).hexdigest()
+        body = topology._canonical(value)
+        self.queue.append(len(body).to_bytes(2, 'big') + body)
+
+    def record(self, status, rows):
+        self.observation += 1
+        return dict(binding=self.binding.to_record(), runtimeId=self.runtime_id,
+                    sequence=self.observation, status=status, listenAddress='127.0.0.1',
+                    listenPort=3128, hostCID=2, servicePort=4050, uid=10004,
+                    observedAtMonotonicMs=self.clock.sample()[1], currentFDs=rows)
+
+    def ready(self):
+        self.send('PROXY_READY', dict(observation=self.record('READY', self.rows())))
+
+    def write(self, owned, data):
+        self.writes.append(bytes(data))
+        if data == b'STOP':
+            self.closed = True
+            return
+        value = json.loads(data[2:2 + int.from_bytes(data[:2], 'big')])
+        mac = value.pop('mac')
+        if (mac != hmac.new(self.key, self.DOMAIN + b'FROM_BOOTSTRAP\0' + topology._canonical(value),
+                            hashlib.sha256).hexdigest() or value['sequence'] != self.received + 1):
+            raise AssertionError('literal child received an unauthenticated command')
+        self.received = value['sequence']
+        payload = value['payload']
+        if value['kind'] == 'PROXY_CURRENT':
+            index = self.reports; self.reports += 1
+            rows = self.report_rows(index) if self.report_rows else self.rows()
+            self.send('PROXY_CURRENT', dict(requestId=payload['requestId'],
+                requestSequence=value['sequence'], observation=self.record('CURRENT', rows)))
+            if self.on_report: self.on_report(index)
+        else:
+            self.closed = True
+            self.send('PROXY_TERMINAL', dict(requestId=payload['requestId'],
+                requestSequence=value['sequence'], runtimeId=self.runtime_id, code='COMPLETE',
+                usedBytes=0, cleanupStatus='PROVEN', failedAtMonotonicMs=self.clock.sample()[1]))
+
+    def read(self, owned, remaining_ms):
+        if self.queue: return self.queue.pop(0)
+        raise confinement.ConfinementError('CHANNEL_EOF' if self.closed else 'ROLE_START_FAILED')
+
+
+# A serving PROXY inventory: the listener and the STOP selector over FD3/FD4.
+LITERAL_PROXY_ROWS = (
+    dict(fd=5, kind='PROXY_LISTENER', device='8', inode='800', flags=2050, tfds=[]),
+    dict(fd=6, kind='PROXY_STOP_SELECTOR', device='16', inode='1066', flags=2, tfds=[3, 4]),
+)
+
+
+LITERAL_PROXY_KEY, LITERAL_PROXY_CHILD, LITERAL_PROXY_PIPE = bytes([10]) * 32, '7' * 32, '8' * 32
+
+
+def literal_proxy_client(owned, binding, clock, budget=None):
+    """A fresh bootstrap-side client on the literal child's original pipe pair."""
+    policy = proxy.qualify_composition_proxy(binding, child=owned,
+        pipe=(owned.command, owned.result), child_id=LITERAL_PROXY_CHILD,
+        pipe_id=LITERAL_PROXY_PIPE, channel_key=LITERAL_PROXY_KEY,
+        admission_policy=proxy_policy(), cleanup_budget=budget or topology.CleanupBudget(clock),
+        provenance_validator=lambda c, p: c is owned and p == (owned.command, owned.result))
+    return proxy.ProxyCompositionClient(policy, clock)
+
+
+def literal_proxy_authority(confinement_fixture, rows=LITERAL_PROXY_ROWS, *, binding, clock,
+                            budget=None):
+    """A ProxyChildAuthority over a literal child: the composition's own construction order."""
+    handoff, kernel, active, table = literal_runtime_role(
+        confinement_fixture, 'PROXY', 'SERVICE', None, rows, bind=False)
+    owned = handoff._owned
+    key, child_id, pipe_id = LITERAL_PROXY_KEY, LITERAL_PROXY_CHILD, LITERAL_PROXY_PIPE
+    child = LiteralProxyChild(table, active, binding, child_id, pipe_id, key, clock)
+    kernel.write_proxy_frame, kernel.read_proxy_frame = child.write, child.read
+    authority = topology.ProxyChildAuthority(handoff, literal_proxy_client(owned, binding, clock, budget),
+                                             kernel, binding, seal=topology._PROXY_CHILD_SEAL)
+    kernel.bind_runtime_owner(handoff, 'SERVICE', authority, child_id, pipe_id, 1)
+    active['fds'] = sorted(table)
+    child.ready(); authority._ready()
+    return authority, child, handoff, kernel, active, table
 
 
 class TopologyTests(unittest.TestCase):
@@ -944,63 +1065,61 @@ class TopologyTests(unittest.TestCase):
             'tests/unit/confinement_test.py')
         confinement_fixture.c = confinement
         confinement_fixture.RUN = RUN
-        proxy_fixture = load('task8_event_current_proxy_fixture',
-                             'tests/unit/proxy_test.py')
-        proxy_fixture.proxy = proxy
-        observations = []
-        def capture(harness, owner):
-            # Sample the exact serving owner once to configure an independent
-            # literal /proc view of the same kernel facts. The composed helper
-            # must then call both real observers itself.
-            proxy_rows = owner.observe_current(
-                harness.nominal_binding).to_record()['currentFDs']
-            runtime_owners = {role: object() for role in confinement.UIDS}
-            runtime_owners['PROXY'] = owner
-            handoffs, controls, retained = [], {}, []
-            for role, lifecycle in zip(confinement.UIDS,
-                    ('SERVICE', 'WAITING', 'WAITING', 'SERVICE')):
-                rowset = proxy_rows if role == 'PROXY' else ()
-                handoff, kernel, active, endpoints = literal_runtime_role(
-                    confinement_fixture, role, lifecycle,
-                    runtime_owners[role], rowset)
-                handoffs.append(handoff); controls[role] = (kernel, active)
-                retained.extend(endpoints)
-            before = topology.observe_current_roles(
-                tuple(handoffs), runtime_owners, owner, harness.nominal_binding)
-            self.assertEqual([row['lifecycle'] for row in before],
-                             ['SERVICE', 'WAITING', 'WAITING', 'SERVICE'])
-            self.assertEqual(before[3]['currentFDs'][-2]['kind'],
-                             'PROXY_LISTENER')
+        binding = event_binding()
+        authority, child, proxy_handoff, proxy_kernel, proxy_active, _ = literal_proxy_authority(
+            confinement_fixture, binding=binding, clock=Clock())
+        runtime_owners = {role: object() for role in confinement.UIDS}
+        runtime_owners['PROXY'] = authority
+        handoffs, controls = [], {}
+        for role, lifecycle in zip(confinement.UIDS,
+                ('SERVICE', 'WAITING', 'WAITING', 'SERVICE')):
+            if role == 'PROXY':
+                handoffs.append(proxy_handoff); controls[role] = (proxy_kernel, proxy_active)
+                continue
+            handoff, kernel, active, _ = literal_runtime_role(
+                confinement_fixture, role, lifecycle, runtime_owners[role])
+            handoffs.append(handoff); controls[role] = (kernel, active)
+        before = topology.observe_current_roles(
+            tuple(handoffs), runtime_owners, authority, binding)
+        self.assertEqual([row['lifecycle'] for row in before],
+                         ['SERVICE', 'WAITING', 'WAITING', 'SERVICE'])
+        self.assertEqual([row['kind'] for row in before[3]['currentFDs']][5:],
+                         ['PROXY_LISTENER', 'PROXY_STOP_SELECTOR'])
+        # Each composed PROXY observation is one bracketed pair of child reports.
+        self.assertEqual(child.reports, 2)
 
-            # Task 6 already proves only its completed original preparation can
-            # reach this private transition. Exercise that authored transition,
-            # then require the composed helper to derive BROWSER_ACTIVE.
-            browser = handoffs[1]; kernel = controls['BROWSER'][0]
-            preparation = object.__new__(confinement.BootstrapBrowserPreparation)
-            roles = types.SimpleNamespace(_preparation=preparation)
-            object.__setattr__(preparation, '_roles', roles)
-            object.__setattr__(preparation, '_child', browser)
-            object.__setattr__(preparation, '_committed', True)
-            kernel._commit_browser_runtime(preparation)
-            after = topology.observe_current_roles(
-                tuple(handoffs), runtime_owners, owner, harness.nominal_binding)
-            self.assertEqual(after[1]['lifecycle'], 'BROWSER_ACTIVE')
+        # Task 6 already proves only its completed original preparation can
+        # reach this private transition. Exercise that authored transition,
+        # then require the composed helper to derive BROWSER_ACTIVE.
+        browser = handoffs[1]; kernel = controls['BROWSER'][0]
+        preparation = object.__new__(confinement.BootstrapBrowserPreparation)
+        roles = types.SimpleNamespace(_preparation=preparation)
+        object.__setattr__(preparation, '_roles', roles)
+        object.__setattr__(preparation, '_child', browser)
+        object.__setattr__(preparation, '_committed', True)
+        kernel._commit_browser_runtime(preparation)
+        after = topology.observe_current_roles(
+            tuple(handoffs), runtime_owners, authority, binding)
+        self.assertEqual(after[1]['lifecycle'], 'BROWSER_ACTIVE')
+        self.assertEqual(after[3], before[3])
 
-            controls['BROWSER'][1]['fds'].append(6)
-            with self.assertRaisesRegex(topology.TopologyError,
-                    '^NATIVE_CURRENT_INVENTORY_UNAVAILABLE$'):
-                topology.observe_current_roles(
-                    tuple(handoffs), runtime_owners, owner,
-                    harness.nominal_binding)
-            controls['BROWSER'][1]['fds'].pop()
-            substituted = dict(runtime_owners); substituted['PROXY'] = object()
+        controls['BROWSER'][1]['fds'].append(6)
+        with self.assertRaisesRegex(topology.TopologyError,
+                '^NATIVE_CURRENT_INVENTORY_UNAVAILABLE$'):
+            topology.observe_current_roles(
+                tuple(handoffs), runtime_owners, authority, binding)
+        controls['BROWSER'][1]['fds'].pop()
+        substituted = dict(runtime_owners); substituted['PROXY'] = object()
+        with self.assertRaisesRegex(topology.TopologyError, '^ROLE_DENIED$'):
+            topology.observe_current_roles(
+                tuple(handoffs), substituted, authority, binding)
+        # R11: anything but the child authority (an in-process owner included) is denied.
+        for candidate in (object(), substituted['PROXY']):
             with self.assertRaisesRegex(topology.TopologyError, '^ROLE_DENIED$'):
                 topology.observe_current_roles(
-                    tuple(handoffs), substituted, owner,
-                    harness.nominal_binding)
-            observations.extend((before, after, tuple(retained)))
-        proxy_fixture.CompositionHarness(self, sink=capture).run()
-        self.assertEqual(len(observations), 3)
+                    tuple(handoffs), dict(runtime_owners, PROXY=candidate), candidate, binding)
+        self.assertEqual(topology.observe_current_roles(
+            tuple(handoffs), runtime_owners, authority, binding)[3], before[3])
 
     def test_v1_browser_family_event_reservation_is_nominal_ordered_and_one_use(self):
         confinement_fixture = load(
@@ -1008,111 +1127,112 @@ class TopologyTests(unittest.TestCase):
             'tests/unit/confinement_test.py')
         confinement_fixture.c = confinement
         confinement_fixture.RUN = RUN
-        proxy_fixture = load('task8_event_reservation_proxy_fixture',
-                             'tests/unit/proxy_test.py')
-        proxy_fixture.proxy = proxy
-        completed = []
-        def capture(harness, proxy_owner):
-            runtime_owners = {role: object() for role in confinement.UIDS}
-            runtime_owners['PROXY'] = proxy_owner
-            browser, _, _, _ = literal_runtime_role(
-                confinement_fixture, 'BROWSER', 'WAITING',
-                runtime_owners['BROWSER'])
+        binding = event_binding()
+        proxy_authority, child, _, _, _, _ = literal_proxy_authority(
+            confinement_fixture, binding=binding, clock=Clock())
+        runtime_owners = {role: object() for role in confinement.UIDS}
+        runtime_owners['PROXY'] = proxy_authority
+        browser, _, _, _ = literal_runtime_role(
+            confinement_fixture, 'BROWSER', 'WAITING',
+            runtime_owners['BROWSER'])
 
-            def event_owner():
-                native = EventNative()
-                del native.audit_role_pids[501]
-                native.audit_role_pids[300] = 'BROWSER'
-                budget = topology.CleanupBudget(clock=Clock(
-                    (100, 10), (100, 10), (100, 10), (100, 10),
-                    (100, 10), (100, 10), (100, 10), (100, 10)))
-                value = topology.LinuxBootstrapEventSource.install(
-                    harness.nominal_binding,
-                    topology.qualify_offline_event_native(native), budget)
-                return value, native
+        def event_owner():
+            native = EventNative()
+            del native.audit_role_pids[501]
+            native.audit_role_pids[300] = 'BROWSER'
+            budget = topology.CleanupBudget(clock=Clock(
+                (100, 10), (100, 10), (100, 10), (100, 10),
+                (100, 10), (100, 10), (100, 10), (100, 10)))
+            value = topology.LinuxBootstrapEventSource.install(
+                binding, topology.qualify_offline_event_native(native), budget)
+            return value, native
 
-            def group(native, serial, syscall, pid, ppid, exit_code,
-                      argument0=None):
-                return (native.message('AUDIT', audit_event(serial, syscall,
-                    pid=pid, ppid=ppid, exit_code=exit_code,
-                    argument0=argument0)),
-                    native.message('AUDIT', topology._event_nlmsg(
-                        1320, 0, ('audit(1.000:%d): end' % serial).encode())))
+        def group(native, serial, syscall, pid, ppid, exit_code,
+                  argument0=None):
+            return (native.message('AUDIT', audit_event(serial, syscall,
+                pid=pid, ppid=ppid, exit_code=exit_code,
+                argument0=argument0)),
+                native.message('AUDIT', topology._event_nlmsg(
+                    1320, 0, ('audit(1.000:%d): end' % serial).encode())))
 
+        source, native = event_owner()
+        self.assertTrue(hasattr(source, 'reserve_browser_transition'))
+        reservation = source.reserve_browser_transition(
+            binding, 1, browser, runtime_owners['BROWSER'], proxy_authority)
+        source.commit_browser_transition(reservation)
+        # Reservation and commit each observed the child through one bracket.
+        self.assertEqual(child.reports, 4)
+        native.events.extend(group(native, 101, 220, 300, 1, 600))
+        with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
+            source.barrier()
+        native.events.extend(group(native, 102, 221, 600, 300, 0))
+        with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
+            source.barrier()
+        # Task 7 finding: the old EXIT step never completed. `_audit_record`'s key
+        # pattern cannot read `a0`, so a parsed EXIT record always ends the source;
+        # at the base this test ran inside the proxy loop, which swallowed that
+        # error and every later assertion. Task 11 removes the EXIT phase.
+
+        source, native = event_owner()
+        native.events.extend(group(native, 104, 220, 300, 1, 601))
+        with self.assertRaisesRegex(topology.TopologyError,
+                                   '^EVENT_SOURCE_TERMINAL$'):
+            source.barrier()
+
+        for fault in ('mismatch', 'out-of-order', 'extra', 'replay'):
             source, native = event_owner()
-            completed.append(hasattr(source, 'reserve_browser_transition'))
-            self.assertTrue(completed[-1])
             reservation = source.reserve_browser_transition(
-                harness.nominal_binding, 1, browser,
-                runtime_owners['BROWSER'], proxy_owner)
+                binding, 1, browser, runtime_owners['BROWSER'], proxy_authority)
             source.commit_browser_transition(reservation)
-            native.events.extend(group(native, 101, 220, 300, 1, 600))
-            with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
-                source.barrier()
-            native.events.extend(group(native, 102, 221, 600, 300, 0))
-            with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
-                source.barrier()
-            native.events.extend(group(native, 103, 93, 600, 300, 0, '0'))
-            self.assertEqual(source.barrier().generation, 1)
-
-            source, native = event_owner()
-            native.events.extend(group(native, 104, 220, 300, 1, 601))
-            with self.assertRaisesRegex(topology.TopologyError,
-                                       '^EVENT_SOURCE_TERMINAL$'):
-                source.barrier()
-
-            for fault in ('mismatch', 'out-of-order', 'extra', 'replay'):
-                source, native = event_owner()
-                reservation = source.reserve_browser_transition(
-                    harness.nominal_binding, 1, browser,
-                    runtime_owners['BROWSER'], proxy_owner)
-                source.commit_browser_transition(reservation)
-                if fault == 'replay':
-                    with self.assertRaisesRegex(topology.TopologyError,
-                                               '^EVENT_SOURCE_TERMINAL$'):
-                        source.commit_browser_transition(reservation)
-                    continue
-                values = {'mismatch': (105, 220, 301, 1, 602),
-                          'out-of-order': (106, 221, 300, 1, 0),
-                          'extra': (107, 40, 300, 1, 0)}[fault]
-                native.events.extend(group(native, *values))
+            if fault == 'replay':
                 with self.assertRaisesRegex(topology.TopologyError,
                                            '^EVENT_SOURCE_TERMINAL$'):
-                    source.barrier()
+                    source.commit_browser_transition(reservation)
+                continue
+            values = {'mismatch': (105, 220, 301, 1, 602),
+                      'out-of-order': (106, 221, 300, 1, 0),
+                      'extra': (107, 40, 300, 1, 0)}[fault]
+            native.events.extend(group(native, *values))
+            with self.assertRaisesRegex(topology.TopologyError,
+                                       '^EVENT_SOURCE_TERMINAL$'):
+                source.barrier()
 
+        source, _ = event_owner()
+        with self.assertRaisesRegex(topology.TopologyError,
+                                   '^EVENT_SOURCE_TERMINAL$'):
+            source.reserve_browser_transition(
+                binding, 2, browser, runtime_owners['BROWSER'], proxy_authority)
+        for fault in ('binding', 'role-owner', 'runtime-owner', 'proxy-owner'):
             source, _ = event_owner()
-            with self.assertRaisesRegex(topology.TopologyError,
-                                       '^EVENT_SOURCE_TERMINAL$'):
-                source.reserve_browser_transition(
-                    harness.nominal_binding, 2, browser,
-                    runtime_owners['BROWSER'], proxy_owner)
-            for fault in ('binding', 'role-owner', 'runtime-owner',
-                          'proxy-owner'):
-                source, _ = event_owner()
-                values = dict(binding=harness.nominal_binding,
-                    handoff=browser, runtime=runtime_owners['BROWSER'],
-                    proxy=proxy_owner)
-                if fault == 'binding':
-                    values['binding'] = dataclasses.replace(
-                        harness.nominal_binding, epoch=2)
-                elif fault == 'role-owner':
-                    values['handoff'] = dataclasses.replace(browser)
-                elif fault == 'runtime-owner':
-                    values['runtime'] = object()
-                else: values['proxy'] = object()
-                with self.subTest(fault=fault), self.assertRaisesRegex(
-                        topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
-                    source.reserve_browser_transition(values['binding'], 1,
-                        values['handoff'], values['runtime'], values['proxy'])
-            first, _ = event_owner(); second, _ = event_owner()
-            reservation = first.reserve_browser_transition(
-                harness.nominal_binding, 1, browser,
-                runtime_owners['BROWSER'], proxy_owner)
-            with self.assertRaisesRegex(topology.TopologyError,
-                                       '^EVENT_SOURCE_TERMINAL$'):
-                second.commit_browser_transition(reservation)
-        proxy_fixture.CompositionHarness(self, sink=capture).run()
-        self.assertEqual(completed, [True])
+            values = dict(binding=binding, handoff=browser,
+                runtime=runtime_owners['BROWSER'], proxy=proxy_authority)
+            if fault == 'binding':
+                values['binding'] = dataclasses.replace(binding, epoch=2)
+            elif fault == 'role-owner':
+                values['handoff'] = dataclasses.replace(browser)
+            elif fault == 'runtime-owner':
+                values['runtime'] = object()
+            else: values['proxy'] = object()
+            with self.subTest(fault=fault), self.assertRaisesRegex(
+                    topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
+                source.reserve_browser_transition(values['binding'], 1,
+                    values['handoff'], values['runtime'], values['proxy'])
+        # The PROXY report changed between reservation and commit: never consumed.
+        source, _ = event_owner()
+        reservation = source.reserve_browser_transition(
+            binding, 1, browser, runtime_owners['BROWSER'], proxy_authority)
+        child.table[6]['flags'] = 3
+        with self.assertRaisesRegex(topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
+            source.commit_browser_transition(reservation)
+        self.assertFalse(reservation._used)
+        first, _ = event_owner(); second, _ = event_owner()
+        other, _, _, _, _, _ = literal_proxy_authority(
+            confinement_fixture, binding=binding, clock=Clock())
+        reservation = first.reserve_browser_transition(
+            binding, 1, browser, runtime_owners['BROWSER'], other)
+        with self.assertRaisesRegex(topology.TopologyError,
+                                   '^EVENT_SOURCE_TERMINAL$'):
+            second.commit_browser_transition(reservation)
 
     def test_v1_first_terminal_latch_freezes_budget_before_capture_settles(self):
         for settlement in (30010, 70010):
@@ -2361,22 +2481,10 @@ class TopologyTests(unittest.TestCase):
         binding = confinement.CompositionBinding(
             1, RUN, MANIFEST, CONFIG, 'd' * 64, 1, 190)
         payload = topology._payload(snapshot(), expected, (100, 10), (100, 10))
-        role_runtime = []
-        for index, role in enumerate(confinement.UIDS):
-            rows = [dict(fd=fd,
-                kind='NULL' if fd < 3 else 'COMMAND' if fd == 3 else 'RESULT',
-                device='1', inode=str(100 + index * 10 + fd), flags=1 if fd == 4 else 0,
-                ownerId=('%x' % (index * 5 + fd + 1))[-1] * 32,
-                acquiredGeneration=1) for fd in range(5)]
-            if role == 'PROXY':
-                rows.append(dict(fd=5,kind='PROXY_LISTENER',device='1',
-                    inode='999',flags=0,ownerId='9' * 32,
-                    acquiredGeneration=1))
-            role_runtime.append(dict(role=role,
-                childId=('%x' % (index + 1)) * 32,
-                pipeId=('%x' % (index + 5)) * 32,
-                lifecycle='SERVICE' if role in ('CONTROLLER','PROXY') else 'WAITING',
-                inheritedFDs=[0,1,2,3,4],currentFDs=rows))
+        # The roleRuntime rows and the runtime-row divergence vectors are defined
+        # once (confinement_test), so Python and Swift consume the same vectors (P12).
+        vector_source = load('task7_runtime_row_vectors', 'tests/unit/confinement_test.py')
+        role_runtime = vector_source.composition_role_runtime()
         payload['composition'] = dict(binding=binding.to_record(),
             probeEpochDigest='e' * 64,fixtureInventoryDigest='f' * 64,
             eventCheckpoint=dict(binding=binding.to_record(),generation=1,
@@ -2419,6 +2527,26 @@ class TopologyTests(unittest.TestCase):
         invalid_composition(lambda e:e.__setitem__('mac','0' * 64),remac=False)
         invalid_composition(lambda e:e['payload'].__setitem__('hostChallenge',
             TEST_HOST_CHALLENGE.upper()))
+        self.assertEqual(len(composition_vectors), 8)
+        # compB M-2 and T10 runtime-row divergences, appended as objects after the
+        # eight envelope strings: {id, code, originals, roleRuntime}. A SELF vector
+        # is a structural fault the ownerless Python consumer rejects as well; the
+        # FIXTURE vector differs only from the retained original rows (confinement_test).
+        runtime_vectors = vector_source.runtime_row_divergence_vectors(role_runtime)
+        self.assertEqual([v['id'] for v in runtime_vectors],
+                         list(vector_source.RUNTIME_ROW_VECTOR_IDS))
+        for vector in runtime_vectors:
+            changed = [row for row, original in zip(vector['roleRuntime'], role_runtime)
+                       if row != original]
+            self.assertEqual(len(changed), 1, vector['id'])
+            if vector['originals'] == 'SELF':
+                with self.subTest(vector=vector['id']):
+                    with self.assertRaisesRegex(topology.TopologyError, '^HANDOFF_DENIED$'):
+                        topology._runtime_wire_row(changed[0], changed[0]['role'])
+                    invalid_composition(lambda e, v=vector:
+                        e['payload']['composition'].__setitem__('roleRuntime', v['roleRuntime']))
+                    composition_vectors.pop()
+        composition_vectors.extend(runtime_vectors)
         if path:
             with pathlib.Path(path + '.bootstrap-v1.json').open(
                     'x',encoding='ascii') as output:

@@ -958,11 +958,10 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
     }
     private func selectorRuntimeRows(sharedInode:Bool = true) -> [[String:Any]] {
         var rows = runtimeRows(), fds = Array((rows[3]["currentFDs"] as! [[String:Any]]).prefix(5))
-        // Pinned Linux6.8 fs/eventpoll.c:2055–2056 calls anon_inode_getfile;
-        // fs/anon_inodes.c:96–106,137–147 uses one inode for distinct file owners.
-        // Member SHA256s: eventpoll.c c8b2fed972bcb1621c8efec4b299ee5011f398d1ca2d95be9bb20f08ce8c6d96;
-        // anon_inodes.c 77dda97cc9a37fa66adad6b22abbef629962b9a64cab95ebfe80353f6753bd58.
-        // These literal observations create no native selector or provenance.
+        // Distinct epoll selectors may share one anonymous inode. That is an
+        // unreviewed kernel fact here, not a reference record (compA M-3); selector
+        // provenance is the guest's tfd: bracket (E4, C5). These literal
+        // observations create no native selector or provenance.
         let extras:[(String,String,String)] = [
             ("PROXY_LISTENER","9","900"), ("PROXY_STOP_SELECTOR","16","1066"),
             ("PROXY_ACCEPTED_STREAM","9","901"), ("PROXY_VSOCK_STREAM","9","902"),
@@ -972,6 +971,44 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
                         "ownerId":String(format:"%032x",500+index),"acquiredGeneration":1])
         }
         rows[3]["currentFDs"] = fds; return rows
+    }
+    @Test func v1_runtime_row_divergence_vectors_match_python() throws {
+        // compB M-2 and the T10 Python/Swift runtime-row divergences (P12): the Python
+        // producer appends one shared vector set after the eight envelope strings of
+        // the composition invalid fixture, and both languages reject every vector.
+        let path = try #require(ProcessInfo.processInfo.environment["BOOTSTRAP_V1_HANDOFF_INPUT"])
+        #expect(path.hasSuffix(".bootstrap-v1.json"))
+        let invalidPath = String(path.dropLast(".json".count)) + ".invalid.json"
+        let all = try #require(try JSONSerialization.jsonObject(
+            with:Data(contentsOf:URL(fileURLWithPath:invalidPath))) as? [Any])
+        let vectors = all.compactMap { $0 as? [String:Any] }
+        #expect(all.prefix(8).allSatisfy { $0 is String })
+        #expect(all.count == 8 + vectors.count)
+        #expect(vectors.compactMap { $0["id"] as? String } == [
+            "controller_null_command_above_fd4","proxy_null_result_above_fd4","proxy_command_above_fd4",
+            "vsock_without_accepted","connect_selector_without_accepted","duplicate_device_inode",
+            "selector_aliases_socket","waiting_role_extra_fd","differs_from_originals"])
+        let valid = try #require(try JSONSerialization.jsonObject(
+            with:Data(contentsOf:URL(fileURLWithPath:path))) as? [String:Any])
+        let payload = try #require(valid["payload"] as? [String:Any])
+        let composition = try #require(payload["composition"] as? [String:Any])
+        let fixture = try #require(composition["roleRuntime"] as? [[String:Any]])
+        #expect(throws:Never.self) { try BootstrapHandoff.validateRoleRuntimeV1(fixture,originals:fixture,generation:1) }
+        for vector in vectors {
+            let id = try #require(vector["id"] as? String)
+            let runtime = try #require(vector["roleRuntime"] as? [[String:Any]])
+            let mode = try #require(vector["originals"] as? String)
+            #expect(mode == "SELF" || mode == "FIXTURE", "\(id)")
+            #expect(throws:VMFailure.admissionUnavailable, "\(id)") {
+                try BootstrapHandoff.validateRoleRuntimeV1(runtime,originals:mode == "SELF" ? runtime:fixture,generation:1)
+            }
+            if mode == "FIXTURE" {
+                // Structurally valid: only the retained original comparison rejects it.
+                #expect(throws:Never.self, "\(id)") {
+                    try BootstrapHandoff.validateRoleRuntimeV1(runtime,originals:runtime,generation:1)
+                }
+            }
+        }
     }
     @Test func t4_r1_distinct_original_selectors_can_share_anonymous_inode() throws {
         for shared in [false,true] {

@@ -35,6 +35,10 @@ p = t._PROBES
 proxy_fixture = load('bootstrap_v1_proxy_fixture', ROOT / 'tests/unit/proxy_test.py')
 topology_fixture = load('bootstrap_v1_topology_fixture', ROOT / 'tests/unit/topology_test.py')
 confinement_fixture = load('bootstrap_v1_confinement_fixture', ROOT / 'tests/unit/confinement_test.py')
+# The module originals the composition must use unreplaced (E4, P12).
+ORIGINAL_OBSERVE_CURRENT_ROLES = t.observe_current_roles
+# A CONNECT to the stand-in child's own FRONTEND destination.
+STAND_IN_CONNECT = b'CONNECT frontend.example:443 HTTP/1.1\r\nHost: frontend.example:443\r\n\r\n'
 # C2: host-issued one-use challenges (32 lowercase hex). The first is the
 # shared exported test value (nonce bytes 00..0f); the second is another.
 TEST_HOST_CHALLENGE = topology_fixture.TEST_HOST_CHALLENGE
@@ -521,6 +525,141 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
         self.assertEqual(invoked,[])
 
 
+class LiveProxyChannel:
+    """The original PROXY FD3/FD4 pipe pair between the bootstrap and its stand-in child.
+
+    Bootstrap writes (NativeKernelPort.write_proxy_frame) reach the child's FD3; the
+    child's FD4 bytes are read back by the bootstrap's real read_proxy_frame through
+    its kernel bindings. The child's own 'WAITING\\n' is consumed as spawn does.
+    """
+    def __init__(self):
+        self.ready=threading.Condition()
+        self.command,self.result=bytearray(),bytearray()
+        self.command_eof=self.result_eof=False
+        self.waiting=bytearray();self.writes=[]
+    def write_command(self,data):
+        with self.ready:
+            self.command.extend(data);self.writes.append(bytes(data));self.ready.notify_all()
+        return len(data)
+    def close_command(self):
+        with self.ready:self.command_eof=True;self.ready.notify_all()
+    def result_ready(self,timeout):
+        with self.ready:
+            self.ready.wait_for(lambda:self.result or self.result_eof,timeout)
+            return bool(self.result) or self.result_eof
+    def read_result(self,size):
+        with self.ready:
+            part=bytes(self.result[:size]);del self.result[:size];return part
+    # The stand-in child's side.
+    def command_ready(self):
+        with self.ready:return bool(self.command) or self.command_eof
+    def read_command(self,size):
+        with self.ready:
+            self.ready.wait_for(lambda:self.command or self.command_eof,5)
+            part=bytes(self.command[:size]);del self.command[:size];return part
+    def write_result(self,data):
+        with self.ready:
+            if len(self.waiting)<8:
+                take=8-len(self.waiting);self.waiting.extend(data[:take]);data=data[take:]
+            self.result.extend(data);self.ready.notify_all()
+    def close_result(self):
+        with self.ready:self.result_eof=True;self.ready.notify_all()
+    def idle(self):time.sleep(0.0005)
+
+
+class LiteralRoleProc:
+    """Literal /proc for the four original children: the NativeKernelPort bindings seam.
+
+    Each child's inherited FD0..4 are per-role literals; the PROXY child's table is
+    its stand-in's own inert descriptor table (fd -> [device, inode, flags], plus each
+    selector's registered tfd: targets), served at the stand-in's distinct attested
+    PID. The bootstrap's own descriptor table (fstat) holds unrelated identities.
+    """
+    def __init__(self,harness):
+        self.h,self.children,self.run_device=harness,{},2
+        self.os=types.SimpleNamespace(listdir=self.listdir,readlink=self.readlink,stat=self.stat,
+            fstat=lambda fd:types.SimpleNamespace(st_dev=9,st_ino=90000+fd),
+            read=self.read,write=self.write)
+        self.monotonic=time.monotonic
+    def child(self,path):
+        parts=path.split('/')
+        if len(parts)<3 or parts[1]!='proc' or not parts[2].isdigit() or int(parts[2]) not in self.children:
+            return None,None,None
+        role,launch=self.children[int(parts[2])]
+        return role,launch,'/'+'/'.join(parts[3:])
+    def table(self,role,index):
+        """{fd:(device,inode,flags,targets,link)} for one child, read at call time."""
+        if role=='PROXY':
+            stand_in=self.h.proxy_harness
+            live=dict(stand_in.live) if stand_in is not None else {fd:[1,fd+100,int(fd==4)] for fd in range(5)}
+            selectors={selector.fd for selector in (stand_in.selectors if stand_in else ())}
+            targets=dict(stand_in.targets) if stand_in is not None else {}
+            return {fd:(dev,inode,flags,tuple(sorted(targets.get(fd,()))),
+                        '/dev/null' if fd<3 else 'pipe:[%d]'%inode if fd<5 else
+                        'anon_inode:[eventpoll]' if fd in selectors else 'socket:[%d]'%inode)
+                    for fd,(dev,inode,flags) in live.items()}
+        return {fd:(2,1000+index*10+fd,int(fd==4),(),'/dev/null' if fd<3 else 'pipe:[%d]'%(1000+index*10+fd))
+                for fd in range(5)}
+    def facts(self,path):
+        role,launch,rest=self.child(path)
+        fd=int(rest.rsplit('/',1)[1])
+        table=self.table(role,list(c.UIDS).index(role))
+        if fd not in table:raise FileNotFoundError(path)
+        return table[fd]
+    def read_file(self,path,limit=65536):
+        role,launch,rest=self.child(path)
+        if role is None:raise FileNotFoundError(path)
+        uid=launch.uid
+        if rest=='/status':
+            return ('Uid:\t%d %d %d %d\nGid:\t%d %d %d %d\nGroups:\nCapEff:\t0\nCapPrm:\t0\nCapInh:\t0\n'
+                    'CapAmb:\t0\nCapBnd:\t0\nNoNewPrivs:\t1\nSeccomp:\t2\n'%((uid,)*8)).encode()
+        if rest=='/cmdline':return b'\0'.join(arg.encode() for arg in launch.argv)+b'\0'
+        if rest=='/mountinfo':
+            mounts=''.join('1 0 0:1 / /'+d+' ro - ext4 base ro\n' for d in ('opt','usr','lib','lib64','etc'))
+            return (mounts+''.join('1 0 0:2 / /'+d+' rw - tmpfs base rw\n' for d in
+                    ('tmp','var','run/acceptance/'+role.lower(),'dev/shm'))).encode()
+        if rest.startswith('/fdinfo/'):
+            dev,inode,flags,targets,link=self.facts(path)
+            text='pos:\t0\nflags:\t0%o\nmnt_id:\t15\nino:\t%d\n'%(flags,inode)
+            for target in targets:
+                text+='tfd: %8d events: %8x data: %16x  pos:0 ino:%x sdev:%x\n'%(target,4,target,1,1)
+            return text.encode()
+        raise FileNotFoundError(path)
+    def listdir(self,path):
+        role,launch,rest=self.child(path)
+        if rest=='/fd':return [str(fd) for fd in sorted(self.table(role,list(c.UIDS).index(role)))]
+        if rest=='/root/dev':return ['null','shm']
+        if rest=='/root/run/acceptance':return [role.lower()]
+        raise FileNotFoundError(path)
+    def readlink(self,path):
+        if path.startswith('/proc/self/ns/'):
+            return {'pid':'pid:[1]','mnt':'mnt:[1]','user':'user:[1]'}[path.rsplit('/',1)[1]]
+        role,launch,rest=self.child(path)
+        if rest.startswith('/ns/'):return {'pid':'pid:[20]','mnt':'mnt:[20]','user':'user:[1]'}[rest[4:]]
+        if rest.startswith('/fd/'):return self.facts(path)[4]
+        raise FileNotFoundError(path)
+    def stat(self,path):
+        role,launch,rest=self.child(path)
+        if role is not None and rest.startswith('/fd/'):
+            dev,inode,_,_,_=self.facts(path)
+            return types.SimpleNamespace(st_dev=dev,st_ino=inode)
+        if role is not None and rest=='/exe':return types.SimpleNamespace(st_dev=1,st_ino=999)
+        uid=launch.uid if role is not None else 0
+        return types.SimpleNamespace(st_dev=1 if path.endswith('/root') or path.endswith('/.root') else 2,
+                                     st_ino=555,st_mode=0o700,st_uid=uid,st_gid=uid)
+    # The original PROXY pipe ends: FD3's writer and FD4's reader.
+    def select(self,reads,writes,errors,timeout):
+        endpoints=self.h.proxy_endpoints
+        ready=[r for r in reads if endpoints and r is endpoints[1] and self.h.proxy_channel.result_ready(timeout)]
+        return ready,[w for w in writes if endpoints and w is endpoints[0]],[]
+    def read(self,fd,size):
+        if not self.h.proxy_endpoints or fd is not self.h.proxy_endpoints[1]:raise OSError('inert read')
+        return self.h.proxy_channel.read_result(size)
+    def write(self,fd,data):
+        if not self.h.proxy_endpoints or fd is not self.h.proxy_endpoints[0]:raise OSError('inert write')
+        return self.h.proxy_channel.write_command(bytes(data))
+
+
 class BootstrapOwnedCompositionTests(unittest.TestCase):
     """Task 9 public boundary; full inert integration is built below this API."""
 
@@ -534,52 +673,35 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 1,'1'*32,'b'*64,'a'*64,'c'*64,7,expires_at)
             confinement_fixture.c=c;confinement_fixture.RUN=self.binding.runId
             self.role_finite=confinement_fixture.Kernel()
-            self.role_kernel=c.NativeKernelPort(types.SimpleNamespace())
+            # E4: the actual NativeKernelPort observes each original child through a
+            # literal /proc (its bindings seam); no observation method is replaced.
+            self.role_proc=LiteralRoleProc(self)
+            self.role_kernel=c.NativeKernelPort(self.role_proc)
+            self.proxy_channel=LiveProxyChannel();self.proxy_endpoints=None
             spawn_waiting=self.role_finite.spawn_waiting
             def spawn_identified(launch,entry):
-                owned=spawn_waiting(launch,entry);owned.identity=object();return owned
+                fixture=spawn_waiting(launch,entry)
+                owned=c.NativeOwned(fixture.pid,fixture.run_id,fixture.role,fixture.command,fixture.result)
+                self.role_finite.children[fixture.pid].owned=owned
+                self.role_proc.children[owned.pid]=(launch.role,launch)
+                index=list(c.UIDS).index(launch.role)
+                links=tuple(self.role_proc.table(launch.role,index)[fd][4] for fd in (3,4))
+                self.role_kernel._owned[owned]=dict(outer=owned.pid+1000,child=owned.pid,
+                    terminal=None,launch=launch,links=links,exec_identity=(1,999),
+                    digest=hashlib.sha256(c.filter_bytes(launch.filter)).hexdigest())
+                if launch.role=='PROXY':self.proxy_endpoints=(owned.command,owned.result)
+                return owned
             self.role_kernel.spawn_waiting=spawn_identified
-            self.role_kernel.inspect=self.role_finite.inspect
-            self.role_kernel.stop_owned=self.role_finite.stop_owned
+            def stop_owned(owned,deadline):
+                # Stopping the original PROXY child ends its stand-in loop (FD3 EOF).
+                # A proven stop is cached in the kernel state, as NativeKernelPort._exit does.
+                if owned.role=='PROXY':self.proxy_channel.close_command()
+                receipt=self.role_finite.stop_owned(owned,deadline)
+                state=self.role_kernel._owned.get(owned)
+                if state is not None and receipt['status'] in ('STOPPED','EXITED'):state['terminal']=dict(receipt)
+                return receipt
+            self.role_kernel.stop_owned=stop_owned
             self.role_kernel.wait_owned=self.role_finite.wait_owned
-            self.native_runtime={}
-            def bind_runtime(handoff,lifecycle,owner,child_id,pipe_id,generation):
-                index=list(c.UIDS).index(handoff.launch.role)
-                rows=[dict(fd=fd,
-                    kind='NULL' if fd<3 else 'COMMAND' if fd==3 else 'RESULT',
-                    device='1',inode=str(index*10+fd+1),flags=0,
-                    ownerId=hex(index*10+fd+1)[-1]*32,acquiredGeneration=1)
-                    for fd in range(5)]
-                self.native_runtime[id(handoff)]=dict(handoff=handoff,owner=owner,
-                    role=handoff.launch.role,lifecycle=lifecycle,
-                    childId=child_id,pipeId=pipe_id,
-                    inheritedFDs=[0,1,2,3,4],currentFDs=rows)
-            def runtime_lifecycle(handoff,owner):
-                state=self.native_runtime[id(handoff)]
-                if state['owner'] is not owner:raise c.ConfinementError('AUTHORITY_LOST')
-                return state['lifecycle']
-            def inspect_runtime(handoff,lifecycle,owner):
-                state=self.native_runtime[id(handoff)]
-                if state['owner'] is not owner or state['lifecycle']!=lifecycle:
-                    raise c.ConfinementError('AUTHORITY_LOST')
-                return {key:([dict(row) for row in state[key]] if key=='currentFDs'
-                    else list(state[key]) if key=='inheritedFDs' else state[key])
-                    for key in ('role','childId','pipeId','lifecycle','inheritedFDs','currentFDs')}
-            def register_runtime(handoff,owner,endpoint,kind,generation):
-                record=owner.observe_current(self.binding).to_record()
-                row=next(value for value in record['currentFDs']
-                         if value['fd']==endpoint.fileno())
-                self.native_runtime[id(handoff)]['currentFDs'].append(dict(row))
-            def commit_runtime(preparation):
-                state=self.native_runtime[id(preparation._child)]
-                if preparation is not preparation._roles._preparation or not preparation._committed:
-                    raise c.ConfinementError('AUTHORITY_LOST')
-                state['lifecycle']='BROWSER_ACTIVE'
-            self.role_kernel.bind_runtime_owner=bind_runtime
-            self.role_kernel.runtime_lifecycle=runtime_lifecycle
-            self.role_kernel.inspect_runtime=inspect_runtime
-            self.role_kernel.register_runtime_descriptor=register_runtime
-            self.role_kernel._commit_browser_runtime=commit_runtime
             self.role_config=confinement_fixture.ConfinementTests().config(self.role_kernel)
             launches=tuple(c.prepare_role(role,c.RoleConfig(
                 self.role_config,c.role_fds(role,self.binding.runId))) for role in c.UIDS)
@@ -621,8 +743,10 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                 self.binding.manifestDigest,self.binding.configIdentity,
                 (('FRONTEND','https://frontend.example'),('BACKEND','https://backend.example')))
             self.proxy_run=run
+            # Long-lived local bindings let the shared clock advance past a minute.
+            self.proxy_limits=(1000,10000) if expires_at==190 else (120000,1200000)
             policy=t._PROXY.qualify_native_admission(run,
-                {'FRONTEND':'frontend.example','BACKEND':'backend.example'},1024,1000,10000,
+                {'FRONTEND':'frontend.example','BACKEND':'backend.example'},1024,*self.proxy_limits,
                 runtime_identity='e'*64,role_policy_identity=self.binding.rolePolicyDigest,
                 handoff_validator=lambda value:value)
             self.expected=t.qualify_topology_authority(run_id=self.binding.runId,
@@ -661,9 +785,17 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             retain=self.event_native.retain_pending
             self.event_native.retain_pending=lambda kind:(self.timeline.append(('event-retain',kind)) or retain(kind))
             self.events=t.qualify_offline_event_native(self.event_native)
-            self.runtime=None
-            self.raw_handoffs=self.raw_endpoints=None
-            self.proxy_harness=self.proxy_thread=self.proxy_release=None
+            self.proxy_harness=self.proxy_thread=None;self.proxy_errors=[]
+
+        def child_admission(self,vsock_key):
+            """The stand-in child's own trusted admission policy, qualified independently."""
+            run=t._PROXY.RunBinding(self.binding.runId,vsock_key,self.binding.expiresAtMs,1,
+                self.binding.manifestDigest,self.binding.configIdentity,
+                (('FRONTEND','https://frontend.example'),('BACKEND','https://backend.example')))
+            return t._PROXY.qualify_native_admission(run,
+                {'FRONTEND':'frontend.example','BACKEND':'backend.example'},1024,*self.proxy_limits,
+                runtime_identity='e'*64,role_policy_identity=self.binding.rolePolicyDigest,
+                handoff_validator=lambda *_:True)
 
         def build(self):
             stack=contextlib.ExitStack()
@@ -679,64 +811,34 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     for role,handoff in self.roles._handoffs.items()}
                 return self.roles
             stack.enter_context(mock.patch.object(c,'bind_original_roles',side_effect=start_roles))
-            observe_current_roles=t.observe_current_roles
-            def current_roles(handoffs,runtime_owners,proxy_owner,binding):
-                proxy_rows=proxy_owner.observe_current(binding).to_record()['currentFDs']
-                roles_owner=runtime_owners['CONTROLLER'];raw=[];retained=[]
-                if self.raw_handoffs is None:
-                    for role in c.UIDS:
-                        lifecycle='SERVICE' if role in ('CONTROLLER','PROXY') else 'WAITING'
-                        rowset=proxy_rows if role=='PROXY' else ()
-                        handoff,kernel,_,endpoints=topology_fixture.literal_runtime_role(
-                            confinement_fixture,role,lifecycle,runtime_owners[role],rowset)
-                        state=kernel._runtime_owners[id(handoff)]
-                        state['childId']=roles_owner._map[role]['childId']
-                        state['pipeId']=roles_owner._map[role]['pipeId']
-                        raw.append(handoff);retained.extend(endpoints)
-                    self.raw_handoffs,self.raw_endpoints=tuple(raw),tuple(retained)
-                if (self.roles._preparation is not None
-                        and self.roles._preparation._committed):
-                    browser=self.raw_handoffs[1]
-                    browser._kernel._runtime_owners[id(browser)]['lifecycle']='BROWSER_ACTIVE'
-                self.runtime=observe_current_roles(
-                    self.raw_handoffs,runtime_owners,proxy_owner,binding)
-                return self.runtime
-            stack.enter_context(mock.patch.object(t,'observe_current_roles',side_effect=current_roles))
             stack.enter_context(mock.patch.object(proxy_fixture,'proxy',t._PROXY))
             stack.enter_context(mock.patch.object(topology_fixture,'topology',t))
             stack.enter_context(mock.patch.object(topology_fixture,'confinement',c))
-            if self.binding.expiresAtMs!=190:
-                # Local long-lived proxy admission matching this binding only.
-                proxy_config=proxy_fixture.config
-                def long_lived_config(sockets,clock=None,**changes):
-                    changes.setdefault('binding',t._PROXY.RunBinding('1'*32,self.vsock_key,
-                        self.binding.expiresAtMs,1,'b'*64,'a'*64,proxy_fixture.ORIGINS))
-                    return proxy_config(sockets,clock,**changes)
-                stack.enter_context(mock.patch.object(proxy_fixture,'config',long_lived_config))
             self.proxy_entry_args=None
-            def proxy_entry(*args):
-                # P10: the 4th argument is the key the proxy initializer carries as vsockKey.
-                self.proxy_entry_args=args
-                vsock_key=args[3] if len(args)>3 else self.vsock_key
-                ready,release=threading.Event(),threading.Event();box=[]
-                def sink(harness,owner):
-                    self.timeline.append('proxy-loop-owner');box.append(owner);ready.set()
-                    if not release.wait(5): raise AssertionError('bounded proxy loop release missing')
-                expires=self.binding.expiresAtMs
-                def long_lived(initial):
-                    initial['binding']['expiresAtMs']=expires
-                    initial['proxyBootstrap']['expiresAt']=expires
-                harness=proxy_fixture.CompositionHarness(self.test,commands=[],sink=sink,
-                    mutate=None if expires==190 else long_lived,vsock_key=vsock_key)
-                harness.binding['expiresAtMs']=expires
-                thread=threading.Thread(target=harness.run,daemon=True);thread.start()
-                if not ready.wait(5): raise AssertionError('actual inherited proxy loop did not mint owner')
-                self.proxy_harness,self.proxy_thread,self.proxy_release=harness,thread,release
+            def proxy_entry(roles,binding,budget,vsock_key):
+                # P10: the 4th argument is the key the bootstrap's initializer carries as
+                # vsockKey. This trusted embedding only starts the stand-in PROXY child:
+                # the actual serve_proxy in another thread, with its own policy, reading
+                # the bootstrap's FD3 bytes. It returns no proxy object (E4, R11).
+                self.proxy_entry_args=(roles,binding,budget,vsock_key)
+                row=roles._map['PROXY']
+                child=proxy_fixture.CompositionHarness(self.test,commands=[],channel=self.proxy_channel,
+                    clock=self.clock,limits=self.proxy_limits,vsock_key=vsock_key,
+                    sink=lambda harness,owner:self.timeline.append('proxy-loop-owner'),
+                    child_policy=(binding.to_record(),row['childId'],row['pipeId'],
+                                  roles._keys['PROXY'],self.child_admission(vsock_key)))
+                def serve():
+                    try:child.run()
+                    except BaseException as error:self.proxy_errors.append(error)
+                    finally:self.proxy_channel.close_result()
+                thread=threading.Thread(target=serve,daemon=True)
+                self.proxy_harness,self.proxy_thread=child,thread
+                thread.start()
                 def finish():
-                    release.set();thread.join(5)
-                    if thread.is_alive(): raise AssertionError('actual proxy loop did not terminate')
+                    self.proxy_channel.close_command();thread.join(5)
+                    if thread.is_alive():raise AssertionError('stand-in proxy loop did not terminate')
                 stack.callback(finish)
-                self.timeline.append('proxy');return box[0]
+                self.timeline.append('proxy')
             composition=t.compose_bootstrap_v1(binding=self.binding,expected=self.expected,
                 role_config=self.role_config,fixtures=self.fixture,
                 proxy_entry=proxy_entry,
@@ -1168,8 +1270,8 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             h.clock.wall+=61000;h.clock.mono+=61000;real[0]+=61000
             retained=list(composition._cleanup_chain);mono=h.clock.mono
             self.assertEqual([type(owner) for owner in retained],
-                [c.OriginalRoleSet,t._PROXY.ProxyRuntimeOwner,t.BootstrapEventOwner])
-            with recording(c.OriginalRoleSet),recording(t._PROXY.ProxyRuntimeOwner), \
+                [c.OriginalRoleSet,t.ProxyChildAuthority,t.BootstrapEventOwner])
+            with recording(c.OriginalRoleSet),recording(t.ProxyChildAuthority), \
                     recording(t.BootstrapEventOwner):
                 receipt=composition.stop_owned(60000)
             self.assertEqual(receipt,{'status':'STOPPED','runId':h.binding.runId})
@@ -1371,15 +1473,225 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
         self.assertIs(caught.exception.cleanup,composition)
 
     def test_v1_complete_guest_composition_uses_actual_accepted_modules(self):
+        # E4 (P12): nothing on the observation path is replaced. The composition's
+        # own NativeKernelPort reads a literal /proc per original child; the PROXY
+        # child's table is its stand-in's inert descriptor table at its own attested
+        # PID, and the actual serve_proxy runs in another thread standing in for that
+        # child. Labelled (RB5): literal /proc and a thread, never native evidence;
+        # the bracket tests below are the C5 binding.
+        for name in ('register_runtime_descriptor','retire_runtime_descriptor'):
+            self.assertFalse(hasattr(c.NativeKernelPort,name),name)
         h=self.Harness(self);composition,stack=h.build()
-        with stack:proof=composition.begin(TEST_HOST_CHALLENGE)
-        self.assertEqual(h.proxy_harness.events[:3],['bind','listen','owner'])
-        self.assertEqual(len(h.proxy_harness.owners),1)
-        self.assertIs(type(composition._proxy_owner),t._PROXY.ProxyRuntimeOwner)
-        self.assertEqual(h.proxy_harness.exit,0)
-        self.assertIs(type(composition._handoff),t.BootstrapHandoffV1)
-        self.assertEqual(json.loads(proof.handoff)['version'],2)
-        self.assertEqual([r['role'] for r in composition._handoff.payload['composition']['roleRuntime']],list(c.UIDS))
+        for name in ('bind_runtime_owner','inspect_runtime','runtime_lifecycle',
+                     'observe_child_descriptors','read_proxy_frame','write_proxy_frame'):
+            self.assertNotIn(name,vars(h.role_kernel),name)
+            self.assertIs(getattr(h.role_kernel,name).__func__,getattr(c.NativeKernelPort,name),name)
+        with stack:
+            self.assertIs(t.observe_current_roles,ORIGINAL_OBSERVE_CURRENT_ROLES)
+            proof=composition.begin(TEST_HOST_CHALLENGE)
+            authority=composition._proxy_authority
+            self.assertIs(type(authority),t.ProxyChildAuthority)
+            self.assertIs(authority._handoff,h.roles._handoffs['PROXY'])
+            self.assertNotEqual(authority._handoff.attestation.pid,os.getpid())
+            self.assertTrue(h.proxy_thread.is_alive())
+            self.assertIsNot(h.proxy_thread,threading.current_thread())
+            # The child minted its own in-process owner; the bootstrap holds none.
+            self.assertEqual(h.proxy_harness.events[:3],['bind','listen','owner'])
+            self.assertEqual(len(h.proxy_harness.owners),1)
+            self.assertFalse(any(type(value) is t._PROXY.ProxyRuntimeOwner
+                                 for value in vars(composition).values()))
+            self.assertNotIn(h.proxy_harness.owners[0],composition._cleanup_chain)
+            self.assertIs(type(composition._handoff),t.BootstrapHandoffV1)
+            self.assertEqual(json.loads(proof.handoff)['version'],2)
+            payload=composition._handoff.payload['composition']
+            self.assertEqual([r['role'] for r in payload['roleRuntime']],list(c.UIDS))
+            self.assertEqual(payload['proxyRuntimeId'],h.proxy_harness.owners[0]._runtime_id)
+            rows=payload['roleRuntime'][3]['currentFDs']
+            self.assertEqual([r['kind'] for r in rows],['NULL','NULL','NULL','COMMAND','RESULT',
+                                                        'PROXY_LISTENER','PROXY_STOP_SELECTOR'])
+            live=h.proxy_harness.live
+            self.assertEqual([(r['fd'],r['device'],r['inode'],r['flags']) for r in rows],
+                             [(fd,str(live[fd][0]),str(live[fd][1]),live[fd][2]) for fd in sorted(live)])
+        self.assertEqual(h.proxy_errors,[])
+
+    def literal_child(self,rows=None):
+        """A ProxyChildAuthority over a literal child (topology_test fixture), on this module."""
+        self.assertTrue(hasattr(t,'ProxyChildAuthority'),'no cross-process PROXY child authority (E4)')
+        confinement_fixture.c=c;confinement_fixture.RUN=topology_fixture.RUN
+        stack=contextlib.ExitStack()
+        for name,value in (('topology',t),('confinement',c),('proxy',t._PROXY)):
+            stack.enter_context(mock.patch.object(topology_fixture,name,value))
+        with stack:
+            return topology_fixture.literal_proxy_authority(confinement_fixture,
+                rows if rows is not None else topology_fixture.LITERAL_PROXY_ROWS,
+                binding=topology_fixture.event_binding(),clock=topology_fixture.Clock())
+
+    LITERAL_STREAM=dict(fd=7,kind='PROXY_ACCEPTED_STREAM',device='8',inode='801',flags=2050,tfds=[])
+
+    def test_v1_proxy_authority_observes_child_proc_not_bootstrap_fds(self):
+        rows=topology_fixture.LITERAL_PROXY_ROWS+(self.LITERAL_STREAM,)
+        authority,child,handoff,kernel,active,table=self.literal_child(rows)
+        # The bootstrap's own FD5..7 hold unrelated identities; only the child's count.
+        own={5:(3,7005),6:(3,7006),7:(3,7007)}
+        kernel.b.os.fstat=lambda fd:types.SimpleNamespace(st_dev=own.get(fd,(4,0))[0],st_ino=own.get(fd,(4,0))[1])
+        self.assertNotEqual(handoff.attestation.pid,os.getpid())
+        observed=authority.observe_current()
+        self.assertEqual(set(observed),{'runtimeId','rows'})
+        self.assertEqual(observed['runtimeId'],child.runtime_id)
+        expected=[dict(fd=fd,kind=table[fd]['kind'],device=table[fd]['device'],inode=table[fd]['inode'],
+                       flags=table[fd]['flags'],tfds=table[fd]['tfds']) for fd in sorted(table)]
+        self.assertEqual(observed['rows'],expected)
+        self.assertTrue(all((row['device'],row['inode'])!=tuple(map(str,own[row['fd']]))
+                            for row in observed['rows'] if row['fd'] in own))
+        retained=kernel.runtime_record(handoff)['currentFDs']
+        self.assertEqual([(r['fd'],r['kind'],r['device'],r['inode'],r['flags']) for r in retained],
+                         [(r['fd'],r['kind'],r['device'],r['inode'],r['flags']) for r in expected])
+        # Report A, the /proc read, then report B: two CURRENT requests per observation.
+        self.assertEqual(child.reports,2)
+        self.assertEqual([json.loads(w[2:])['kind'] for w in child.writes],['PROXY_CURRENT']*2)
+
+    def test_v1_in_process_proxy_runtime_owner_rejected(self):
+        # R11: the in-process ProxyRuntimeOwner gate is replaced, not kept beside the
+        # child authority. A stand-in child's own owner handed back is ADAPTER_DENIED.
+        self.assertTrue(hasattr(t,'ProxyChildAuthority'),'no cross-process PROXY child authority (E4)')
+        for path in ('entry','activation'):
+            with self.subTest(path=path):
+                h=self.Harness(self);composition,stack=h.build()
+                entry=composition._proxy_entry;owners=[]
+                def in_process(*args):
+                    entry(*args);deadline=time.monotonic()+5
+                    while not h.proxy_harness.owners and time.monotonic()<deadline:time.sleep(.001)
+                    owners.append(h.proxy_harness.owners[0]);return owners[0]
+                if path=='entry':composition._proxy_entry=in_process
+                else:
+                    activate=composition._activate_proxy
+                    def activation():
+                        activate();return h.proxy_harness.owners[0]
+                    composition._activate_proxy=activation
+                with stack:
+                    with self.assertRaisesRegex(t.TopologyError,'^ADAPTER_DENIED$'):
+                        composition.begin(TEST_HOST_CHALLENGE)
+                    owner=h.proxy_harness.owners[0]
+                    self.assertIs(type(owner),t._PROXY.ProxyRuntimeOwner)
+                    self.assertIsNone(composition._proxy_authority)
+                    self.assertTrue(composition._terminal)
+                    self.assertTrue(any(value is owner for value in composition._cleanup_chain))
+                    self.assertFalse(any(type(value) is tuple and value[0]=='event-retain'
+                                         for value in h.timeline))
+        # The authority itself admits no in-process proxy: the PID check, the exact
+        # nominal types and a fresh original client are all required.
+        authority,child,handoff,kernel,active,table=self.literal_child()
+        binding=authority._binding
+        def client():
+            return topology_fixture.literal_proxy_client(handoff._owned,binding,topology_fixture.Clock())
+        same_process=dataclasses.replace(handoff,attestation=dataclasses.replace(
+            handoff.attestation,pid=os.getpid()))
+        class SubKernel(c.NativeKernelPort):pass
+        used=client();used._sent=1
+        browser=dataclasses.replace(handoff,launch=dataclasses.replace(handoff.launch,role='BROWSER'))
+        for name,args,seal in (('same-process',(same_process,client(),kernel,binding),t._PROXY_CHILD_SEAL),
+                               ('unsealed',(handoff,client(),kernel,binding),None),
+                               ('foreign-client',(handoff,types.SimpleNamespace(),kernel,binding),t._PROXY_CHILD_SEAL),
+                               ('used-client',(handoff,used,kernel,binding),t._PROXY_CHILD_SEAL),
+                               ('kernel-subclass',(handoff,client(),object.__new__(SubKernel),binding),t._PROXY_CHILD_SEAL),
+                               ('not-proxy',(browser,client(),kernel,binding),t._PROXY_CHILD_SEAL)):
+            with self.subTest(construct=name),self.assertRaisesRegex(t.TopologyError,'^ADAPTER_DENIED$'):
+                t.ProxyChildAuthority(*args,seal=seal)
+
+    def test_v1_proxy_report_omitting_or_adding_descriptor_denied(self):
+        base=topology_fixture.LITERAL_PROXY_ROWS+(self.LITERAL_STREAM,)
+        extra=dict(fd=8,kind='PROXY_VSOCK_STREAM',device='8',inode='802',flags=2050,tfds=[])
+        for change in ('omit','add','inode','flags','targets'):
+            with self.subTest(change=change):
+                authority,child,handoff,kernel,active,table=self.literal_child(base)
+                before=kernel.runtime_record(handoff)
+                def report(index,change=change):
+                    rows=child.rows()
+                    if change=='omit':rows=[r for r in rows if r['fd']!=7]
+                    elif change=='add':rows=rows+[dict(extra)]
+                    elif change=='inode':rows[7]['inode']='899'
+                    elif change=='flags':rows[7]['flags']=2
+                    elif change=='targets':rows[6]['tfds']=[3,4]
+                    return rows
+                child.report_rows=report
+                if change=='targets':
+                    # The child reports its fixed STOP targets; its /proc selector watches another set.
+                    table[6]['tfds']=[3]
+                with self.assertRaisesRegex(t.TopologyError,'^PROXY_RUNTIME_DRIFT$'):
+                    authority.observe_current()
+                self.assertEqual(kernel.runtime_record(handoff),before,'nothing adopted')
+                with self.assertRaisesRegex(t.TopologyError,'^PROXY_DENIED$'):
+                    authority.observe_current()
+
+    def test_v1_proxy_report_and_proc_must_bracket_same_generation(self):
+        # Review Focus 3: report A, /proc, report B must describe one generation. A
+        # descriptor change between them, even one undone before B, is terminal drift.
+        base=topology_fixture.LITERAL_PROXY_ROWS+(self.LITERAL_STREAM,)
+        added=dict(fd=8,kind='PROXY_VSOCK_STREAM',device='8',inode='802',flags=2050,tfds=[])
+        for churn in ('fd-added-after-A','fd-closed-after-A','substituted-and-restored',
+                      'targets-changed-after-A','object-class-after-A','B-differs','sequence-gap'):
+            with self.subTest(churn=churn):
+                authority,child,handoff,kernel,active,table=self.literal_child(base)
+                original=child.rows()
+                def after(index,churn=churn):
+                    if index==0 and churn=='fd-added-after-A':
+                        table[8]=dict(added);active['fds'].append(8)
+                    elif index==0 and churn=='fd-closed-after-A':
+                        active['fds'].remove(7)
+                    elif churn=='substituted-and-restored':
+                        table[7]['inode']='899' if index==0 else '801'
+                    elif index==0 and churn=='targets-changed-after-A':
+                        table[6]['tfds']=[3]
+                    elif index==0 and churn=='object-class-after-A':
+                        table[7]['kind']='PROXY_CONNECT_SELECTOR'
+                    elif index==0 and churn=='sequence-gap':
+                        child.observation+=1
+                child.on_report=after
+                if churn in ('substituted-and-restored','targets-changed-after-A','object-class-after-A'):
+                    # The child's reports never change; only its /proc does, between them.
+                    child.report_rows=lambda index:[dict(row) for row in original]
+                elif churn=='B-differs':
+                    child.report_rows=lambda index:original if index==0 else original[:-1]
+                with self.assertRaisesRegex(t.TopologyError,'^PROXY_RUNTIME_DRIFT$'):
+                    authority.observe_current()
+                self.assertEqual(child.reports,2,'report B is always requested')
+                with self.assertRaisesRegex(t.TopologyError,'^PROXY_DENIED$'):
+                    authority.observe_current()
+        # Control: the same bracket with no churn is accepted.
+        authority,child,handoff,kernel,active,table=self.literal_child(base)
+        self.assertEqual(len(authority.observe_current()['rows']),8)
+
+    def test_v1_accepted_streams_after_admission_are_observed_not_registered(self):
+        # E4: a stream the child accepts after admission is never registered; the next
+        # bracketed observation adopts it, and every retained identity keeps its owner.
+        for name in ('register_runtime_descriptor','retire_runtime_descriptor'):
+            self.assertFalse(hasattr(c.NativeKernelPort,name),name)
+        h=self.Harness(self);composition,stack=h.build();adopted=[]
+        adopt=c.NativeKernelPort._adopt_child_inventory
+        def spy(kernel,handoff,owner,report):
+            adopted.append([row['kind'] for row in report]);return adopt(kernel,handoff,owner,report)
+        with stack,mock.patch.object(c.NativeKernelPort,'_adopt_child_inventory',new=spy):
+            first=composition.begin(TEST_HOST_CHALLENGE)
+            before=json.loads(first.handoff)['payload']['composition']['roleRuntime'][3]['currentFDs']
+            stand_in=h.proxy_harness;stand_in.clients.append([STAND_IN_CONNECT])
+            deadline=time.monotonic()+5
+            def settled():
+                return (len(stand_in.live)==9 and any(e.family==40 and len(e.sent)>=66
+                        for e in stand_in.endpoints))
+            while not settled() and time.monotonic()<deadline:time.sleep(.001)
+            self.assertTrue(settled(),'stand-in child never established its tunnel')
+            current=composition.require_current()
+            rows=json.loads(current.handoff)['payload']['composition']['roleRuntime'][3]['currentFDs']
+            self.assertEqual([r['kind'] for r in rows][5:],['PROXY_LISTENER','PROXY_STOP_SELECTOR',
+                                                            'PROXY_ACCEPTED_STREAM','PROXY_VSOCK_STREAM'])
+            live=stand_in.live
+            self.assertEqual([(r['fd'],r['device'],r['inode'],r['flags']) for r in rows],
+                             [(fd,str(live[fd][0]),str(live[fd][1]),live[fd][2]) for fd in sorted(live)])
+            self.assertEqual(rows[:7],before,'retained identities keep their ownerIds')
+            self.assertEqual(len({r['ownerId'] for r in rows}),9)
+            self.assertEqual(adopted[-1][5:],['PROXY_LISTENER','PROXY_STOP_SELECTOR',
+                                              'PROXY_ACCEPTED_STREAM','PROXY_VSOCK_STREAM'])
+        self.assertEqual(h.proxy_errors,[])
 
     def test_v1_composition_preparation_returns_original_python_owner(self):
         h=self.Harness(self);composition,stack=h.build()
@@ -1520,15 +1832,21 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
         self.assertEqual(len(seen[0]),4)
         self.assertEqual(seen[0][3],derived)
         self.assertNotIn(capability,[arg for arg in seen[0] if type(arg) is bytes])
-        # End to end: the initializer frame and the serving proxy's own binding.
+        # End to end: the bootstrap's own initializer frame on the original PROXY FD3
+        # (E4: the bootstrap carries the key into the child) and the child's binding.
         h=self.Harness(self);composition,stack=h.build()
         with stack:
             composition.begin(TEST_HOST_CHALLENGE)
             self.assertEqual(h.proxy_entry_args[3],derived)
-            boot=h.proxy_harness.initial['proxyBootstrap']
+            initializer=h.proxy_channel.writes[0]
+            self.assertEqual(int.from_bytes(initializer[:2],'big'),len(initializer)-2)
+            initial=json.loads(initializer[2:])
+            self.assertEqual((initial['version'],initial['kind']),(2,'PROXY_COMPOSITION_INIT'))
+            self.assertEqual(initial['channelKeyHex'],h.roles._keys['PROXY'].hex())
+            boot=initial['proxyBootstrap']
             self.assertEqual(boot['vsockKey'],derived.hex())
             self.assertNotIn('capability',boot)
-            self.assertNotIn(capability.hex(),json.dumps(h.proxy_harness.initial))
+            self.assertNotIn(capability.hex(),initializer.decode('ascii'))
             binding=h.proxy_harness.owners[0]._config.binding
             self.assertEqual(binding.vsock_key,derived)
             self.assertFalse(hasattr(binding,'capability'))

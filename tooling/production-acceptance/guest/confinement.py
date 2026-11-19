@@ -1227,15 +1227,52 @@ _RUNTIME_FD_KINDS={
     'NULL','COMMAND','RESULT','PROXY_LISTENER','PROXY_STOP_SELECTOR',
     'PROXY_ACCEPTED_STREAM','PROXY_VSOCK_STREAM','PROXY_CONNECT_SELECTOR',
 }
+# The only kinds above FD4, and only in PROXY's inventory (compB M-2).
+_PROXY_RUNTIME_KINDS=frozenset(kind for kind in _RUNTIME_FD_KINDS if kind.startswith('PROXY_'))
+_SELECTOR_KINDS=frozenset(('PROXY_STOP_SELECTOR','PROXY_CONNECT_SELECTOR'))
+_DECIMAL=re.compile('0|[1-9][0-9]{0,19}')
+_FD_NAME=re.compile('0|[1-9][0-9]{0,3}')
+_U64_MAX=18446744073709551615
 
 
-def validate_runtime_observation(value,handoff,lifecycle,*,_allow_proxy_pre_listener=False):
-    """Strictly retain inherited authority separately from current inventory."""
+def _decimal(value):
+    """Canonical unsigned decimal of at most 20 digits that fits a u64 (Swift twin)."""
+    return type(value) is str and _DECIMAL.fullmatch(value) is not None and int(value)<=_U64_MAX
+
+
+def fdinfo_facts(data):
+    """(flags, tfd targets) from one Linux /proc/<pid>/fdinfo/<fd> text.
+
+    `flags:` is the octal open-file flags line, exactly once. `tfd:` lines exist
+    only for an epoll instance (one per registered target); their sorted target
+    FD numbers bind a selector's identity beyond its shared anonymous inode
+    (E4/C5, compA M-3). A procfs text format, like `flags:` (ABI ruling R13).
+    """
+    if type(data) is not bytes or len(data)>4096: _fail('FD_DENIED')
+    try: lines=data.decode('ascii').splitlines()
+    except UnicodeError: _fail('FD_DENIED')
+    flags=[line.split() for line in lines if line.startswith('flags:')]
+    if len(flags)!=1 or len(flags[0])!=2 or re.fullmatch('[0-7]{1,22}',flags[0][1]) is None: _fail('FD_DENIED')
+    targets=[]
+    for line in lines:
+        if line.startswith('tfd:'):
+            fields=line.split()
+            if len(fields)<2 or _FD_NAME.fullmatch(fields[1]) is None or int(fields[1])>4095: _fail('FD_DENIED')
+            targets.append(int(fields[1]))
+    if len(set(targets))!=len(targets): _fail('FD_DENIED')
+    return int(flags[0][1],8),tuple(sorted(targets))
+
+
+def runtime_rows(value,role,lifecycle,*,_allow_proxy_pre_listener=False):
+    """Pure RoleRuntimeObservation wire checks for one fixed role (amendment 4.1).
+
+    Shared by the bootstrap observer, the composition consumer and, through the
+    exported divergence vectors, the Swift twin `validateRoleRuntimeV1`.
+    """
     if (type(value) is not dict
             or set(value)!=set(('role','childId','pipeId','lifecycle',
                                 'inheritedFDs','currentFDs'))
-            or type(handoff) is not RoleHandoff
-            or value['role']!=handoff.launch.role
+            or role not in UIDS or value['role']!=role
             or value['lifecycle']!=lifecycle
             or lifecycle not in ('WAITING','SERVICE','BROWSER_ACTIVE')
             or not _run(value['childId']) or not _run(value['pipeId'])
@@ -1243,23 +1280,20 @@ def validate_runtime_observation(value,handoff,lifecycle,*,_allow_proxy_pre_list
             or type(value['currentFDs']) is not list
             or not 5<=len(value['currentFDs'])<=55):
         _fail('FD_DENIED')
-    seen=[]
+    seen=[];owners=set()
     for row in value['currentFDs']:
         if (type(row) is not dict
                 or set(row)!=set(('fd','kind','device','inode','flags','ownerId',
                                   'acquiredGeneration'))
                 or type(row['fd']) is not int or not 0<=row['fd']<=4095
                 or row['kind'] not in _RUNTIME_FD_KINDS
-                or type(row['device']) is not str or not row['device'].isdecimal()
-                or not 1<=len(row['device'])<=20
-                or type(row['inode']) is not str or not row['inode'].isdecimal()
-                or not 1<=len(row['inode'])<=20
+                or not _decimal(row['device']) or not _decimal(row['inode'])
                 or type(row['flags']) is not int or not 0<=row['flags']<=9007199254740991
-                or not _run(row['ownerId'])
+                or not _run(row['ownerId']) or row['ownerId'] in owners
                 or type(row['acquiredGeneration']) is not int
                 or row['acquiredGeneration']!=1):
             _fail('FD_DENIED')
-        seen.append(row['fd'])
+        seen.append(row['fd']);owners.add(row['ownerId'])
     if seen!=sorted(set(seen)) or seen[:5]!=[0,1,2,3,4]: _fail('FD_DENIED')
     if [row['kind'] for row in value['currentFDs'][:5]]!=[
             'NULL','NULL','NULL','COMMAND','RESULT']:
@@ -1269,10 +1303,15 @@ def validate_runtime_observation(value,handoff,lifecycle,*,_allow_proxy_pre_list
         _fail('FD_DENIED')
     if lifecycle=='WAITING' and len(value['currentFDs'])!=5:
         _fail('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')
-    if handoff.launch.role!='PROXY' and any(
+    if role!='PROXY' and any(
             row['kind'].startswith('PROXY_') for row in value['currentFDs']):
         _fail('FD_DENIED')
-    if handoff.launch.role=='PROXY':
+    # compB M-2, T10 divergences: above FD4 only PROXY's own runtime kinds, never
+    # a NULL/COMMAND/RESULT row and never another role's extra descriptor.
+    if any(row['fd']>=5 and (role!='PROXY' or row['kind'] not in _PROXY_RUNTIME_KINDS)
+           for row in value['currentFDs']):
+        _fail('FD_DENIED')
+    if role=='PROXY':
         counts={kind:sum(row['kind']==kind for row in value['currentFDs'])
                 for kind in _RUNTIME_FD_KINDS}
         if (lifecycle!='SERVICE'
@@ -1280,11 +1319,33 @@ def validate_runtime_observation(value,handoff,lifecycle,*,_allow_proxy_pre_list
                 or counts['PROXY_STOP_SELECTOR']>1
                 or counts['PROXY_ACCEPTED_STREAM']>16
                 or counts['PROXY_VSOCK_STREAM']>16
-                or counts['PROXY_CONNECT_SELECTOR']>16):
+                or counts['PROXY_CONNECT_SELECTOR']>16
+                or counts['PROXY_VSOCK_STREAM']>counts['PROXY_ACCEPTED_STREAM']
+                or counts['PROXY_CONNECT_SELECTOR']>counts['PROXY_ACCEPTED_STREAM']):
             _fail('FD_DENIED')
+    # From FD3 on, pipe and socket identities are unique and an epoll selector
+    # (whose anonymous inode distinct selectors may share) never aliases one.
+    plain=[(row['device'],row['inode']) for row in value['currentFDs'][3:]
+           if row['kind'] not in _SELECTOR_KINDS]
+    selectors={(row['device'],row['inode']) for row in value['currentFDs'][3:]
+               if row['kind'] in _SELECTOR_KINDS}
+    if len(set(plain))!=len(plain) or selectors&set(plain): _fail('FD_DENIED')
     return {key:([dict(row) for row in value[key]] if key=='currentFDs'
                  else list(value[key]) if key=='inheritedFDs' else value[key])
             for key in ('role','childId','pipeId','lifecycle','inheritedFDs','currentFDs')}
+
+
+def validate_runtime_observation(value,handoff,lifecycle,*,originals=None,_allow_proxy_pre_listener=False):
+    """Strictly retain inherited authority separately from current inventory.
+
+    With `originals`, the row must also equal that retained original record
+    exactly (the Swift twin's canonical original equality).
+    """
+    if type(handoff) is not RoleHandoff: _fail('FD_DENIED')
+    row=runtime_rows(value,handoff.launch.role,lifecycle,
+                     _allow_proxy_pre_listener=_allow_proxy_pre_listener)
+    if originals is not None and row!=originals: _fail('FD_DENIED')
+    return row
 
 
 class NativeKernelPort:
@@ -1301,8 +1362,9 @@ class NativeKernelPort:
         """Trusted acquisition handoff; never populated from a runtime report.
 
         Capture inherited identities while the original child is still waiting.
-        The serving owner then registers each endpoint at acquisition and keeps
-        it until proven close. Unknown Node/Chromium internals remain unavailable.
+        PROXY runtime descriptors are never registered: each bracketed observation
+        of the child (`_adopt_child_inventory`) carries its complete inventory.
+        Unknown Node/Chromium internals remain unavailable.
         """
         if type(handoff) is not RoleHandoff or handoff._kernel is not self or handoff._owned not in self._owned or id(handoff) in self._runtime_owners or runtime_owner is None or not _run(child_id) or not _run(pipe_id): _fail('AUTHORITY_LOST')
         expected='SERVICE' if handoff.launch.role in ('CONTROLLER','PROXY') else 'WAITING'
@@ -1314,40 +1376,91 @@ class NativeKernelPort:
             info=self.b.read_file('/proc/'+str(handoff.attestation.pid)+'/fdinfo/'+str(fd)).decode('ascii')
             flags=int(next(x.split()[1] for x in info.splitlines() if x.startswith('flags:')),8)
             rows.append(dict(fd=fd,kind='NULL' if fd<3 else 'COMMAND' if fd==3 else 'RESULT',device=str(metadata.st_dev),inode=str(metadata.st_ino),flags=flags,ownerId=secrets.token_hex(16),acquiredGeneration=1))
-        self._runtime_owners[id(handoff)]=dict(handoff=handoff,owner=runtime_owner,lifecycle=lifecycle,childId=child_id,pipeId=pipe_id,rows=rows,endpoints={},facts=_ownership_facts(handoff._owned))
+        self._runtime_owners[id(handoff)]=dict(handoff=handoff,owner=runtime_owner,lifecycle=lifecycle,childId=child_id,pipeId=pipe_id,rows=rows,targets={},facts=_ownership_facts(handoff._owned))
 
-    def register_runtime_descriptor(self,handoff,runtime_owner,endpoint,kind,generation):
-        state=self._runtime_owners.get(id(handoff))
-        limits={'PROXY_LISTENER':1,'PROXY_STOP_SELECTOR':1,'PROXY_ACCEPTED_STREAM':16,'PROXY_VSOCK_STREAM':16,'PROXY_CONNECT_SELECTOR':16}
-        if not state or state['handoff'] is not handoff or state['owner'] is not runtime_owner or handoff.launch.role!='PROXY' or kind not in limits or _v1_int(generation)!=1: _fail('AUTHORITY_LOST')
-        fd=endpoint.fileno();_v1_int(fd,5)
-        if fd>4095 or any(row['fd']==fd for row in state['rows']) or sum(row['kind']==kind for row in state['rows'])>=limits[kind]: _fail('FD_DENIED')
-        metadata=self.b.os.fstat(fd)
-        # Capture original acquisition kernel identity before configuration.
-        # Current flags are sampled at observation and must match this capture.
-        info=self.b.read_file('/proc/'+str(handoff.attestation.pid)+'/fdinfo/'+str(fd)).decode('ascii')
-        flags=int(next(x.split()[1] for x in info.splitlines() if x.startswith('flags:')),8)
-        row=dict(fd=fd,kind=kind,device=str(metadata.st_dev),inode=str(metadata.st_ino),flags=flags,ownerId=secrets.token_hex(16),acquiredGeneration=generation)
-        state['rows'].append(row);state['endpoints'][fd]=endpoint
+    def observe_child_descriptors(self,handoff):
+        """The PROXY child's complete descriptor table, read from /proc/<pid> (E4, C5).
 
-    def retire_runtime_descriptor(self,handoff,runtime_owner,endpoint):
+        Identity is os.stat('/proc/<pid>/fd/N'), never fstat of the same number in
+        this bootstrap process, whose own descriptor table is unrelated. Flags and an
+        epoll selector's tfd: targets come from /proc/<pid>/fdinfo/N; the link names
+        the object class. Kinds are not observable here: the caller binds them to
+        the two MAC'd reports that bracket this read. Read-only; it holds nothing.
+        """
+        if type(handoff) is not RoleHandoff or handoff._kernel is not self or handoff.launch.role!='PROXY': _fail('AUTHORITY_LOST')
+        state=self._owned.get(handoff._owned)
+        if not state or state['terminal'] is not None or state['child']!=handoff.attestation.pid: _fail('AUTHORITY_LOST')
+        base='/proc/'+str(handoff.attestation.pid)
+        listed=self.b.os.listdir(base+'/fd')
+        if (type(listed) is not list or len(listed)>4096
+                or any(type(name) is not str or _FD_NAME.fullmatch(name) is None or int(name)>4095 for name in listed)
+                or len(set(listed))!=len(listed)):
+            _fail('FD_DENIED')
+        rows=[]
+        for fd in sorted(int(name) for name in listed):
+            path=base+'/fd/'+str(fd)
+            metadata=self.b.os.stat(path)
+            flags,targets=fdinfo_facts(self.b.read_file(base+'/fdinfo/'+str(fd),4096))
+            link=self.b.os.readlink(path)
+            if (type(link) is not str or not link.isascii() or not 0<len(link)<=256
+                    or type(metadata.st_dev) is not int or type(metadata.st_ino) is not int
+                    or not 0<=metadata.st_dev<=_U64_MAX or not 0<=metadata.st_ino<=_U64_MAX
+                    or (targets and link!='anon_inode:[eventpoll]')):
+                _fail('FD_DENIED')
+            rows.append(dict(fd=fd,device=str(metadata.st_dev),inode=str(metadata.st_ino),
+                             flags=flags,tfds=list(targets),link=link))
+        return tuple(rows)
+
+    def _adopt_child_inventory(self,handoff,runtime_owner,report):
+        """The bootstrap's PROXY ledger after one accepted report-A, /proc, report-B bracket.
+
+        Every observation carries the complete inventory; nothing is registered or
+        retired by call. FD0..4 must still be the inherited originals captured while
+        the child waited. A runtime descriptor whose (fd, kind, device, inode) is
+        unchanged keeps its ownerId and must keep its flags and tfd: targets; a new
+        identity is an observed acquisition with a new ownerId, and one absent from
+        /proc is retired by that absence.
+        """
         state=self._runtime_owners.get(id(handoff))
-        if not state or state['owner'] is not runtime_owner: _fail('AUTHORITY_LOST')
-        matches=[fd for fd,original in state['endpoints'].items() if original is endpoint]
-        if len(matches)!=1 or endpoint.fileno()!=-1: _fail('CLEANUP_UNCERTAIN')
-        fd=matches[0]
-        if _native_fd_exists(self.b,'/proc/'+str(handoff.attestation.pid),str(fd)): _fail('CLEANUP_UNCERTAIN')
-        del state['endpoints'][fd];state['rows'][:]=[row for row in state['rows'] if row['fd']!=fd]
+        if (not state or state['handoff'] is not handoff or state['owner'] is not runtime_owner
+                or handoff.launch.role!='PROXY' or state['lifecycle']!='SERVICE'
+                or _ownership_facts(handoff._owned)!=state['facts']): _fail('AUTHORITY_LOST')
+        if type(report) is not tuple or not 5<=len(report)<=55: _fail('FD_DENIED')
+        rows=[dict(row) for row in state['rows'][:5]];adopted={}
+        previous={(row['fd'],row['kind'],row['device'],row['inode']):row for row in state['rows'][5:]}
+        for index,row in enumerate(report):
+            if type(row) is not dict or set(row)!={'fd','kind','device','inode','flags','tfds'} or type(row['tfds']) is not list: _fail('FD_DENIED')
+            key=(row['fd'],row['kind'],row['device'],row['inode'])
+            if index<5:
+                inherited=rows[index]
+                if key+(row['flags'],tuple(row['tfds']))!=(inherited['fd'],inherited['kind'],inherited['device'],inherited['inode'],inherited['flags'],()): _fail('FD_DENIED')
+                continue
+            old=previous.get(key)
+            if old is not None and (old['flags']!=row['flags'] or state['targets'].get(key)!=tuple(row['tfds'])): _fail('FD_DENIED')
+            rows.append(dict(fd=row['fd'],kind=row['kind'],device=row['device'],inode=row['inode'],flags=row['flags'],
+                             ownerId=old['ownerId'] if old is not None else secrets.token_hex(16),acquiredGeneration=1))
+            adopted[key]=tuple(row['tfds'])
+        runtime_rows(dict(role='PROXY',childId=state['childId'],pipeId=state['pipeId'],lifecycle='SERVICE',
+                          inheritedFDs=[0,1,2,3,4],currentFDs=rows),'PROXY','SERVICE')
+        state['rows'][:]=rows;state['targets']=adopted
+        return tuple(dict(row) for row in rows)
+
+    def runtime_record(self,handoff):
+        """The retained current record for one bound original child; no /proc read."""
+        state=self._runtime_owners.get(id(handoff))
+        if not state or state['handoff'] is not handoff or handoff._kernel is not self: _fail('AUTHORITY_LOST')
+        return dict(role=handoff.launch.role,childId=state['childId'],pipeId=state['pipeId'],
+                    lifecycle=state['lifecycle'],inheritedFDs=[0,1,2,3,4],
+                    currentFDs=[dict(row) for row in sorted(state['rows'],key=lambda row:row['fd'])])
 
     def inspect_runtime(self,original_handoff,lifecycle,runtime_owner):
         state=self._runtime_owners.get(id(original_handoff))
         if not state or state['handoff'] is not original_handoff or state['owner'] is not runtime_owner or state['lifecycle']!=lifecycle or _ownership_facts(original_handoff._owned)!=state['facts']: _fail('AUTHORITY_LOST')
         h=original_handoff;s=self._owned.get(h._owned)
         if not s or s['terminal'] is not None or s['child']!=h.attestation.pid: _fail('AUTHORITY_LOST')
-        for fd,endpoint in state['endpoints'].items():
-            if endpoint.fileno()!=fd: _fail('CLEANUP_UNCERTAIN')
-            actual=self.b.os.fstat(fd);row=next(r for r in state['rows'] if r['fd']==fd)
-            if (str(actual.st_dev),str(actual.st_ino))!=(row['device'],row['inode']): _fail('FD_DENIED')
+        # No bootstrap-side fstat: the rows are the inherited capture plus the last
+        # bracketed PROXY observation, and _native_observe re-reads every one of
+        # them from the child's own /proc/<pid>/fd and fdinfo.
         rows=tuple(sorted(state['rows'],key=lambda row:row['fd']))
         facts=_native_observe(self.b,h.attestation.pid,s['launch'],s['digest'],{},lifecycle=='WAITING',current_fds=rows)
         _check(_attestation(facts),h.launch,waiting=lifecycle=='WAITING')
@@ -1396,6 +1509,31 @@ class NativeKernelPort:
         end=self.b.monotonic()+remaining_ms/1000
         header=self._read_exact(owned.result,4,remaining_ms,eof_code='CHANNEL_EOF')
         count=struct.unpack('>I',header)[0]
+        if not 0<count<=16384: _fail('FRAME_DENIED')
+        return header+self._read_exact(owned.result,count,max(0,int((end-self.b.monotonic())*1000)),eof_code='CHANNEL_EOF')
+
+    def write_proxy_frame(self,owned,data):
+        """One PROXY v2 FD3 frame (two-byte length, 1..4096 bytes) or the bare STOP.
+
+        The class writer, never a per-instance replacement: only the retained
+        original physical command end of the original PROXY child.
+        """
+        if (type(data) is not bytes or getattr(owned,'role',None)!='PROXY'
+                or not (data==b'STOP' or (len(data)>=3 and int.from_bytes(data[:2],'big')==len(data)-2<=4096))):
+            _fail('CHANNEL_DENIED')
+        NativeKernelPort.write_role(self,owned,data)
+
+    def read_proxy_frame(self,owned,remaining_ms):
+        """One PROXY v2 FD4 frame: a two-byte length, then 1..16384 bytes (amendment 6.1).
+
+        Only the retained original result end; same bounds as read_role otherwise.
+        """
+        state=self._owned.get(owned)
+        if state is None or state['terminal'] is not None or owned.role!='PROXY': _fail('CHANNEL_DENIED')
+        remaining_ms=min(_v1_int(remaining_ms,0),1000)
+        end=self.b.monotonic()+remaining_ms/1000
+        header=self._read_exact(owned.result,2,remaining_ms,eof_code='CHANNEL_EOF')
+        count=int.from_bytes(header,'big')
         if not 0<count<=16384: _fail('FRAME_DENIED')
         return header+self._read_exact(owned.result,count,max(0,int((end-self.b.monotonic())*1000)),eof_code='CHANNEL_EOF')
 
@@ -1595,6 +1733,12 @@ class NativeKernelPort:
                 return dict(outcome)
             if self.b.monotonic()<until:self.b.sleep(min(0.01,max(0,until-self.b.monotonic())))
         return {'status':'TIMEOUT','pid':owned.pid,'run_id':owned.run_id}
+
+    def terminal_receipt(self,owned):
+        """The cached terminal receipt of one original child, or None. Read-only; no wait."""
+        state=self._owned.get(owned)
+        if state is None: _fail('EXIT_DENIED')
+        return None if state['terminal'] is None else dict(state['terminal'])
 
     def wait_owned(self,owned,deadline): return self._exit(owned,deadline,False)
     def stop_owned(self,owned,deadline): return self._exit(owned,deadline,True)

@@ -1945,22 +1945,36 @@ class ProxyTests(unittest.TestCase):
 
 
 class CompositionHarness:
-    """Real inherited decoder, selector parser and loop; inert OS bytes only."""
-    def __init__(self, test, *, commands=None, mutate=None, sink=None, limits=(20, 50), vsock_key=VSOCK_KEY):
+    """Real inherited decoder, selector parser and loop; inert OS bytes only.
+
+    With `channel`, it is the stand-in PROXY child of a bootstrap composition
+    test (E4): FD3 bytes come from the bootstrap's writes, FD4 frames go back to
+    the bootstrap's reads, and the shared `clock` is advanced only by the test.
+    `child_policy` is then the child's own trusted embedding: (binding record,
+    childId, pipeId, channel key, its independently qualified admission policy).
+    """
+    def __init__(self, test, *, commands=None, mutate=None, sink=None, limits=(20, 50), vsock_key=VSOCK_KEY,
+                 channel=None, clock=None, child_policy=None):
         self.test, self.owners, self.frames, self.events = test, [], [], []
         # (idleTimeoutMs, runTimeoutMs) for both the frame and the independent admission.
         self.limits = limits
         # P10: the key the bootstrap passes to the proxy entry, for the frame and the admission.
         self.vsock_key = vsock_key
-        self.clock = Clock()
-        self.clock.wall, self.clock.mono = 100, 10
+        self.channel, self.child_policy = channel, child_policy
+        self.clock = clock if clock is not None else Clock()
+        if clock is None: self.clock.wall, self.clock.mono = 100, 10
         self.live = {fd: [1, fd + 100, 0 if fd != 4 else 1] for fd in range(5)}
+        # Selector FD -> registered target FDs, served as fdinfo `tfd:` lines.
+        self.targets = {}
         self.next_fd, self.endpoints, self.selectors = 5, [], []
         self.child, self.pipe = object(), (object(), object())
         self.key = b'\x09' * 32
         self.binding = dict(version=1, runId='1'*32, manifestDigest='b'*64,
                             configIdentity='a'*64, rolePolicyDigest='c'*64,
                             epoch=7, expiresAtMs=190)
+        self.child_id, self.pipe_id = '2'*32, '3'*32
+        if child_policy is not None:
+            self.binding, self.child_id, self.pipe_id, self.key, self.admitted = child_policy
         self.output, self.input = bytearray(), bytearray()
         self.pending_commands = commands if commands is not None else [self.command('PROXY_CURRENT'), b'STOP']
         self.on_ready, self.on_sleep, self.on_write = sink, None, None
@@ -1981,7 +1995,7 @@ class CompositionHarness:
                        childId='2'*32, pipeId='3'*32, channelKeyHex=self.key.hex(), proxyBootstrap=bootstrap)
         if mutate: mutate(initial)
         self.initial = initial
-        self.input.extend(self.frame(initial))
+        if channel is None: self.input.extend(self.frame(initial))
         harness = self
 
         class Endpoint:
@@ -2027,13 +2041,18 @@ class CompositionHarness:
                 self.fd = harness.allocate(); self.target = None; self.closes = 0
                 harness.selectors.append(self)
             def fileno(self): return self.fd
-            def register(self, target, event): self.target = target
+            def register(self, target, event):
+                self.target = target
+                harness.targets.setdefault(self.fd, set()).add(
+                    target if type(target) is int else target.fileno())
             def select(self, timeout):
+                if harness.channel is not None and not harness.channel.command_ready():
+                    return [(types.SimpleNamespace(fd=4),2)]
                 return [(types.SimpleNamespace(fd=3),1),(types.SimpleNamespace(fd=4),2)]
             def close(self):
                 self.closes += 1
                 if harness.fail_close: raise OSError('inert selector close')
-                harness.live.pop(self.fd, None); self.fd = -1
+                harness.live.pop(self.fd, None); harness.targets.pop(self.fd, None); self.fd = -1
 
         self.Endpoint = Endpoint
         class SelectWriter:
@@ -2046,8 +2065,9 @@ class CompositionHarness:
             socket=lambda family, kind, protocol: Endpoint(family))
         self.selector_module = types.SimpleNamespace(DefaultSelector=Selector,
             SelectSelector=SelectWriter, EVENT_READ=1, EVENT_WRITE=2)
-        self.time = types.SimpleNamespace(time=lambda: self.clock.wall/1000,
-            monotonic=lambda: self.clock.mono/1000, sleep=self.sleep)
+        # Half-millisecond offsets keep int(x * 1000) exact on the shared clock.
+        self.time = types.SimpleNamespace(time=lambda: (self.clock.wall+.5)/1000,
+            monotonic=lambda: (self.clock.mono+.5)/1000, sleep=self.sleep)
         self.files, self.fd_closes = {}, []
         self.os = types.SimpleNamespace(read=self.read, write=self.write, close=self.close,
             fstat=self.fstat, listdir=lambda path: [str(fd) for fd in self.live],
@@ -2068,11 +2088,20 @@ class CompositionHarness:
         if fd not in self.live: raise OSError('inert missing descriptor')
         dev, inode, flags = self.live[fd]
         return types.SimpleNamespace(st_dev=dev, st_ino=inode)
+    def fdinfo(self, target):
+        """Kernel-format fdinfo text: flags, plus one tfd: line per epoll target."""
+        text = 'pos:\t0\nflags:\t0'+oct(self.live[target][2])[2:]+'\nmnt_id:\t15\nino:\t%d\n' % self.live[target][1]
+        for registered in sorted(self.targets.get(target, ())):
+            text += 'tfd: %8d events: %8x data: %16x  pos:0 ino:%x sdev:%x\n' % (
+                registered, 4, registered, self.live.get(registered, [0, 0])[1], 1)
+        return text.encode()
     def open(self, path, flags):
         target = int(path.rsplit('/', 1)[1]); fd = 4000
-        self.files[fd] = bytearray(('flags:\t'+oct(self.live[target][2])[2:]+'\n').encode())
+        self.files[fd] = bytearray(self.fdinfo(target))
         return fd
     def read(self, fd, size):
+        if fd == 3 and self.channel is not None:
+            return self.channel.read_command(min(size, self.fragment))
         source = self.input if fd == 3 else self.files[fd]
         if fd == 3 and not source and self.pending_commands:
             item = self.pending_commands.pop(0)
@@ -2081,12 +2110,15 @@ class CompositionHarness:
         return part
     def write(self, fd, data):
         if self.on_write: self.on_write()
-        part = bytes(data[:self.write_fragment]); self.output.extend(part); return len(part)
+        part = bytes(data[:self.write_fragment]); self.output.extend(part)
+        if self.channel is not None: self.channel.write_result(part)
+        return len(part)
     def close(self, fd):
         if fd in self.files: del self.files[fd]
         else: self.fd_closes.append(fd)
     def sleep(self, seconds):
-        self.clock.wait(max(1, int(seconds*1000)))
+        if self.channel is not None: self.channel.idle()
+        else: self.clock.wait(max(1, int(seconds*1000)))
         if self.on_sleep: self.on_sleep()
     @staticmethod
     def frame(value):
@@ -2094,8 +2126,8 @@ class CompositionHarness:
         return len(body).to_bytes(2, 'big') + body
     def command(self, kind, sequence=1, request_id='4'*32, **changes):
         payload = dict(requestId=request_id, generation=1) if kind == 'PROXY_CURRENT' else dict(requestId=request_id, cleanupEndsAtMonotonicMs=25)
-        value = dict(version=2, kind=kind, binding=self.binding, childId='2'*32,
-                     pipeId='3'*32, sequence=sequence, payload=payload)
+        value = dict(version=2, kind=kind, binding=self.binding, childId=self.child_id,
+                     pipeId=self.pipe_id, sequence=sequence, payload=payload)
         value.update(changes)
         body = self.frame(value)[2:]
         value['mac'] = hmac.new(self.key, b'acceptance:bootstrap-composition:v1\0PROXY:FROM_BOOTSTRAP\0'+body, hashlib.sha256).hexdigest()
@@ -2104,11 +2136,14 @@ class CompositionHarness:
         self.events.append('owner'); self.owners.append(owner)
         if self.on_ready: self.on_ready(self, owner)
     def run(self, *, legacy=False, policy_override=None, legacy_commands=None):
-        base = config(Sockets()).binding
-        fields = dataclasses.fields(base)
-        keyed = proxy.RunBinding(base.run_id, self.vsock_key, *(getattr(base, f.name) for f in fields[2:]))
-        admitted = proxy.qualify_native_admission(keyed, HOSTS, 10000, *self.limits,
-            runtime_identity='d'*64, role_policy_identity='c'*64, handoff_validator=lambda *_: True)
+        if self.child_policy is not None:
+            admitted = self.admitted
+        else:
+            base = config(Sockets()).binding
+            fields = dataclasses.fields(base)
+            keyed = proxy.RunBinding(base.run_id, self.vsock_key, *(getattr(base, f.name) for f in fields[2:]))
+            admitted = proxy.qualify_native_admission(keyed, HOSTS, 10000, *self.limits,
+                runtime_identity='d'*64, role_policy_identity='c'*64, handoff_validator=lambda *_: True)
         bindings = proxy.qualify_native_bindings(self.os, self.socket, self.selector_module, self.time,
             platform_name='linux', machine='aarch64')
         if legacy:
@@ -2118,7 +2153,7 @@ class CompositionHarness:
         if hasattr(proxy, 'qualify_composition_proxy') and not legacy:
             self.nominal_binding = proxy.CompositionBinding.from_record(self.binding)
             self.policy = proxy.qualify_composition_proxy(self.nominal_binding,
-                child=self.child, pipe=self.pipe, child_id='2'*32, pipe_id='3'*32,
+                child=self.child, pipe=self.pipe, child_id=self.child_id, pipe_id=self.pipe_id,
                 channel_key=self.key, admission_policy=admitted, cleanup_budget=self.budget,
                 provenance_validator=lambda child, pipe: child is self.child and pipe is self.pipe,
                 runtime_sink=self.capture)
@@ -2161,6 +2196,108 @@ class ProxyCompositionTests(unittest.TestCase):
         h = CompositionHarness(self, sink=sink).run(); self.ready(h)
         self.assertEqual(failures, [True])
         self.assertNotIn('PROXY_CURRENT', [f['kind'] for f in h.frames])
+
+    def test_v1_equal_objects_cannot_substitute_listener_transport_sockets_timeline(self):
+        # P1 (compB I-7): an equal copy of any serving original is a substitution,
+        # including the listener retained by the original sockets owner.
+        for target in ('listener', 'sockets.listener', 'transport', 'sockets', 'timeline'):
+            with self.subTest(target=target):
+                seen = []
+                def sink(h, owner, target=target):
+                    self.assertEqual(owner.observe_current(h.nominal_binding).to_record()['status'], 'CURRENT')
+                    if target == 'listener': owner._listener = copy.copy(owner._listener)
+                    elif target == 'sockets.listener': owner._sockets.listener = copy.copy(owner._sockets.listener)
+                    elif target == 'transport': owner._transport = copy.copy(owner._transport)
+                    elif target == 'sockets': owner._sockets = copy.copy(owner._sockets)
+                    else: owner._timeline = copy.copy(owner._timeline)
+                    with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+                    seen.append(True)
+                h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+                self.assertEqual(seen, [True])
+                self.assertNotIn('PROXY_CURRENT', [f['kind'] for f in h.frames])
+                self.assertNotEqual(h.frames[-1]['payload']['code'], 'COMPLETE')
+
+    def test_v1_unknown_extra_fd_fails_runtime_current(self):
+        # P7 (compB I-7): an unknown descriptor in the child's own table is never
+        # tolerated; the owner is terminal even after it disappears again.
+        seen = []
+        def sink(h, owner):
+            self.assertEqual(owner.observe_current(h.nominal_binding).to_record()['status'], 'CURRENT')
+            h.live[19] = [1, 199, 0]
+            with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+            del h.live[19]
+            with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+            seen.append(True)
+        h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+        self.assertEqual(seen, [True])
+        self.assertNotIn('PROXY_CURRENT', [f['kind'] for f in h.frames])
+
+    def test_v1_foreign_binding_observe_current_denied(self):
+        # P6 (compB I-7): only the original composition binding may observe.
+        for change in (dict(epoch=8), dict(runId='5'*32), dict(expiresAtMs=191)):
+            with self.subTest(change=change):
+                seen = []
+                def sink(h, owner, change=change):
+                    foreign = dataclasses.replace(h.nominal_binding, **change)
+                    with self.assertRaises(proxy.ProxyError): owner.observe_current(foreign)
+                    with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+                    seen.append(True)
+                h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+                self.assertEqual(seen, [True])
+                self.assertNotIn('PROXY_CURRENT', [f['kind'] for f in h.frames])
+
+    def test_v1_duplicate_request_id_denied(self):
+        # P5 (compB M-4): a requestId is single-use even at the next command sequence.
+        h = CompositionHarness(self)
+        h.pending_commands = [h.command('PROXY_CURRENT', 1, '4'*32), h.command('PROXY_CURRENT', 2, '4'*32)]
+        h.run(); self.ready(h)
+        self.assertEqual([f['kind'] for f in h.frames], ['PROXY_READY', 'PROXY_CURRENT', 'PROXY_TERMINAL'])
+        self.assertEqual(h.frames[-1]['payload']['code'], 'CHANNEL_DENIED')
+        # Control: a fresh requestId at the same next sequence is served.
+        h = CompositionHarness(self)
+        h.pending_commands = [h.command('PROXY_CURRENT', 1, '4'*32), h.command('PROXY_CURRENT', 2, '5'*32), b'STOP']
+        h.run(); self.ready(h)
+        self.assertEqual([f['kind'] for f in h.frames],
+                         ['PROXY_READY', 'PROXY_CURRENT', 'PROXY_CURRENT', 'PROXY_TERMINAL'])
+        self.assertEqual(h.frames[-1]['payload']['code'], 'COMPLETE')
+
+    def test_v1_report_rows_carry_kernel_facts_and_selector_targets(self):
+        # C5 report rows: exactly {fd, kind, device, inode, flags, tfds}; a selector's
+        # identity is its tfd: set (compA M-3), checked on both sides of the wire.
+        checked = []
+        def sink(h, owner):
+            stream = owner._transport.open(2, 4050, owner._config.binding)
+            rows = owner.observe_current(h.nominal_binding).to_record()['currentFDs']
+            self.assertTrue(all(set(row) == {'fd','kind','device','inode','flags','tfds'} for row in rows))
+            by_kind = {row['kind']: row for row in rows}
+            self.assertEqual(by_kind['PROXY_STOP_SELECTOR']['tfds'], [3, 4])
+            self.assertEqual(by_kind['PROXY_CONNECT_SELECTOR']['tfds'], [stream.socket.fileno()])
+            self.assertEqual(by_kind['PROXY_LISTENER']['tfds'], [])
+            selector = owner._sockets.stop_selector
+            h.targets[selector.fileno()].add(9)
+            with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+            checked.append(True)
+        h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+        self.assertEqual(checked, [True])
+        h = CompositionHarness(self).run(); ready = h.frames[0]
+        for mutation in ('stop-target', 'connect-without-stream', 'target-on-socket', 'ownerId'):
+            with self.subTest(mutation=mutation):
+                frame = copy.deepcopy(ready)
+                rows = frame['payload']['observation']['currentFDs']
+                if mutation == 'stop-target': rows[6]['tfds'] = [3]
+                elif mutation == 'connect-without-stream':
+                    rows.append(dict(fd=7, kind='PROXY_CONNECT_SELECTOR', device=rows[6]['device'],
+                                     inode=rows[6]['inode'], flags=rows[6]['flags'], tfds=[5]))
+                elif mutation == 'target-on-socket': rows[5]['tfds'] = [3]
+                else: rows[5]['ownerId'] = '1'*32
+                frame.pop('mac')
+                frame['mac'] = hmac.new(h.key, b'acceptance:bootstrap-composition:v1\0PROXY:TO_BOOTSTRAP\0'+h.frame(frame)[2:], hashlib.sha256).hexdigest()
+                client = proxy.ProxyCompositionClient(h.policy, h.clock)
+                h.clock.mono = 10
+                with self.assertRaises(proxy.ProxyError): client.accept_frame(h.frame(frame))
+        client = proxy.ProxyCompositionClient(h.policy, h.clock)
+        h.clock.mono = 10
+        self.assertEqual(client.accept_frame(h.frame(ready))['status'], 'READY')
 
     def test_v1_inherited_v2_epoch_checked_before_runtime_mint(self):
         self.ready(CompositionHarness(self).run())
@@ -2613,7 +2750,7 @@ class ProxyCompositionTests(unittest.TestCase):
                     def setblocking(value):
                         row=owner._context._inventory.rows[endpoint.fd]
                         self.assertEqual(row['flags'],524288)
-                        registered.append(row['ownerId'])
+                        registered.append((row['device'],row['inode']))
                         self.assertIs(value,False)
                         h.live[endpoint.fd][2]|=2048
                         if mutation=='inode':h.live[endpoint.fd][1]+=1
@@ -2635,7 +2772,8 @@ class ProxyCompositionTests(unittest.TestCase):
                 if mutation=='none':
                     self.assertEqual(len(currents),1)
                     row=next(r for r in currents[0]['payload']['observation']['currentFDs'] if r['kind']=='PROXY_ACCEPTED_STREAM')
-                    self.assertEqual((row['ownerId'],row['flags']),(registered[0],524288|2048))
+                    # C5 report rows carry kernel facts only: the original acquisition identity, never relearned.
+                    self.assertEqual(((row['device'],row['inode']),row['flags'],row['tfds']),(registered[0],524288|2048,[]))
                 else:self.assertEqual(currents,[])
                 self.assertTrue(all(e.closes==1 for e in h.endpoints))
 

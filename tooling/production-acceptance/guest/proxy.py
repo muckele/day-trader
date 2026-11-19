@@ -22,6 +22,14 @@ if _CONFINEMENT_NAME not in sys.modules:
     sys.modules[_CONFINEMENT_NAME] = _module
     _spec.loader.exec_module(_module)
 CompositionBinding = sys.modules[_CONFINEMENT_NAME].CompositionBinding
+_CONFINEMENT_FDINFO = sys.modules[_CONFINEMENT_NAME].fdinfo_facts
+
+
+def _fdinfo_facts(data):
+    try:
+        return _CONFINEMENT_FDINFO(data)
+    except Exception:
+        raise ProxyError('CHANNEL_DENIED') from None
 
 
 _PROTOCOL_SPEC = importlib.util.spec_from_file_location(
@@ -939,6 +947,7 @@ class _RuntimeDescriptors:
             self._add(fd, 'NULL' if fd < 3 else 'COMMAND' if fd == 3 else 'RESULT')
 
     def _facts(self, fd):
+        """(device, inode, flags, tfd targets) of this process's own FD."""
         stat = self.os.fstat(fd)
         handle = self.os.open('/proc/self/fdinfo/' + str(fd), self.os.O_RDONLY | self.os.O_CLOEXEC)
         self.unresolved_reads.append(handle)
@@ -950,27 +959,42 @@ class _RuntimeDescriptors:
                 if not part: break
                 data.extend(part)
             if len(data) > 4096: raise ProxyError('CHANNEL_DENIED')
-            flags = [line.split()[1] for line in data.decode('ascii').splitlines()
-                     if line.startswith('flags:')]
-            if len(flags) != 1: raise ProxyError('CHANNEL_DENIED')
-            flags = int(flags[0], 8)
+            # The bootstrap parses the child's /proc/<pid>/fdinfo with the same
+            # function, so both sides of the C5 bracket read one format.
+            flags, targets = _fdinfo_facts(bytes(data))
         finally:
             self.os.close(handle)
             self.unresolved_reads.remove(handle)
         if (not _plain_integer(flags, 0, _MAX_SAFE_INTEGER)
-                or any(type(v) is not int or not 0 <= v <= 99999999999999999999
+                or any(type(v) is not int or not 0 <= v <= 18446744073709551615
                        for v in (stat.st_dev, stat.st_ino))):
             raise ProxyError('CHANNEL_DENIED')
-        return str(stat.st_dev), str(stat.st_ino), flags
+        return str(stat.st_dev), str(stat.st_ino), flags, targets
 
     def _add(self, fd, kind):
         if not _plain_integer(fd, 0, 4095) or fd in self.rows:
             raise ProxyError('CHANNEL_DENIED')
         if kind in _FD_LIMITS and sum(row['kind'] == kind for row in self.rows.values()) >= _FD_LIMITS[kind]:
             raise ProxyError('CHANNEL_DENIED')
-        dev, inode, flags = self._facts(fd)
+        dev, inode, flags, _ = self._facts(fd)
+        # ownerId is this ledger's private acquisition identity; it never leaves
+        # the PROXY child (the report rows carry kernel facts only).
         self.rows[fd] = dict(fd=fd, kind=kind, device=dev, inode=inode, flags=flags,
                             ownerId=secrets.token_hex(16), acquiredGeneration=1)
+
+    def _targets(self, fd, kind):
+        """The tfd: set each selector must hold: the fixed STOP/result pair, or its one stream."""
+        if kind == 'PROXY_STOP_SELECTOR':
+            return (3, 4)
+        if kind != 'PROXY_CONNECT_SELECTOR':
+            return ()
+        owners = [entry[1] for entry in self.endpoints.values()
+                  if entry[3] == fd and entry[2] == 'connector']
+        sockets = [entry[3] for entry in self.endpoints.values()
+                   if owners and entry[1] is owners[0] and entry[2] == 'socket']
+        if len(owners) != 1 or len(sockets) != 1:
+            raise ProxyError('CHANNEL_DENIED')
+        return (sockets[0],)
 
     def acquire(self, endpoint, kind, owner, attribute):
         fd = endpoint.fileno()
@@ -990,7 +1014,7 @@ class _RuntimeDescriptors:
         # Only this initial Linux O_NONBLOCK transition may change captured
         # facts. Keep the original acquisition identity, never relearn drift.
         if (getattr(owner, attribute) is not endpoint or endpoint.fileno() != fd
-                or self._facts(fd) != (row['device'], row['inode'], row['flags'] | 2048)):
+                or self._facts(fd)[:3] != (row['device'], row['inode'], row['flags'] | 2048)):
             raise ProxyError('CHANNEL_DENIED')
         row['flags'] |= 2048
         self.pending_nonblocking.remove(id(endpoint))
@@ -1013,12 +1037,20 @@ class _RuntimeDescriptors:
                     or getattr(owner, 'closing', False) or getattr(owner, 'cleanup_uncertain', False)):
                 raise ProxyError('CLEANUP_UNCERTAIN')
         listed = self.os.listdir('/proc/self/fd')
+        # Strict (P7): exactly the ledger's FDs, each once; an unknown extra FD fails.
         if set(listed) != {str(fd) for fd in self.rows} or len(listed) != len(self.rows):
             raise ProxyError('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')
-        for fd, row in self.rows.items():
-            if self._facts(fd) != (row['device'], row['inode'], row['flags']):
+        report = []
+        for fd, row in sorted(self.rows.items()):
+            device, inode, flags, targets = self._facts(fd)
+            # Strict on selectors too: each holds exactly its fixed tfd: target set.
+            if ((device, inode, flags) != (row['device'], row['inode'], row['flags'])
+                    or targets != self._targets(fd, row['kind'])):
                 raise ProxyError('CHANNEL_DENIED')
-        return tuple(tuple(row.items()) for _, row in sorted(self.rows.items()))
+            # C5 report row: exactly {fd, kind, device, inode, flags, tfds}.
+            report.append((('fd', fd), ('kind', row['kind']), ('device', device),
+                           ('inode', inode), ('flags', flags), ('tfds', targets)))
+        return tuple(report)
 
 
 @dataclass(frozen=True, eq=False)
@@ -1037,7 +1069,7 @@ class ProxyRuntimeObservation:
                     listenAddress=_LISTEN_ADDRESS, listenPort=_LISTEN_PORT,
                     hostCID=_HOST_CID, servicePort=_VSOCK_SERVICE, uid=10004,
                     observedAtMonotonicMs=self._observed,
-                    currentFDs=[dict(row) for row in self._rows])
+                    currentFDs=[dict(row, tfds=list(dict(row)['tfds'])) for row in self._rows])
 
 
 def _config_facts(config):
@@ -1047,8 +1079,12 @@ def _config_facts(config):
 
 
 class ProxyRuntimeOwner:
+    """The serving loop's own runtime owner. It exists only inside the PROXY child
+    (R11): the bootstrap observes it across the process boundary through its MAC'd
+    reports and the child's /proc (topology.ProxyChildAuthority, E4/C5)."""
     def __init__(self, context, config, transport, listener, timeline, seal=None):
-        if seal is not _COMPOSITION_SEAL or context not in _COMPOSITION_CONTEXTS:
+        if (seal is not _COMPOSITION_SEAL or type(context) is not ProxyCompositionContext
+                or context not in _COMPOSITION_CONTEXTS):
             raise ProxyError('ADMISSION_DENIED')
         self._context, self._config, self._transport = context, config, transport
         self._sockets, self._listener, self._timeline = config.sockets, listener, timeline
@@ -1125,7 +1161,8 @@ class ProxyRuntimeOwner:
 
 class ProxyCompositionContext:
     def __init__(self, policy, config, sockets, seal=None):
-        if seal is not _COMPOSITION_SEAL or policy not in _COMPOSITION_POLICIES:
+        if (seal is not _COMPOSITION_SEAL or type(policy) is not CompositionProxyPolicy
+                or policy not in _COMPOSITION_POLICIES):
             raise ProxyError('ADMISSION_DENIED')
         self._policy, self._config, self._sockets = policy, config, sockets
         self._inventory = _RuntimeDescriptors(sockets.os)
@@ -1328,27 +1365,45 @@ def _observation_record(value, binding, status):
             or not _plain_integer(value['observedAtMonotonicMs'], 0, _MAX_SAFE_INTEGER)
             or type(value['currentFDs']) is not list or not 6 <= len(value['currentFDs']) <= 55):
         raise ProxyError('CHANNEL_DENIED')
-    last, counts, owners = -1, {}, set()
+    # C5 report rows are exactly {fd, kind, device, inode, flags, tfds}; ownerIds
+    # are minted by the bootstrap's own ledger, never taken from the child.
+    last, counts, plain, selectors, streams, targets = -1, {}, [], set(), set(), []
     for row in value['currentFDs']:
-        _exact(row, ('fd','kind','device','inode','flags','ownerId','acquiredGeneration'))
-        fd = row['fd']
+        _exact(row, ('fd','kind','device','inode','flags','tfds'))
+        fd, kind, tfds = row['fd'], row['kind'], row['tfds']
         if (not _plain_integer(fd, last+1, 4095)
                 or not _plain_integer(row['flags'], 0, _MAX_SAFE_INTEGER)
-                or type(row['acquiredGeneration']) is not int or row['acquiredGeneration'] != 1
-                or type(row['ownerId']) is not str or _HEX32_RE.fullmatch(row['ownerId']) is None
-                or row['ownerId'] in owners
                 or any(type(row[k]) is not str or re.fullmatch(r'0|[1-9][0-9]{0,19}', row[k]) is None
-                       for k in ('device','inode'))):
+                       or int(row[k]) > 18446744073709551615 for k in ('device','inode'))
+                or type(tfds) is not list or any(type(t) is not int for t in tfds)):
             raise ProxyError('CHANNEL_DENIED')
-        kind = row['kind']
+        identity = (row['device'], row['inode'])
         if fd < 5:
-            if fd != last+1 or kind != ('NULL' if fd<3 else 'COMMAND' if fd==3 else 'RESULT'):
+            if fd != last+1 or kind != ('NULL' if fd<3 else 'COMMAND' if fd==3 else 'RESULT') or tfds:
                 raise ProxyError('CHANNEL_DENIED')
         elif kind not in _FD_LIMITS: raise ProxyError('CHANNEL_DENIED')
-        counts[kind] = counts.get(kind, 0)+1; owners.add(row['ownerId']); last = fd
+        # Selector identity is its tfd: set (compA M-3): the STOP selector watches
+        # exactly the inherited command/result pair, a connect selector exactly one
+        # vsock stream of this inventory; nothing else may carry targets.
+        elif kind == 'PROXY_STOP_SELECTOR':
+            if tfds != [3, 4]: raise ProxyError('CHANNEL_DENIED')
+        elif kind == 'PROXY_CONNECT_SELECTOR':
+            if len(tfds) != 1: raise ProxyError('CHANNEL_DENIED')
+            targets.append(tfds[0])
+        elif tfds: raise ProxyError('CHANNEL_DENIED')
+        if kind == 'PROXY_VSOCK_STREAM': streams.add(fd)
+        if fd >= 3 and kind in ('PROXY_STOP_SELECTOR', 'PROXY_CONNECT_SELECTOR'):
+            selectors.add(identity)
+        elif fd >= 3:
+            plain.append(identity)
+        counts[kind] = counts.get(kind, 0)+1; last = fd
     if [r['fd'] for r in value['currentFDs'][:5]] != [0,1,2,3,4] or counts.get('PROXY_LISTENER') != 1:
         raise ProxyError('CHANNEL_DENIED')
     if any(counts.get(kind,0)>limit for kind,limit in _FD_LIMITS.items()):
+        raise ProxyError('CHANNEL_DENIED')
+    if (counts.get('PROXY_VSOCK_STREAM', 0) > counts.get('PROXY_ACCEPTED_STREAM', 0)
+            or len(set(targets)) != len(targets) or not set(targets) <= streams
+            or len(set(plain)) != len(plain) or selectors & set(plain)):
         raise ProxyError('CHANNEL_DENIED')
     return value
 

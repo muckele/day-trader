@@ -166,13 +166,19 @@ class V1RoleTests(unittest.TestCase):
         except (TypeError,c.ConfinementError) as error:self.fail('current listener observer rejected original runtime inventory: '+str(error))
         self.assertFalse(facts['waiting']);self.assertEqual(tuple(d.fd for d in facts['fds']),(0,1,2,3,4))
 
+    @staticmethod
+    def report(k,h,kinds=('NULL','NULL','NULL','COMMAND','RESULT','PROXY_LISTENER')):
+        """Report rows for the literal child table, as one accepted C5 bracket yields them."""
+        return tuple(dict(fd=row['fd'],kind=kinds[row['fd']],device=row['device'],inode=row['inode'],
+                          flags=row['flags'],tfds=row['tfds']) for row in k.observe_child_descriptors(h))
+
     def inspect_runtime(self,drift=None):
         k,h,b=self.runtime(extra=False)
         self.assertTrue(hasattr(k,'bind_runtime_owner'),'runtime acquisition binding is absent')
         owner=object();k.bind_runtime_owner(h,'SERVICE',owner,'1'*32,'2'*32,1)
-        endpoint=types.SimpleNamespace(fileno=lambda:5)
-        k.register_runtime_descriptor(h,owner,endpoint,'PROXY_LISTENER',1)
         old_list=b.os.listdir;b.os.listdir=lambda p:['0','1','2','3','4','5'] if p.endswith('/fd') else old_list(p)
+        # E4/C5: the listener is adopted from one bracketed child observation, never registered.
+        k._adopt_child_inventory(h,owner,self.report(k,h))
         if drift=='inode':b.os.stat=lambda p:types.SimpleNamespace(st_dev=2,st_ino=99)
         if drift=='unknown':b.os.listdir=lambda p:['0','1','2','3','4','5','6'] if p.endswith('/fd') else old_list(p)
         if drift=='owner':owner=object()
@@ -190,6 +196,90 @@ class V1RoleTests(unittest.TestCase):
 
     def test_v1_unknown_runtime_internal_profile_is_unavailable(self):
         with self.assertRaisesRegex(c.ConfinementError,'NATIVE_CURRENT_INVENTORY_UNAVAILABLE'):self.inspect_runtime('unknown')
+
+    def test_v1_proxy_runtime_descriptors_are_observed_never_registered(self):
+        # E4/C5: the registry calls are gone; the child's own /proc is the only source.
+        for name in ('register_runtime_descriptor','retire_runtime_descriptor'):
+            self.assertFalse(hasattr(c.NativeKernelPort,name),name)
+        k,h,b=self.runtime()
+        rows=k.observe_child_descriptors(h)
+        self.assertEqual([(r['fd'],r['device'],r['inode'],r['flags'],r['tfds'],r['link']) for r in rows],
+                         [(0,'2','10',0,[],'/dev/null'),(1,'2','10',0,[],'/dev/null'),(2,'2','10',0,[],'/dev/null'),
+                          (3,'2','30',0,[],'pipe:[30]'),(4,'2','40',1,[],'pipe:[40]'),(5,'2','50',2,[],'socket:[50]')])
+        # Never this process's own descriptor table: a differing bootstrap fstat is ignored.
+        b.os.fstat=lambda fd:types.SimpleNamespace(st_dev=9,st_ino=9000+fd)
+        self.assertEqual(k.observe_child_descriptors(h),rows)
+        old_read=b.read_file
+        b.read_file=lambda path,*a:(old_read(path,*a)+b'tfd:        3 events:       19 data: 3  pos:0 ino:1e sdev:d\n'
+                                    if path.endswith('/fdinfo/5') else old_read(path,*a))
+        with self.assertRaisesRegex(c.ConfinementError,'^FD_DENIED$'):k.observe_child_descriptors(h)
+        b.os.readlink=lambda p,old=b.os.readlink:'anon_inode:[eventpoll]' if p.endswith('/fd/5') else old(p)
+        self.assertEqual(k.observe_child_descriptors(h)[5]['tfds'],[3])
+
+    def test_v1_inherited_fds_and_retained_owner_ids_bind_adopted_inventory(self):
+        self.assertTrue(hasattr(c.NativeKernelPort,'_adopt_child_inventory'),'no observed PROXY ledger (E4)')
+        k,h,b=self.runtime(extra=False);owner=object()
+        k.bind_runtime_owner(h,'SERVICE',owner,'1'*32,'2'*32,1)
+        b.os.listdir=lambda p,old=b.os.listdir:['0','1','2','3','4','5'] if p.endswith('/fd') else old(p)
+        first=k._adopt_child_inventory(h,owner,self.report(k,h))
+        again=k._adopt_child_inventory(h,owner,self.report(k,h))
+        self.assertEqual(first,again,'an unchanged identity keeps its ownerId')
+        self.assertEqual(k.runtime_record(h)['currentFDs'],list(again))
+        report=list(self.report(k,h))
+        # An inherited identity never changes; a retained runtime identity keeps its flags and targets.
+        for index,key,value in ((3,'inode','31'),(5,'flags',3),(5,'tfds',[3])):
+            with self.subTest(index=index,key=key),self.assertRaisesRegex(c.ConfinementError,'^FD_DENIED$'):
+                changed=[dict(row) for row in report];changed[index][key]=value
+                k._adopt_child_inventory(h,owner,tuple(changed))
+        with self.assertRaisesRegex(c.ConfinementError,'^AUTHORITY_LOST$'):
+            k._adopt_child_inventory(h,object(),tuple(report))
+        report[5]=dict(report[5],inode='51')
+        replaced=k._adopt_child_inventory(h,owner,tuple(report))
+        self.assertNotEqual(replaced[5]['ownerId'],again[5]['ownerId'],'a new identity is a new observed acquisition')
+
+    def test_v1_proxy_frames_use_the_original_result_end_and_two_byte_bound(self):
+        self.assertTrue(hasattr(c.NativeKernelPort,'read_proxy_frame'),'no PROXY v2 FD4 reader (E4)')
+        pending=bytearray();reads=[];result=object()
+        def consume(fd,n):
+            part=bytes(pending[:n]);del pending[:n];reads.append(fd);return part
+        b=types.SimpleNamespace(monotonic=lambda:0,select=lambda r,w,e,t:(r,[],[]),
+                                os=types.SimpleNamespace(read=consume))
+        k=c.NativeKernelPort(b);owned=c.NativeOwned(204,RUN,'PROXY',object(),result)
+        k._owned[owned]={'terminal':None}
+        def read(data):
+            pending[:]=data;reads.clear()
+            return k.read_proxy_frame(owned,100)
+        self.assertEqual(read(b'\x00\x03abc'),b'\x00\x03abc');self.assertTrue(all(fd is result for fd in reads))
+        for bad,code in ((b'\x00\x00',"FRAME_DENIED"),(b'\x40\x01',"FRAME_DENIED"),(b'',"CHANNEL_EOF")):
+            with self.subTest(bad=bad),self.assertRaisesRegex(c.ConfinementError,'^'+code+'$'):read(bad)
+        browser=c.NativeOwned(202,RUN,'BROWSER',object(),object());k._owned[browser]={'terminal':None}
+        with self.assertRaisesRegex(c.ConfinementError,'^CHANNEL_DENIED$'):k.read_proxy_frame(browser,100)
+
+    def test_runtime_wire_row_rejects_non_proxy_kinds_above_fd4(self):
+        # compB M-2 (validator_laxity.py) and the T10 Python/Swift divergences
+        # (runtime_row_divergence.py), exported unchanged for the Swift twin.
+        base=composition_role_runtime();handoffs=role_handoffs()
+        for row,handoff in zip(base,handoffs):
+            self.assertEqual(c.validate_runtime_observation(row,handoff,row['lifecycle']),row)
+        vectors=runtime_row_divergence_vectors(base)
+        self.assertEqual([v['id'] for v in vectors],list(RUNTIME_ROW_VECTOR_IDS))
+        for vector in vectors:
+            with self.subTest(vector=vector['id']):
+                changed=[index for index,row in enumerate(vector['roleRuntime']) if row!=base[index]]
+                self.assertEqual(len(changed),1)
+                index=changed[0];row=vector['roleRuntime'][index];handoff=handoffs[index]
+                if vector['originals']=='SELF':
+                    with self.assertRaisesRegex(c.ConfinementError,'^'+vector['code']+'$'):
+                        c.validate_runtime_observation(row,handoff,row['lifecycle'])
+                    with self.assertRaisesRegex(c.ConfinementError,'^'+vector['code']+'$'):
+                        c.runtime_rows(row,row['role'],row['lifecycle'])
+                    continue
+                # Structurally valid: only the retained original comparison rejects it.
+                self.assertIn('originals',inspect.signature(c.validate_runtime_observation).parameters)
+                self.assertEqual(c.validate_runtime_observation(row,handoff,row['lifecycle']),row)
+                self.assertEqual(c.validate_runtime_observation(row,handoff,row['lifecycle'],originals=row),row)
+                with self.assertRaisesRegex(c.ConfinementError,'^'+vector['code']+'$'):
+                    c.validate_runtime_observation(row,handoff,row['lifecycle'],originals=base[index])
 
     def test_v1_current_event_source_cannot_be_replaced(self):
         roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof)
@@ -359,6 +449,71 @@ class V1RoleTests(unittest.TestCase):
         self.assertEqual(budget.deadline,60100)
         budget.clock.mono=70000
         self.assertEqual(budget.remaining(),0)
+
+def composition_role_runtime():
+    """The exported composition fixture's four roleRuntime rows (topology_test exporter)."""
+    runtime=[]
+    for index,role in enumerate(('CONTROLLER','BROWSER','VERIFIER','PROXY')):
+        rows=[dict(fd=fd,kind='NULL' if fd<3 else 'COMMAND' if fd==3 else 'RESULT',
+                   device='1',inode=str(100+index*10+fd),flags=1 if fd==4 else 0,
+                   ownerId=('%x'%(index*5+fd+1))[-1]*32,acquiredGeneration=1) for fd in range(5)]
+        if role=='PROXY':
+            rows.append(dict(fd=5,kind='PROXY_LISTENER',device='1',inode='999',flags=0,
+                             ownerId='9'*32,acquiredGeneration=1))
+        runtime.append(dict(role=role,childId=('%x'%(index+1))*32,pipeId=('%x'%(index+5))*32,
+            lifecycle='SERVICE' if role in ('CONTROLLER','PROXY') else 'WAITING',
+            inheritedFDs=[0,1,2,3,4],currentFDs=rows))
+    return runtime
+
+
+RUNTIME_ROW_VECTOR_IDS=('controller_null_command_above_fd4','proxy_null_result_above_fd4',
+    'proxy_command_above_fd4','vsock_without_accepted','connect_selector_without_accepted',
+    'duplicate_device_inode','selector_aliases_socket','waiting_role_extra_fd','differs_from_originals')
+
+
+def runtime_row_divergence_vectors(base):
+    """Shared Python/Swift runtime-row divergence vectors (compB M-2, T10 review).
+
+    Each changes exactly one role row of `base`. originals SELF: rejected against
+    itself (a structural fault); FIXTURE: structurally valid, rejected only because
+    it differs from the retained original. `code` is the Python failure.
+    """
+    import copy
+    def extra(fd,kind,device,inode):
+        return dict(fd=fd,kind=kind,device=device,inode=inode,flags=0,
+                    ownerId='%032x'%(0xe0+fd),acquiredGeneration=1)
+    def vector(identifier,index,rows=(),originals='SELF',code='FD_DENIED',change=None):
+        runtime=copy.deepcopy(base)
+        runtime[index]['currentFDs'].extend(rows)
+        if change: change(runtime[index])
+        return dict(id=identifier,code=code,originals=originals,roleRuntime=runtime)
+    def listener_inode(row):row['currentFDs'][5]['inode']='998'
+    return [
+        vector('controller_null_command_above_fd4',0,(extra(9,'NULL','1','909'),extra(10,'COMMAND','1','910'))),
+        vector('proxy_null_result_above_fd4',3,(extra(9,'NULL','1','909'),extra(11,'RESULT','1','911'))),
+        vector('proxy_command_above_fd4',3,(extra(6,'COMMAND','1','906'),)),
+        vector('vsock_without_accepted',3,(extra(6,'PROXY_VSOCK_STREAM','1','906'),)),
+        vector('connect_selector_without_accepted',3,(extra(6,'PROXY_CONNECT_SELECTOR','16','1066'),)),
+        vector('duplicate_device_inode',3,(extra(6,'PROXY_ACCEPTED_STREAM','1','999'),)),
+        vector('selector_aliases_socket',3,(extra(6,'PROXY_STOP_SELECTOR','1','999'),)),
+        vector('waiting_role_extra_fd',1,(extra(5,'PROXY_LISTENER','1','905'),),
+               code='NATIVE_CURRENT_INVENTORY_UNAVAILABLE'),
+        vector('differs_from_originals',3,originals='FIXTURE',change=listener_inode),
+    ]
+
+
+def role_handoffs():
+    """One RoleHandoff per fixed role; only the launch role and type matter to the wire checks."""
+    legacy=ConfinementTests();handoffs=[]
+    for index,role in enumerate(c.UIDS):
+        launch=c.prepare_role(role,c.RoleConfig(legacy.config(),c.role_fds(role,RUN)))
+        attestation=c.RoleAttestation(**dict(pid=401+index,run_id=RUN,role=role,uids=(launch.uid,)*3,
+            gids=(launch.uid,)*3,groups=(),capabilities=(0,)*5,no_new_privs=1,seccomp=2,
+            filter_digest=hashlib.sha256(c.filter_bytes(launch.filter)).hexdigest(),fds=launch.fds,
+            views=launch.views,waiting=True,programs=launch.programs))
+        handoffs.append(c.RoleHandoff(launch,attestation,object(),c.NativeOwned(401+index,RUN,role,object(),object())))
+    return tuple(handoffs)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('acceptance_confinement', ROOT / 'guest/confinement.py')

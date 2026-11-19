@@ -16,6 +16,7 @@ import sys
 import threading
 import struct
 import time
+import weakref
 
 
 class TopologyError(ValueError):
@@ -388,17 +389,17 @@ class _OfflineFenceRecords:
 class BrowserTransitionReservation:
     """One nominal bootstrap-only reservation; no wire projection exists."""
     __slots__ = ('_event_owner', '_binding', '_generation', '_handoff',
-                 '_runtime_owner', '_proxy_owner', '_proxy_runtime_id',
+                 '_runtime_owner', '_proxy_authority', '_proxy_runtime_id',
                  '_proxy_facts', '_used', '_seal')
 
     def __init__(self, event_owner, binding, generation, handoff,
-                 runtime_owner, proxy_owner, runtime_id, proxy_facts, seal=None):
+                 runtime_owner, proxy_authority, runtime_id, proxy_facts, seal=None):
         if seal is not _OFFLINE_EVENT_NATIVE_SEAL:
             _fail('AUTHORITY_LOST')
         self._event_owner, self._binding, self._generation = (
             event_owner, binding, generation)
-        self._handoff, self._runtime_owner, self._proxy_owner = (
-            handoff, runtime_owner, proxy_owner)
+        self._handoff, self._runtime_owner, self._proxy_authority = (
+            handoff, runtime_owner, proxy_authority)
         self._proxy_runtime_id, self._proxy_facts = runtime_id, proxy_facts
         self._used, self._seal = False, seal
 
@@ -630,30 +631,29 @@ class BootstrapEventOwner:
             self._pending_count = self._pending_bytes = 0
         _fail(code)
 
-    def _proxy_facts(self, proxy_owner):
-        try: value = proxy_owner.observe_current(self.binding).to_record()
+    def _proxy_facts(self, proxy_authority):
+        # E4/C5: one bracketed cross-process observation of the PROXY child.
+        if (type(proxy_authority) is not ProxyChildAuthority
+                or proxy_authority._binding is not self.binding):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        try: value = proxy_authority.observe_current()
         except Exception: self._terminate('EVENT_SOURCE_TERMINAL')
-        if (not _keys(value, ('binding','runtimeId','sequence','status',
-                'listenAddress','listenPort','hostCID','servicePort','uid',
-                'observedAtMonotonicMs','currentFDs'))
-                or _CONFINEMENT.CompositionBinding.from_record(
-                    value['binding']) != self.binding
-                or value['status'] != 'CURRENT'
+        if (not _keys(value, ('runtimeId', 'rows'))
+                or type(value['runtimeId']) is not str
                 or _RUN.fullmatch(value['runtimeId']) is None
-                or type(value['currentFDs']) is not list
+                or type(value['rows']) is not list
                 or sum(row.get('kind') == 'PROXY_LISTENER'
-                       for row in value['currentFDs'] if type(row) is dict) != 1):
+                       for row in value['rows'] if type(row) is dict) != 1):
             self._terminate('EVENT_SOURCE_TERMINAL')
         try:
             facts = tuple((row['fd'], row['kind'], row['device'], row['inode'],
-                           row['flags'], row['ownerId'], row['acquiredGeneration'])
-                          for row in value['currentFDs'])
+                           row['flags'], tuple(row['tfds'])) for row in value['rows'])
         except (KeyError, TypeError):
             self._terminate('EVENT_SOURCE_TERMINAL')
         return value['runtimeId'], facts
 
     def reserve_browser_transition(self, binding, generation, browser_handoff,
-                                   browser_runtime_owner, proxy_runtime_owner):
+                                   browser_runtime_owner, proxy_authority):
         """Reserve the sole original Browser-family lifecycle transition."""
         with self._lock:
             if (self._terminal is not None or self._browser_reservation is not None
@@ -664,8 +664,7 @@ class BootstrapEventOwner:
                                       _CONFINEMENT.NativeKernelPort)
                     or self._audit_pids.get(browser_handoff.attestation.pid)
                         != 'BROWSER'
-                    or not isinstance(proxy_runtime_owner,
-                                      _PROXY.ProxyRuntimeOwner)):
+                    or type(proxy_authority) is not ProxyChildAuthority):
                 self._terminate('EVENT_SOURCE_TERMINAL')
             try:
                 lifecycle = browser_handoff._kernel.runtime_lifecycle(
@@ -678,9 +677,9 @@ class BootstrapEventOwner:
                 self._terminate('EVENT_SOURCE_TERMINAL')
             if lifecycle != 'WAITING':
                 self._terminate('EVENT_SOURCE_TERMINAL')
-            runtime_id, proxy_facts = self._proxy_facts(proxy_runtime_owner)
+            runtime_id, proxy_facts = self._proxy_facts(proxy_authority)
             reservation = BrowserTransitionReservation(self, binding, generation,
-                browser_handoff, browser_runtime_owner, proxy_runtime_owner,
+                browser_handoff, browser_runtime_owner, proxy_authority,
                 runtime_id, proxy_facts, _OFFLINE_EVENT_NATIVE_SEAL)
             self._browser_reservation = reservation
             return reservation
@@ -706,7 +705,7 @@ class BootstrapEventOwner:
                     observed, reservation._handoff, lifecycle)
             except Exception:
                 self._terminate('EVENT_SOURCE_TERMINAL')
-            runtime_id, proxy_facts = self._proxy_facts(reservation._proxy_owner)
+            runtime_id, proxy_facts = self._proxy_facts(reservation._proxy_authority)
             if (lifecycle != 'WAITING'
                     or runtime_id != reservation._proxy_runtime_id
                     or proxy_facts != reservation._proxy_facts):
@@ -994,24 +993,220 @@ class LinuxBootstrapEventSource:
         return owner
 
 
-def observe_current_roles(handoffs, runtime_owners, proxy_runtime_owner, binding):
-    """Observe complete runtime state through the accepted original owners."""
+_PROXY_CHILD_SEAL = object()
+_PROXY_CHILD_AUTHORITIES = weakref.WeakKeyDictionary()
+# Real-time liveness bound for each FD4 frame read (READY, CURRENT, TERMINAL),
+# the read_role cap. Freshness is separate: the client admits a CURRENT only
+# within 100 ms of its request on the guest clock (amendment 6.1).
+_PROXY_FRAME_WAIT_MS = 1000
+_EPOLL_LINK = 'anon_inode:[eventpoll]'
+
+
+def _bracketed(rows, table):
+    """Report rows equal the child's /proc rows (C5).
+
+    Same FD set and order, identity, flags and tfd: targets; above FD4 the link
+    must also name the reported kind's object class: an epoll instance for a
+    selector, the reported socket inode for a socket. FD0..4 links are checked
+    by the role observer against the inherited capture.
+    """
+    if type(table) is not tuple or len(table) != len(rows):
+        return False
+    for row, seen in zip(rows, table):
+        if ((row['fd'], row['device'], row['inode'], row['flags'], list(row['tfds']))
+                != (seen['fd'], seen['device'], seen['inode'], seen['flags'], list(seen['tfds']))):
+            return False
+        if row['fd'] >= 5 and seen['link'] != (
+                _EPOLL_LINK if row['kind'] in _CONFINEMENT._SELECTOR_KINDS
+                else 'socket:[' + row['inode'] + ']'):
+            return False
+    return True
+
+
+class ProxyChildAuthority:
+    """Bootstrap-side PROXY runtime authority across the process boundary (E4, C5).
+
+    It holds no proxy object. Each current check sends one MAC'd request on the
+    original PROXY FD3 and reads report A from FD4, then reads the child's own
+    /proc/<pid>/fd and fdinfo, then requests report B. All three must agree
+    exactly and B must be A's next observation; anything else is terminal
+    PROXY_RUNTIME_DRIFT. Built only by the composition's trusted embedding.
+    """
+    __slots__ = ('_handoff', '_client', '_kernel', '_binding', '_lock',
+                 '_runtime_id', '_terminal', '_stopped', '__weakref__')
+
+    def __init__(self, handoff, client, kernel, binding, *, seal=None):
+        originals = (_PROXY._CLIENT_ORIGINALS.get(client)
+                     if type(client) is _PROXY.ProxyCompositionClient else None)
+        if (seal is not _PROXY_CHILD_SEAL or originals is None
+                or type(kernel) is not _CONFINEMENT.NativeKernelPort
+                or type(handoff) is not _CONFINEMENT.RoleHandoff
+                or handoff.launch.role != 'PROXY' or handoff._kernel is not kernel
+                or type(binding) is not _CONFINEMENT.CompositionBinding
+                or originals[0].binding != binding
+                or originals[0].child is not handoff._owned
+                or originals[0].pipe != (handoff._owned.command, handoff._owned.result)
+                or client._state() != (0, 0, 0, None, None, frozenset())):
+            _fail('ADAPTER_DENIED')
+        # The proxy loop must never run in the bootstrap process: this authority
+        # only observes a separate PROXY child, through its pipes and its /proc.
+        if handoff.attestation.pid == os.getpid():
+            _fail('ADAPTER_DENIED')
+        self._handoff, self._client, self._kernel = handoff, client, kernel
+        self._binding, self._lock = binding, threading.Lock()
+        self._runtime_id = self._terminal = self._stopped = None
+        _PROXY_CHILD_AUTHORITIES[self] = (handoff, client, kernel, binding)
+
+    @property
+    def runtime_id(self):
+        return self._runtime_id
+
+    def _live(self):
+        originals = _PROXY_CHILD_AUTHORITIES.get(self)
+        if (originals is None or self._terminal is not None or any(a is not b for a, b in zip(
+                originals, (self._handoff, self._client, self._kernel, self._binding)))):
+            _fail('PROXY_DENIED')
+
+    def _read(self, remaining_ms):
+        try:
+            return self._kernel.read_proxy_frame(self._handoff._owned, remaining_ms)
+        except _CONFINEMENT.ConfinementError as error:
+            if str(error) == 'CHANNEL_EOF':
+                # Physical EOF revokes at once (amendment 5); no fresh cleanup window.
+                try: self._client.accept_frame(b'')
+                except Exception: pass
+            raise
+
+    def _ready(self):
+        with self._lock:
+            self._live()
+            try:
+                if self._runtime_id is not None: _fail('PROXY_DENIED')
+                value = self._client.accept_frame(self._read(_PROXY_FRAME_WAIT_MS))
+                if type(value) is not dict or value.get('status') != 'READY':
+                    _fail('PROXY_DENIED')
+            except Exception:
+                self._terminal = 'PROXY_DENIED'
+                _fail('PROXY_DENIED')
+            self._runtime_id = value['runtimeId']
+
+    def _report(self):
+        frame = self._client.current(secrets.token_hex(16), 1)
+        self._kernel.write_proxy_frame(self._handoff._owned, frame)
+        value = self._client.accept_frame(self._read(_PROXY_FRAME_WAIT_MS))
+        if type(value) is not dict or value.get('status') != 'CURRENT':
+            _fail('PROXY_DENIED')
+        return value
+
+    def observe_current(self) -> dict:
+        """Report A, then the child's /proc, then report B (C5): {runtimeId, rows}."""
+        with self._lock:
+            self._live()
+            try:
+                first = self._report()
+            except Exception:
+                self._terminal = 'PROXY_DENIED'
+                _fail('PROXY_DENIED')
+            try:
+                table = self._kernel.observe_child_descriptors(self._handoff)
+            except Exception:
+                self._terminal = 'PROXY_RUNTIME_DRIFT'
+                _fail('PROXY_RUNTIME_DRIFT')
+            try:
+                second = self._report()
+            except Exception:
+                self._terminal = 'PROXY_DENIED'
+                _fail('PROXY_DENIED')
+            rows = first['currentFDs']
+            if (first['runtimeId'] != self._runtime_id
+                    or second['runtimeId'] != self._runtime_id
+                    or second['sequence'] != first['sequence'] + 1
+                    or second['currentFDs'] != rows
+                    or not _bracketed(rows, table)):
+                self._terminal = 'PROXY_RUNTIME_DRIFT'
+                _fail('PROXY_RUNTIME_DRIFT')
+            try:
+                self._kernel._adopt_child_inventory(
+                    self._handoff, self, tuple(dict(row) for row in rows))
+            except Exception:
+                self._terminal = 'PROXY_RUNTIME_DRIFT'
+                _fail('PROXY_RUNTIME_DRIFT')
+            return {'runtimeId': self._runtime_id,
+                    'rows': [dict(row, tfds=list(row['tfds'])) for row in rows]}
+
+    def stop_owned(self, remaining_ms):
+        """Authenticated PROXY_STOP carrying the one shared cleanup end (amendment 5, 6.1).
+
+        Never overlaps a current check or another stop. Once the original PROXY
+        child has a proven terminal receipt its runtime ended with it. Without the
+        authenticated channel it sends the bare STOP, which permits nonblocking
+        cleanup only, and reports uncertainty; the child stays with the role owner.
+        """
+        if type(remaining_ms) is not int or not 0 <= remaining_ms <= 60000:
+            _fail('CLEANUP_UNCERTAIN')
+        run_id = self._binding.runId
+        if self not in _PROXY_CHILD_AUTHORITIES or not self._lock.acquire(blocking=False):
+            return {'status': 'TIMEOUT', 'runId': run_id}
+        try:
+            if self._stopped is not None:
+                return dict(self._stopped)
+            if self._terminal is None:
+                self._terminal = 'STOPPED'
+            status = 'TIMEOUT'
+            budget = _PROXY._CLIENT_ORIGINALS[self._client][0].cleanup_budget
+            try:
+                budget.start_terminal()
+                ended = self._kernel.terminal_receipt(self._handoff._owned)
+                if ended is not None:
+                    if ended.get('status') not in ('STOPPED', 'EXITED'):
+                        _fail('CLEANUP_UNCERTAIN')
+                    self._stopped = {'status': 'STOPPED', 'runId': run_id}
+                    return dict(self._stopped)
+                frame = self._client.stop(secrets.token_hex(16), budget.deadline)
+                self._kernel.write_proxy_frame(self._handoff._owned, frame)
+                value = self._client.accept_frame(
+                    self._read(min(remaining_ms, budget.remaining())))
+                if (self._runtime_id is not None and type(value) is dict
+                        and value.get('runtimeId') == self._runtime_id
+                        and value.get('cleanupStatus') == 'PROVEN'):
+                    status = 'STOPPED'
+            except Exception:
+                try: self._kernel.write_proxy_frame(self._handoff._owned, b'STOP')
+                except Exception: pass
+            receipt = {'status': status, 'runId': run_id}
+            if status == 'STOPPED':
+                self._stopped = receipt
+            return dict(receipt)
+        finally:
+            self._lock.release()
+
+
+def observe_current_roles(handoffs, runtime_owners, proxy_authority, binding):
+    """Observe complete runtime state through the accepted original owners.
+
+    PROXY's inventory comes only from its child authority's bracketed report
+    A, /proc, report B (E4, C5); R11 replaced the in-process owner gate.
+    """
     if (type(handoffs) is not tuple or len(handoffs) != 4
             or type(runtime_owners) is not dict
             or set(runtime_owners) != set(_CONFINEMENT.UIDS)
-            or not isinstance(proxy_runtime_owner, _PROXY.ProxyRuntimeOwner)
-            or type(binding) is not _CONFINEMENT.CompositionBinding):
+            or type(proxy_authority) is not ProxyChildAuthority
+            or type(binding) is not _CONFINEMENT.CompositionBinding
+            or proxy_authority._binding is not binding):
         _fail('ROLE_DENIED')
     expected_roles = tuple(_CONFINEMENT.UIDS)
-    result = []
+    result, proxy_rows = [], None
     for handoff, role in zip(handoffs, expected_roles):
         if (type(handoff) is not _CONFINEMENT.RoleHandoff
                 or handoff.launch.role != role
                 or not isinstance(handoff._kernel, _CONFINEMENT.NativeKernelPort)):
             _fail('ROLE_DENIED')
         owner = runtime_owners[role]
-        if role == 'PROXY' and owner is not proxy_runtime_owner:
+        if role == 'PROXY' and (owner is not proxy_authority
+                                or handoff is not proxy_authority._handoff):
             _fail('ROLE_DENIED')
+        if role == 'PROXY':
+            proxy_rows = proxy_authority.observe_current()['rows']
         try:
             lifecycle = handoff._kernel.runtime_lifecycle(handoff, owner)
             expected = {'CONTROLLER': ('SERVICE',),
@@ -1031,22 +1226,11 @@ def observe_current_roles(handoffs, runtime_owners, proxy_runtime_owner, binding
         except Exception:
             _fail('ROLE_DENIED')
         result.append(row)
-    try: proxy_record = proxy_runtime_owner.observe_current(binding).to_record()
-    except Exception: _fail('PROXY_DENIED')
-    if (not _keys(proxy_record, ('binding','runtimeId','sequence','status',
-            'listenAddress','listenPort','hostCID','servicePort','uid',
-            'observedAtMonotonicMs','currentFDs'))
-            or _CONFINEMENT.CompositionBinding.from_record(proxy_record['binding']) != binding
-            or proxy_record['status'] != 'CURRENT' or not _RUN.fullmatch(proxy_record['runtimeId'])):
-        _fail('PROXY_DENIED')
     def kernel_facts(rows):
-        if type(rows) is not list: _fail('PROXY_DENIED')
-        try:
-            return [(row['fd'],row['kind'],row['device'],row['inode'],row['flags'])
-                    for row in rows]
-        except (KeyError,TypeError): _fail('PROXY_DENIED')
-    if kernel_facts(proxy_record['currentFDs']) != kernel_facts(result[3]['currentFDs']):
-        _fail('PROXY_DENIED')
+        return [(row['fd'], row['kind'], row['device'], row['inode'], row['flags'])
+                for row in rows]
+    if kernel_facts(proxy_rows) != kernel_facts(result[3]['currentFDs']):
+        _fail('PROXY_RUNTIME_DRIFT')
     return tuple(result)
 
 
@@ -2485,46 +2669,16 @@ def _runtime_wire_row(value, role, handoff=None, expected_lifecycle=None):
             or value['inheritedFDs'] != [0,1,2,3,4]
             or value['lifecycle'] != lifecycle):
         _fail('HANDOFF_DENIED')
-    if handoff is not None:
-        try: return _CONFINEMENT.validate_runtime_observation(value, handoff,
-                                                               lifecycle)
-        except Exception: _fail('HANDOFF_DENIED')
-    rows = value['currentFDs']
-    if type(rows) is not list or not 5 <= len(rows) <= 55:
-        _fail('HANDOFF_DENIED')
-    previous, owners = -1, set()
-    for row in rows:
-        if (not _keys(row, ('fd','kind','device','inode','flags','ownerId',
-                            'acquiredGeneration'))
-                or not _integer(row['fd'], previous + 1, 4095)
-                or row['kind'] not in _CONFINEMENT._RUNTIME_FD_KINDS
-                or type(row['device']) is not str
-                or re.fullmatch(r'0|[1-9][0-9]{0,19}', row['device']) is None
-                or type(row['inode']) is not str
-                or re.fullmatch(r'0|[1-9][0-9]{0,19}', row['inode']) is None
-                or not _integer(row['flags']) or not _RUN.fullmatch(row['ownerId'])
-                or row['ownerId'] in owners
-                or type(row['acquiredGeneration']) is not int
-                or row['acquiredGeneration'] != 1):
-            _fail('HANDOFF_DENIED')
-        previous = row['fd']; owners.add(row['ownerId'])
-    if ([row['fd'] for row in rows[:5]] != [0,1,2,3,4]
-            or [row['kind'] for row in rows[:5]] !=
-               ['NULL','NULL','NULL','COMMAND','RESULT']):
-        _fail('HANDOFF_DENIED')
-    if len({(row['device'],row['inode']) for row in rows[3:5]}) != 2:
-        _fail('HANDOFF_DENIED')
-    proxy_counts = {kind:sum(row['kind'] == kind for row in rows)
-                    for kind in _CONFINEMENT._RUNTIME_FD_KINDS
-                    if kind.startswith('PROXY_')}
-    if role == 'PROXY':
-        if (proxy_counts.get('PROXY_LISTENER') != 1
-                or proxy_counts.get('PROXY_STOP_SELECTOR', 0) > 1
-                or any(proxy_counts.get(kind, 0) > 16 for kind in
-                       ('PROXY_ACCEPTED_STREAM','PROXY_VSOCK_STREAM',
-                        'PROXY_CONNECT_SELECTOR'))):
-            _fail('HANDOFF_DENIED')
-    elif len(rows) != 5 or any(proxy_counts.values()):
+    # compB M-2: the same wire checks run with and without an owner (Swift twin),
+    # and an owned row must also equal the bootstrap's retained original record.
+    try:
+        if handoff is None:
+            _CONFINEMENT.runtime_rows(value, role, lifecycle)
+        else:
+            _CONFINEMENT.validate_runtime_observation(
+                value, handoff, lifecycle,
+                originals=handoff._kernel.runtime_record(handoff))
+    except Exception:
         _fail('HANDOFF_DENIED')
     return value
 
@@ -2635,6 +2789,31 @@ def verify_bootstrap_handoff_v1(wire, expected, binding, owner=None):
         _fail('HANDOFF_DENIED')
 
 
+def _proxy_initializer(binding, row, channel_key, policy, vsock_key):
+    """The exact v2 PROXY_COMPOSITION_INIT frame (amendment 6.1) from trusted state only.
+
+    It carries the vsock-stream key into the PROXY child (P10, R6), never the
+    run capability; the nested v1 bootstrap is the unchanged Task 9 object.
+    """
+    run = policy.binding
+    nested = dict(version=1, kind='PROXY_BOOTSTRAP', runId=run.run_id,
+                  vsockKey=vsock_key.hex(), expiresAt=run.expires_at,
+                  firstSequence=run.first_sequence, manifestIdentity=run.manifest_identity,
+                  configIdentity=run.config_identity, origins=dict(run.origins),
+                  aggregateBytes=policy.aggregate_bytes, idleTimeoutMs=policy.idle_timeout_ms,
+                  runTimeoutMs=policy.run_timeout_ms, runtimeIdentity=policy.runtime_identity,
+                  rolePolicyIdentity=policy.role_policy_identity,
+                  handoff=dict(commandFd=3, confined=True, resultFd=4, role='PROXY',
+                               uid=_CONFINEMENT.UIDS['PROXY'], waiting=True))
+    body = _canonical(dict(version=2, kind='PROXY_COMPOSITION_INIT',
+                           binding=binding.to_record(), childId=row['childId'],
+                           pipeId=row['pipeId'], channelKeyHex=channel_key.hex(),
+                           proxyBootstrap=nested))
+    if not 0 < len(body) <= 4096:
+        _fail('ADAPTER_DENIED')
+    return len(body).to_bytes(2, 'big') + body
+
+
 class _CompositionCurrentSource:
     def __init__(self, owner): self._owner = owner
     def require_current(self): return self._owner._role_current()
@@ -2668,7 +2847,7 @@ class BootstrapComposition:
             observations, host_devices, events)
         self._budget, self._state = cleanup_budget, 'NEW'
         self._observations.bind_cleanup_budget(self._budget)
-        self._probe_epoch = self._roles = self._proxy_owner = self._event_owner = None
+        self._probe_epoch = self._roles = self._proxy_authority = self._event_owner = None
         self._browser_preparation = self._browser_reservation = None
         self._browser_commit_currents = 0
         self._cleanup_chain = []
@@ -2779,32 +2958,63 @@ class BootstrapComposition:
         return value
 
     def _activate_proxy(self):
+        """Start the original PROXY child's composition and return its child authority.
+
+        E4/C5: the bootstrap never holds a proxy object. It binds the PROXY runtime
+        owner while the child still waits, writes the v2 initializer on the
+        original FD3, lets the trusted embedding start the child, and reads READY.
+        """
         operation = (self._proxy_entry if callable(self._proxy_entry) else
                      self._proxy_entry.activate_original)
-        # P10/R6 (C3): the proxy entry receives the vsock-stream key as an explicit argument (the
-        # PROXY initializer's vsockKey); the run capability stays with the bootstrap and the host.
+        roles = self._roles
+        handoff, row = roles._handoffs['PROXY'], roles._map['PROXY']
+        owned, facts = handoff._owned, roles._facts['PROXY']
+        # P10/R6 (C3): only the vsock-stream key crosses into the PROXY child, inside the
+        # initializer below and as the entry's explicit argument; the run capability stays
+        # with the bootstrap and the host.
         vsock_key = _CONFINEMENT.derive_channel_key(self._expected.capability, _VSOCK_STREAM)
-        return operation(self._roles, self.binding, self._budget, vsock_key)
+        policy = self._expected.proxy_policy
+        if not hmac.compare_digest(vsock_key, policy.binding.vsock_key):
+            _fail('AUTHORITY_LOST')
+        def provenance(child, pipe):
+            return (child is owned and pipe == (owned.command, owned.result)
+                    and _CONFINEMENT._ownership_facts(owned) == facts)
+        client = _PROXY.ProxyCompositionClient(_PROXY.qualify_composition_proxy(
+            self.binding, child=owned, pipe=(owned.command, owned.result),
+            child_id=row['childId'], pipe_id=row['pipeId'], channel_key=roles._keys['PROXY'],
+            admission_policy=policy, cleanup_budget=self._budget,
+            provenance_validator=provenance), self._expected.clock)
+        authority = ProxyChildAuthority(handoff, client, handoff._kernel, self.binding,
+                                        seal=_PROXY_CHILD_SEAL)
+        # Inherited FD0..4 identities are captured while the child still waits.
+        handoff._kernel.bind_runtime_owner(
+            handoff, 'SERVICE', authority, row['childId'], row['pipeId'], 1)
+        handoff._kernel.write_proxy_frame(owned, _proxy_initializer(
+            self.binding, row, roles._keys['PROXY'], policy, vsock_key))
+        started = operation(roles, self.binding, self._budget, vsock_key)
+        if started is not None:
+            # R11: a returned in-process ProxyRuntimeOwner (or any object) is never
+            # proxy authority; it is kept only for its own cleanup.
+            error = TopologyError('ADAPTER_DENIED')
+            error.cleanup = started
+            raise error
+        authority._ready()
+        return authority
 
     def _bind_runtime_owners(self):
         for role in _CONFINEMENT.UIDS:
             handoff = self._roles._handoffs[role]
             if not isinstance(handoff._kernel, _CONFINEMENT.NativeKernelPort):
                 _fail('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')
+            if role == 'PROXY':
+                continue  # bound to its child authority while waiting (_activate_proxy)
             row = self._roles._map[role]
-            lifecycle = 'SERVICE' if role in ('CONTROLLER','PROXY') else 'WAITING'
-            runtime_owner = self._proxy_owner if role == 'PROXY' else self._roles
+            lifecycle = 'SERVICE' if role == 'CONTROLLER' else 'WAITING'
             handoff._kernel.bind_runtime_owner(
-                handoff, lifecycle, runtime_owner, row['childId'], row['pipeId'], 1)
-        inventory = self._proxy_owner._context._inventory
-        proxy_handoff = self._roles._handoffs['PROXY']
-        endpoints = {entry[3]: entry[0] for entry in inventory.endpoints.values()}
-        for fd, row in sorted(inventory.rows.items()):
-            if fd >= 5:
-                endpoint = endpoints.get(fd)
-                if endpoint is None: _fail('PROXY_DENIED')
-                proxy_handoff._kernel.register_runtime_descriptor(
-                    proxy_handoff, self._proxy_owner, endpoint, row['kind'], 1)
+                handoff, lifecycle, self._roles, row['childId'], row['pipeId'], 1)
+        # E4/C5: nothing is registered. The first bracketed observation adopts the
+        # complete PROXY inventory, and every later one carries it again.
+        self._proxy_authority.observe_current()
 
     def _read_topology(self, token):
         raw = []
@@ -2828,12 +3038,12 @@ class BootstrapComposition:
         devices = self._host_devices.observe(self._expected)
         self._checkpoint(token)
         handoffs = tuple(self._roles._handoffs[role] for role in _CONFINEMENT.UIDS)
-        runtime_owners = {role:(self._proxy_owner if role == 'PROXY' else self._roles)
+        runtime_owners = {role:(self._proxy_authority if role == 'PROXY' else self._roles)
                           for role in _CONFINEMENT.UIDS}
         runtime = observe_current_roles(handoffs, runtime_owners,
-                                        self._proxy_owner, self.binding)
+                                        self._proxy_authority, self.binding)
         self._checkpoint(token)
-        proxy_record = self._proxy_owner.observe_current(self.binding).to_record()
+        runtime_id = self._proxy_authority.runtime_id
         self._checkpoint(token); observed = self._clock(); self._checkpoint(token)
         after = self._event_owner.barrier()
         self._checkpoint(token); final = self._clock(); self._checkpoint(token)
@@ -2858,19 +3068,18 @@ class BootstrapComposition:
             handoffs, probes, ProxyRuntime(
                 self.binding.runId, self.binding.manifestDigest,
                 self.binding.configIdentity, self.binding.expiresAtMs,
-                proxy_record['listenAddress'], proxy_record['listenPort'],
-                proxy_record['hostCID'], proxy_record['servicePort'],
-                proxy_record['uid']))
+                _PROXY._LISTEN_ADDRESS, _PROXY._LISTEN_PORT, _PROXY._HOST_CID,
+                _PROXY._VSOCK_SERVICE, _CONFINEMENT.UIDS['PROXY']))
         base = _payload(snapshot, self._expected, observed, final)
         composition = dict(binding=self.binding.to_record(),
             probeEpochDigest=self._probe_epoch.digest,
             fixtureInventoryDigest=self._probe_epoch.fixture_inventory_digest,
             eventCheckpoint=after.to_record(),
-            proxyRuntimeId=proxy_record['runtimeId'],
+            proxyRuntimeId=runtime_id,
             roleRuntime=[dict(row) for row in runtime])
         payload = dict(base, composition=composition)
         if challenge is not None: payload['hostChallenge'] = challenge
-        self._publish(token, _proxy_runtime_id=proxy_record['runtimeId'],
+        self._publish(token, _proxy_runtime_id=runtime_id,
                       _event_source_id=after.sourceIdentity)
         _validate_composition_payload(payload, self._expected, self.binding, self)
         self._checkpoint(token)
@@ -2933,10 +3142,11 @@ class BootstrapComposition:
             if type(roles) is not _CONFINEMENT.OriginalRoleSet:
                 _fail('AUTHORITY_LOST')
             self._publish(token, _roles=roles, _state='ROLES_WAITING')
-            token, proxy_owner = self._acquire('proxy', self._activate_proxy)
-            if not isinstance(proxy_owner, _PROXY.ProxyRuntimeOwner):
-                _fail('PROXY_RUNTIME_UNAVAILABLE')
-            self._publish(token, _proxy_owner=proxy_owner, _state='PROXY_READY')
+            token, proxy_authority = self._acquire('proxy', self._activate_proxy)
+            # R11: replaces the in-process ProxyRuntimeOwner gate; never beside it.
+            if type(proxy_authority) is not ProxyChildAuthority:
+                _fail('ADAPTER_DENIED')
+            self._publish(token, _proxy_authority=proxy_authority, _state='PROXY_READY')
             token, _ = self._acquire('runtime', self._bind_runtime_owners)
             self._checkpoint(token)
             token, event_owner = self._acquire('event', lambda:
@@ -3025,7 +3235,7 @@ class BootstrapComposition:
             _fail('AUTHORITY_LOST')
         reservation = self._event_owner.reserve_browser_transition(
             self.binding, self._generation, self._roles._handoffs['BROWSER'],
-            self._roles, self._proxy_owner)
+            self._roles, self._proxy_authority)
         if type(reservation) is not BrowserTransitionReservation:
             _fail('AUTHORITY_LOST')
         self._browser_preparation, self._browser_reservation = owner, reservation
