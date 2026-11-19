@@ -783,7 +783,7 @@ class BootstrapEventOwner:
                 'family': {root}, 'exited': {}, 'committed': now,
             }
 
-    def _attribute(self, pid, ppid, serial):
+    def _attribute(self, pid, ppid):
         """P61: an original role by pid; after commit the BROWSER family by
         initial-namespace pid=/ppid= only. An unknown pid whose ppid is a family
         pid joins the family. A family pid (not the root) whose ppid is not a
@@ -792,17 +792,22 @@ class BootstrapEventOwner:
         PID namespace or the namespace's child reaper (kernel/exit.c:585-600,
         :623-655, :690-706), and each of those is a family pid. So this catches
         a pid reused by a non-family process. Any other unknown pid is terminal.
-        P64: serial order is not delivery order (P63), so a record logged while
-        its parent was alive may arrive after the parent's exit_group. A parent
-        removed by exit_group still counts for records whose serial is lower than
-        that exit_group's serial, within the P63 window."""
+        P64/P65: a family parent removed by exit_group still counts as a family
+        parent, in either serial order, while its exit_group serial is within the
+        P63 window: serials are not delivery order (P63), and the kernel logs the
+        exit_group (audit_free, kernel/exit.c:853) before it reparents the
+        children (exit_notify :891 -> forget_original_parent :736 -> :706), so
+        a child's later record may
+        still name it. It leaves with the window; pids are allocated cyclically
+        (kernel/pid.c:229-237) and every clone is audited, so its number cannot be
+        reused within the window (guest pid_max >= 32768, a C10 condition)."""
         role = self._audit_pids.get(pid)
         if role is not None:
             return role
         transition = self._browser_transition
         if transition is not None:
             family, exited = transition['family'], transition['exited']
-            parent = ppid in family or (ppid in exited and serial < exited[ppid])
+            parent = ppid in family or ppid in exited
             if pid in family:
                 if not parent:
                     self._terminate('EVENT_SOURCE_TERMINAL')
@@ -1021,7 +1026,7 @@ class BootstrapEventOwner:
                 self._terminate('EVENT_SOURCE_TERMINAL')
             group['syscalls'].append(dict(number=number,
                 success=success, exit=exit_code,
-                role=self._attribute(pid, ppid, serial), pid=pid, ppid=ppid,
+                role=self._attribute(pid, ppid), pid=pid, ppid=ppid,
                 argument0=int(fields['a0'], 16), serial=serial))
         elif kind == 1302:
             group['paths'].append(fields)

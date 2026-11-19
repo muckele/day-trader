@@ -1693,10 +1693,12 @@ class TopologyTests(unittest.TestCase):
                 self.assert_terminal(source)
 
     def test_v1_exited_parent_counts_for_its_earlier_child_records(self):
-        # P64: serials are taken at logging and queued later (P63), so a child's
-        # record logged while its parent lived (ppid = parent) can arrive after
-        # the parent's exit_group. It is attributed if its serial is below that
-        # exit_group's serial; otherwise P61(c) holds (terminal).
+        # P64/P65: a family parent removed by exit_group still counts as a family
+        # parent, in either serial order, while its exit_group serial is within
+        # the 1024-serial P63 window. Lower serials: records logged before the
+        # exit but queued after it (P63). Higher serials: the kernel logs the
+        # exit_group (kernel/exit.c:853) before it reparents the children
+        # (:891 -> :736 -> :706), so a child's record in between still names it.
         def setup():
             source, native, root = self.browser_source(launch=True)
             native.events += audit_group(native, 200, 51, pid=4101, ppid=600)   # child joins
@@ -1708,26 +1710,30 @@ class TopologyTests(unittest.TestCase):
             self.assertEqual((transition['family'], transition['exited']),
                              ({root, 600, 4102}, {4101: 210}))
             return source, native
-        # Lower serials, delivered after the exit_group: a member and a newcomer.
+        # Lower and higher serials naming the exited parent, for a member (4102)
+        # and a newcomer (4103): all attributed.
+        for serials in ((205, 206), (215, 216)):
+            source, native = setup()
+            native.events += audit_group(native, serials[0], 51, pid=4102, ppid=4101)
+            native.events += audit_group(native, serials[1], 51, pid=4103, ppid=4101)
+            with self.subTest(serials=serials):
+                self.assertEqual(self.assert_publishes(source).generation, 1)
+                self.assertIn(4103, source._browser_transition['family'])
+        # At the window's edge (highest 1234 = 210 + 1024) it still counts.
         source, native = setup()
-        native.events += audit_group(native, 205, 51, pid=4102, ppid=4101)
-        native.events += audit_group(native, 206, 51, pid=4103, ppid=4101)
+        native.events += audit_group(native, 1234, 51, pid=4102, ppid=4101)
         self.assertEqual(self.assert_publishes(source).generation, 1)
-        self.assertIn(4103, source._browser_transition['family'])
-        # Higher serials naming the exited parent: P61(c) / unknown pid, terminal.
+        self.assertEqual(source._browser_transition['exited'], {4101: 210})
+        # One serial later it has left the window: a record naming it is terminal
+        # (P61(c) for the member, unknown parent for a newcomer).
         for pid in (4102, 4103):
             source, native = setup()
-            native.events += audit_group(native, 215, 51, pid=pid, ppid=4101)
-            with self.subTest(late_child=pid):
+            native.events += audit_group(native, 1234, 93, pid=600, ppid=300)
+            self.assert_publishes(source)
+            native.events += audit_group(native, 1235, 51, pid=pid, ppid=4101)
+            with self.subTest(after_window=pid):
                 self.assert_terminal(source)
-        # The exited member leaves with the 1024-serial window.
-        source, native = setup()
-        native.events += audit_group(native, 1234, 93, pid=600, ppid=300)
-        self.assert_publishes(source)
-        self.assertEqual(source._browser_transition['exited'], {4101: 210})
-        native.events += audit_group(native, 1235, 93, pid=600, ppid=300)
-        self.assert_publishes(source)
-        self.assertEqual(source._browser_transition['exited'], {})
+                self.assertEqual(source._browser_transition['exited'], {})
 
     def test_v1_reserved_transition_stuck_in_clone_is_pending_then_terminal(self):
         # Barriers at the health cadence (at most 100 ms apart) keep the source
