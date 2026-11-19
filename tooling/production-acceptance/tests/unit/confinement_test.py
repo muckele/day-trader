@@ -1268,8 +1268,14 @@ class ConfinementTests(unittest.TestCase):
         # Approved storage contract: all writable paths stay on the existing
         # bounded /run tmpfs; allocating additional root tmpfs budgets is denied.
         self.assertFalse(any(args[0]==b'tmpfs' for nr,args in raw if nr==40))
-        self.assertIn((40,(b'/opt',b'/run/acceptance/browser/.root/opt',None,4096,None)),raw)
-        self.assertIn((40,(None,b'/run/acceptance/browser/.root/opt',None,4129,None)),raw)
+        # Every read-only base directory is bound once and remounted read-only right after its bind (Task 9:
+        # reviewer M18 left /etc writable and survived the opt-only assertions).
+        for directory in ('opt','usr','lib','lib64','etc'):
+            target=('/run/acceptance/browser/.root/'+directory).encode()
+            bind=(40,(('/'+directory).encode(),target,None,4096,None)); remount=(40,(None,target,None,4129,None))
+            with self.subTest(directory=directory):
+                self.assertEqual((raw.count(bind),raw.count(remount)),(1,1))
+                self.assertEqual(raw.index(remount),raw.index(bind)+1)
         self.assertIn((40,(b'proc',b'/proc',b'proc',14,None)),raw)
         self.assertNotIn('chroot',[x[0] for x in b.calls])
         self.assertIn((41,(b'.',b'.')),raw)
@@ -1533,7 +1539,17 @@ class ConfinementTests(unittest.TestCase):
             with self.assertRaisesRegex(c.ConfinementError, '^NATIVE_GATE_DENIED$'):
                 c.NativeKernelPort(types.SimpleNamespace())
         unvalidated = c.LinuxBindings.__new__(c.LinuxBindings)
+        # Each clause of the seal alone (Task 9 mutants D5-seal, D5-type): private module objects are forged here
+        # only so that exactly one condition is false in each construction.
+        identity = c.GuestRuntimeIdentity(c.ProgramPin(c.PYTHON, 'a' * 64),
+                                          c.ProgramPin('/usr/lib/aarch64-linux-gnu/libc.so.6', 'b' * 64), 'c' * 64)
+        validated = c._ValidatedRuntime(identity, c._NATIVE_SEAL)
+        forged = c.LinuxBindings.__new__(c.LinuxBindings); forged._runtime = validated
+        carrying = InertBindings(); carrying._runtime = validated
         for name, make in (('inert bindings', lambda: c.NativeKernelPort(InertBindings())),
+                           ('LinuxBindings with a validated runtime, without the seal', lambda: c.NativeKernelPort(forged)),
+                           ('seal over inert bindings carrying a validated runtime',
+                            lambda: c.NativeKernelPort(carrying, seal=c._NATIVE_KERNEL_SEAL)),
                            ('foreign seal', lambda: c.NativeKernelPort(InertBindings(), seal=object())),
                            ('seal over inert bindings',
                             lambda: c.NativeKernelPort(InertBindings(), seal=c._NATIVE_KERNEL_SEAL)),
@@ -1546,8 +1562,6 @@ class ConfinementTests(unittest.TestCase):
         # Only select_native_kernel seals, over its own LinuxBindings; it takes no injected factory, and offline
         # (this host is not the pinned Linux guest) its own loader refuses before any effect.
         self.assertNotIn('bindings_factory', inspect.signature(c.select_native_kernel).parameters)
-        identity = c.GuestRuntimeIdentity(c.ProgramPin(c.PYTHON, 'a' * 64),
-                                          c.ProgramPin('/usr/lib/aarch64-linux-gnu/libc.so.6', 'b' * 64), 'c' * 64)
         with self.assertRaisesRegex(c.ConfinementError, '^NATIVE_GATE_DENIED$'):
             c.select_native_kernel('bootstrap-check', runtime_identity=identity, validate_runtime=lambda value: value)
         # The offline port is a distinct, unsealed type: never a NativeKernelPort, never a subclass of it.
