@@ -1256,6 +1256,44 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
         #expect(proof.deviceInventoryDigest.count == 64)
     }
 
+    @Test func v1_role_filter_digests_match_python() throws {
+        // E1 (contract C6): the host role table pins, per role, the outer seccomp
+        // filter digest the Python producer exports. BROWSER has its own program;
+        // CONTROLLER, VERIFIER and PROXY keep their bytes.
+        let order = ["CONTROLLER","BROWSER","VERIFIER","PROXY"]
+        let unchanged = ["CONTROLLER":"294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3",
+                         "VERIFIER":"294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3",
+                         "PROXY":"01e3ec748fdbadb0a0ac195855506cc19680fcc5aa3c6289d2c15e15ec981d7d"]
+        let table = BootstrapHandoff.roles
+        #expect(table.map { $0.0 } == order)
+        for key in ["TASK10_TOPOLOGY_INPUT","BOOTSTRAP_V1_HANDOFF_INPUT"] {
+            let path = try #require(ProcessInfo.processInfo.environment[key])
+            let envelope = try #require(try JSONSerialization.jsonObject(
+                with:Data(contentsOf:URL(fileURLWithPath:path))) as? [String:Any])
+            let rows = try #require((envelope["payload"] as? [String:Any])?["roles"] as? [[String:Any]])
+            var exported:[(String,String)] = []
+            for row in rows {
+                exported.append((try #require(row["role"] as? String),try #require(row["filterDigest"] as? String)))
+            }
+            #expect(exported.map { $0.0 } == order, "\(key)")
+            #expect(exported.map { $0.1 } == table.map { $0.2 }, "\(key)")
+            let digests = Dictionary(uniqueKeysWithValues:exported)
+            for (role,digest) in unchanged { #expect(digests[role] == digest, "\(key) \(role)") }
+            let browser = try #require(digests["BROWSER"])
+            #expect(!unchanged.values.contains(browser), "\(key) BROWSER")
+        }
+        // The verifier compares each row with its own table entry: a row carrying
+        // another role's digest is rejected, in both directions across BROWSER.
+        for (target,source) in [(1,0),(0,1),(1,2),(2,1),(1,3),(3,1)] {
+            let run = try BootstrapRunFixture().run  // one sequence-1 legacy handoff per run
+            let bad = try handoff(run) { value in
+                var x=value; var r=x["roles"] as! [[String:Any]]; r[target]["filterDigest"]=r[source]["filterDigest"]; x["roles"]=r; return x }
+            #expect(throws:VMFailure.admissionUnavailable, "row \(target) carries row \(source)'s digest") {
+                _ = try OfflineVMHost.bootstrapCheck(run:run,probe:BootstrapProbeFake([bad]),lifecycle:BootstrapLifecycleFake(),
+                                                     executables:try executableAuthority(run),clock:BootstrapTestClock()) }
+        }
+    }
+
     @Test func shared_python_valid_mac_nested_primitive_vectors_reject() throws {
         let path = try #require(ProcessInfo.processInfo.environment["TASK10_TOPOLOGY_INPUT"])
         let vectors = try JSONSerialization.jsonObject(with:Data(contentsOf:URL(fileURLWithPath:path + ".invalid.json"))) as! [String]

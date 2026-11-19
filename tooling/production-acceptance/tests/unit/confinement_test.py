@@ -842,7 +842,13 @@ class ConfinementTests(unittest.TestCase):
         self.assertFalse(browser.attestation.views.console)
         self.assertEqual(browser.attestation.views.private_mode,0o700)
     def test_privilege_gain_denied(self):
-        for nr in (91,146,147,144,149,159,151,152,268,40,41,51,33):
+        # E1 (C6): capset, the set*id family, setgroups and chroot are allowed for BROWSER only (Chromium's
+        # namespace sandbox, BrowserSandboxFilterTests); every other role still denies them. setns, mount,
+        # pivot_root and mknodat stay denied for every role (R1).
+        for role in ('CONTROLLER','VERIFIER','PROXY'):
+            for nr in (91,146,147,144,149,159,151,152,268,40,41,51,33):
+                self.assertEqual(evaluate(self.api().build_filter(role),nr),DENY,(role,nr))
+        for nr in (268,40,41,33):
             self.assertEqual(evaluate(self.api().build_filter('BROWSER'),nr),DENY,nr)
         for args in ((47,2,0),(38,0),(8,1),(28,0),(22,0)):
             self.assertEqual(evaluate(c.build_filter('BROWSER'),167,args),DENY)
@@ -1271,6 +1277,109 @@ class ConfinementTests(unittest.TestCase):
         with self.assertRaises(probe.ProbeFailure): probe.run_case('proxy_fixed_vsock_positive',port)
         port.attempt=lambda case:({'operation':'PROXY.fixed-vsock-CID2-port4050','attempted':True,'denied':False,'receiver_count':1},)
         self.assertEqual(len(probe.run_case('proxy_fixed_vsock_positive',port)),1)
+
+
+COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
+
+
+class BrowserSandboxFilterTests(unittest.TestCase):
+    """E1 (contract C6, rulings R1 and R2): the BROWSER outer filter allows exactly what Chromium's namespace
+    sandbox needs, and keeps every other denial; CONTROLLER, VERIFIER and PROXY keep their filter.
+
+    Each vector runs the produced program through the independent interpreter above on synthetic seccomp_data.
+    Syscall numbers, flags, families, types and return values are named and resolved from the committed coverage
+    v2 (checked against the independent oracles by abi_coverage_test); a name absent from it fails the test.
+    """
+    SANDBOX = ('chroot', 'capset', 'setuid', 'setgid', 'setreuid', 'setregid', 'setresuid', 'setresgid',
+               'setfsuid', 'setfsgid', 'setgroups')
+    NAMESPACE = ('unshare', 'clone', 'clone3')
+    OTHER_ROLES = ('CONTROLLER', 'VERIFIER', 'PROXY')
+
+    @classmethod
+    def setUpClass(cls):
+        cls.V = {r['id']: r['value'] for r in json.loads(COVERAGE_V2.read_bytes())['records']}
+
+    def v(self, *names):
+        """OR of the coverage v2 values of NAMES."""
+        value = 0
+        for name in names:
+            self.assertIn(name, self.V, f'{name}: absent from coverage v2')
+            value |= self.V[name]
+        return value
+
+    def nr(self, name):
+        return self.v('__NR_' + name)
+
+    def returns(self):
+        return self.v('SECCOMP_RET_ALLOW'), self.v('SECCOMP_RET_ERRNO', 'EPERM'), self.v('SECCOMP_RET_KILL_PROCESS')
+
+    def test_browser_filter_allows_namespace_sandbox_syscalls(self):
+        allow, eperm, _ = self.returns()
+        namespaces = self.v('CLONE_NEWUSER', 'CLONE_NEWPID', 'CLONE_NEWNET')
+        browser = c.build_filter('BROWSER')
+        for name in self.SANDBOX:
+            with self.subTest(role='BROWSER', syscall=name):
+                self.assertEqual(evaluate(browser, self.nr(name)), allow)
+        for name in self.NAMESPACE:
+            with self.subTest(role='BROWSER', syscall=name):
+                self.assertEqual(evaluate(browser, self.nr(name), (namespaces,)), allow)
+        for role in self.OTHER_ROLES:
+            program = c.build_filter(role)
+            for name in self.SANDBOX:
+                with self.subTest(role=role, syscall=name):
+                    self.assertEqual(evaluate(program, self.nr(name)), eperm)
+            for name in self.NAMESPACE:
+                with self.subTest(role=role, syscall=name):
+                    self.assertEqual(evaluate(program, self.nr(name), (namespaces,)), allow)
+
+    def test_browser_filter_keeps_design_and_extra_denials(self):
+        _, eperm, kill = self.returns()
+        browser = c.build_filter('BROWSER')
+        sockets = (('AF_VSOCK', 'SOCK_STREAM'), ('AF_PACKET', 'SOCK_RAW'), ('AF_PACKET', 'SOCK_DGRAM'),
+                   ('AF_INET', 'SOCK_RAW'), ('AF_INET6', 'SOCK_RAW'))
+        for call in ('socket', 'socketpair'):
+            for family, kind in sockets:
+                with self.subTest(syscall=call, family=family, kind=kind):
+                    self.assertEqual(evaluate(browser, self.nr(call), (self.v(family), self.v(kind), 0)), eperm)
+        # Design section 9.2 denials, then the R1 extras that stay denied for BROWSER.
+        for name in ('io_uring_setup', 'io_uring_register', 'io_uring_enter', 'ptrace', 'process_vm_readv',
+                     'process_vm_writev', 'pidfd_getfd', 'pidfd_open', 'mount', 'umount2', 'pivot_root', 'setns',
+                     'mknodat'):
+            with self.subTest(syscall=name):
+                self.assertEqual(evaluate(browser, self.nr(name)), eperm)
+        # Any arch other than AUDIT_ARCH_AARCH64 is killed before the E1 allowances are reached: zero, the bare
+        # e_machine value, big-endian AArch64, x86_64 and 32-bit ARM.
+        native = self.v('AUDIT_ARCH_AARCH64')
+        for arch in (0, self.v('EM_AARCH64'), 0x800000b7, 0xc000003e, 0x40000028):
+            self.assertNotEqual(arch, native)
+            for name in ('chroot', 'setresuid', 'unshare'):
+                with self.subTest(arch=hex(arch), syscall=name):
+                    self.assertEqual(evaluate(browser, self.nr(name), arch=arch), kill)
+
+    def test_browser_seccomp_flags_exact(self):
+        allow, eperm, _ = self.returns()
+        tsync, spec = self.v('SECCOMP_FILTER_FLAG_TSYNC'), self.v('SECCOMP_FILTER_FLAG_SPEC_ALLOW')
+        log, listener = self.v('SECCOMP_FILTER_FLAG_LOG'), self.v('SECCOMP_FILTER_FLAG_NEW_LISTENER')
+        esrch = self.v('SECCOMP_FILTER_FLAG_TSYNC_ESRCH')
+        allowed = (0, tsync, spec, tsync | spec)
+        denied = (log, listener, listener | tsync, listener | spec, listener | spec | tsync, esrch)
+        self.assertEqual((allowed, denied), ((0, 1, 4, 5), (2, 8, 9, 12, 13, 16)))
+        operation = self.v('SECCOMP_SET_MODE_FILTER')
+        browser = c.build_filter('BROWSER')
+        for flags in allowed:
+            with self.subTest(role='BROWSER', flags=flags):
+                self.assertEqual(evaluate(browser, self.nr('seccomp'), (operation, flags, 1234)), allow)
+        for flags in denied:
+            with self.subTest(role='BROWSER', flags=flags):
+                self.assertEqual(evaluate(browser, self.nr('seccomp'), (operation, flags, 1234)), eperm)
+        for role in self.OTHER_ROLES:
+            program = c.build_filter(role)
+            for flags in (0, tsync):
+                with self.subTest(role=role, flags=flags):
+                    self.assertEqual(evaluate(program, self.nr('seccomp'), (operation, flags, 1234)), allow)
+            for flags in (spec, tsync | spec) + denied:
+                with self.subTest(role=role, flags=flags):
+                    self.assertEqual(evaluate(program, self.nr('seccomp'), (operation, flags, 1234)), eperm)
 
 
 if __name__ == '__main__': unittest.main()

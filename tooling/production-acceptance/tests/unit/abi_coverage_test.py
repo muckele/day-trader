@@ -29,7 +29,7 @@ ARCHIVE = Path('/Users/Matt/day-trader-references/m4-linux-aarch64-offline-repai
 ARCHIVE_SHA = 'c969dea4e8bb6be991bbf7c010ba0e0a5643a3a8d8fb0a2aaa053406f1e965f3'
 INVENTORY = ROOT / 'appliance/abi-inventory.json'
 COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
-COVERAGE_V2_SHA = 'bf1085ded397981173b04041a9c52781318c48fb085c83a3526753697c5c4af4'
+COVERAGE_V2_SHA = '51e78770688460ab53a66152ff71557efdf56bfe753d908adfd5cff146c3a4d9'
 EVENT_REFERENCE = ROOT / 'appliance/bootstrap-event-reference.json'
 EVENT_REFERENCE_SHA = 'a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d'
 ORACLES_PATH = Path(__file__).resolve().parent / 'abi_oracles.py'
@@ -231,12 +231,57 @@ confinement = importlib.util.module_from_spec(_conf_spec)
 sys.modules[_conf_spec.name] = confinement
 _conf_spec.loader.exec_module(confinement)
 
-# Deny list in program order (24 inventoried symbols).
+# Base deny list in program order (24 inventoried symbols).
 DENY_ORDER = tuple('__NR_' + n for n in (
     'io_uring_setup io_uring_enter io_uring_register ptrace process_vm_readv process_vm_writev pidfd_getfd pidfd_open '
     'capset setregid setgid setreuid setuid setresuid setresgid setfsuid setfsgid setgroups setns mknodat umount2 mount '
     'pivot_root chroot').split())
-DENY_SYMBOLS = frozenset(DENY_ORDER)
+# E1 (contract C6, ruling R1): exactly these eleven leave the BROWSER deny list, for Chromium's namespace sandbox.
+BROWSER_SANDBOX_SYMBOLS = frozenset('__NR_' + n for n in (
+    'chroot capset setuid setgid setreuid setregid setresuid setresgid setfsuid setfsgid setgroups').split())
+# Per-role deny list in program order: BROWSER 13 symbols (R1 keeps mount umount2 pivot_root setns mknodat pidfd_open),
+# every other role the 24 unchanged.
+DENY_SYMBOLS_BY_ROLE = {
+    'CONTROLLER': DENY_ORDER,
+    'BROWSER': tuple('__NR_' + n for n in (
+        'io_uring_setup io_uring_enter io_uring_register ptrace process_vm_readv process_vm_writev pidfd_getfd '
+        'pidfd_open setns mknodat umount2 mount pivot_root').split()),
+    'VERIFIER': DENY_ORDER,
+    'PROXY': DENY_ORDER,
+}
+# seccomp(2) filter flags each role may pass, in program order (C6). Each entry names the POLICY_LITERALS or coverage v2
+# symbols whose OR is the compared value. No NEW_LISTENER, LOG or TSYNC_ESRCH for any role.
+_BASE_FLAGS = (('SECCOMP_NO_FLAGS',), ('SECCOMP_FILTER_FLAG_TSYNC',))
+SECCOMP_FLAG_NAMES_BY_ROLE = {
+    'CONTROLLER': _BASE_FLAGS,
+    'BROWSER': _BASE_FLAGS + (('SECCOMP_FILTER_FLAG_SPEC_ALLOW',),
+                              ('SECCOMP_FILTER_FLAG_TSYNC', 'SECCOMP_FILTER_FLAG_SPEC_ALLOW')),
+    'VERIFIER': _BASE_FLAGS,
+    'PROXY': _BASE_FLAGS,
+}
+# Flag combinations the brief tests as denied (C6), each the OR of the named symbols: LOG, NEW_LISTENER,
+# NEW_LISTENER|TSYNC, NEW_LISTENER|SPEC_ALLOW, NEW_LISTENER|SPEC_ALLOW|TSYNC, TSYNC_ESRCH. For roles other than BROWSER
+# SPEC_ALLOW and TSYNC|SPEC_ALLOW are denied too.
+SECCOMP_DENIED_FLAG_NAMES = (
+    ('SECCOMP_FILTER_FLAG_LOG',),
+    ('SECCOMP_FILTER_FLAG_NEW_LISTENER',),
+    ('SECCOMP_FILTER_FLAG_NEW_LISTENER', 'SECCOMP_FILTER_FLAG_TSYNC'),
+    ('SECCOMP_FILTER_FLAG_NEW_LISTENER', 'SECCOMP_FILTER_FLAG_SPEC_ALLOW'),
+    ('SECCOMP_FILTER_FLAG_NEW_LISTENER', 'SECCOMP_FILTER_FLAG_SPEC_ALLOW', 'SECCOMP_FILTER_FLAG_TSYNC'),
+    ('SECCOMP_FILTER_FLAG_TSYNC_ESRCH',),
+)
+# guest/confinement.py module constants (Task 8), each element bound to its named symbol in source order.
+# BASE_DENY_SYSCALLS is DENY_ORDER; BROWSER_SANDBOX_SYSCALLS lists the eleven in this order.
+BROWSER_SANDBOX_ORDER = tuple('__NR_' + n for n in (
+    'chroot capset setregid setgid setreuid setuid setresuid setresgid setfsuid setfsgid setgroups').split())
+# sha256(filter_bytes(build_filter(role))). E1 leaves CONTROLLER, VERIFIER and PROXY byte-identical; the BROWSER digest
+# was computed in Task 8 Step 3 from the E1 program (96 instructions).
+ROLE_FILTER_DIGESTS = {
+    'CONTROLLER': '294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3',
+    'BROWSER': 'f84ca34690734a6a45871af34bfddf5941e4a2c8af2f1916eb10a248b74bb049',
+    'VERIFIER': '294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3',
+    'PROXY': '01e3ec748fdbadb0a0ac195855506cc19680fcc5aa3c6289d2c15e15ec981d7d',
+}
 
 # syscall symbol -> files whose native syscall(...) call sites invoke it (R6). Direct call sites only: the BPF deny list
 # and socketpair appear in the filter but are not called.
@@ -267,10 +312,16 @@ ARG_SYMBOLS = {
     '__NR_prctl': {0: _PRCTL_OPTIONS,
                    1: frozenset({'SUID_DUMP_DISABLE', 'PR_CAP_AMBIENT_RAISE', 'PR_CAP_AMBIENT_CLEAR_ALL',
                                  'SECCOMP_MODE_FILTER'})},
-    '__NR_seccomp': {0: frozenset({'SECCOMP_SET_MODE_FILTER'}), 1: frozenset({'SECCOMP_FILTER_FLAG_TSYNC'})},
+    '__NR_seccomp': {0: frozenset({'SECCOMP_SET_MODE_FILTER'}),
+                     1: frozenset({'SECCOMP_FILTER_FLAG_TSYNC', 'SECCOMP_FILTER_FLAG_SPEC_ALLOW'})},
     '__NR_unshare': {0: frozenset({'CLONE_NEWNS', 'CLONE_NEWPID', 'CLONE_NEWIPC'})},
     '__NR_socket': _SOCKET_ARGS,
     '__NR_socketpair': _SOCKET_ARGS,
+}
+# The only OR combinations of ARG_SYMBOLS a filter comparison on args[i] low word may take, each listed by name
+# (C6: BROWSER's TSYNC|SPEC_ALLOW). Any other combination stays unadmitted.
+ARG_COMBINATIONS = {
+    '__NR_seccomp': {1: (frozenset({'SECCOMP_FILTER_FLAG_TSYNC', 'SECCOMP_FILTER_FLAG_SPEC_ALLOW'}),)},
 }
 # Literals that are policy choices, not ABI values: name -> (value, one-line justification). Each genuine use is named
 # at its own site (SITE_ARGS / the expected filter program); there is no catch-all "any policy value" acceptance.
@@ -691,7 +742,8 @@ class CodeBindingTests(unittest.TestCase):
 
     def arg_allowed(self, program, index, arg_index, masked):
         """Values a comparison on args[arg_index] may take: ARG_SYMBOLS of every syscall whose filter branch reaches it,
-        plus the named flag/protocol/NNP policy scalars. (Secondary check; the exact program comparison is authoritative.)"""
+        each named ARG_COMBINATIONS OR for that syscall argument, plus the named flag/protocol/NNP policy scalars.
+        (Secondary check; the exact program comparison is authoritative.)"""
         allowed = {POLICY_LITERALS[n][0] for n in ('PROTOCOL_DEFAULT', 'SECCOMP_NO_FLAGS', 'NNP_ENABLE')}
         owners = 0
         for j, (code, jt, jf, k), offset, m in self.walk(program):
@@ -700,6 +752,12 @@ class CodeBindingTests(unittest.TestCase):
                     owners += 1
                     sym = self.nr_by_value[k]
                     allowed |= self.values(ARG_SYMBOLS.get(sym, {}).get(arg_index, ()))
+                    for names in ARG_COMBINATIONS.get(sym, {}).get(arg_index, ()):
+                        self.assertLessEqual(names, ARG_SYMBOLS[sym][arg_index], (sym, arg_index))
+                        combined = 0
+                        for value in self.values(names):
+                            combined |= value
+                        allowed.add(combined)
         self.assertGreater(owners, 0, ('compare unreachable from any syscall branch', index))
         return allowed
 
@@ -725,7 +783,7 @@ class CodeBindingTests(unittest.TestCase):
         ld(ARCH); eq(V['AUDIT_ARCH_AARCH64'], yes='native'); ret(KILL)
         lab('native'); ld(NR); mask(P['NR_HIGH_BITS_MASK']); eq(P['NR_MASKED_CLEAN'], yes='syscall'); ret(KILL)
         lab('syscall'); ld(NR)
-        for sym in DENY_ORDER:
+        for sym in DENY_SYMBOLS_BY_ROLE[role]:
             eq(V[sym], yes='deny')
         eq(nrv('socket'), yes='socket'); eq(nrv('socketpair'), yes='socket'); eq(nrv('prctl'), yes='prctl')
         eq(nrv('seccomp'), yes='seccomp'); ret(ALLOW)
@@ -739,8 +797,13 @@ class CodeBindingTests(unittest.TestCase):
         lab('ambient'); ld(hi(1)); req(P['HIGH_WORD_ZERO']); ld(lo(1)); eq(V['PR_CAP_AMBIENT_RAISE'], yes='deny'); ret(ALLOW)
         lab('inner'); ld(hi(1)); req(P['HIGH_WORD_ZERO']); ld(lo(1)); req(V['SECCOMP_MODE_FILTER']); ret(ALLOW)
         lab('seccomp'); ld(hi(0)); req(P['HIGH_WORD_ZERO']); ld(lo(0)); req(V['SECCOMP_SET_MODE_FILTER'])
-        ld(hi(1)); req(P['HIGH_WORD_ZERO']); ld(lo(1)); eq(P['SECCOMP_NO_FLAGS'], yes='allow')
-        eq(V['SECCOMP_FILTER_FLAG_TSYNC'], yes='allow'); ret(ERR)
+        ld(hi(1)); req(P['HIGH_WORD_ZERO']); ld(lo(1))
+        for names in SECCOMP_FLAG_NAMES_BY_ROLE[role]:
+            flags = 0
+            for name in names:
+                flags |= self.resolve(name)
+            eq(flags, yes='allow')
+        ret(ERR)
         lab('socket')
         for i in range(3):
             ld(hi(i)); req(P['HIGH_WORD_ZERO'])
@@ -774,14 +837,121 @@ class CodeBindingTests(unittest.TestCase):
                 self.assertEqual(got, want, (role, i))
 
     def test_filter_deny_list_matches_named_syscalls(self):
-        expected = {self.V[s] for s in DENY_SYMBOLS}
-        self.assertEqual(len(DENY_SYMBOLS), 24)
+        """24 named symbols for CONTROLLER, VERIFIER and PROXY; for BROWSER the 13 left after exactly the eleven C6
+        sandbox symbols are removed, in base order. The program's deny jumps are those symbols, in that order."""
+        self.assertEqual(set(DENY_SYMBOLS_BY_ROLE), set(confinement.UIDS))
+        self.assertEqual((len(DENY_ORDER), len(set(DENY_ORDER))), (24, 24))
+        self.assertEqual(len(BROWSER_SANDBOX_SYMBOLS), 11)
+        self.assertLessEqual(BROWSER_SANDBOX_SYMBOLS, set(DENY_ORDER))
+        for role, symbols in DENY_SYMBOLS_BY_ROLE.items():
+            if role == 'BROWSER':
+                self.assertEqual(len(symbols), 13)
+                self.assertEqual(symbols, tuple(s for s in DENY_ORDER if s not in BROWSER_SANDBOX_SYMBOLS))
+            else:
+                self.assertEqual(symbols, DENY_ORDER, role)
         for role, program in self.programs().items():
             deny = len(program) - 1
             self.assertEqual(program[deny][3], self.V['SECCOMP_RET_ERRNO'] | self.V['EPERM'])
-            got = {k for i, (code, jt, jf, k), off, masked in self.walk(program)
-                   if code == self.op_jeq and off == self.V['seccomp_data.nr'] and not masked and jt and i + 1 + jt == deny}
-            self.assertEqual(got, expected, role)
+            got = [k for i, (code, jt, jf, k), off, masked in self.walk(program)
+                   if code == self.op_jeq and off == self.V['seccomp_data.nr'] and not masked and jt and i + 1 + jt == deny]
+            self.assertEqual(got, [self.V[s] for s in DENY_SYMBOLS_BY_ROLE[role]], role)
+
+    def test_role_filter_digests_pinned(self):
+        """sha256(filter_bytes(build_filter(role))) per role: E1 leaves CONTROLLER, VERIFIER and PROXY byte-identical
+        and gives BROWSER its own program. VMHost.swift's role table pins the same four digests."""
+        digests = {role: hashlib.sha256(confinement.filter_bytes(program)).hexdigest()
+                   for role, program in self.programs().items()}
+        for role in ('CONTROLLER', 'VERIFIER', 'PROXY'):
+            self.assertEqual(digests[role], ROLE_FILTER_DIGESTS[role], role)
+        self.assertNotIn(digests['BROWSER'], {digests[role] for role in ('CONTROLLER', 'VERIFIER', 'PROXY')})
+        self.assertEqual(set(ROLE_FILTER_DIGESTS), set(confinement.UIDS))
+        self.assertEqual(digests['BROWSER'], ROLE_FILTER_DIGESTS['BROWSER'])
+
+    def module_constant(self, name):
+        """The value node of the single module-level assignment to NAME in guest/confinement.py."""
+        found = [n.value for n in self.nodes('confinement.py', '<module>', ast.Assign)
+                 if [ast.unparse(t) for t in n.targets] == [name]]
+        self.assertEqual(len(found), 1, name)
+        return found[0]
+
+    def or_names(self, names):
+        """OR of the POLICY_LITERALS, R13_LITERALS or coverage v2 values of NAMES."""
+        value = 0
+        for name in names:
+            value |= self.resolve(name)
+        return value
+
+    def seccomp_flag_compares(self, program):
+        """In program order, k of every comparison on the seccomp(2) flags word (args[1] low word) inside the seccomp
+        dispatch branch that jumps to the ALLOW return."""
+        V = self.V
+        starts = [j + 1 + jt for j, (code, jt, jf, k), off, m in self.walk(program)
+                  if code == self.op_jeq and off == V['seccomp_data.nr'] and not m and jt and k == V['__NR_seccomp']]
+        self.assertEqual(len(starts), 1)
+        branch = self.reach(program, starts[0])
+        flags_word = V['seccomp_data.args'] + self.stride
+        got = []
+        for i, (code, jt, jf, k), off, m in self.walk(program):
+            if i in branch and code == self.op_jeq and off == flags_word and not m and jt:
+                self.assertEqual(program[i + 1 + jt], (self.op_ret, 0, 0, V['SECCOMP_RET_ALLOW']), i)
+                got.append(k)
+        return got
+
+    def test_module_filter_constants_match_named_symbols(self):
+        """guest/confinement.py BASE_DENY_SYSCALLS (24, in order), BROWSER_SANDBOX_SYSCALLS (11, in order) and
+        SECCOMP_FLAGS_BY_ROLE (per role): one assertion per element, each against its named symbol or named OR."""
+        base = self.module_constant('BASE_DENY_SYSCALLS')
+        self.assertIsInstance(base, ast.Tuple)
+        self.assertEqual(len(base.elts), len(DENY_ORDER))
+        for index, (node, name) in enumerate(zip(base.elts, DENY_ORDER)):
+            self.assertEqual(_eval_int(node), self.resolve(name), (index, name))
+        sandbox = self.module_constant('BROWSER_SANDBOX_SYSCALLS')
+        self.assertIsInstance(sandbox, ast.Tuple)
+        self.assertEqual(set(BROWSER_SANDBOX_ORDER), BROWSER_SANDBOX_SYMBOLS)
+        self.assertEqual(len(sandbox.elts), len(BROWSER_SANDBOX_ORDER))
+        for index, (node, name) in enumerate(zip(sandbox.elts, BROWSER_SANDBOX_ORDER)):
+            self.assertEqual(_eval_int(node), self.resolve(name), (index, name))
+        flags = self.module_constant('SECCOMP_FLAGS_BY_ROLE')
+        self.assertIsInstance(flags, ast.Call)
+        self.assertEqual((ast.unparse(flags.func), len(flags.args), flags.keywords), ('MappingProxyType', 1, []))
+        table = flags.args[0]
+        self.assertIsInstance(table, ast.Dict)
+        roles = [key.value if isinstance(key, ast.Constant) else None for key in table.keys]
+        self.assertEqual(roles, list(confinement.UIDS))
+        for role, value in zip(roles, table.values):
+            self.assertIsInstance(value, ast.Tuple, role)
+            names = SECCOMP_FLAG_NAMES_BY_ROLE[role]
+            self.assertEqual(len(value.elts), len(names), role)
+            for index, (node, combination) in enumerate(zip(value.elts, names)):
+                self.assertEqual(_eval_int(node), self.or_names(combination), (role, index, combination))
+        # The runtime objects are exactly the bound literals.
+        self.assertEqual(confinement.BASE_DENY_SYSCALLS, tuple(_eval_int(n) for n in base.elts))
+        self.assertEqual(confinement.BROWSER_SANDBOX_SYSCALLS, tuple(_eval_int(n) for n in sandbox.elts))
+        self.assertEqual(dict(confinement.SECCOMP_FLAGS_BY_ROLE),
+                         {role: tuple(_eval_int(n) for n in value.elts) for role, value in zip(roles, table.values)})
+
+    def test_seccomp_flag_sets_match_named_symbols(self):
+        """C6: each role's seccomp(2) flag comparisons, in program order, are exactly its named set; BROWSER's is
+        {0, TSYNC, SPEC_ALLOW, TSYNC|SPEC_ALLOW} built from the two named symbols. One assertion per allowed value and
+        one per brief-tested denied value (plus SPEC_ALLOW and TSYNC|SPEC_ALLOW for the other roles)."""
+        tsync, spec = self.resolve('SECCOMP_FILTER_FLAG_TSYNC'), self.resolve('SECCOMP_FILTER_FLAG_SPEC_ALLOW')
+        programs = self.programs()
+        browser = self.seccomp_flag_compares(programs['BROWSER'])
+        browser_set = (self.resolve('SECCOMP_NO_FLAGS'), tsync, spec, tsync | spec)
+        self.assertEqual(len(browser), len(browser_set))
+        for index, value in enumerate(browser_set):
+            self.assertEqual(browser[index], value, ('BROWSER', index))
+        for role, program in programs.items():
+            got = self.seccomp_flag_compares(program)
+            want = [self.or_names(names) for names in SECCOMP_FLAG_NAMES_BY_ROLE[role]]
+            self.assertEqual(len(got), len(want), role)
+            for index, value in enumerate(want):
+                self.assertEqual(got[index], value, (role, index))
+            denied = [self.or_names(names) for names in SECCOMP_DENIED_FLAG_NAMES]
+            if role != 'BROWSER':
+                denied += [spec, tsync | spec]
+            for value in denied:
+                self.assertNotIn(value, got, (role, value))
 
     def test_filter_dispatch_numbers_are_the_expected_syscalls(self):
         allowed_dispatch = {'__NR_socket', '__NR_socketpair', '__NR_prctl', '__NR_seccomp'}

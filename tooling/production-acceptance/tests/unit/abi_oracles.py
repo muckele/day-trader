@@ -133,4 +133,12 @@ ORACLES = {
     'RTF_NONEXTHOP': 2097152,  # linux-6.8/include/uapi/linux/ipv6_route.h:27 #define RTF_NONEXTHOP 0x00200000
     'RTF_LOCAL': 2147483648,  # linux-6.8/include/uapi/linux/ipv6_route.h:40 #define RTF_LOCAL 0x80000000
     'TCP_ESTABLISHED': 1,  # linux-6.8/include/net/tcp_states.h:13 enum { TCP_ESTABLISHED = 1,
+    'SECCOMP_FILTER_FLAG_SPEC_ALLOW': 4,  # linux-6.8/include/uapi/linux/seccomp.h:23 #define SECCOMP_FILTER_FLAG_SPEC_ALLOW (1UL << 2) = 4
+    'SECCOMP_FILTER_FLAG_NEW_LISTENER': 8,  # linux-6.8/include/uapi/linux/seccomp.h:24 #define SECCOMP_FILTER_FLAG_NEW_LISTENER (1UL << 3) = 8
+    'SECCOMP_FILTER_FLAG_LOG': 2,  # linux-6.8/include/uapi/linux/seccomp.h:22 #define SECCOMP_FILTER_FLAG_LOG (1UL << 1) = 2
+    'SECCOMP_FILTER_FLAG_TSYNC_ESRCH': 16,  # linux-6.8/include/uapi/linux/seccomp.h:25 #define SECCOMP_FILTER_FLAG_TSYNC_ESRCH (1UL << 4) = 16
+    'CLONE_NEWUSER': 268435456,  # linux-6.8/include/uapi/linux/sched.h:31 #define CLONE_NEWUSER 0x10000000
+    'CLONE_NEWNET': 1073741824,  # linux-6.8/include/uapi/linux/sched.h:33 #define CLONE_NEWNET 0x40000000
+    'AF_PACKET': 17,  # linux-6.8/include/linux/socket.h:208 #define AF_PACKET 17
+    'SOCK_RAW': 3,  # linux-6.8/include/linux/net.h:67 SOCK_RAW = 3, in enum sock_type under #ifndef ARCH_HAS_SOCKET_TYPES (net.h:48); arm64 does not define it (see record)
 }

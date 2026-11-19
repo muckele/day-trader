@@ -33,6 +33,20 @@
       "conditions": [
         "#ifndef _LINUX_SOCKET_H"
       ],
+      "declaration": "#define AF_PACKET\t17\t/* Packet family\t\t*/",
+      "firstLine": 208,
+      "id": "AF_PACKET",
+      "lastLine": 208,
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "memberSHA256": "4afa211fad3850a13fbb7ab4130fcd162e3ac4d3593f7b6c5b6232a498841dc2",
+      "signed": true,
+      "value": 17,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
       "declaration": "#define AF_UNIX\t\t1\t/* Unix domain sockets \t\t*/",
       "firstLine": 190,
       "id": "AF_UNIX",
@@ -244,6 +258,20 @@
       "conditions": [
         "#ifndef _UAPI_LINUX_SCHED_H"
       ],
+      "declaration": "#define CLONE_NEWNET\t\t0x40000000\t/* New network namespace */",
+      "firstLine": 33,
+      "id": "CLONE_NEWNET",
+      "lastLine": 33,
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "memberSHA256": "1a4a3cef927a5b620add2879da2d469df4ebce135e033d8fff5264c010de535c",
+      "signed": true,
+      "value": 1073741824,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
       "declaration": "#define CLONE_NEWNS\t0x00020000\t/* New mount namespace group */",
       "firstLine": 20,
       "id": "CLONE_NEWNS",
@@ -266,6 +294,20 @@
       "memberSHA256": "1a4a3cef927a5b620add2879da2d469df4ebce135e033d8fff5264c010de535c",
       "signed": true,
       "value": 536870912,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "declaration": "#define CLONE_NEWUSER\t\t0x10000000\t/* New user namespace */",
+      "firstLine": 31,
+      "id": "CLONE_NEWUSER",
+      "lastLine": 31,
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "memberSHA256": "1a4a3cef927a5b620add2879da2d469df4ebce135e033d8fff5264c010de535c",
+      "signed": true,
+      "value": 268435456,
       "width": 32
     },
     {
@@ -837,6 +879,48 @@
       "conditions": [
         "#ifndef _UAPI_LINUX_SECCOMP_H"
       ],
+      "declaration": "#define SECCOMP_FILTER_FLAG_LOG\t\t\t(1UL << 1)",
+      "firstLine": 22,
+      "id": "SECCOMP_FILTER_FLAG_LOG",
+      "lastLine": 22,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 2,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_FILTER_FLAG_NEW_LISTENER\t(1UL << 3)",
+      "firstLine": 24,
+      "id": "SECCOMP_FILTER_FLAG_NEW_LISTENER",
+      "lastLine": 24,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 8,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_FILTER_FLAG_SPEC_ALLOW\t\t(1UL << 2)",
+      "firstLine": 23,
+      "id": "SECCOMP_FILTER_FLAG_SPEC_ALLOW",
+      "lastLine": 23,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 4,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
       "declaration": "#define SECCOMP_FILTER_FLAG_TSYNC\t\t(1UL << 0)",
       "firstLine": 21,
       "id": "SECCOMP_FILTER_FLAG_TSYNC",
@@ -845,6 +929,20 @@
       "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
       "signed": false,
       "value": 1,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_FILTER_FLAG_TSYNC_ESRCH\t\t(1UL << 4)",
+      "firstLine": 25,
+      "id": "SECCOMP_FILTER_FLAG_TSYNC_ESRCH",
+      "lastLine": 25,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 16,
       "width": 64
     },
     {
@@ -961,6 +1059,21 @@
       "memberSHA256": "db0aa1e0b6fbf6f3f36e9dcfc39193b7542637a62ecf1fb7e364a028df3d031f",
       "signed": true,
       "value": 2048,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES"
+      ],
+      "declaration": "\tSOCK_RAW\t= 3,",
+      "firstLine": 67,
+      "id": "SOCK_RAW",
+      "lastLine": 67,
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "memberSHA256": "db0aa1e0b6fbf6f3f36e9dcfc39193b7542637a62ecf1fb7e364a028df3d031f",
+      "signed": true,
+      "value": 3,
       "width": 32
     },
     {

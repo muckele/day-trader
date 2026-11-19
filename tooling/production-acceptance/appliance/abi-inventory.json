@@ -1219,6 +1219,87 @@
       "memberPath": "linux-6.8/include/net/tcp_states.h",
       "signed": true,
       "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_FILTER_FLAG_SPEC_ALLOW",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_FILTER_FLAG_NEW_LISTENER",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_FILTER_FLAG_LOG",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_FILTER_FLAG_TSYNC_ESRCH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "id": "CLONE_NEWUSER",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "id": "CLONE_NEWNET",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "id": "AF_PACKET",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES"
+      ],
+      "id": "SOCK_RAW",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "signed": true,
+      "width": 32
     }
   ],
   "version": 1

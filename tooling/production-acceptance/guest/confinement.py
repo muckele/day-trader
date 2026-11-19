@@ -237,15 +237,37 @@ def filter_bytes(program):
     return b''.join(struct.pack('<HBBI', *i) for i in program)
 
 
+# Linux 6.8 native arm64 syscall numbers: no compat/multiplexed ABI. In order:
+# io_uring_setup, io_uring_enter, io_uring_register, ptrace, process_vm_readv,
+# process_vm_writev, pidfd_getfd, pidfd_open, capset, setregid, setgid,
+# setreuid, setuid, setresuid, setresgid, setfsuid, setfsgid, setgroups, setns,
+# mknodat, umount2, mount, pivot_root, chroot.
+BASE_DENY_SYSCALLS = (425, 426, 427, 117, 270, 271, 438, 434,
+                      91, 143, 144, 145, 146, 147, 149, 151, 152, 159,
+                      268, 33, 39, 40, 41, 51)
+# E1 (contract C6, ruling R1): Chromium's namespace sandbox calls these inside
+# its own user namespace, so they leave the BROWSER deny list only: chroot,
+# capset, setregid, setgid, setreuid, setuid, setresuid, setresgid, setfsuid,
+# setfsgid, setgroups. mount, umount2, pivot_root, setns, mknodat and
+# pidfd_open stay denied for BROWSER. unshare, clone and clone3 were never
+# filtered (R2). Roles hold no capability in the initial user namespace.
+BROWSER_SANDBOX_SYSCALLS = (51, 91, 143, 144, 145, 146, 147, 149, 151, 152, 159)
+# seccomp(2) filter flags each role may pass: 0 and TSYNC; BROWSER also
+# SPEC_ALLOW and TSYNC|SPEC_ALLOW (C6). Never LOG, NEW_LISTENER or TSYNC_ESRCH.
+SECCOMP_FLAGS_BY_ROLE = MappingProxyType({
+    'CONTROLLER': (0, 1), 'BROWSER': (0, 1, 4, 5), 'VERIFIER': (0, 1), 'PROXY': (0, 1)})
+
+
 def build_filter(role):
     """Deterministic, inspectable classic-BPF outer policy; no external generator.
 
     Loads match pinned little-endian seccomp_data nr0/arch4/args16; both words
     of every constrained scalar are checked. Only ALLOW, EPERM, KILL_PROCESS
     exits exist. No TRACE/USER_NOTIF or listener flags. New restriction filters
-    can only tighten this one. No AF_NETLINK exception is selected.
+    can only tighten this one. No AF_NETLINK exception is selected. BROWSER
+    differs only in its deny list and seccomp flag set (E1, contract C6).
     """
-    if role not in UIDS: _fail('ROLE_DENIED')
+    if role not in UIDS or role not in SECCOMP_FLAGS_BY_ROLE: _fail('ROLE_DENIED')
     code, labels, jumps = [], {}, []
     def load(offset): code.append((0x20, 0, 0, offset))
     def ret(value): code.append((0x06, 0, 0, value))
@@ -257,10 +279,9 @@ def build_filter(role):
     label('native')
     load(0); code.append((0x54, 0, 0, 0xc0000000)); eq(0, yes='syscall'); ret(0x80000000)
     label('syscall'); load(0)
-    # Linux 6.8 native arm64 syscall numbers: no compat/multiplexed ABI.
-    for nr in (425, 426, 427, 117, 270, 271, 438, 434,
-               91, 143, 144, 145, 146, 147, 149, 151, 152, 159,
-               268, 33, 39, 40, 41, 51): eq(nr, yes='deny')
+    deny = BASE_DENY_SYSCALLS if role != 'BROWSER' else tuple(
+        nr for nr in BASE_DENY_SYSCALLS if nr not in BROWSER_SANDBOX_SYSCALLS)
+    for nr in deny: eq(nr, yes='deny')
     eq(198, yes='socket'); eq(199, yes='socket'); eq(167, yes='prctl'); eq(277, yes='seccomp')
     ret(0x7fff0000)
     label('prctl')
@@ -272,10 +293,13 @@ def build_filter(role):
     label('dumpable'); load(28); require(0); load(24); require(0); ret(0x7fff0000)
     label('ambient'); load(28); require(0); load(24); eq(2, yes='deny'); ret(0x7fff0000)
     # Chromium may tighten its inherited policy via prctl or seccomp; only
-    # filter mode and 0/TSYNC flags are allowed, never a NEW_LISTENER escape.
+    # filter mode and the role's flags are allowed (0/TSYNC; BROWSER also
+    # SPEC_ALLOW), never a NEW_LISTENER escape.
     label('inner-filter'); load(28); require(0); load(24); require(2); ret(0x7fff0000)
     label('seccomp'); load(20); require(0); load(16); require(1)
-    load(28); require(0); load(24); eq(0, yes='allow'); eq(1, yes='allow'); ret(0x00050001)
+    load(28); require(0); load(24)
+    for flags in SECCOMP_FLAGS_BY_ROLE[role]: eq(flags, yes='allow')
+    ret(0x00050001)
     label('socket')
     for offset in (20, 28, 36): load(offset); require(0)
     load(16); eq(1, yes='unix'); eq(2, yes='ip'); eq(10, yes='ip')
