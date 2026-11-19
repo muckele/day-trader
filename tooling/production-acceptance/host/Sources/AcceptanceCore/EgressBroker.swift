@@ -248,10 +248,10 @@ public final class Tunnel: @unchecked Sendable {
         do {
             try await forward(source, destination, ended: &ended)
         } catch {
-            // P38: a per-slot end (idle, or the guest's physical close) ends this tunnel only.
-            // The pump toward the guest sends its logical EOF first (b), unless the guest has
-            // closed its stream (c). Every other error still fails the run, and a protocol or limit
-            // violation fails it even after the slot ended (fix round 1, I-1).
+            // P38: a per-slot end (idle, or the launcher's END for the guest's connection, P40) ends
+            // this tunnel only. The pump toward the guest sends its logical EOF first (b), unless the
+            // guest's connection has ended (c). Every other error still fails the run, and a protocol
+            // or limit violation fails it even after the slot ended (fix round 1, I-1).
             if let failure = error as? BrokerFailure, failure == .limits || failure == .invalidControl { throw error }
             if error is LaneFailure { throw error }  // P40: the launcher's pipe is gone or broken: whole run
             if error is GuestStreamClosed { await broker.endSlot(id, guestClosed: true) }
