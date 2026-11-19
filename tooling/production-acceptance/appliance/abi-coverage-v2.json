@@ -326,6 +326,34 @@
     },
     {
       "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "declaration": "#define\tEBADF\t\t 9\t/* Bad file number */",
+      "firstLine": 13,
+      "id": "EBADF",
+      "lastLine": 13,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "memberSHA256": "2c148e92b8318deeb767fabd60822113e575ee664ff09a1873aed8f7a495793c",
+      "signed": true,
+      "value": 9,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "declaration": "#define\tECONNREFUSED\t111\t/* Connection refused */",
+      "firstLine": 94,
+      "id": "ECONNREFUSED",
+      "lastLine": 94,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "memberSHA256": "fb7b5a504015f3a9074c641e7371b250d867d751d90e4a22a8ac17fced3d50af",
+      "signed": true,
+      "value": 111,
+      "width": 32
+    },
+    {
+      "conditions": [
         "#ifndef _ASM_GENERIC_ERRNO_H"
       ],
       "declaration": "#define\tEHOSTUNREACH\t113\t/* No route to host */",
@@ -364,6 +392,48 @@
       "memberSHA256": "fb7b5a504015f3a9074c641e7371b250d867d751d90e4a22a8ac17fced3d50af",
       "signed": true,
       "value": 101,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "declaration": "#define\tENOENT\t\t 2\t/* No such file or directory */",
+      "firstLine": 6,
+      "id": "ENOENT",
+      "lastLine": 6,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "memberSHA256": "2c148e92b8318deeb767fabd60822113e575ee664ff09a1873aed8f7a495793c",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "declaration": "#define\tENOEXEC\t\t 8\t/* Exec format error */",
+      "firstLine": 12,
+      "id": "ENOEXEC",
+      "lastLine": 12,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "memberSHA256": "2c148e92b8318deeb767fabd60822113e575ee664ff09a1873aed8f7a495793c",
+      "signed": true,
+      "value": 8,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "declaration": "#define\tENOTSOCK\t88\t/* Socket operation on non-socket */",
+      "firstLine": 71,
+      "id": "ENOTSOCK",
+      "lastLine": 71,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "memberSHA256": "fb7b5a504015f3a9074c641e7371b250d867d751d90e4a22a8ac17fced3d50af",
+      "signed": true,
+      "value": 88,
       "width": 32
     },
     {
@@ -435,6 +505,20 @@
       "memberSHA256": "8526ac1acaf5534946e98d64a8b448ccf45a7925e5661b388f285d7153b794ee",
       "signed": true,
       "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "declaration": "#define MSG_CMSG_CLOEXEC 0x40000000\t/* Set close_on_exec for file",
+      "firstLine": 332,
+      "id": "MSG_CMSG_CLOEXEC",
+      "lastLine": 332,
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "memberSHA256": "4afa211fad3850a13fbb7ab4130fcd162e3ac4d3593f7b6c5b6232a498841dc2",
+      "signed": false,
+      "value": 1073741824,
       "width": 32
     },
     {
@@ -821,6 +905,34 @@
     },
     {
       "conditions": [
+        "#ifndef _UAPI_LINUX_PTRACE_H"
+      ],
+      "declaration": "#define PTRACE_ATTACH\t\t  16",
+      "firstLine": 22,
+      "id": "PTRACE_ATTACH",
+      "lastLine": 22,
+      "memberPath": "linux-6.8/include/uapi/linux/ptrace.h",
+      "memberSHA256": "e0a5a2bac8fc8c287342daccaaa484d22d9332c75013d454c54bf51b646b53b3",
+      "signed": true,
+      "value": 16,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_PTRACE_H"
+      ],
+      "declaration": "#define PTRACE_SEIZE\t\t0x4206",
+      "firstLine": 53,
+      "id": "PTRACE_SEIZE",
+      "lastLine": 53,
+      "memberPath": "linux-6.8/include/uapi/linux/ptrace.h",
+      "memberSHA256": "e0a5a2bac8fc8c287342daccaaa484d22d9332c75013d454c54bf51b646b53b3",
+      "signed": true,
+      "value": 16902,
+      "width": 64
+    },
+    {
+      "conditions": [
         "#ifndef _LINUX_ROUTE_H"
       ],
       "declaration": "#define\tRTF_GATEWAY\t0x0002\t\t/* destination is a gateway\t*/",
@@ -886,6 +998,20 @@
       "memberPath": "linux-6.8/include/uapi/linux/route.h",
       "memberSHA256": "26101b575b648585c1a6f34e20eca000e6ae4c869e632b987e9e3f9345b13eab",
       "signed": false,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "declaration": "#define\tSCM_RIGHTS\t0x01\t\t/* rw: access rights (array of int) */",
+      "firstLine": 177,
+      "id": "SCM_RIGHTS",
+      "lastLine": 177,
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "memberSHA256": "4afa211fad3850a13fbb7ab4130fcd162e3ac4d3593f7b6c5b6232a498841dc2",
+      "signed": true,
       "value": 1,
       "width": 32
     },
@@ -1031,6 +1157,20 @@
     },
     {
       "conditions": [
+        "#ifndef _UAPI__ASM_GENERIC_SIGNAL_H"
+      ],
+      "declaration": "#define SIGSYS\t\t31",
+      "firstLine": 46,
+      "id": "SIGSYS",
+      "lastLine": 46,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/signal.h",
+      "memberSHA256": "936247c76acb82e5c82c58c2cddfe45fcb71230465f6c137966a8a285a3dc04c",
+      "signed": true,
+      "value": 31,
+      "width": 32
+    },
+    {
+      "conditions": [
         "#ifndef _LINUX_NET_H",
         "#ifndef ARCH_HAS_SOCKET_TYPES"
       ],
@@ -1116,6 +1256,20 @@
       "lastLine": 65,
       "memberPath": "linux-6.8/include/linux/net.h",
       "memberSHA256": "db0aa1e0b6fbf6f3f36e9dcfc39193b7542637a62ecf1fb7e364a028df3d031f",
+      "signed": true,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef __ASM_GENERIC_SOCKET_H"
+      ],
+      "declaration": "#define SOL_SOCKET\t1",
+      "firstLine": 9,
+      "id": "SOL_SOCKET",
+      "lastLine": 9,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/socket.h",
+      "memberSHA256": "795c17350dcd328870890fcfa9c96ae4751687f348d340f9a760679e19d59527",
       "signed": true,
       "value": 1,
       "width": 32
@@ -1492,6 +1646,18 @@
       "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
       "signed": true,
       "value": 117,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_recvmsg 212",
+      "firstLine": 550,
+      "id": "__NR_recvmsg",
+      "lastLine": 550,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 212,
       "width": 32
     },
     {

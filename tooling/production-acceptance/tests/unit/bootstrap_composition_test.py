@@ -67,18 +67,33 @@ class Exit(BaseException): pass
 
 
 class InertFamily:
-    """Drive the actual confined child/result/cleanup code with finite OS effects."""
+    """Drive the actual confined child/result/cleanup code with finite OS effects.
+
+    Task 10: the authority supplies fixture processes of the controller and proxy UIDs in each family's PID
+    namespace, the trusted UNIX names, the SCM_RIGHTS donors, CONFIG_COMPAT present and a rubber-stamp inventory
+    correlation. The inert kernel refuses every attempt with EPERM except: AF_UNIX sockets open (E1) and their
+    connects are refused; recvmsg on the FD3 pipe is ENOTSOCK; unshare(CLONE_NEWUSER) succeeds (P49); the AArch32 and
+    alternate-entry samples die by SIGSYS; nodes are absent and foreign /proc/<pid>/fd is EACCES. The parent observes
+    each waiting exact-inventory family through literal Linux /proc (confinement_test.LiteralProc).
+    """
+    BOOTSTRAP_ARGV = ('/opt/acceptance/runtime/python/bin/python3', '/opt/acceptance/guest/bootstrap.py')
+    FOREIGN = {'CONTROLLER': 7, 'PROXY': 8}
+    SIGSYS = 31  # include/uapi/asm-generic/signal.h:46
     def __init__(self, binding, receivers, clock, budget):
         self.events, self.clock, self.current = [], clock, None
         self.wait_status, self.scope_failure = 'EXITED', False
-        self.pid, self.buffer = 200, bytearray()
+        self.pid, self.buffer, self.sample, self.proc = 200, bytearray(), None, None
         self.authority = types.SimpleNamespace(
             approve_offline_fixtures=lambda config: self.authority,
             receiver_count=lambda operation: 987, # must never be trusted by v1
-            foreign_pid=lambda role: 500, audit=lambda port: None,
             helper_pin=lambda name: c.ProgramPin('/opt/acceptance/tests/fixtures/' + p.HELPER_SAMPLES[name], 'f'*64),
             audit_abi_termination=lambda *args: self.authority,
-            unsynchronized_thread=lambda port: None, memory=lambda value: value)
+            unsynchronized_thread=lambda port: None, memory=lambda value: value,
+            foreign_uid_process_in_role_ns=lambda role: self.FOREIGN[role],
+            trusted_unix_names=lambda: ('\0acceptance-trusted', '/run/acceptance/controller/trusted.sock'),
+            scm_rights_donor=lambda role: '/run/acceptance/' + role.lower() + '/donor',
+            kernel_feature=lambda name: True,
+            correlate_inventory=lambda role, digest: self.authority)
         self.elapsed = 0
         def mono(): self.elapsed += .001; return self.elapsed
         def write(fd, data):
@@ -91,24 +106,58 @@ class InertFamily:
             self.events.append(('syscall', nr, args))
             if self.current.role == 'PROXY' and nr in (198, 203, 64):
                 return 19 if nr == 198 else args[-1] if nr == 64 else 0
+            if nr == 97: return 0                      # P49: unshare(CLONE_NEWUSER) in a fresh family
+            if nr == 198 and args[0] == 1: return 21   # AF_UNIX sockets are allowed (E1); connects are refused
+            if nr == 212: raise OSError(88, 'inert ENOTSOCK')  # recvmsg on the FD3 pipe
             raise PermissionError(1, 'inert kernel denial')
         def end(code): raise Exit(code)
+        foreign = {'/proc/%d' % pid: c.UIDS[role] for role, pid in self.FOREIGN.items()}
+        def stat(path):
+            if path in foreign: return types.SimpleNamespace(st_uid=foreign[path])
+            if self.proc is not None: return self.proc.stat(path)
+            raise FileNotFoundError(2, path)
+        def open_(path, *args):
+            if path in ('/proc/7/fd/3', '/proc/8/fd/3'): raise PermissionError(13, 'inert foreign descriptor')
+            raise FileNotFoundError(2, 'inert absent node')
+        def listdir(path):
+            if path == '/proc': return ['1', 'self', 'thread-self']
+            if self.proc is not None and path.startswith(self.proc.base): return self.proc.listdir(path)
+            return ['0','1','2','3','4']
+        def readlink(path):
+            if self.proc is not None and path.startswith((self.proc.base, '/proc/self/ns/')): return self.proc.readlink(path)
+            return '/dev/null'
+        cmdline = b''.join(arg.encode() + b'\0' for arg in self.BOOTSTRAP_ARGV)
+        def read_file(path, limit=65536):
+            return cmdline if path == '/proc/self/cmdline' else self.proc.read_file(path, limit)
+        def pin_sample(path, digest):
+            self.sample = path; return 39
+        def exitcode(status):
+            if self.sample is not None and self.sample.endswith(('/aarch32-syscall', '/alternate-entry')): return -self.SIGSYS
+            return status >> 8
         self.b = types.SimpleNamespace(monotonic=mono, sleep=lambda duration: None,
             syscall=syscall, select=lambda *args: ([31], [], []),
-            pin_sample=lambda path, digest: 39, signal=types.SimpleNamespace(SIGKILL=9),
+            pin_sample=pin_sample, signal=types.SimpleNamespace(SIGKILL=9),
+            read_file=read_file, run_device=confinement_fixture.LiteralProc.RUN_DEV,
             os=types.SimpleNamespace(path=types.SimpleNamespace(lexists=lambda path: False),
                 write=write, read=lambda fd, size: b'EXIT' if fd == 3 else b'ATTEMPTED\n'[:size],
                 close=lambda fd: None, unlink=lambda path: None, rmdir=rmdir,
-                listdir=lambda path: ['0','1','2','3','4'], readlink=lambda path: '/dev/null',
-                open=lambda *args: (_ for _ in ()).throw(FileNotFoundError()),
+                listdir=listdir, readlink=readlink, stat=stat, getpid=lambda: 1,
+                open=open_,
                 fork=lambda: 901, pipe2=lambda flags: (31,32), WNOHANG=1,
-                waitpid=lambda pid, flags: (pid,23<<8), waitstatus_to_exitcode=lambda status: status>>8,
+                waitpid=lambda pid, flags: (pid,23<<8), waitstatus_to_exitcode=exitcode,
                 kill=lambda pid, sig: self.events.append(('kill',pid)), _exit=end))
         kernel = c.OfflineKernelPort(self.b)
         def spawn(launch, entry):
-            self.pid += 1; self.current = launch
+            self.pid += 1; self.current = launch; self.sample = None
             owned = c.NativeOwned(self.pid, binding.runId, launch.role, object(), object())
             self.events.append(('spawn', owned))
+            # The waiting family as the parent observes it (T8-03): literal /proc of this pid; a probe family never
+            # execs, so its cmdline is the bootstrap's own.
+            self.proc = confinement_fixture.LiteralProc(launch.role)
+            self.proc.pid, self.proc.base = self.pid, '/proc/%d' % self.pid
+            self.proc.cmdline = list(self.BOOTSTRAP_ARGV)
+            kernel._owned[owned] = {'child': self.pid, 'terminal': None, 'launch': launch, 'digest': self.proc.digest,
+                                    'links': ('pipe:[30]', 'pipe:[40]')}
             facts = dict(pid=self.pid, run_id=binding.runId, role=launch.role,
                 uids=(launch.uid,)*3, gids=(launch.uid,)*3, groups=(), capabilities=(0,)*5,
                 no_new_privs=1, seccomp=2, filter_digest=hashlib.sha256(b''.join(
@@ -163,7 +212,8 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
                     original=family.authority.helper_pin; helper=[None]
                     def pin(name): helper[0]=name; return original(name)
                     family.authority.helper_pin=pin
-                    family.b.os.waitstatus_to_exitcode=lambda status: -9 if helper[0]=='AArch32-audit' else 23
+                    # T8-02: only a SIGSYS death reaches the termination audit, which then refuses.
+                    family.b.os.waitstatus_to_exitcode=lambda status: -31 if helper[0]=='AArch32-audit' else 23
                     family.authority.audit_abi_termination=denied
                 try: p.qualify_probe_epoch(setup[0],family.fixtures,setup[3])
                 except (p.ProbeFailure,p.RuntimeGateUnavailable): pass
@@ -172,7 +222,7 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
                 self.assertIs(family.fixtures.cleanup_budget,setup[3])
                 for owner in family.fixtures.family_owners:
                     self.assertTrue(any(row[:2]==('stop',owner.owned) for row in family.events))
-                self.assertLess(len(family.fixtures.family_owners),91)
+                self.assertLess(len(family.fixtures.family_owners),94)
 
     def test_t5_r2_epoch_is_a_positive_safe_integer_on_the_wire(self):
         for epoch in (1,2,9007199254740991):
@@ -202,8 +252,8 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
 
     def test_t5_r3_all_framed_child_results_reject_duplicate_and_unknown_fields(self):
         operations=tuple(op for case in p.PROBES.values() for op in case.operations)
-        self.assertEqual(len(operations),91)
-        for target in range(91):
+        self.assertEqual(len(operations),94)
+        for target in range(94):
             for prefix in (b'{"operation":"UNTRUSTED_DUPLICATE",',b'{"attempted":false,',b'{"unknown":0,'):
                 with self.subTest(operation=operations[target],prefix=prefix):
                     setup=self.setup_epoch(); family=setup[4]
@@ -1439,8 +1489,8 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             try:composition.begin(TEST_HOST_CHALLENGE)
             except Exception as error:self.fail('a >60 s probe catalogue was denied: '+repr(error))
             self.assertEqual(composition._state,'ADMITTED')
-            self.assertEqual(len(h.fixture.family_owners),91)
-            self.assertGreaterEqual(h.clock.mono-start,91000)
+            self.assertEqual(len(h.fixture.family_owners),94)
+            self.assertGreaterEqual(h.clock.mono-start,94000)
             self.assertIs(h.budget.started,False)
             self.assertIsNone(h.budget.deadline)
 

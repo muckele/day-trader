@@ -1310,6 +1310,124 @@
       "memberPath": "linux-6.8/include/linux/fs.h",
       "signed": true,
       "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_recvmsg",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "id": "MSG_CMSG_CLOEXEC",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "id": "SCM_RIGHTS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef __ASM_GENERIC_SOCKET_H"
+      ],
+      "id": "SOL_SOCKET",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/socket.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "id": "ENOTSOCK",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "id": "EBADF",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "id": "ECONNREFUSED",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "id": "ENOENT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "id": "ENOEXEC",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_PTRACE_H"
+      ],
+      "id": "PTRACE_ATTACH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/ptrace.h",
+      "signed": true,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_PTRACE_H"
+      ],
+      "id": "PTRACE_SEIZE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/ptrace.h",
+      "signed": true,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__ASM_GENERIC_SIGNAL_H"
+      ],
+      "id": "SIGSYS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/signal.h",
+      "signed": true,
+      "width": 32
     }
   ],
   "version": 1

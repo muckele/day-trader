@@ -1035,8 +1035,11 @@ class LinuxBindings:
         # hypervisor device-list/image authority supplied at selection.
         mounts=self.read_file('/proc/self/mountinfo').decode('ascii').splitlines()
         parsed=[(r.split(' - ')[0].split(),r.split(' - ')[1].split()) for r in mounts]
-        if (not any(a[4]=='/' and 'ro' in a[5].split(',') for a,b in parsed) or
-            not any(a[4]=='/run' and b[0]=='tmpfs' for a,b in parsed) or
+        # T8-12: path lookup reaches only the last mount on a mount point
+        # (mountinfo lists mounts in mount order); an earlier row proves nothing.
+        top={a[4]:(a,b) for a,b in parsed}
+        if ('/' not in top or 'ro' not in top['/'][0][5].split(',') or
+            '/run' not in top or top['/run'][1][0]!='tmpfs' or
             len(self.read_file('/proc/swaps').splitlines()) != 1 or
             set(self.os.listdir('/sys/class/net')) != {'lo'}): _fail('APPLIANCE_DENIED')
         self.run_device=self.os.stat('/run').st_dev

@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import re
+import struct
 import subprocess
 import sys
 import tarfile
@@ -29,7 +30,7 @@ ARCHIVE = Path('/Users/Matt/day-trader-references/m4-linux-aarch64-offline-repai
 ARCHIVE_SHA = 'c969dea4e8bb6be991bbf7c010ba0e0a5643a3a8d8fb0a2aaa053406f1e965f3'
 INVENTORY = ROOT / 'appliance/abi-inventory.json'
 COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
-COVERAGE_V2_SHA = '440574980e85720c6d9aea1a14bda9fae30c5c26d544ea4abc2b990a107d89f7'
+COVERAGE_V2_SHA = '46d87a21cfbd0a9d8a25e748877f3c3371609a18a01097b74dc321e2258d7e65'
 EVENT_REFERENCE = ROOT / 'appliance/bootstrap-event-reference.json'
 EVENT_REFERENCE_SHA = 'a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d'
 ORACLES_PATH = Path(__file__).resolve().parent / 'abi_oracles.py'
@@ -226,6 +227,9 @@ class CoverageTests(unittest.TestCase):
 
 
 GUEST = ROOT / 'guest'
+# Task 10 (Option A I1): the guest probe catalogue is swept with the guest modules' syscall and flag tables.
+PROBE_FILE = 'confinement_probe.py'
+PROBE_PATH = ROOT / 'tests/guest' / PROBE_FILE
 _conf_spec = importlib.util.spec_from_file_location('abi_coverage_confinement', GUEST / 'confinement.py')
 confinement = importlib.util.module_from_spec(_conf_spec)
 sys.modules[_conf_spec.name] = confinement
@@ -283,22 +287,39 @@ ROLE_FILTER_DIGESTS = {
     'PROXY': '01e3ec748fdbadb0a0ac195855506cc19680fcc5aa3c6289d2c15e15ec981d7d',
 }
 
-# syscall symbol -> files whose native syscall(...) call sites invoke it (R6). Direct call sites only: the BPF deny list
-# and socketpair appear in the filter but are not called.
+# syscall symbol -> files whose native syscall(...) call sites invoke it (R6). Direct call sites only: the rest of the
+# BPF deny list appears in the filter but is not called. Task 10 adds the probe catalogue's attempts (PROBE_FILE).
 SYSCALL_SITES = {
-    '__NR_capset': frozenset({'confinement.py'}),
-    '__NR_close_range': frozenset({'confinement.py'}),
+    '__NR_capset': frozenset({'confinement.py', PROBE_FILE}),
+    '__NR_chroot': frozenset({PROBE_FILE}),
+    '__NR_close_range': frozenset({'confinement.py', PROBE_FILE}),
+    '__NR_connect': frozenset({PROBE_FILE}),
     '__NR_fcntl': frozenset({'confinement.py'}),
+    '__NR_io_uring_enter': frozenset({PROBE_FILE}),
+    '__NR_io_uring_register': frozenset({PROBE_FILE}),
+    '__NR_io_uring_setup': frozenset({PROBE_FILE}),
     '__NR_mount': frozenset({'confinement.py'}),
+    '__NR_pidfd_getfd': frozenset({PROBE_FILE}),
+    '__NR_pidfd_open': frozenset({PROBE_FILE}),
     '__NR_pivot_root': frozenset({'confinement.py'}),
     '__NR_prctl': frozenset({'confinement.py'}),
-    '__NR_seccomp': frozenset({'confinement.py'}),
+    '__NR_process_vm_readv': frozenset({PROBE_FILE}),
+    '__NR_process_vm_writev': frozenset({PROBE_FILE}),
+    '__NR_ptrace': frozenset({PROBE_FILE}),
+    '__NR_recvmsg': frozenset({PROBE_FILE}),
+    '__NR_seccomp': frozenset({'confinement.py', PROBE_FILE}),
+    '__NR_sendto': frozenset({PROBE_FILE}),
     '__NR_setgroups': frozenset({'confinement.py'}),
     '__NR_setresgid': frozenset({'confinement.py'}),
-    '__NR_setresuid': frozenset({'confinement.py'}),
+    '__NR_setresuid': frozenset({'confinement.py', PROBE_FILE}),
+    '__NR_socket': frozenset({PROBE_FILE}),
+    '__NR_socketpair': frozenset({PROBE_FILE}),
     '__NR_umount2': frozenset({'confinement.py'}),
-    '__NR_unshare': frozenset({'confinement.py'}),
+    '__NR_unshare': frozenset({'confinement.py', PROBE_FILE}),
+    '__NR_write': frozenset({PROBE_FILE}),
 }
+# The syscalls the probe catalogue attempts (Task 10): exactly these, each at sites bound in SITE_ARGS.
+PROBE_SYSCALLS = frozenset(name for name, files in SYSCALL_SITES.items() if PROBE_FILE in files)
 
 # syscall symbol -> argument index (after the number; equals seccomp args[i]) -> covered symbols whose values the
 # literal at that index (or the filter comparison on args[i] low word) may take. Used both by the native call sites
@@ -317,9 +338,14 @@ ARG_SYMBOLS = {
     '__NR_seccomp': {0: frozenset({'SECCOMP_SET_MODE_FILTER'}),
                      1: frozenset({'SECCOMP_FILTER_FLAG_TSYNC', 'SECCOMP_FILTER_FLAG_SPEC_ALLOW'})},
     '__NR_umount2': {1: frozenset({'MNT_DETACH'})},
-    '__NR_unshare': {0: frozenset({'CLONE_NEWNS', 'CLONE_NEWPID', 'CLONE_NEWIPC'})},
+    # CLONE_NEWUSER: the P49 probe's unshare; no filter compares unshare's argument (R2).
+    '__NR_unshare': {0: frozenset({'CLONE_NEWNS', 'CLONE_NEWPID', 'CLONE_NEWIPC', 'CLONE_NEWUSER'})},
     '__NR_socket': _SOCKET_ARGS,
     '__NR_socketpair': _SOCKET_ARGS,
+    # Task 10 theft probes (T8-01, Option A m4): the ptrace requests and recvmsg's flags; neither is compared by any
+    # filter (ptrace jumps straight to the deny return, recvmsg is not filtered).
+    '__NR_ptrace': {0: frozenset({'PTRACE_ATTACH', 'PTRACE_SEIZE'})},
+    '__NR_recvmsg': {2: frozenset({'MSG_CMSG_CLOEXEC'})},
 }
 # The only OR combinations of ARG_SYMBOLS a filter comparison on args[i] low word may take, each listed by name
 # (C6: BROWSER's TSYNC|SPEC_ALLOW). Any other combination stays unadmitted.
@@ -358,6 +384,40 @@ R13_LITERALS = {
     'TCP_LISTEN': (10, 'R13 (P34): linux-6.8/include/net/tcp_states.h:22 TCP_LISTEN is the 10th enumerator counted '
                        'from TCP_ESTABLISHED = 1 at :13; an implicit enumerator the deriver refuses with '
                        'SYMBOL_MISSING, the same route as the SS_* socket states'),
+    'SOCKETPAIR_SV_BYTES': (8, 'R13 (Task 10): socketpair(2) fills int sv[2], two 4-byte ints on LP64; the probe passes '
+                               'that buffer'),
+    'SOCK_FPROG_BYTES': (16, 'R13 (Task 10): linux-6.8/include/uapi/linux/filter.h:31-34 struct sock_fprog {unsigned '
+                             'short len; struct sock_filter *filter;} on LP64: 2 bytes, 6 padding, an 8-byte pointer; '
+                             'the probe passes it empty'),
+}
+# Task 10: literals of the guest probe catalogue that are probe choices, not ABI values. They are named only at
+# PROBE_FILE syscall sites and struct calls (never by build_filter, so POLICY_VALUES is unchanged).
+PROBE_POLICY_LITERALS = {
+    'NULL_POINTER': (0, 'a NULL user pointer or address argument that the refused call never dereferences'),
+    'NO_FLAGS': (0, 'a flags or options argument with no bit set'),
+    'ZERO_ARG': (0, 'a zero count, opcode or length argument of a call that must be refused before it reads it'),
+    'INVALID_FD': (-1, 'no descriptor: io_uring_register and io_uring_enter on -1 reach the seccomp check first'),
+    'IO_URING_ENTRIES': (1, 'io_uring_setup asks for one ring entry; the call must be refused before any ring exists'),
+    'FOREIGN_COMMAND_FD': (3, "the foreign role process's inherited FD3 command pipe, the descriptor pidfd_getfd "
+                              'would steal'),
+    'ROOT_ID': (0, 'uid 0: setresuid(0, 0, 0) asks for root in the real, effective and saved ids'),
+    'ONE_IOVEC': (1, 'process_vm_readv, process_vm_writev and recvmsg pass exactly one iovec'),
+    'FIRST_UNAUDITED_FD': (5, 'the first descriptor above the audited FD0..4, where the helper close_range starts'),
+    'CLOSE_RANGE_PAST_RETAINED': (1, 'close_range(fd + 1, ...): the second range starts just after the retained '
+                                     'pinned descriptor'),
+    'SVM_RESERVED': (0, 'struct sockaddr_vm svm_reserved1 is zero'),
+    'NO_FLOW_LABEL': (0, 'struct sockaddr_in6 sin6_flowinfo is zero'),
+    'NO_SCOPE': (0, 'struct sockaddr_in6 sin6_scope_id is zero: no link-local scope'),
+    'CAP_BIT0': (1, 'capability bit 0 (CAP_CHOWN) in the first effective and permitted words: one capability the role '
+                    'does not hold'),
+    'NO_CAPABILITIES': (0, 'an empty capability word'),
+    'POINTER_SLOT': (0, 'a pointer field the NativeMemory pointer map relocates at the call; the packed value is a '
+                        'placeholder'),
+    'IOV_BYTES': (8, 'eight bytes in each process_vm iovec: a non-empty transfer, since a zero total returns 0 before '
+                     'the pid is resolved'),
+    'REMOTE_IOV_BASE': (4096, 'a non-null remote address; the ptrace access check precedes any use of it'),
+    'ONE_BYTE': (1, 'a one-byte data buffer, enough to carry one SCM_RIGHTS message'),
+    'ZERO_OFFSET': (0, 'the first control message starts at offset 0 of the control buffer'),
 }
 
 # Exact per-site bindings for native syscall(...) calls: (file, enclosing qualname, ordinal in source order among the
@@ -370,6 +430,7 @@ def _s(*names):
     return frozenset(names)
 
 _PRCTL_ZERO = {2: 'UNUSED_ARG', 3: 'UNUSED_ARG', 4: 'UNUSED_ARG'}
+_VSOCK_STREAM = {0: _s('AF_VSOCK'), 1: _s('SOCK_STREAM'), 2: 'PROTOCOL_DEFAULT'}
 SITE_ARGS = {
     ('confinement.py', 'LinuxBindings.pin_programs', 0): ('__NR_fcntl', {1: _s('F_DUPFD_CLOEXEC'), 2: 'FD_FLOOR'}),
     ('confinement.py', 'LinuxBindings.pin_sample', 0): ('__NR_fcntl', {1: _s('F_DUPFD_CLOEXEC'), 2: 'FD_FLOOR'}),
@@ -395,6 +456,48 @@ SITE_ARGS = {
     ('confinement.py', 'NativeChildPort.no_new_privs', 0): ('__NR_prctl', {0: _s('PR_SET_NO_NEW_PRIVS'), 1: 'NNP_ENABLE', **_PRCTL_ZERO}),
     ('confinement.py', 'NativeChildPort.install_seccomp', 0): ('__NR_seccomp', {0: _s('SECCOMP_SET_MODE_FILTER')}),
     ('confinement.py', '_KernelPortCore.spawn_waiting', 0): ('__NR_unshare', {0: _s('CLONE_NEWNS', 'CLONE_NEWPID', 'CLONE_NEWIPC')}),
+    # tests/guest/confinement_probe.py (Task 10, Option A I1): every probe attempt, site by site.
+    (PROBE_FILE, 'NativeProbePort._operation', 0): ('__NR_socket', _VSOCK_STREAM),
+    (PROBE_FILE, 'NativeProbePort._operation', 1): ('__NR_socketpair', _VSOCK_STREAM, {3: ('SOCKETPAIR_SV_BYTES',)}),
+    (PROBE_FILE, 'NativeProbePort._operation', 2): ('__NR_io_uring_setup', {0: 'IO_URING_ENTRIES', 1: 'NULL_POINTER'}),
+    (PROBE_FILE, 'NativeProbePort._operation', 3): ('__NR_io_uring_register', {
+        0: 'INVALID_FD', 1: 'ZERO_ARG', 2: 'NULL_POINTER', 3: 'ZERO_ARG'}),
+    (PROBE_FILE, 'NativeProbePort._operation', 4): ('__NR_io_uring_enter', {
+        0: 'INVALID_FD', 1: 'ZERO_ARG', 2: 'ZERO_ARG', 3: 'NO_FLAGS', 4: 'NULL_POINTER', 5: 'ZERO_ARG'}),
+    (PROBE_FILE, 'NativeProbePort._operation', 5): ('__NR_socket', _VSOCK_STREAM),
+    (PROBE_FILE, 'NativeProbePort._operation', 6): ('__NR_connect', {}),
+    (PROBE_FILE, 'NativeProbePort._operation', 7): ('__NR_write', {}),
+    (PROBE_FILE, 'NativeProbePort._operation', 8): ('__NR_pidfd_open', {1: 'NO_FLAGS'}),
+    (PROBE_FILE, 'NativeProbePort._operation', 9): ('__NR_pidfd_getfd', {1: 'FOREIGN_COMMAND_FD', 2: 'NO_FLAGS'}),
+    (PROBE_FILE, 'NativeProbePort._operation', 10): ('__NR_ptrace', {0: _s('PTRACE_ATTACH'), 2: 'NULL_POINTER',
+                                                                     3: 'NULL_POINTER'}),
+    (PROBE_FILE, 'NativeProbePort._operation', 11): ('__NR_ptrace', {0: _s('PTRACE_SEIZE'), 2: 'NULL_POINTER',
+                                                                     3: 'NO_FLAGS'}),
+    (PROBE_FILE, 'NativeProbePort._operation', 12): ('__NR_setresuid', {0: 'ROOT_ID', 1: 'ROOT_ID', 2: 'ROOT_ID'}),
+    (PROBE_FILE, 'NativeProbePort._operation', 13): ('__NR_capset', {}),
+    (PROBE_FILE, 'NativeProbePort._operation', 14): ('__NR_chroot', {}),
+    (PROBE_FILE, 'NativeProbePort._operation', 15): ('__NR_unshare', {0: _s('CLONE_NEWUSER')}),
+    (PROBE_FILE, 'NativeProbeContext.cross_memory', 0): ('__NR_process_vm_readv', {2: 'ONE_IOVEC', 4: 'ONE_IOVEC',
+                                                                                  5: 'NO_FLAGS'}),
+    (PROBE_FILE, 'NativeProbeContext.cross_memory', 1): ('__NR_process_vm_writev', {2: 'ONE_IOVEC', 4: 'ONE_IOVEC',
+                                                                                   5: 'NO_FLAGS'}),
+    (PROBE_FILE, 'NativeProbeContext.receive_rights', 0): ('__NR_recvmsg', {2: _s('MSG_CMSG_CLOEXEC')}),
+    (PROBE_FILE, 'NativeProbeContext.connect_unix', 0): ('__NR_socket', {0: _s('AF_UNIX'), 1: _s('SOCK_STREAM'),
+                                                                         2: 'PROTOCOL_DEFAULT'}),
+    (PROBE_FILE, 'NativeProbeContext.connect_unix', 1): ('__NR_connect', {}),
+    (PROBE_FILE, 'NativeProbeContext.network_attempt', 0): ('__NR_socket', {2: 'PROTOCOL_DEFAULT'}, {
+        0: ('AF_INET', 'AF_INET6'), 1: ('SOCK_STREAM', 'SOCK_DGRAM')}),
+    (PROBE_FILE, 'NativeProbeContext.network_attempt', 1): ('__NR_connect', {}),
+    (PROBE_FILE, 'NativeProbeContext.network_attempt', 2): ('__NR_write', {}),
+    (PROBE_FILE, 'NativeProbeContext.network_attempt', 3): ('__NR_sendto', {3: 'NO_FLAGS'}),
+    (PROBE_FILE, 'NativeProbeContext._helper', 0): ('__NR_socket', _VSOCK_STREAM),
+    (PROBE_FILE, 'NativeProbeContext._helper', 1): ('__NR_socket', _VSOCK_STREAM),
+    (PROBE_FILE, 'NativeProbeContext._helper', 2): ('__NR_close_range', {0: 'FIRST_UNAUDITED_FD', 2: 'CLOSE_RANGE_NO_FLAGS'},
+                                                    {1: ('CLOSE_RANGE_INCLUSIVE_END',)}),
+    (PROBE_FILE, 'NativeProbeContext._helper', 3): ('__NR_close_range', {1: 'CLOSE_RANGE_MAX', 2: 'CLOSE_RANGE_NO_FLAGS'},
+                                                    {0: ('CLOSE_RANGE_PAST_RETAINED',)}),
+    (PROBE_FILE, 'NativeProbeContext.bootstrap_rejection.FaultPort.install_seccomp', 0): ('__NR_seccomp', {
+        0: _s('SECCOMP_SET_MODE_FILTER'), 1: _s('SECCOMP_FILTER_FLAG_TSYNC')}, {2: ('SOCK_FPROG_BYTES',)}),
 }
 # SYSCALL_SITES is derived from the per-site table (nr symbol -> files); the test also checks it against the AST.
 
@@ -456,6 +559,11 @@ OPEN_FLAG_SITES = {
     ('confinement.py', '_KernelPortCore.spawn_waiting', 'pipe2', 0): _s('O_CLOEXEC'),
     ('confinement.py', '_KernelPortCore.spawn_waiting', 'open', 0): _s('O_RDWR', 'O_CLOEXEC', 'O_NOFOLLOW'),
     ('topology.py', 'NativeTopologyBindings._read', 'open_owned', 0): ('OPTIONAL_CLOEXEC_ABSENT',),
+    # Task 10 (T8-12): the console probes open each node for writing as well as for reading.
+    (PROBE_FILE, 'NativeProbeContext.open_denied', 'open', 0): _s('O_WRONLY', 'O_NOFOLLOW', 'O_CLOEXEC'),
+    (PROBE_FILE, 'NativeProbeContext.open_denied', 'open', 1): _s('O_NOFOLLOW', 'O_CLOEXEC'),
+    (PROBE_FILE, 'NativeProbeContext._helper', 'pipe2', 0): _s('O_CLOEXEC'),
+    (PROBE_FILE, 'NativeProbeContext._helper', 'pipe2', 1): _s('O_CLOEXEC'),
 }
 
 # AF_VSOCK host CID literals: (file, qualname) -> count. A CID literal is the element right before the policy service
@@ -494,6 +602,116 @@ TOPOLOGY_ABI_CONSTANTS = {
 # printed flags column (field index 7 of each shape).
 KERNEL_IPV6_ROW_FLAGS = (('_RTF_NONEXTHOP', '_RTF_REJECT'), ('_RTF_LOCAL', '_RTF_NONEXTHOP', '_RTF_UP'))
 KERNEL_IPV6_FLAGS_FIELD = 7
+
+# Task 10 (Option A I1): the errno, signal and ancillary values tests/guest/confinement_probe.py compares or raises,
+# each bound once at module level: constant name -> coverage v2 id.
+PROBE_ABI_CONSTANTS = {
+    '_EPERM': 'EPERM', '_ENOENT': 'ENOENT', '_ENOEXEC': 'ENOEXEC', '_EACCES': 'EACCES', '_ENOTSOCK': 'ENOTSOCK',
+    '_ECONNREFUSED': 'ECONNREFUSED', '_SIGSYS': 'SIGSYS', '_SOL_SOCKET': 'SOL_SOCKET', '_SCM_RIGHTS': 'SCM_RIGHTS',
+}
+# The accepted denial errno sets, in order; none holds EBADF (T8-01). _denial_errnos returns exactly these, in order.
+PROBE_DENIAL_SETS = {
+    '_KERNEL_DENIAL': ('_EPERM', '_EACCES'),
+    '_CREDENTIAL_DENIAL': ('_EPERM',),
+    '_ABSENT_OR_DENIED': ('_EPERM', '_EACCES', '_ENOENT'),
+    '_UNIX_REFUSED': ('_EPERM', '_EACCES', '_ENOENT', '_ECONNREFUSED'),
+}
+PROBE_DENIAL_RETURNS = ('_CREDENTIAL_DENIAL', '_ABSENT_OR_DENIED', '_UNIX_REFUSED', '_KERNEL_DENIAL')
+# Every comparison in the probe whose left operand is an errno, the helper's exit code or signal, or a control
+# message's (level, kind): qualname -> [(left, operator, comparator)] in source order. Exit codes 0, 23 and 24 are this
+# module's own child protocol; the only signal is SIGSYS (T8-02).
+PROBE_ABI_COMPARES = {
+    'NativeProbePort._denial': [('error.errno', 'NotIn', '_denial_errnos(name)')],
+    'NativeProbeContext.receive_rights': [('(level, kind)', 'NotEq', '(_SOL_SOCKET, _SCM_RIGHTS)')],
+    'NativeProbeContext.inherited_endpoint_not_socket': [('error.errno', 'NotEq', '_ENOTSOCK')],
+    'NativeProbeContext._helper': [('error.errno', 'Eq', '_EPERM'), ('error.errno', 'Eq', '_ENOEXEC'),
+                                   ('code', 'NotEq', '24'), ('-code', 'NotEq', '_SIGSYS'), ('code', 'Eq', '23'),
+                                   ('code', 'NotEq', '0')],
+}
+# Every errno the probe raises itself: (qualname, exception, errno argument, text) in source order.
+PROBE_ERRNO_RAISES = (
+    ('NativeProbePort._operation', 'PermissionError', '_EPERM', 'FD_INVENTORY_BOUNDARY'),
+    ('NativeProbePort._operation', 'PermissionError', '_EPERM', 'NO_CONSOLE_NODE'),
+    ('NativeProbePort._operation', 'PermissionError', '_EPERM', 'FD_INVENTORY_BOUNDARY'),
+    ('NativeProbeContext.family_only_processes', 'PermissionError', '_EPERM', 'FAMILY_ONLY'),
+    ('NativeProbeContext._helper', '_HelperBoundaryDenied', '_ENOEXEC', 'CONFIG_COMPAT_ABSENT'),
+    ('NativeProbeContext._helper', '_HelperBoundaryDenied', '_EPERM', 'SECCOMP_KILL'),
+    ('NativeProbeContext._helper', '_HelperBoundaryDenied', '_EPERM', 'HELPER_EXIT'),
+    ('NativeProbeContext.bootstrap_rejection', 'PermissionError', '_EPERM', 'BOOTSTRAP_BOUNDARY_DENIED'),
+)
+# R13 layout literals of the probe (Task 10): module constant -> (literal, bytes for a struct format or None for an
+# offset or size, one-line justification citing the pinned archive). The deriver refuses pointer-bearing structs, so
+# these stay known uncovered surface, accepted by review; derived facts are checked in test_layout_literals_are_justified.
+LAYOUT_LITERALS = {
+    '_IOVEC': ('<QQ', 16, 'linux-6.8/include/uapi/linux/uio.h:17-21 struct iovec {void __user *iov_base; '
+                          '__kernel_size_t iov_len;}: two LP64 8-byte words'),
+    '_USER_MSGHDR': ('<Qi4xQQQQI4x', 56, 'linux-6.8/include/linux/socket.h:82-90 struct user_msghdr: msg_name pointer, '
+                                         'int msg_namelen and 4 padding bytes, msg_iov pointer, size_t msg_iovlen, '
+                                         'msg_control pointer, size_t msg_controllen, unsigned int msg_flags and 4 '
+                                         'tail padding bytes (LP64 alignment 8)'),
+    '_CMSGHDR': ('<Qii', 16, 'linux-6.8/include/linux/socket.h:104-108 struct cmsghdr {__kernel_size_t cmsg_len; '
+                             'int cmsg_level; int cmsg_type;}'),
+    '_SCM_FD': ('<i', 4, 'linux-6.8/include/linux/socket.h:177 SCM_RIGHTS carries an array of int descriptors'),
+    '_SOCKADDR_UN': ('<H108s', 110, 'linux-6.8/include/uapi/linux/un.h:7-12 UNIX_PATH_MAX 108; struct sockaddr_un '
+                                    '{__kernel_sa_family_t sun_family; char sun_path[UNIX_PATH_MAX];}, the family an '
+                                    'unsigned short (include/uapi/linux/socket.h:10)'),
+    '_SOCKADDR_VM': ('<HHIIB3x', 16, 'linux-6.8/include/uapi/linux/vm_sockets.h:178-190 struct sockaddr_vm: '
+                                     'svm_family, svm_reserved1, svm_port, svm_cid, svm_flags, then zero padding to '
+                                     'sizeof(struct sockaddr) 16'),
+    '_SOCKADDR_IN': ('<H2s4s8x', 16, 'linux-6.8/include/uapi/linux/in.h:255-264 struct sockaddr_in: host-order '
+                                     'sin_family, __be16 sin_port as two network-order bytes, struct in_addr (:92-94), '
+                                     'zero pad to __SOCK_SIZE__ 16'),
+    '_SOCKADDR_IN6': ('<H2sI16sI', 28, 'linux-6.8/include/uapi/linux/in6.h:50-56 struct sockaddr_in6: sin6_family, '
+                                       '__be16 sin6_port as two network-order bytes, __be32 sin6_flowinfo (zero), '
+                                       'struct in6_addr of 16 bytes (:33-40), __u32 sin6_scope_id (zero)'),
+    '_CAPSET_HEADER': ('<II', 8, 'linux-6.8/include/uapi/linux/capability.h:39-42 struct __user_cap_header_struct '
+                                 '{__u32 version; int pid;}'),
+    '_CAPSET_DATA': ('<6I', 24, 'linux-6.8/include/uapi/linux/capability.h:44-48 struct __user_cap_data_struct {__u32 '
+                                'effective, permitted, inheritable;} times _LINUX_CAPABILITY_U32S_3 (2, :37)'),
+    '_MSG_IOV': (16, None, 'linux-6.8/include/linux/socket.h:85 offsetof(struct user_msghdr, msg_iov): after the '
+                           '8-byte msg_name and the 4-byte msg_namelen padded to 8'),
+    '_MSG_CONTROL': (32, None, 'linux-6.8/include/linux/socket.h:87 offsetof(struct user_msghdr, msg_control): after '
+                               'msg_iov and the 8-byte msg_iovlen'),
+    '_CMSG_ONE_FD': (24, None, 'linux-6.8/include/linux/socket.h:118,124 CMSG_SPACE(sizeof(int)): sizeof(struct '
+                               'cmsghdr) + CMSG_ALIGN(4), CMSG_ALIGN rounding up to sizeof(long) 8'),
+    '_SUN_PATH_OFFSET': (2, None, 'linux-6.8/include/uapi/linux/un.h:10 offsetof(struct sockaddr_un, sun_path): after '
+                                  'the 2-byte sun_family'),
+    '_SUN_PATH_BYTES': (108, None, 'linux-6.8/include/uapi/linux/un.h:7 UNIX_PATH_MAX 108, the size of sun_path'),
+}
+# Struct formats of the probe that are its own protocol, not Linux ABI.
+PROTOCOL_LITERALS = {
+    '_FRAME_LENGTH': ('<I', 4, "the probe's own little-endian length prefix of its child-result and helper-target "
+                               'frames, not Linux ABI'),
+}
+# Every struct.* call in the probe: (qualname, ordinal among struct calls there) -> (format constant, {argument index
+# after the format: name}) for each argument that is an int literal. Names resolve through coverage v2,
+# POLICY_LITERALS or PROBE_POLICY_LITERALS; non-literal arguments carry values computed at run time.
+PROBE_PACK_VALUES = {
+    ('_sockaddr_vm', 0): ('_SOCKADDR_VM', {0: 'AF_VSOCK', 1: 'SVM_RESERVED', 2: 'VSOCK_SERVICE_PORT',
+                                           3: 'VMADDR_CID_HOST', 4: 'NO_FLAGS'}),
+    ('_unix_address', 0): ('_SOCKADDR_UN', {0: 'AF_UNIX'}),
+    ('ReceiverBinding.address_bytes', 0): ('_SOCKADDR_IN', {0: 'AF_INET'}),
+    ('ReceiverBinding.address_bytes', 1): ('_SOCKADDR_IN6', {0: 'AF_INET6', 2: 'NO_FLOW_LABEL', 4: 'NO_SCOPE'}),
+    ('NativeProbePort._operation', 0): ('_CAPSET_HEADER', {0: '_LINUX_CAPABILITY_VERSION_3', 1: 'CAPSET_HEADER_PID'}),
+    ('NativeProbePort._operation', 1): ('_CAPSET_DATA', {0: 'CAP_BIT0', 1: 'CAP_BIT0', 2: 'NO_CAPABILITIES',
+                                                         3: 'NO_CAPABILITIES', 4: 'NO_CAPABILITIES',
+                                                         5: 'NO_CAPABILITIES'}),
+    ('NativeProbeContext.cross_memory', 0): ('_IOVEC', {0: 'POINTER_SLOT', 1: 'IOV_BYTES'}),
+    ('NativeProbeContext.cross_memory', 1): ('_IOVEC', {0: 'REMOTE_IOV_BASE', 1: 'IOV_BYTES'}),
+    ('NativeProbeContext.receive_rights', 0): ('_IOVEC', {0: 'POINTER_SLOT', 1: 'ONE_BYTE'}),
+    ('NativeProbeContext.receive_rights', 1): ('_USER_MSGHDR', {0: 'NULL_POINTER', 1: 'ZERO_ARG', 2: 'POINTER_SLOT',
+                                                                3: 'ONE_IOVEC', 4: 'POINTER_SLOT', 6: 'NO_FLAGS'}),
+    ('NativeProbeContext.receive_rights', 2): ('_USER_MSGHDR', {}),
+    ('NativeProbeContext.receive_rights', 3): ('_CMSGHDR', {}),
+    ('NativeProbeContext.receive_rights', 4): ('_CMSGHDR', {1: 'ZERO_OFFSET'}),
+    ('NativeProbeContext.receive_rights', 5): ('_SCM_FD', {}),
+    ('NativeProbeContext.receive_rights', 6): ('_SCM_FD', {}),
+    ('NativeProbeContext._helper', 0): ('_FRAME_LENGTH', {}),
+    ('_ProbeFixturesCore.run_confined.child', 0): ('_FRAME_LENGTH', {}),
+    ('_ProbeFixturesCore.run_confined.child', 1): ('_FRAME_LENGTH', {}),
+    ('_ProbeFixturesCore.run_confined.child', 2): ('_FRAME_LENGTH', {}),
+    ('_ProbeFixturesCore.run_confined', 0): ('_FRAME_LENGTH', {}),
+}
 
 
 def _coverage():
@@ -553,16 +771,19 @@ def _function(tree, name):
 
 class CodeBindingTests(unittest.TestCase):
     """Binds the Linux ABI literals of the guest Python modules (confinement.py, proxy.py, storage.py, topology.py;
-    intake.py and protocol.py carry none) to the committed coverage v2, or to an explicit POLICY_LITERALS entry.
+    intake.py and protocol.py carry none) and of the guest probe catalogue tests/guest/confinement_probe.py (Task 10)
+    to the committed coverage v2, or to an explicit POLICY_LITERALS (probe: PROBE_POLICY_LITERALS) entry.
     bootstrap_reference_test checks the committed event reference JSON against the Linux headers. The event-constant
     literals in guest/topology.py are NOT bound to that reference by any test (recorded known gap, rulings R17/R18);
     examples: the audit rule action (AUDIT_ALWAYS) at topology.py:189, the route kind at :723, and _ROUTE_GROUPS at
     :173. Syscall numbers are bound here (ruling R14), and of the audit rule only its arch value is bound here
     (test_topology_audit_rule_syscall_list_matches_named_symbols).
 
-    Known uncovered ABI surface (ruling R13), deliberately NOT tested here: the capset structs (only divisibility of
+    Known uncovered ABI surface (ruling R13), deliberately NOT derived here: the capset structs (only divisibility of
     bytearray(24) by _LINUX_CAPABILITY_U32S_3 is checked; the 12-byte element size is not derivable), struct
-    sock_fprog, sockaddr_in and sockaddr_in6, the LP64 data model (sizeof long/pointer, 64-bit syscall registers),
+    sock_fprog, the struct layouts of tests/guest/confinement_probe.py (iovec, user_msghdr, cmsghdr, sockaddr_un,
+    sockaddr_vm, sockaddr_in, sockaddr_in6 and the capset header and data: recorded with a justification each in
+    LAYOUT_LITERALS, Task 10), the LP64 data model (sizeof long/pointer, 64-bit syscall registers),
     socket_state SS_* values (implicit enumerators; TCP_LISTEN likewise, bound only through R13_LITERALS, ruling P34),
     and kernel text formats and behaviour (procfs field positions and number bases, the audit record text, inotify
     watch descriptor numbering, syscall success return values).
@@ -575,7 +796,9 @@ class CodeBindingTests(unittest.TestCase):
         cls.nr_by_value = {v: k for k, v in V.items() if k.startswith('__NR_')}
         assert len(cls.nr_by_value) == sum(1 for k in V if k.startswith('__NR_'))
         cls.trees = {name: ast.parse((GUEST / name).read_text()) for name in ('confinement.py', 'topology.py')}
+        cls.trees[PROBE_FILE] = ast.parse(PROBE_PATH.read_text())
         cls.scoped = {name: _scoped_nodes(ast.parse((GUEST / name).read_text())) for name in GUEST_MODULES}
+        cls.scoped[PROBE_FILE] = _scoped_nodes(cls.trees[PROBE_FILE])
         decl = next(r['declaration'] for r in cls.cov['records'] if r['id'] == 'seccomp_data.args')
         cls.args_count = int(re.search(r'args\[(\d+)\]', decl).group(1))
         cls.stride = (V['seccomp_data.sizeof'] - V['seccomp_data.args']) // cls.args_count
@@ -602,6 +825,25 @@ class CodeBindingTests(unittest.TestCase):
             return R13_LITERALS[name][0]
         self.assertTrue(name in self.V, f'{name}: symbol absent from coverage v2')
         return self.V[name]
+
+    def covered(self, name):
+        """The coverage v2 value of NAME, which must be a coverage symbol (never a policy or R13 name)."""
+        self.assertIn(name, self.V, f'{name}: symbol absent from coverage v2')
+        return self.V[name]
+
+    def resolve_at(self, key, name):
+        """resolve(NAME), or a PROBE_POLICY_LITERALS value, which only a PROBE_FILE site may name."""
+        if name in PROBE_POLICY_LITERALS:
+            self.assertEqual(key[0], PROBE_FILE, (key, name, 'probe policy literal outside the probe'))
+            return PROBE_POLICY_LITERALS[name][0]
+        return self.resolve(name)
+
+    def policy_at(self, key, name):
+        """A POLICY_LITERALS value, or at a PROBE_FILE site a PROBE_POLICY_LITERALS value; nothing else."""
+        if name in POLICY_LITERALS:
+            return POLICY_LITERALS[name][0]
+        self.assertIn(name, PROBE_POLICY_LITERALS, (key, name))
+        return self.resolve_at(key, name)
 
     def nodes(self, fname, qual, kind):
         """Nodes of type KIND whose innermost enclosing qualname in FNAME is QUAL, in source order."""
@@ -982,8 +1224,9 @@ class CodeBindingTests(unittest.TestCase):
                 used.setdefault(self.nr_by_value[first.value], set()).add(fname)
             else:
                 opaque.append((fname, ast.unparse(call.func)))
-        # the single non-literal site is the libc trampoline that receives the number as a parameter
-        self.assertEqual(opaque, [('confinement.py', 'self._libc.syscall')])
+        # the non-literal sites are the libc trampoline and the probe context's trampoline, which receive the number
+        # as a parameter
+        self.assertEqual(opaque, [('confinement.py', 'self._libc.syscall'), (PROBE_FILE, 'self.port.b.syscall')])
         self.assertEqual({k: frozenset(v) for k, v in used.items()}, SYSCALL_SITES)
 
     def site_table(self):
@@ -1005,6 +1248,8 @@ class CodeBindingTests(unittest.TestCase):
             visit(tree, [])
             for qual, calls in per_func.items():
                 for n, call in enumerate(sorted(calls, key=lambda c: (c.lineno, c.col_offset))):
+                    # An uncovered number fails here as an assertion, never as a KeyError (Task 10).
+                    self.assertIn(call.args[0].value, self.nr_by_value, (fname, qual, n, call.lineno))
                     found[(fname, qual, n)] = (call, self.nr_by_value[call.args[0].value])
         return found
 
@@ -1027,16 +1272,16 @@ class CodeBindingTests(unittest.TestCase):
             for idx, want in expected.items():
                 where = (key, sym, idx, literal[idx])
                 if isinstance(want, str):
-                    self.assertEqual(literal[idx], POLICY_LITERALS[want][0], where)
+                    self.assertEqual(literal[idx], self.policy_at(key, want), where)
                 else:
                     acc = 0
                     for name in sorted(want):
-                        self.assertEqual(acc & self.V[name], 0, where)  # flag symbols are disjoint bits
-                        acc |= self.V[name]
+                        self.assertEqual(acc & self.covered(name), 0, where)  # flag symbols are disjoint bits
+                        acc |= self.covered(name)
                     self.assertEqual(literal[idx], acc, where)
-                    self.assertLessEqual(want, ARG_SYMBOLS[sym][idx], where)
+                    self.assertLessEqual(want, ARG_SYMBOLS.get(sym, {}).get(idx, frozenset()), where)
                 checked += 1
-        self.assertEqual(checked, 33)  # every int-literal argument at every site
+        self.assertEqual(checked, 91)  # every int-literal argument at every site (Task 10: 58 at probe sites)
 
     def test_capability_literals_are_covered(self):
         tree = self.trees['confinement.py']
@@ -1070,10 +1315,10 @@ class CodeBindingTests(unittest.TestCase):
                 if idx in literal_args:
                     self.assertIsNotNone(_eval_int(arg), (key, idx, ast.unparse(arg)))
                     continue
-                want = [self.resolve(name) for name in nested.get(idx, ())]
+                want = [self.resolve_at(key, name) for name in nested.get(idx, ())]
                 self.assertEqual(_int_constants(arg), want, (key, idx, ast.unparse(arg)))
                 nested_total += len(want)
-        self.assertEqual(nested_total, 4)
+        self.assertEqual(nested_total, 12)  # Task 10: 8 at probe sites
 
     # --- R14: the rest of the guest modules -----------------------------------------------------------------------
     def check_compare_site(self, name):
@@ -1133,7 +1378,7 @@ class CodeBindingTests(unittest.TestCase):
 
     def test_open_flag_literals_match_named_symbols(self):
         found = {}
-        for fname in GUEST_MODULES:
+        for fname in GUEST_MODULES + (PROBE_FILE,):
             per = {}
             for qual, node in self.scoped[fname]:
                 if not isinstance(node, ast.Call):
@@ -1259,11 +1504,12 @@ class CodeBindingTests(unittest.TestCase):
         self.assertEqual([t for t in texts if re.fullmatch(r'[0-9A-Fa-f]{2}', t)], [])
 
     def test_policy_literals_are_justified(self):
-        for name, (value, reason) in {**POLICY_LITERALS, **R13_LITERALS}.items():
+        for name, (value, reason) in {**POLICY_LITERALS, **R13_LITERALS, **PROBE_POLICY_LITERALS}.items():
             self.assertIs(type(value), int, name)
             self.assertGreater(len(reason), 20, name)
         self.assertFalse(set(POLICY_LITERALS) & set(R13_LITERALS))
-        self.assertFalse((set(POLICY_LITERALS) | set(R13_LITERALS)) & set(self.V))
+        self.assertFalse(set(PROBE_POLICY_LITERALS) & (set(POLICY_LITERALS) | set(R13_LITERALS)))
+        self.assertFalse((set(POLICY_LITERALS) | set(R13_LITERALS) | set(PROBE_POLICY_LITERALS)) & set(self.V))
 
     def test_build_filter_int_constants_are_classified(self):
         V = self.V
@@ -1273,6 +1519,153 @@ class CodeBindingTests(unittest.TestCase):
         stray = [n.value for n in ast.walk(_function(self.trees['confinement.py'], 'build_filter'))
                  if isinstance(n, ast.Constant) and type(n.value) is int and n.value not in classified]
         self.assertEqual(stray, [])
+
+    # --- Task 10: the guest probe catalogue (Option A I1) --------------------------------------------------------------
+    def probe_module_values(self):
+        """name -> value node of every single-target module-level assignment in the probe; a name bound twice fails."""
+        found = {}
+        for node in self.nodes(PROBE_FILE, '<module>', ast.Assign):
+            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                self.assertNotIn(node.targets[0].id, found, node.targets[0].id)
+                found[node.targets[0].id] = node.value
+        return found
+
+    def test_probe_syscall_sites_use_covered_numbers(self):
+        """Every syscall(...) site of tests/guest/confinement_probe.py uses a covered number and is a SITE_ARGS row;
+        the only non-literal site is the probe context's own trampoline. Option A mutants D (ptrace 117 -> 41) and E
+        (recvmsg -> sendmsg) change a bound site."""
+        used, opaque = set(), []
+        for call in _syscall_calls(self.trees[PROBE_FILE]):
+            first = call.args[0] if call.args else None
+            if isinstance(first, ast.Constant) and type(first.value) is int:
+                self.assertIn(first.value, self.nr_by_value, (PROBE_FILE, call.lineno, first.value))
+                used.add(self.nr_by_value[first.value])
+            else:
+                opaque.append(ast.unparse(call.func))
+        self.assertEqual(opaque, ['self.port.b.syscall'])
+        self.assertEqual(used, PROBE_SYSCALLS)
+        self.assertEqual(len(PROBE_SYSCALLS), 20)
+        found = {key: sym for key, (call, sym) in self.site_table().items() if key[0] == PROBE_FILE}
+        rows = {key: row[0] for key, row in SITE_ARGS.items() if key[0] == PROBE_FILE}
+        self.assertEqual(set(found), set(rows))
+        for key, sym in rows.items():
+            self.assertEqual(found.get(key), sym, key)
+        # The theft family's own sites (T8-01): one each, never folded into another number.
+        theft = {sym: [key for key, value in rows.items() if value == sym]
+                 for sym in ('__NR_ptrace', '__NR_recvmsg', '__NR_pidfd_open', '__NR_pidfd_getfd', '__NR_process_vm_readv',
+                             '__NR_process_vm_writev', '__NR_chroot', '__NR_unshare')}
+        self.assertEqual({sym: len(keys) for sym, keys in theft.items()},
+                         {'__NR_ptrace': 2, '__NR_recvmsg': 1, '__NR_pidfd_open': 1, '__NR_pidfd_getfd': 1,
+                          '__NR_process_vm_readv': 1, '__NR_process_vm_writev': 1, '__NR_chroot': 1, '__NR_unshare': 1})
+
+    def test_probe_errno_signal_and_flag_literals_match_named_symbols(self):
+        """The probe's errno, signal and ancillary constants are each bound to their coverage v2 symbol; every accepted
+        denial set is named and holds no EBADF (T8-01); every errno, exit-code, signal and (level, kind) comparison and
+        every errno the probe raises is exactly as listed, with no integer errno or signal literal; the ptrace
+        requests, recvmsg flags and the user-namespace flag are their named symbols, one assertion per site."""
+        values = self.probe_module_values()
+        for name, symbol in PROBE_ABI_CONSTANTS.items():
+            with self.subTest(constant=name):
+                self.assertIn(name, values)
+                self.assertEqual(_eval_int(values[name]), self.covered(symbol), (name, symbol))
+        ebadf = self.covered('EBADF')
+        for name, members in PROBE_DENIAL_SETS.items():
+            with self.subTest(denial_set=name):
+                self.assertIn(name, values)
+                self.assertIsInstance(values[name], ast.Tuple)
+                self.assertEqual([ast.unparse(e) for e in values[name].elts], list(members))
+                resolved = [self.covered(PROBE_ABI_CONSTANTS[member]) for member in members]
+                self.assertNotIn(ebadf, resolved, name)
+        returns = [ast.unparse(n.value) for n in self.nodes(PROBE_FILE, '_denial_errnos', ast.Return)]
+        self.assertEqual(returns, list(PROBE_DENIAL_RETURNS))
+        tracked = {'code', '-code', '(level, kind)'}
+        found = {}
+        for qual, node in self.scoped[PROBE_FILE]:
+            if isinstance(node, ast.Compare):
+                left = ast.unparse(node.left)
+                if left in tracked or 'errno' in left:
+                    self.assertEqual(len(node.ops), 1, (qual, ast.unparse(node)))
+                    found.setdefault(qual, []).append(node)
+        got = {qual: [(ast.unparse(n.left), type(n.ops[0]).__name__, ast.unparse(n.comparators[0]))
+                      for n in _source_order(nodes)] for qual, nodes in found.items()}
+        self.assertEqual(got, PROBE_ABI_COMPARES)
+        raised = []
+        for qual, node in self.scoped[PROBE_FILE]:
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.args
+                    and (node.func.id.endswith('Error') or node.func.id == '_HelperBoundaryDenied')
+                    and node.func.id not in ('ProbeFailure', 'RuntimeGateUnavailable', 'AttributeError', 'TypeError')):
+                raised.append((qual, node))
+        rows = tuple((qual, node.func.id, ast.unparse(node.args[0]),
+                      node.args[1].value if len(node.args) > 1 and isinstance(node.args[1], ast.Constant) else None)
+                     for qual, node in sorted(raised, key=lambda pair: (pair[1].lineno, pair[1].col_offset)))
+        self.assertEqual(rows, PROBE_ERRNO_RAISES)
+        for qual, kind, errno, text in PROBE_ERRNO_RAISES:
+            self.assertIn(errno, PROBE_ABI_CONSTANTS, (qual, kind, text))
+        sites = self.site_table()
+        for key, symbol, index in (((PROBE_FILE, 'NativeProbePort._operation', 10), 'PTRACE_ATTACH', 0),
+                                   ((PROBE_FILE, 'NativeProbePort._operation', 11), 'PTRACE_SEIZE', 0),
+                                   ((PROBE_FILE, 'NativeProbeContext.receive_rights', 0), 'MSG_CMSG_CLOEXEC', 2),
+                                   ((PROBE_FILE, 'NativeProbePort._operation', 15), 'CLONE_NEWUSER', 0)):
+            with self.subTest(site=key, symbol=symbol):
+                self.assertIn(key, sites)
+                self.assertEqual(_eval_int(sites[key][0].args[1 + index]), self.covered(symbol))
+        self.assertNotEqual(self.covered('PTRACE_ATTACH'), 0)
+        self.assertNotEqual(self.covered('PTRACE_SEIZE'), 0)
+
+    def test_layout_literals_are_justified(self):
+        """R13 layout literals of the probe: each module constant is exactly its LAYOUT_LITERALS (or protocol) literal,
+        justified from the pinned archive and consistent with the derived layout facts; every struct call names one
+        of these formats and binds each of its int-literal arguments."""
+        values = self.probe_module_values()
+        tables = {**LAYOUT_LITERALS, **PROTOCOL_LITERALS}
+        self.assertFalse(set(LAYOUT_LITERALS) & set(PROTOCOL_LITERALS))
+        for name, (literal, size, reason) in tables.items():
+            with self.subTest(layout=name):
+                self.assertIn(name, values)
+                self.assertIsInstance(values.get(name), ast.Constant)
+                self.assertEqual(values[name].value, literal)
+                self.assertGreater(len(reason), 40, name)
+                if name in LAYOUT_LITERALS:
+                    self.assertRegex(reason, r'linux-6\.8/[A-Za-z0-9_/.-]+\.h:\d+')
+                if type(literal) is str:
+                    self.assertEqual(struct.calcsize(literal), size, name)
+                else:
+                    self.assertIsNone(size, name)
+        formats = {name for name, node in values.items() if isinstance(node, ast.Constant) and type(node.value) is str
+                   and re.fullmatch(r'[<>=!@][0-9A-Za-z]+', node.value)}
+        self.assertEqual(formats, {name for name, (literal, *_) in tables.items() if type(literal) is str})
+        layout = {name: literal for name, (literal, *_) in tables.items()}
+        # Derived facts: offsets and sizes follow from the formats and the covered capability count.
+        long_bytes = struct.calcsize('<q')
+        self.assertEqual(layout['_MSG_IOV'], struct.calcsize('<Qi4x'))
+        self.assertEqual(layout['_MSG_CONTROL'], struct.calcsize('<Qi4xQQ'))
+        self.assertEqual(layout['_USER_MSGHDR'][:len('<Qi4xQQ')], '<Qi4xQQ')
+        self.assertEqual(layout['_CMSG_ONE_FD'], struct.calcsize(layout['_CMSGHDR'])
+                         + -(-struct.calcsize(layout['_SCM_FD']) // long_bytes) * long_bytes)
+        self.assertEqual(layout['_SUN_PATH_OFFSET'], struct.calcsize('<H'))
+        self.assertEqual(layout['_SUN_PATH_BYTES'], struct.calcsize(layout['_SOCKADDR_UN']) - layout['_SUN_PATH_OFFSET'])
+        self.assertEqual(struct.calcsize(layout['_CAPSET_DATA']), R13_LITERALS['CAPSET_DATA_BYTES'][0])
+        self.assertEqual(struct.calcsize(layout['_CAPSET_DATA']), 3 * 4 * self.covered('_LINUX_CAPABILITY_U32S_3'))
+        for name in ('_SOCKADDR_VM', '_SOCKADDR_IN'):
+            self.assertEqual(struct.calcsize(layout[name]), 16, name)  # sizeof(struct sockaddr), in.h:255
+        # Every struct.* call: a named format, and each int-literal argument named exactly.
+        calls = {}
+        for qual, node in self.scoped[PROBE_FILE]:
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == 'struct'):
+                calls.setdefault(qual, []).append(node)
+        found = {(qual, n): call for qual, nodes in calls.items() for n, call in enumerate(_source_order(nodes))}
+        self.assertEqual(set(found), set(PROBE_PACK_VALUES))
+        for key, call in found.items():
+            fmt, named = PROBE_PACK_VALUES[key]
+            with self.subTest(struct_call=key):
+                self.assertIsInstance(call.args[0], ast.Name)
+                self.assertEqual(call.args[0].id, fmt)
+                self.assertIn(fmt, tables)
+                literal = {i: _eval_int(a) for i, a in enumerate(call.args[1:]) if _eval_int(a) is not None}
+                self.assertEqual(set(literal), set(named))
+                for index, name in named.items():
+                    self.assertEqual(literal[index], self.resolve_at((PROBE_FILE,) + key, name), (key, index, name))
 
 
 if __name__ == '__main__':

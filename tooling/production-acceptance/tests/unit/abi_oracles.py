@@ -142,4 +142,16 @@ ORACLES = {
     'AF_PACKET': 17,  # linux-6.8/include/linux/socket.h:208 #define AF_PACKET 17
     'SOCK_RAW': 3,  # linux-6.8/include/linux/net.h:67 SOCK_RAW = 3, in enum sock_type under #ifndef ARCH_HAS_SOCKET_TYPES (net.h:48); arm64 does not define it (see record)
     'MNT_DETACH': 2,  # linux-6.8/include/linux/fs.h:1156 #define MNT_DETACH	0x00000002	/* Just detach from the tree */
+    '__NR_recvmsg': 212,  # linux-6.8/include/uapi/asm-generic/unistd.h:550 #define __NR_recvmsg 212 (outside any conditional; arm64 uapi/asm/unistd.h only defines __ARCH_WANT_* and includes asm-generic/unistd.h)
+    'MSG_CMSG_CLOEXEC': 1073741824,  # linux-6.8/include/linux/socket.h:332 #define MSG_CMSG_CLOEXEC 0x40000000 (no arm64 override; linux/socket.h is generic)
+    'SCM_RIGHTS': 1,  # linux-6.8/include/linux/socket.h:177 #define SCM_RIGHTS	0x01 (no arm64 override)
+    'SOL_SOCKET': 1,  # linux-6.8/include/uapi/asm-generic/socket.h:9 #define SOL_SOCKET	1 (arm64 has no uapi/asm/socket.h; generic via mandatory-y)
+    'ENOTSOCK': 88,  # linux-6.8/include/uapi/asm-generic/errno.h:71 #define	ENOTSOCK	88 (arm64 has no uapi/asm/errno.h; generic via mandatory-y)
+    'EBADF': 9,  # linux-6.8/include/uapi/asm-generic/errno-base.h:13 #define	EBADF		 9 (included by asm-generic/errno.h; no arm64 override)
+    'ECONNREFUSED': 111,  # linux-6.8/include/uapi/asm-generic/errno.h:94 #define	ECONNREFUSED	111 (no arm64 override)
+    'ENOENT': 2,  # linux-6.8/include/uapi/asm-generic/errno-base.h:6 #define	ENOENT		 2 (no arm64 override)
+    'ENOEXEC': 8,  # linux-6.8/include/uapi/asm-generic/errno-base.h:12 #define	ENOEXEC		 8 (no arm64 override)
+    'PTRACE_ATTACH': 16,  # linux-6.8/include/uapi/linux/ptrace.h:22 #define PTRACE_ATTACH		  16 (arm64 uapi/asm/ptrace.h does not define it)
+    'PTRACE_SEIZE': 16902,  # linux-6.8/include/uapi/linux/ptrace.h:53 #define PTRACE_SEIZE		0x4206 (arm64 uapi/asm/ptrace.h does not define it)
+    'SIGSYS': 31,  # linux-6.8/include/uapi/asm-generic/signal.h:46 #define SIGSYS		31 (arm64 uapi/asm/signal.h defines only SIGSTKSZ and includes asm-generic/signal.h; no override)
 }
