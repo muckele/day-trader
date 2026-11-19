@@ -187,33 +187,59 @@ class ReceiverAuthority:
 
 
 _EPOCH_SEAL = object()
-_EPOCHS = weakref.WeakSet()
+# Each minted epoch -> the exact values it was minted with (Task 9 review I-1).
+_EPOCHS = weakref.WeakKeyDictionary()
 
 
 class CompletedProbeEpoch:
     """Only the completed original-fixture sequence can mint this sealed value.
 
-    `native` is its provenance (compA part A note): True only for an epoch from
-    NativeProbeFixtures over the sealed NativeKernelPort, False from offline ones.
+    `native` is its provenance (compA part A note): True only for an epoch that
+    qualify_probe_epoch minted from NativeProbeFixtures anchored to this module's
+    own confinement module and its sealed NativeKernelPort, False from offline
+    ones. It is read only through a verified minted epoch: never one built with
+    object.__new__, nor one whose fields were set after minting.
     """
-    __slots__ = ('binding','cases','task10_projection','fixture_inventory_digest','digest','family_proofs','native',
+    __slots__ = ('binding','cases','task10_projection','fixture_inventory_digest','digest','family_proofs','_native',
                  '__weakref__')
     def __init__(self, *args, _seal=None):
         if _seal is not _EPOCH_SEAL: raise ProbeFailure('PROBE_EPOCH_DENIED')
         if len(args) != 7 or type(args[6]) is not bool: raise ProbeFailure('PROBE_EPOCH_DENIED')
         for key,value in zip(self.__slots__[:7],args): object.__setattr__(self,key,value)
-        _EPOCHS.add(self)
+        _EPOCHS[self] = args
 
     def __setattr__(self, name, value): raise AttributeError('immutable completed epoch')
 
+    def _minted(self):
+        # An object.__new__ epoch was never minted; a field set afterwards with
+        # object.__setattr__ is no longer the minted object.
+        record = _EPOCHS.get(self)
+        if record is None or any(getattr(self,key,None) is not value for key,value in zip(self.__slots__[:7],record)):
+            raise ProbeFailure('PROBE_EPOCH_DENIED')
+        return self
+
+    @property
+    def native(self):
+        return self._minted()._native
+
     def require_current(self, binding, fixture_digest, wall_ms):
-        if (type(self) is not CompletedProbeEpoch or self not in _EPOCHS
+        self._minted()
+        if (type(self) is not CompletedProbeEpoch
                 or type(binding) is not _confinement().CompositionBinding or binding != self.binding
                 or fixture_digest != self.fixture_inventory_digest or type(wall_ms) is not int
                 or not 0 <= wall_ms < binding.expiresAtMs
                 or any(not owner.proven for owner in self.family_proofs)):
             raise ProbeFailure('PROBE_EPOCH_DENIED')
         return self
+
+
+def _anchored_native(fixtures):
+    """Native provenance only over this module's own confinement module (topology's
+    instance) and its sealed NativeKernelPort, never a caller-supplied module
+    (Task 9 review I-1)."""
+    anchor = _confinement()
+    return (type(fixtures) is NativeProbeFixtures and fixtures.c is anchor
+            and type(fixtures.kernel) is anchor.NativeKernelPort)
 
 
 def qualify_probe_epoch(binding, fixtures, cleanup_budget):
@@ -226,6 +252,11 @@ def qualify_probe_epoch(binding, fixtures, cleanup_budget):
             or not callable(getattr(cleanup_budget,'routine_call',None))
             or type(getattr(cleanup_budget,'started',None)) is not bool):
         raise RuntimeGateUnavailable('PROBE_EPOCH_UNAVAILABLE')
+    # A NativeProbeFixtures that skipped its constructor, or whose module or kernel
+    # is not the anchored sealed port, mints nothing, before any effect.
+    native = _anchored_native(fixtures)
+    if type(fixtures) is NativeProbeFixtures and not native:
+        raise RuntimeGateUnavailable('NATIVE_FIXTURES_UNAVAILABLE')
     if fixtures.config.run_id != binding.runId or fixtures._epoch_started:
         raise ProbeFailure('PROBE_EPOCH_DENIED')
     fixtures._epoch_started = True
@@ -301,7 +332,7 @@ def qualify_probe_epoch(binding, fixtures, cleanup_budget):
                        exited=owner.exited,emptyScopes=owner.scopes) for owner in fixtures.family_owners])
     digest = hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode('ascii')).hexdigest()
     return CompletedProbeEpoch(binding,tuple(cases),projection,receivers.digest,digest,
-                               tuple(fixtures.family_owners),type(fixtures) is NativeProbeFixtures,_seal=_EPOCH_SEAL)
+                               tuple(fixtures.family_owners),native,_seal=_EPOCH_SEAL)
 
 
 class ProbeFailure(ValueError):
@@ -809,9 +840,13 @@ class _ProbeFixturesCore:
 
 class NativeProbeFixtures(_ProbeFixturesCore):
     """Native fixtures: only over the sealed NativeKernelPort (T8-05), after the
-    explicit native selector and pinned native fixture approval."""
+    explicit native selector and pinned native fixture approval. The module and
+    the port type are this module's own anchor, _confinement(); a substituted
+    confinement module is refused (Task 9 review I-1)."""
     def __init__(self,confinement,kernel,config,authority):
-        if type(kernel) is not confinement.NativeKernelPort: raise RuntimeGateUnavailable('NATIVE_FIXTURES_UNAVAILABLE')
+        anchor=_confinement()
+        if confinement is not anchor or type(kernel) is not anchor.NativeKernelPort:
+            raise RuntimeGateUnavailable('NATIVE_FIXTURES_UNAVAILABLE')
         self._bind(confinement,kernel,config,authority,'approve_native_fixtures',
                    'NATIVE_FIXTURES_UNAVAILABLE','NATIVE_FIXTURES_UNAPPROVED')
 

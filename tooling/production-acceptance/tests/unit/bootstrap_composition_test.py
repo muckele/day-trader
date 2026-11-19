@@ -321,6 +321,75 @@ class BootstrapProbeCompositionTests(unittest.TestCase):
         with self.assertRaisesRegex(p.ProbeFailure, '^PROBE_EPOCH_DENIED$'):
             p.CompletedProbeEpoch(*values, False)
 
+    def test_native_fixtures_reject_substituted_confinement_module(self):
+        # Task 9 review I-1: native fixtures and a native epoch are anchored to the probe module's own confinement
+        # module (_confinement(), topology's instance) and its sealed port, never to a module the caller passes.
+        anchor = p._confinement()
+        self.assertIs(anchor, c)
+        def substitute():
+            # The reviewer's construction: a stand-in namespace whose NativeKernelPort is the offline port.
+            fake = types.SimpleNamespace(**vars(c)); fake.NativeKernelPort = c.OfflineKernelPort
+            return fake
+        forged_port = object.__new__(c.NativeKernelPort)  # the anchored native type, never constructed
+        binding, channel, clock, budget, family = self.setup_epoch()
+        offline, authority = family.fixtures, family.authority
+        authority.approve_native_fixtures = lambda config: authority
+        for name, module, kernel in (('reviewer: substituted module, offline port', substitute(), offline.kernel),
+                                     ('substituted module, port of the anchored native type', substitute(), forged_port),
+                                     ('anchored module, offline port', c, offline.kernel)):
+            with self.subTest(construct=name):
+                with self.assertRaisesRegex(p.RuntimeGateUnavailable, '^NATIVE_FIXTURES_UNAVAILABLE$'):
+                    p.NativeProbeFixtures(module, kernel, offline.config, authority)
+        # A NativeProbeFixtures that skipped its constructor (object.__new__) mints no epoch, native or not, unless
+        # it holds the anchored module and port: refused before any receiver claim or family effect.
+        for name, module, kernel in (('anchored module, offline port', c, None),
+                                     ('substituted module, offline port', substitute(), None),
+                                     ('substituted module, port of the anchored native type', substitute(), forged_port)):
+            binding, channel, clock, budget, family = self.setup_epoch()
+            forged = object.__new__(p.NativeProbeFixtures); forged.__dict__.update(vars(family.fixtures))
+            forged.c = module
+            if kernel is not None: forged.kernel = kernel
+            with self.subTest(qualify=name):
+                with self.assertRaisesRegex(p.RuntimeGateUnavailable, '^NATIVE_FIXTURES_UNAVAILABLE$'):
+                    p.qualify_probe_epoch(binding, forged, budget)
+                self.assertFalse(forged._epoch_started)
+                self.assertFalse(forged.receivers._claimed)
+                self.assertEqual(channel.requests, [])
+                self.assertFalse(any(row[0] == 'spawn' for row in family.events))
+
+    def test_forged_native_epoch_rejected(self):
+        # Task 9 review I-1: provenance is read only from a verified minted epoch. Neither an epoch built with
+        # object.__new__ nor a minted one whose fields were set afterwards is accepted by require_current, and
+        # reading `native` from either raises instead of answering.
+        binding, channel, clock, budget, family = setup = self.setup_epoch()
+        epoch = self.complete(setup)
+        fields = ('binding', 'cases', 'task10_projection', 'fixture_inventory_digest', 'digest', 'family_proofs')
+        forged = object.__new__(p.CompletedProbeEpoch)
+        for key in fields: object.__setattr__(forged, key, getattr(epoch, key))
+        object.__setattr__(forged, '_native', True)
+        with self.subTest(epoch='object.__new__', read='native'), self.assertRaisesRegex(p.ProbeFailure, '^PROBE_EPOCH_DENIED$'):
+            forged.native
+        with self.subTest(epoch='object.__new__', read='require_current'):
+            with self.assertRaisesRegex(p.ProbeFailure, '^PROBE_EPOCH_DENIED$'):
+                forged.require_current(binding, epoch.fixture_inventory_digest, 0)
+        for name in ('native', '_native'):
+            with self.subTest(assign=name), self.assertRaises(AttributeError):
+                setattr(epoch, name, True)
+        for key, value in (('_native', True), ('digest', '0' * 64), ('binding', dataclasses.replace(epoch.binding))):
+            original = getattr(epoch, key)
+            object.__setattr__(epoch, key, value)
+            try:
+                with self.subTest(field_set=key, read='native'), self.assertRaisesRegex(p.ProbeFailure, '^PROBE_EPOCH_DENIED$'):
+                    epoch.native
+                with self.subTest(field_set=key, read='require_current'):
+                    with self.assertRaisesRegex(p.ProbeFailure, '^PROBE_EPOCH_DENIED$'):
+                        epoch.require_current(binding, epoch.fixture_inventory_digest, 0)
+            finally:
+                object.__setattr__(epoch, key, original)
+        # Control: the untouched minted epoch is accepted and says offline.
+        self.assertIs(epoch.native, False)
+        self.assertIs(epoch.require_current(binding, epoch.fixture_inventory_digest, 0), epoch)
+
     def test_v1_receiver_endpoint_nonce_epoch_mismatch_denied(self):
         self.complete(self.setup_epoch())
         for key, value in [('nonce', '0'*32), ('sequence', 0), ('phase', 'AFTER')]:
