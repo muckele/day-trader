@@ -1692,6 +1692,43 @@ class TopologyTests(unittest.TestCase):
             with self.subTest(reused=pid):
                 self.assert_terminal(source)
 
+    def test_v1_exited_parent_counts_for_its_earlier_child_records(self):
+        # P64: serials are taken at logging and queued later (P63), so a child's
+        # record logged while its parent lived (ppid = parent) can arrive after
+        # the parent's exit_group. It is attributed if its serial is below that
+        # exit_group's serial; otherwise P61(c) holds (terminal).
+        def setup():
+            source, native, root = self.browser_source(launch=True)
+            native.events += audit_group(native, 200, 51, pid=4101, ppid=600)   # child joins
+            native.events += audit_group(native, 201, 51, pid=4102, ppid=4101)  # grandchild joins
+            self.assert_publishes(source)
+            native.events += audit_group(native, 210, 94, pid=4101, ppid=600)   # child exits
+            self.assert_publishes(source)
+            transition = source._browser_transition
+            self.assertEqual((transition['family'], transition['exited']),
+                             ({root, 600, 4102}, {4101: 210}))
+            return source, native
+        # Lower serials, delivered after the exit_group: a member and a newcomer.
+        source, native = setup()
+        native.events += audit_group(native, 205, 51, pid=4102, ppid=4101)
+        native.events += audit_group(native, 206, 51, pid=4103, ppid=4101)
+        self.assertEqual(self.assert_publishes(source).generation, 1)
+        self.assertIn(4103, source._browser_transition['family'])
+        # Higher serials naming the exited parent: P61(c) / unknown pid, terminal.
+        for pid in (4102, 4103):
+            source, native = setup()
+            native.events += audit_group(native, 215, 51, pid=pid, ppid=4101)
+            with self.subTest(late_child=pid):
+                self.assert_terminal(source)
+        # The exited member leaves with the 1024-serial window.
+        source, native = setup()
+        native.events += audit_group(native, 1234, 93, pid=600, ppid=300)
+        self.assert_publishes(source)
+        self.assertEqual(source._browser_transition['exited'], {4101: 210})
+        native.events += audit_group(native, 1235, 93, pid=600, ppid=300)
+        self.assert_publishes(source)
+        self.assertEqual(source._browser_transition['exited'], {})
+
     def test_v1_reserved_transition_stuck_in_clone_is_pending_then_terminal(self):
         # Barriers at the health cadence (at most 100 ms apart) keep the source
         # healthy; an unobserved launch stays EVENT_PENDING through 1000 ms after

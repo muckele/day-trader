@@ -776,12 +776,14 @@ class BootstrapEventOwner:
             # Grammar CLONE -> EXEC -> ACTIVE (CB-I4). P61: 'family' holds only
             # initial-namespace pids from audit pid=/ppid= (kernel/audit.c:
             # 2257-2261): the root and every pid first seen with a family ppid.
+            # P64: 'exited' maps a family pid removed by exit_group to that
+            # exit_group's audit serial, for the P63 window.
             self._browser_transition = {
                 'phase': 'CLONE', 'root': root, 'child': None,
-                'family': {root}, 'committed': now,
+                'family': {root}, 'exited': {}, 'committed': now,
             }
 
-    def _attribute(self, pid, ppid):
+    def _attribute(self, pid, ppid, serial):
         """P61: an original role by pid; after commit the BROWSER family by
         initial-namespace pid=/ppid= only. An unknown pid whose ppid is a family
         pid joins the family. A family pid (not the root) whose ppid is not a
@@ -789,18 +791,23 @@ class BootstrapEventOwner:
         orphan reparents to a live thread of its parent, a subreaper in the same
         PID namespace or the namespace's child reaper (kernel/exit.c:585-600,
         :623-655, :690-706), and each of those is a family pid. So this catches
-        a pid reused by a non-family process. Any other unknown pid is terminal."""
+        a pid reused by a non-family process. Any other unknown pid is terminal.
+        P64: serial order is not delivery order (P63), so a record logged while
+        its parent was alive may arrive after the parent's exit_group. A parent
+        removed by exit_group still counts for records whose serial is lower than
+        that exit_group's serial, within the P63 window."""
         role = self._audit_pids.get(pid)
         if role is not None:
             return role
         transition = self._browser_transition
         if transition is not None:
-            family = transition['family']
+            family, exited = transition['family'], transition['exited']
+            parent = ppid in family or (ppid in exited and serial < exited[ppid])
             if pid in family:
-                if ppid not in family:
+                if not parent:
                     self._terminate('EVENT_SOURCE_TERMINAL')
                 return 'BROWSER'
-            if ppid in family:
+            if parent:
                 family.add(pid)
                 return 'BROWSER'
         self._terminate('EVENT_SOURCE_TERMINAL')
@@ -860,6 +867,7 @@ class BootstrapEventOwner:
             if phase != 'ACTIVE':
                 self._terminate('EVENT_SOURCE_TERMINAL')
             family.discard(pid)
+            transition['exited'][pid] = syscall['serial']  # P64
             return
         if number in (220, 435):
             # P61: exit= is the child's number in the caller's PID namespace
@@ -962,6 +970,11 @@ class BootstrapEventOwner:
                 floor = serial - _AUDIT_SERIAL_WINDOW
                 self._seen_audit_serials = {
                     seen for seen in self._seen_audit_serials if seen >= floor}
+                transition = self._browser_transition
+                if transition is not None:  # P64: exited members leave with the window
+                    transition['exited'] = {
+                        pid: ended for pid, ended in transition['exited'].items()
+                        if ended >= floor}
         group = self._pending_groups.setdefault(serial, {
             'first': observed, 'events': set(), 'count': 0, 'bytes': 0,
             'syscalls': [], 'sockaddrs': [], 'paths': [], 'execves': []})
@@ -1008,8 +1021,8 @@ class BootstrapEventOwner:
                 self._terminate('EVENT_SOURCE_TERMINAL')
             group['syscalls'].append(dict(number=number,
                 success=success, exit=exit_code,
-                role=self._attribute(pid, ppid), pid=pid, ppid=ppid,
-                argument0=int(fields['a0'], 16)))
+                role=self._attribute(pid, ppid, serial), pid=pid, ppid=ppid,
+                argument0=int(fields['a0'], 16), serial=serial))
         elif kind == 1302:
             group['paths'].append(fields)
         elif kind == 1309:
