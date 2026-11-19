@@ -1629,6 +1629,7 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
         base=topology_fixture.LITERAL_PROXY_ROWS+(self.LITERAL_STREAM,)
         added=dict(fd=8,kind='PROXY_VSOCK_STREAM',device='8',inode='802',flags=2050,tfds=[])
         for churn in ('fd-added-after-A','fd-closed-after-A','substituted-and-restored',
+                      'inherited-pipe-substituted','selector-identity-substituted',
                       'targets-changed-after-A','object-class-after-A','B-differs','sequence-gap'):
             with self.subTest(churn=churn):
                 authority,child,handoff,kernel,active,table=self.literal_child(base)
@@ -1640,6 +1641,12 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                         active['fds'].remove(7)
                     elif churn=='substituted-and-restored':
                         table[7]['inode']='899' if index==0 else '801'
+                    elif churn=='inherited-pipe-substituted':
+                        # Inherited FD3 is replaced and restored between the reports.
+                        table[3]['inode']='1999' if index==0 else original[3]['inode']
+                    elif churn=='selector-identity-substituted':
+                        # Same epoll class and tfd: set; only its device:inode reveals it.
+                        table[6]['device']='17' if index==0 else '16'
                     elif index==0 and churn=='targets-changed-after-A':
                         table[6]['tfds']=[3]
                     elif index==0 and churn=='object-class-after-A':
@@ -1647,7 +1654,9 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     elif index==0 and churn=='sequence-gap':
                         child.observation+=1
                 child.on_report=after
-                if churn in ('substituted-and-restored','targets-changed-after-A','object-class-after-A'):
+                if churn in ('substituted-and-restored','inherited-pipe-substituted',
+                             'selector-identity-substituted','targets-changed-after-A',
+                             'object-class-after-A'):
                     # The child's reports never change; only its /proc does, between them.
                     child.report_rows=lambda index:[dict(row) for row in original]
                 elif churn=='B-differs':
