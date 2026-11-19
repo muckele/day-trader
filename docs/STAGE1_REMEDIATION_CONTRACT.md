@@ -118,10 +118,10 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
 
     Bytes stay charged. The tunnel's vsock stream needs a proven close; a failed close is whole-run `CLEANUP_UNCERTAIN`. Every other client errno, and every vsock or broker error, stays whole-run.
   - On the host broker (P38), these end only that slot:
-    - (b) idle: the host first sends the guest a zero-length logical-EOF record, then closes the stream, so a host-first idle close is an ordinary tunnel end on the guest;
-    - (c) a guest stream that closes physically without a logical-EOF record. P39(b): a failed physical write of that stream's records or logical EOF counts as the same close.
+    - (b) idle: the host first sends the guest a zero-length logical-EOF record, then ends the stream (on its relay lane, DATA `00 00` then END, P40), so a host-first idle close is an ordinary tunnel end on the guest;
+    - (c) a guest stream that ends without a logical-EOF record: the launcher's END on its relay lane (P40) at any point, including before the control, inside the setup or a record, mid-tunnel, or while the slot is pending. A stream that ends before its proof is verified uses no sequence.
 
-    Host whole-run causes remain identity or proof failure, a repeated or decreasing sequence (`replay`, C4), caps, protocol violations and broker errors.
+    Host whole-run causes remain identity or proof failure, a repeated or decreasing sequence (`replay`, C4), caps, protocol violations and broker errors. On a relay lane, a pipe EOF, a failed pipe write or a malformed lane record is whole-run `transport` (P40, reversing P39(b)); lanes never retire.
   - The whole-run latch stays for transport, broker or vsock loss, protocol violation, aggregate and run caps, and clock faults. The 1025th tunnel latches `CAPACITY`.
   - A 17th concurrent client is deferred, never latched (P35). While 16 tunnels are live, the proxy does not accept; the client waits in the kernel listen backlog and is accepted when a tunnel closes. Design section 9.3's 16-simultaneous cap is unchanged.
   - Per-run tunnel total: 1024. A tunnel is one vsock stream (one sequence), so the `firstSequence` ceiling is `MAX_SAFE_INTEGER - 1023`.
@@ -147,10 +147,22 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
   - `filter_digest` read-back
   - a real Chromium sandbox start
   - the host VZ relay forwarding bytes only
-  - P39, the offline broker's relay lanes:
-    - (i) the offline broker's fixed lane model retires a lane on each guest-first physical close, so 16 such closes end a run;
-    - (ii) the Stage 2 relay must carry an abnormal guest close (no logical EOF) to the lane but not a normal close, must hold a lane's pre-written challenge until a stream arrives, and must never deliver a closed stream's host bytes to a new stream;
-    - (iii) whether the lane model is replaced by one lane per guest vsock connection is an open owner decision.
+  - P40 (owner decision "Redesign lanes now", 2026-11-18; launcher obligation (c) as amended by P41), the relay lane protocol between the Stage 2 launcher and the broker. It replaces P39 (i)-(iii); the offline broker implements the broker side.
+    - Format: each of the 16 relay pipe pairs (fds 4..35) is a reusable lane that carries one guest vsock connection at a time. Every byte on a lane, both ways, is inside a lane record: type (1 byte) | length (2 bytes, big-endian) | payload. Launcher to broker: OPEN `0x01` (length 0), DATA `0x02` (1-16384, the connection's bytes verbatim), END `0x03` (length 0). Broker to launcher: DATA, END.
+    - State machine:
+      - IDLE to LIVE on OPEN. A stream is over on a side once that side has sent END and received END; the two ENDs may cross. The lane is then IDLE again.
+      - The broker writes the challenge (as DATA) only after OPEN.
+      - After its own END the broker reads that stream up to the launcher's END (P41). Guest records keep their length checks, and a violation is whole-run. Their payloads are discarded, never forwarded or read as the next stream's control or proof. Any byte after the guest's logical EOF is a protocol violation, whole-run.
+      - After the launcher's END the broker writes no DATA for that stream, only its own END.
+      - Guest records are reassembled from the DATA payloads; guest bytes are never read as lane records. The guest-visible C4 bytes are unchanged.
+    - Per-slot (the run continues): the launcher's END at any point; the per-slot idle end (DATA `00 00` unless already written, then END); an END received during a pending resolve or connect. No sequence is used by a stream that ends before its proof is verified.
+    - Whole-run `transport`: a pipe EOF or a failed pipe write on any lane (the launcher is gone; this reverses P39(b)); a malformed lane record (unknown type; OPEN or END with length > 0; DATA of length 0 or over 16384; OPEN while a stream is live or draining; DATA or END while IDLE).
+    - Launcher obligations, for Stage 2 to implement and qualify:
+      - (a) assign each accepted vsock connection to an IDLE lane and send OPEN; hold an accepted connection while no lane is IDLE;
+      - (b) forward that connection's bytes only as DATA on its lane; send END on its close, reset, or any read or write error, then forward nothing more from it;
+      - (c) (P41) on the broker's END, deliver the DATA received before it, then write nothing more to that connection; keep forwarding its bytes as DATA until it ends (close, reset or error); then send END (unless already sent) and close it;
+      - (d) after its own END, discard broker DATA until the broker's END; never deliver one connection's bytes to another;
+      - (e) a broker pipe failure fails the run and closes every connection.
 - **Owning task:** Task 18 records them; Stage 2 resolves them.
 
 ## Appendix: Pre-flight rulings
