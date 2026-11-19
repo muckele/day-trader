@@ -1302,8 +1302,9 @@ class ConfinementTests(unittest.TestCase):
         for fault in HELPER_FAULTS:
             for cleanup in HELPER_CLEANUPS:
                 with self.subTest(fault=fault,cleanup=cleanup):
-                    log=[]; state={'armed':False,'opened':False}
-                    def install(b,events,state=state,log=log):
+                    log=[]; state={'armed':False,'opened':False}; seen={}
+                    def install(b,events,state=state,log=log,seen=seen):
+                        seen['events']=events
                         fork,leave,calls=b.os.fork,b.os._exit,[]
                         def counted_fork():
                             # helper_branch's second fork is the inner fork: the window opens at its call,
@@ -1324,16 +1325,21 @@ class ConfinementTests(unittest.TestCase):
                             return real(*args,**kwargs)
                         return call
                     saved={name:namespace[name] for name in modules+list(PATH_BUILTINS) if name in namespace}
+                    escaped=None
                     try:
                         for name in modules: namespace[name]=StrictSurface(saved[name],name,log,state)
                         for name in PATH_BUILTINS: namespace[name]=shadow(name,getattr(builtins,name))
-                        b,events=helper_branch(launch,fault,cleanup,install=install)
+                        # An exception raised in the helper's own handlers escapes it; keep it so the
+                        # recorded surface is still checked first, then fail on the escape itself.
+                        try: helper_branch(launch,fault,cleanup,install=install)
+                        except Exception as error: escaped=error
                     finally:
                         for name in modules+list(PATH_BUILTINS):
                             if name in saved: namespace[name]=saved[name]
                             else: namespace.pop(name,None)
                     self.assertEqual([name for name in log if name not in OUTER_HELPER_POST_FORK],[])
-                    self.assertEqual(len([e for e in events if e[0]=='exit']),1)
+                    self.assertIsNone(escaped)  # the helper always ends in its own _exit, never by raising
+                    self.assertEqual(len([e for e in seen['events'] if e[0]=='exit']),1)
                     self.assertFalse(state['armed'])  # the window closed at the helper's own _exit
                     if fault=='before-inner':
                         self.assertFalse(state['opened'])  # unshare failed: no inner fork, no pivot
