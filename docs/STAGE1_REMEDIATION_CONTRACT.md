@@ -65,6 +65,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
   - Order: report A, then `/proc`, then report B. Accept only if all three are equal and B's sequence is A's plus 1.
   - The proxy loop never runs in the bootstrap process.
   - The in-process `isinstance(proxy_owner, ProxyRuntimeOwner)` gate is replaced, not kept beside the new authority (R11).
+  - Report rows (reconciles amendment section 6, whose `ProxyRuntimeObservation.currentFDs` used section 4.1's rows): the proxy's report rows are exactly `{fd, kind, device, inode, flags, tfds}`. `ownerId` and `acquiredGeneration` are minted by the bootstrap's ledger, not by the proxy. The `roleRuntime` rows sent to the host keep amendment section 4.1's shape.
 - **Owning task:** Task 7.
 
 ## C6. Per-role seccomp (E1)
@@ -147,6 +148,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
   - `filter_digest` read-back
   - a real Chromium sandbox start
   - the host VZ relay forwarding bytes only
+  - C5 current checks under proxy traffic: a PROXY descriptor change between report A and report B is terminal (C5). Stage 2 must show that no current check runs while the proxy serves clients, or each such race ends the run.
   - P40 (owner decision "Redesign lanes now", 2026-11-18; launcher obligation (c) as amended by P41), the relay lane protocol between the Stage 2 launcher and the broker. It replaces P39 (i)-(iii); the offline broker implements the broker side.
     - Format: each of the 16 relay pipe pairs (fds 4..35) is a reusable lane that carries one guest vsock connection at a time. Every byte on a lane, both ways, is inside a lane record: type (1 byte) | length (2 bytes, big-endian) | payload. Launcher to broker: OPEN `0x01` (length 0), DATA `0x02` (1-16384, the connection's bytes verbatim), END `0x03` (length 0). Broker to launcher: DATA, END.
     - State machine:
