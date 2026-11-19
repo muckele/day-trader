@@ -851,10 +851,16 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             launches=tuple(c.prepare_role(role,c.RoleConfig(
                 self.role_config,c.role_fds(role,self.binding.runId))) for role in c.UIDS)
             self.role_init={};self.role_queue=[];self.worker_sequence=0;self.application_to_worker=[];self.browser_prepare_payload=None
+            # Task 11: the worker launches the pinned Chromium after CURRENT and
+            # before STARTED; the kernel then delivers that launch's audit
+            # records (root clone, child exec). launch=False models a launch
+            # whose records never arrive; refresh_fault mis-correlates REFRESH.
+            self.launch=True;self.refresh_fault=None;self.worker_actions=[]
             def write_role(owned,data):
                 value=json.loads(data[4:])
                 if 'kind' in value:self.role_init[owned.role]=value;return
                 payload=value['payload'];action=value['action']
+                self.worker_actions.append(action)
                 if action=='APP_CHUNK':
                     self.application_to_worker.append(payload);return
                 self.worker_sequence+=1
@@ -863,9 +869,19 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     result_action='PREPARED';result_payload=dict(
                         requestSequence=value['sequence'],grantId=payload['grantId'],
                         reservationId='6'*32,generation=1)
-                elif action=='COMMIT':result_action='REFRESH';result_payload=dict(
-                    requestSequence=value['sequence'],**payload)
+                elif action=='COMMIT':
+                    result_action='REFRESH';result_payload=dict(
+                        requestSequence=value['sequence'],**payload)
+                    if self.refresh_fault is not None:
+                        result_action,result_payload=self.refresh_fault(result_action,result_payload)
                 elif action=='CURRENT':
+                    if self.launch:
+                        root=self.roles._handoffs['BROWSER'].attestation.pid
+                        native=self.event_native
+                        native.events+=topology_fixture.audit_group(
+                            native,9001,220,pid=root,ppid=1,exit_code=root+100)
+                        native.events+=topology_fixture.exec_group(
+                            native,9002,pid=root+100,ppid=root)
                     result_action='STARTED';result_payload={key:payload[key] for key in
                         ('grantId','reservationId','commitId','generation')}
                     result_payload['requestSequence']=value['sequence']
@@ -1083,20 +1099,99 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             proof=composition.require_current()
             runtime=json.loads(proof.handoff)['payload']['composition']['roleRuntime']
             self.assertEqual(runtime[1]['lifecycle'],'BROWSER_ACTIVE')
+            # Task 11 (CB-I4): the commit's own current proof consumed the
+            # kernel-format launch records (root clone, pinned-Chromium exec);
+            # the transition is ACTIVE with the launched child in the family.
             browser_pid=h.roles._handoffs['BROWSER'].attestation.pid
-            child=browser_pid+100
-            for event in (dict(number=220,pid=browser_pid,ppid=1,exit=child,
-                               argument0='0',success=True),
-                          dict(number=221,pid=child,ppid=browser_pid,exit=0,
-                               argument0='0',success=True),
-                          dict(number=93,pid=child,ppid=browser_pid,exit=0,
-                               argument0='0',success=True)):
-                composition._event_owner._accept_browser_transition(event)
-            self.assertIsNone(composition._event_owner._browser_transition)
+            transition=composition._event_owner._browser_transition
+            self.assertEqual(transition['phase'],'ACTIVE')
+            self.assertEqual(transition['family'],{browser_pid,browser_pid+100})
             with self.assertRaises(Exception):composition.commit_browser(preparation)
             self.assertTrue(composition._terminal);self.assertEqual(composition._state,'FAILED')
             self.assertEqual(composition._generation,2)
             self.assertIsNone(composition._proof);self.assertIsNone(composition._handoff)
+
+    @staticmethod
+    def deliver_launch(h):
+        """The kernel's records of the worker's launch: root clone, pinned exec."""
+        root=h.roles._handoffs['BROWSER'].attestation.pid;native=h.event_native
+        native.events+=topology_fixture.audit_group(native,9001,220,pid=root,ppid=1,exit_code=root+100)
+        native.events+=topology_fixture.exec_group(native,9002,pid=root+100,ppid=root)
+
+    def test_v1_launch_records_after_started_within_bound_succeed(self):
+        # P60 with CB-I4(b): STARTED may precede the launch's audit records. The
+        # commit stands, no current proof is published while the launch is
+        # unobserved, each current check (internal or host) is EVENT_PENDING
+        # without failing, and records arriving within the bound make the next
+        # current BROWSER_ACTIVE. Barriers keep the 100 ms health cadence.
+        h=self.Harness(self);h.launch=False;composition,stack=h.build()
+        with stack:
+            composition.begin(TEST_HOST_CHALLENGE);preparation=composition.prepare_browser()
+            self.assertEqual(composition.commit_browser(preparation),{'status':'ACTIVE','generation':1})
+            self.assertEqual(composition._state,'BROWSER_COMMITTED');self.assertFalse(composition._terminal)
+            self.assertIsNone(composition._proof);self.assertIsNone(composition._handoff)
+            self.assertEqual(composition._event_owner._browser_transition['phase'],'CLONE')
+            for check in (composition.require_current,lambda:composition.host_current('1f'*16)):
+                h.event_native.mono+=90
+                with self.assertRaisesRegex(t.TopologyError,'^EVENT_PENDING$'):check()
+                self.assertFalse(composition._terminal);self.assertIsNone(composition._proof)
+                self.assertEqual(composition._state,'BROWSER_COMMITTED')
+            h.event_native.mono+=90;self.deliver_launch(h)
+            proof=composition.require_current()
+            runtime=json.loads(proof.handoff)['payload']['composition']['roleRuntime']
+            self.assertEqual(runtime[1]['lifecycle'],'BROWSER_ACTIVE')
+            self.assertEqual(composition._event_owner._browser_transition['phase'],'ACTIVE')
+            self.assertIs(composition._proof,proof)
+
+    def test_v1_launch_records_missing_beyond_bound_terminal(self):
+        # P60: the lag is bounded by the brief's 1000 ms pending bound from the
+        # transition commit; after it the source and the composition are terminal
+        # and late records cannot revive them.
+        h=self.Harness(self);h.launch=False;composition,stack=h.build()
+        with stack:
+            composition.begin(TEST_HOST_CHALLENGE);preparation=composition.prepare_browser()
+            self.assertEqual(composition.commit_browser(preparation),{'status':'ACTIVE','generation':1})
+            committed=composition._event_owner._browser_transition['committed']
+            for mono in range(committed+90,committed+1001,90):
+                h.event_native.mono=mono
+                with self.subTest(mono=mono),self.assertRaisesRegex(t.TopologyError,'^EVENT_PENDING$'):
+                    composition.require_current()
+                self.assertFalse(composition._terminal)
+            h.event_native.mono=committed+1001
+            with self.assertRaisesRegex(t.TopologyError,'^EVENT_SOURCE_TERMINAL$'):
+                composition.require_current()
+            self.assertTrue(composition._terminal);self.assertEqual(composition._state,'FAILED')
+            self.assertEqual(composition._generation,2)
+            self.deliver_launch(h)
+            with self.assertRaisesRegex(t.TopologyError,'^TOPOLOGY_FAILED$'):composition.require_current()
+
+    def test_v1_refresh_correlation_checked_by_bootstrap(self):
+        # compB M-4 K1: the bootstrap correlates the worker's REFRESH with its
+        # own COMMIT (requestSequence and every COMMIT field) before it commits
+        # the event transition or sends CURRENT; a mismatch launches nothing.
+        faults={
+            'request-sequence':lambda a,p:(a,dict(p,requestSequence=p['requestSequence']+1)),
+            'commit-id':lambda a,p:(a,dict(p,commitId='0'*32)),
+            'grant-id':lambda a,p:(a,dict(p,grantId='0'*32)),
+            'reservation-id':lambda a,p:(a,dict(p,reservationId='0'*32)),
+            'generation':lambda a,p:(a,dict(p,generation=2)),
+            'action':lambda a,p:('STARTED',p),
+        }
+        for fault,change in faults.items():
+            h=self.Harness(self);h.refresh_fault=change;composition,stack=h.build()
+            with stack,self.subTest(fault=fault):
+                composition.begin(TEST_HOST_CHALLENGE);preparation=composition.prepare_browser()
+                with self.assertRaises(Exception):composition.commit_browser(preparation)
+                self.assertEqual(h.worker_actions.count('COMMIT'),1)
+                self.assertNotIn('CURRENT',h.worker_actions)
+                self.assertIsNone(composition._event_owner._browser_transition)
+                self.assertEqual(h.event_native.events,[])
+                self.assertTrue(composition._terminal)
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            composition.begin(TEST_HOST_CHALLENGE);preparation=composition.prepare_browser()
+            self.assertEqual(composition.commit_browser(preparation),{'status':'ACTIVE','generation':1})
+            self.assertEqual(h.worker_actions[-2:],['COMMIT','CURRENT'])
 
     def test_v1_composed_handoff_retains_distinct_command_result_identities(self):
         h=self.Harness(self);composition,stack=h.build()

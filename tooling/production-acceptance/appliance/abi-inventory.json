@@ -1428,6 +1428,491 @@
       "memberPath": "linux-6.8/include/uapi/asm-generic/signal.h",
       "signed": true,
       "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_FILTER_EXIT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_ALWAYS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_ARCH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_EQUAL",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_GET",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_LIST_RULES",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_SYSCALL",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_PATH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_CONFIG_CHANGE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_SOCKADDR",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_CWD",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_EXECVE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_EOE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_PROCTITLE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_STATUS_ENABLED",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_STATUS_FAILURE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_STATUS_PID",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_STATUS_RATE_LIMIT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_STATUS_BACKLOG_LIMIT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_BITMASK_SIZE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_MAX_FIELDS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "id": "RTMGRP_LINK",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "id": "RTMGRP_IPV4_IFADDR",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "id": "RTMGRP_IPV4_ROUTE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "id": "RTMGRP_IPV6_IFADDR",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "id": "RTMGRP_IPV6_ROUTE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H"
+      ],
+      "id": "RTM_NEWLINK",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H"
+      ],
+      "id": "RTM_NEWADDR",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H"
+      ],
+      "id": "RTM_NEWROUTE",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "id": "NLM_F_MULTI",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "id": "NLM_F_ACK",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "id": "NLM_F_DUMP_INTR",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "id": "NLMSG_ERROR",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "id": "NLMSG_DONE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_MODIFY",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_ATTRIB",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_CLOSE_WRITE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_MOVED_FROM",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_MOVED_TO",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_CREATE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_DELETE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_DELETE_SELF",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_MOVE_SELF",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_UNMOUNT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_Q_OVERFLOW",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_IGNORED",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_DONT_FOLLOW",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_MASK_CREATE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
     }
   ],
   "version": 1

@@ -415,7 +415,8 @@ async function startHarness(options = {}) {
   const grant = Object.freeze({}),handoff=Object.freeze({}),child=Object.freeze({});let waiting=true;
   const authority={
     inspectHandoff:value=>value===handoff?{kind:'BROWSER',runId:testRun,uid:10002,child,privatePipe:links.controller,waiting,confined:true}:null,
-    inspectGrant:value=>value===grant?{kind:'BROWSER',runId:testRun,child,purpose:'CONFINEMENT_PROVED',session:null}:null,
+    // Task 11 (P5): the authority reports the remaining activation time that bounds activateOnce.
+    inspectGrant:value=>value===grant?{kind:'BROWSER',runId:testRun,child,purpose:'CONFINEMENT_PROVED',session:null,remainingMs:60000}:null,
     async activate(){activations++;await activationReady;waiting=false;},
     async stopOwned(owned){assert.equal(owned,child);stops++;return {status:options.stopTimeout?'TIMEOUT':'STOPPED',runId:testRun,child};},
     async waitExit(owned){assert.equal(owned,child);waits++;return {status:'EXITED',runId:testRun,child};},

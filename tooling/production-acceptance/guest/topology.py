@@ -311,6 +311,24 @@ _NATIVE_EVENT_SEMANTICS_UNAVAILABLE = (
     'AUDIT_RULE_ENUMERATION', 'AUDIT_DELIVERY', 'ROUTE_DELIVERY',
     'COMBINED_EFFECT_FENCE',
 )
+# E-1b (P45; task-8b brief "E-1b rule"): the only Chromium namespace-sandbox
+# calls admitted without an event, from a BROWSER-family pid other than the
+# transition root once the transition is ACTIVE: chroot, and unshare whose a0
+# is exactly CLONE_NEWUSER (never a mask test). abi_coverage_test binds both
+# constants to __NR_chroot, __NR_unshare and CLONE_NEWUSER.
+_SANDBOX_ADMITTED_SYSCALLS = (51, 97)
+_SANDBOX_UNSHARE_FLAGS = 0x10000000
+# Audit record text (kernel/auditsc.c audit_log_exit :1693-1709, audit_log_name
+# :1513-1595, audit_log_execve_info :1125-1270). Fields are " key=value"; an
+# untrusted string value is quoted or hex (kernel/audit.c:2090-2130), so no
+# value holds a space. a0 is " a0=%lx": lowercase hex, no 0x, no leading zero
+# (lib/vsprintf.c), at most 16 digits on LP64. PATH inode is %lu and dev is
+# %02x:%02x of the kernel MAJOR/MINOR.
+_AUDIT_FIELD = re.compile(r'(?:^| )([A-Za-z_][A-Za-z0-9_]*)=([^ ]+)')
+_AUDIT_A0 = re.compile(r'0|[1-9a-f][0-9a-f]{0,15}')
+_AUDIT_INODE = re.compile(r'[1-9][0-9]{0,19}')
+_AUDIT_DEV = re.compile(r'([0-9a-f]{2}|[1-9a-f][0-9a-f]{2,7}):'
+                        r'([0-9a-f]{2}|[1-9a-f][0-9a-f]{2,7})')
 
 
 def _fixed_audit_rule():
@@ -432,9 +450,20 @@ def qualify_offline_event_native(native):
             or any(type(pid) is not int or not 1 <= pid <= 2**31 - 1
                    or type(role) is not str
                    for pid, role in native.audit_role_pids.items())
-            or getattr(native, 'selector_kind', None) != 'selectors.PollSelector'):
+            or getattr(native, 'selector_kind', None) != 'selectors.PollSelector'
+            or not _browser_executable(getattr(native, 'browser_executable', None))):
         _fail('ADAPTER_DENIED')
     return _OfflineEventNative(native, _OFFLINE_EVENT_NATIVE_SEAL)
+
+
+def _browser_executable(value):
+    """The installed confinement.CHROME identity as audit PATH prints it:
+    (MAJOR(dev), MINOR(dev), inode). The event port reports it once; the owner
+    retains it and compares every Chromium exec against it."""
+    return (type(value) is tuple and len(value) == 3
+            and all(type(part) is int for part in value)
+            and 0 <= value[0] <= 2**32 - 1 and 0 <= value[1] <= 2**32 - 1
+            and 1 <= value[2] <= 2**64 - 1)
 
 
 def select_native_bootstrap_event_source(reference, platform_name, machine):
@@ -471,6 +500,9 @@ class BootstrapEventOwner:
         self._last_clock = None
         self._terminal, self._cleanup_status = None, None
         self._browser_reservation, self._browser_transition = None, None
+        self._browser_executable = self._port.browser_executable
+        if not _browser_executable(self._browser_executable):
+            _fail('AUTHORITY_LOST')
         self._lock = threading.RLock()
 
     @property
@@ -712,42 +744,165 @@ class BootstrapEventOwner:
                     or runtime_id != reservation._proxy_runtime_id
                     or proxy_facts != reservation._proxy_facts):
                 self._terminate('EVENT_SOURCE_TERMINAL')
+            now = self._port.current_monotonic_ms()
+            if type(now) is not int or now < 0:
+                self._terminate('EVENT_SOURCE_TERMINAL')
             reservation._used = True
+            root = reservation._handoff.attestation.pid
+            # Grammar CLONE -> EXEC -> ACTIVE (CB-I4). 'family' holds the root
+            # and the confirmed descendants; 'provisional' maps a pid first
+            # attributed through its ppid (P46) to that ppid; 'exited' maps a
+            # provisional pid that exited before its parent's clone record.
             self._browser_transition = {
-                'phase': 'CLONE',
-                'root': reservation._handoff.attestation.pid,
-                'child': None,
+                'phase': 'CLONE', 'root': root, 'child': None,
+                'family': {root}, 'provisional': {}, 'exited': {},
+                'committed': now,
             }
 
-    def _accept_browser_transition(self, syscall):
+    def _attribute(self, pid, ppid):
+        """Original role by pid; after commit the BROWSER family by pid, or (P46)
+        an unknown pid whose ppid is a family pid, as a provisional member."""
+        role = self._audit_pids.get(pid)
+        if role is not None:
+            return role
+        transition = self._browser_transition
+        if transition is not None and pid not in transition['exited']:
+            if pid in transition['family'] or pid in transition['provisional']:
+                return 'BROWSER'
+            if ppid in transition['family'] or ppid in transition['provisional']:
+                transition['provisional'][pid] = ppid
+                return 'BROWSER'
+        self._terminate('EVENT_SOURCE_TERMINAL')
+
+    def _known_pid(self, pid):
+        transition = self._browser_transition
+        return (pid in self._audit_pids or pid in transition['family']
+                or pid in transition['provisional'] or pid in transition['exited'])
+
+    def _execs_pinned_chromium(self, group, *, launch):
+        """EXEC evidence (P59). The executable is AUDIT_PATH item 0: execve and
+        execveat take the syscall's first audit name (fs/exec.c:2134, :2144 ->
+        getname -> audit_getname, fs/namei.c:204 -> kernel/auditsc.c:2229-2245,
+        appended at :2189); opening it records the opened file's inode/dev on
+        that same name as NORMAL (do_open_execat, fs/exec.c:1541, :911-951 ->
+        do_open, fs/namei.c:3616 -> __audit_inode, kernel/auditsc.c:2325-2381),
+        after following /proc/self/exe (fs/proc/base.c:1738-1756). The ELF
+        interpreter is a later name (fs/binfmt_elf.c:893 open_exec ->
+        getname_kernel, fs/exec.c:968 -> audit_getname, fs/namei.c:253), and
+        items are numbered in that order (kernel/auditsc.c:1803-1807). Item 0
+        must carry the retained identity. The launch (EXEC, or the P46 exec-first
+        launch) also names confinement.CHROME literally in the PATH item and in
+        the EXECVE argv[0]; a family re-exec in ACTIVE may pass any name."""
+        paths = [row for row in group['paths'] if row.get('item') == '0']
+        execves = [row for row in group['execves'] if 'argc' in row]
+        if len(paths) != 1 or len(execves) != 1:
+            return False
+        path = paths[0]
+        inode = _AUDIT_INODE.fullmatch(path.get('inode', ''))
+        dev = _AUDIT_DEV.fullmatch(path.get('dev', ''))
+        major, minor, number = self._browser_executable
+        if (path.get('nametype') != 'NORMAL' or inode is None or dev is None
+                or int(path['inode']) != number
+                or (int(dev.group(1), 16), int(dev.group(2), 16)) != (major, minor)):
+            return False
+        name = '"' + _CONFINEMENT.CHROME + '"'
+        return not launch or (path.get('name') == name and execves[0].get('a0') == name)
+
+    def launch_pending(self):
+        """P60: a committed transition whose launch is not yet observed (CLONE
+        or EXEC) on a live source; its barriers are EVENT_PENDING until ACTIVE
+        and terminal after the 1000 ms bound."""
+        with self._lock:
+            transition = self._browser_transition
+            return (self._terminal is None and transition is not None
+                    and transition['phase'] in ('CLONE', 'EXEC'))
+
+    def _accept_browser_transition(self, syscall, group):
         transition = self._browser_transition
         if transition is None:
             self._terminate('EVENT_SOURCE_TERMINAL')
-        number, phase = syscall['number'], transition['phase']
-        if phase == 'CLONE':
-            if (number not in (220, 435) or syscall['pid'] != transition['root']
-                    or syscall['exit'] in self._audit_pids):
+        number, pid, phase = syscall['number'], syscall['pid'], transition['phase']
+        root, family = transition['root'], transition['family']
+        provisional, exited = transition['provisional'], transition['exited']
+        # E13: only the browser root or its family may clone, exec or exit here.
+        if (syscall['role'] != 'BROWSER'
+                or (pid not in family and pid not in provisional)):
+            self._terminate('EVENT_SOURCE_TERMINAL')
+        if number == 94:
+            # P18/P58: the root's exit_group is terminal; there is no EXIT
+            # phase. A family exit_group removes that process.
+            if pid == root:
+                self._terminate('BROWSER_EXITED')
+            if phase != 'ACTIVE':
                 self._terminate('EVENT_SOURCE_TERMINAL')
-            transition['child'] = syscall['exit']
-            self._audit_pids[syscall['exit']] = 'BROWSER'
-            transition['phase'] = 'EXEC'
+            if pid in provisional:
+                exited[pid] = provisional.pop(pid)
+            else:
+                family.discard(pid)
             return
-        if phase == 'EXEC':
-            if (number not in (221, 281) or syscall['pid'] != transition['child']
-                    or syscall['ppid'] != transition['root']):
+        if number in (220, 435):
+            child = syscall['exit']
+            if phase == 'CLONE':
+                if pid != root or self._known_pid(child):
+                    self._terminate('EVENT_SOURCE_TERMINAL')
+                transition['child'] = child
+                family.add(child)
+                transition['phase'] = 'EXEC'
+                return
+            if phase != 'ACTIVE':
                 self._terminate('EVENT_SOURCE_TERMINAL')
-            transition['phase'] = 'EXIT'
+            if child in provisional:
+                # P46: the parent's later clone record confirms its child.
+                if provisional[child] != pid:
+                    self._terminate('EVENT_SOURCE_TERMINAL')
+                family.add(child)
+                del provisional[child]
+                return
+            if child in exited:
+                # P46: the child already exited; its record is consumed and
+                # the pid is never re-added.
+                if exited[child] != pid:
+                    self._terminate('EVENT_SOURCE_TERMINAL')
+                del exited[child]
+                return
+            if self._known_pid(child):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            family.add(child)
             return
-        if phase == 'EXIT':
-            try: normal = int(syscall['argument0'], 16) == 0
-            except (TypeError, ValueError): normal = False
-            if (number not in (93, 94) or syscall['pid'] != transition['child']
-                    or syscall['ppid'] != transition['root'] or not normal):
+        if number in (221, 281):
+            if not self._execs_pinned_chromium(group, launch=phase != 'ACTIVE'):
                 self._terminate('EVENT_SOURCE_TERMINAL')
-            del self._audit_pids[transition['child']]
-            self._browser_transition = None
+            if phase == 'CLONE':
+                # P46 order: the launched child's exec is logged before the
+                # root's clone record; the clone record confirms it later.
+                if pid not in provisional or syscall['ppid'] != root:
+                    self._terminate('EVENT_SOURCE_TERMINAL')
+                transition['child'] = pid
+                transition['phase'] = 'ACTIVE'
+                return
+            if phase == 'EXEC':
+                if pid != transition['child'] or syscall['ppid'] != root:
+                    self._terminate('EVENT_SOURCE_TERMINAL')
+                transition['phase'] = 'ACTIVE'
+                return
+            # ACTIVE (P59): a family re-exec of the pinned Chromium identity,
+            # by any name (Chromium execs /proc/self/exe); never the root.
+            if pid == root:
+                self._terminate('EVENT_SOURCE_TERMINAL')
             return
         self._terminate('EVENT_SOURCE_TERMINAL')
+
+    def _admit_browser_sandbox(self, syscall):
+        """E-1b: True only for the exact Chromium namespace-sandbox calls."""
+        transition = self._browser_transition
+        chroot, unshare = _SANDBOX_ADMITTED_SYSCALLS
+        return (transition is not None and transition['phase'] == 'ACTIVE'
+                and syscall['role'] == 'BROWSER'
+                and syscall['pid'] != transition['root']
+                and syscall['success'] is True and syscall['exit'] == 0
+                and (syscall['number'] == chroot
+                     or (syscall['number'] == unshare
+                         and syscall['argument0'] == _SANDBOX_UNSHARE_FLAGS)))
 
     def _audit_record(self, raw, observed):
         kind, flags, sequence, payload = _parse_event_nlmsg(raw)
@@ -774,8 +929,15 @@ class BootstrapEventOwner:
                 self._terminate('EVENT_SOURCE_TERMINAL')
             syscall = group['syscalls'][0]
             if syscall['success']:
-                if syscall['number'] in (93, 94, 220, 221, 281, 435):
-                    self._accept_browser_transition(syscall)
+                if syscall['number'] == 93:
+                    # P58: pid= is the tgid, so exit is one thread ending; it
+                    # never terminates the run or removes a pid. Process exit is
+                    # exit_group; root liveness stays with the role supervisor.
+                    pass
+                elif syscall['number'] in (94, 220, 221, 281, 435):
+                    self._accept_browser_transition(syscall, group)
+                elif self._admit_browser_sandbox(syscall):
+                    pass
                 else:
                     if self._browser_transition is not None:
                         self._terminate('EVENT_SOURCE_TERMINAL')
@@ -795,35 +957,56 @@ class BootstrapEventOwner:
             self._last_audit_serial = serial
         group = self._pending_groups.setdefault(serial, {
             'first': observed, 'events': set(), 'count': 0, 'bytes': 0,
-            'syscalls': [], 'sockaddrs': []})
+            'syscalls': [], 'sockaddrs': [], 'paths': [], 'execves': []})
         group['count'] += 1; group['bytes'] += len(raw)
         self._pending_count += 1; self._pending_bytes += len(raw)
         if (len(self._pending_groups) > 64 or self._pending_count > 256
                 or self._pending_bytes > 1048576
                 or observed - group['first'] > 1000):
             self._terminate('EVENT_SOURCE_TERMINAL')
-        fields = dict(re.findall(r'(?:^| )([A-Za-z_]+)=([^ ]+)', text))
+        pairs = _AUDIT_FIELD.findall(text)
+        fields = dict(pairs)
+        if kind in (1300, 1302, 1309) and len(fields) != len(pairs):
+            self._terminate('EVENT_SOURCE_TERMINAL')
         if kind == 1300:
+            # Kernel format (audit_log_exit): every SYSCALL record prints a0
+            # exactly once as %lx; exit/exit_group are logged by __audit_free
+            # with AUDITSC_INVALID, so they never carry success=/exit=.
+            if _AUDIT_A0.fullmatch(fields.get('a0', '')) is None:
+                self._terminate('EVENT_SOURCE_TERMINAL')
             try:
                 number = int(fields['syscall'])
-                exit_code = int(fields['exit'])
                 pid, ppid = int(fields['pid']), int(fields['ppid'])
             except (KeyError, ValueError):
                 self._terminate('EVENT_SOURCE_TERMINAL')
+            if number in (93, 94):
+                if 'success' in fields or 'exit' in fields:
+                    self._terminate('EVENT_SOURCE_TERMINAL')
+                success, exit_code = True, None
+            else:
+                try: exit_code = int(fields['exit'])
+                except (KeyError, ValueError):
+                    self._terminate('EVENT_SOURCE_TERMINAL')
+                if (fields.get('success') not in ('yes', 'no')
+                        or (fields['success'] == 'yes'
+                            and ((number in (220, 435) and exit_code <= 0)
+                                 or (number not in (220, 435) and exit_code != 0)))
+                        or (fields['success'] == 'no' and exit_code >= 0)):
+                    self._terminate('EVENT_SOURCE_TERMINAL')
+                success = fields['success'] == 'yes'
             if (fields.get('arch') != 'c00000b7'
-                    or fields.get('success') not in ('yes', 'no')
                     or number not in (33, 39, 40, 41, 51, 93, 94, 97, 200,
                                       201, 220, 221, 268, 281, 435)
-                    or pid not in self._audit_pids or ppid < 0
-                    or (fields['success'] == 'yes'
-                        and ((number in (220, 435) and exit_code <= 0)
-                             or (number not in (220, 435) and exit_code != 0)))
-                    or (fields['success'] == 'no' and exit_code >= 0)):
+                    or pid < 1 or ppid < 0):
                 self._terminate('EVENT_SOURCE_TERMINAL')
             group['syscalls'].append(dict(number=number,
-                success=fields['success'] == 'yes', exit=exit_code,
-                role=self._audit_pids[pid], pid=pid, ppid=ppid,
-                argument0=fields.get('a0')))
+                success=success, exit=exit_code,
+                role=self._attribute(pid, ppid), pid=pid, ppid=ppid,
+                argument0=int(fields['a0'], 16)))
+        elif kind == 1302:
+            group['paths'].append(fields)
+        elif kind == 1309:
+            group['execves'].append(fields)
         elif kind == 1306:
             try: address = bytes.fromhex(fields['saddr'])
             except (KeyError, ValueError): self._terminate('EVENT_SOURCE_TERMINAL')
@@ -890,13 +1073,20 @@ class BootstrapEventOwner:
         now = self._port.current_monotonic_ms()
         if type(now) is not int or now < 0:
             self._terminate('EVENT_SOURCE_TERMINAL')
+        # A committed transition whose launch is not yet observed (CLONE or
+        # EXEC) is pending at every barrier and terminal after the same
+        # 1000 ms bound as an incomplete group.
+        transition = self._browser_transition
+        launching = (transition is not None
+                     and transition['phase'] in ('CLONE', 'EXEC'))
+        if launching and now - transition['committed'] > 1000:
+            self._terminate('EVENT_SOURCE_TERMINAL')
         if self._pending_groups:
             if any(now - group['first'] > 1000
                    for group in self._pending_groups.values()):
                 self._terminate('EVENT_SOURCE_TERMINAL')
             _fail('EVENT_PENDING')
-        if (self._browser_transition is not None
-                and self._browser_transition['phase'] in ('EXEC', 'EXIT')):
+        if launching:
             _fail('EVENT_PENDING')
 
     def _sealed_fence(self):
@@ -924,7 +1114,9 @@ class BootstrapEventOwner:
             except Exception: self._terminate('EVENT_SOURCE_TERMINAL')
             self._consume_records(records)
             if self._drift: self._terminate('EVENT_DRIFT')
-            self._check_pending()
+            # P60: health and rules are verified before the first pending check,
+            # so a barrier held pending by lagging records (at most the 1000 ms
+            # bound) still keeps the at-most-100 ms health interval.
             self._verify_health_and_rules()
             if self._drift: self._terminate('EVENT_DRIFT')
             self._check_pending()
@@ -3198,7 +3390,7 @@ class BootstrapComposition:
             self._claim_host_challenge(challenge)
             return self._capture_current(challenge)
         except Exception as error:
-            self._failed(error)
+            if not self._launch_lag(error): self._failed(error)
             raise
 
     def require_current(self) -> AdmissionProof:
@@ -3208,8 +3400,22 @@ class BootstrapComposition:
         try:
             return self._capture_current()
         except Exception as error:
-            self._failed(error)
+            if not self._launch_lag(error): self._failed(error)
             raise
+
+    def _launch_lag(self, error):
+        """P60: after STARTED the launch's audit records may lag. While the
+        event source reports the committed launch unobserved, a current check
+        is EVENT_PENDING without failing the composition, and no earlier
+        current stays published; the source itself turns terminal after its
+        1000 ms bound, which then fails the composition."""
+        if (type(error) is not TopologyError or str(error) != 'EVENT_PENDING'
+                or self._state != 'BROWSER_COMMITTED' or self._terminal
+                or not self._event_owner.launch_pending()):
+            return False
+        with self._lock:
+            self._proof = self._handoff = None
+        return True
 
     def _role_current(self):
         proof = self.require_current()
@@ -3273,7 +3479,11 @@ class BootstrapComposition:
                 or not reservation._used or self._browser_commit_currents != 2):
             _fail('AUTHORITY_LOST')
         self._state = 'BROWSER_COMMITTED'
-        self.require_current()
+        try: self.require_current()
+        except TopologyError as error:
+            # P60: STARTED can precede the launch's audit records; the commit
+            # stands while the source holds the launch pending.
+            if str(error) != 'EVENT_PENDING' or self._terminal: raise
         return result
 
     def commit_browser(self, owner):

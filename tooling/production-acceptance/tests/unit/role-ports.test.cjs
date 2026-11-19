@@ -27,19 +27,22 @@ function fixture(kind = 'BROWSER', overrides = {}) {
   const handoff = Object.freeze({}), grant = Object.freeze({});
   let activations = 0;
   let stops = 0;
+  const received = [];
   const facts = { kind, runId: RUN, uid: kind === 'BROWSER' ? 10002 : 10003,
     child, privatePipe: pipe, waiting: true, confined: true, ...overrides };
   const authority = {
     inspectHandoff: h => h === handoff ? { ...facts } : null,
     inspectGrant: g => g === grant ? { kind, runId: RUN, child,
-      purpose: kind === 'BROWSER' ? 'CONFINEMENT_PROVED' : 'PRIOR_SESSION', session: kind === 'VERIFIER' ? Object.freeze({}) : null } : null,
-    activate: async (owned, value) => { assert.equal(owned, child); assert.equal(value, grant); activations++; facts.waiting=false; },
+      purpose: kind === 'BROWSER' ? 'CONFINEMENT_PROVED' : 'PRIOR_SESSION', session: kind === 'VERIFIER' ? Object.freeze({}) : null,
+      remainingMs: 60000 } : null,
+    // T8-11: record exactly what reaches activate (a frozen projection, never the caller's object).
+    activate: async (owned, value) => { assert.equal(owned, child); received.push(value); activations++; facts.waiting=false; },
     waitExit: async (owned, deadline) => ({ status: 'EXITED', runId: RUN, child: owned }),
     stopOwned: async (owned, deadline) => { stops++; return { status: 'STOPPED', runId: RUN, child: owned }; },
   };
   const boundary = roles.bindRoleBootstrap(authority, RUN);
   boundary.audit(handoff);
-  return { child, pipe, handoff, grant, facts, authority, boundary, count: () => activations, stops: () => stops };
+  return { child, pipe, handoff, grant, facts, authority, boundary, received, count: () => activations, stops: () => stops };
 }
 
 // Breaks caught: accepting fabricated/cross-run handoffs, replayed grants,
@@ -56,10 +59,74 @@ test('activation_second_consume_reject', async () => {
 });
 test('arbitrary_role_program_argv_fd_request_reject', async () => {
   for (const extra of [{ program: '/bin/sh' }, { argv: ['-c','echo'] }, { fd: 9 }, { uid: 0 }, { spawn: true }]) {
+    // An identity authority: a copy carrying a request is not the grant, and nothing reaches activate.
     const f = fixture(); const p = roles.adoptRole('BROWSER', f.handoff);
     await assert.rejects(p.activateOnce({ ...f.grant, ...extra }), /ACTIVATION_DENIED/);
-    assert.equal(f.count(), 0);
+    assert.equal(f.count(), 0); assert.deepEqual(f.received, []);
+    // T8-11 variant V1: an authority that recognises the copy structurally. Only a frozen projection of the
+    // authority's own verified facts reaches activate; the requested program/argv/fd/uid/spawn never does.
+    const g = fixture(); const q = roles.adoptRole('BROWSER', g.handoff), copy = { ...g.grant, ...extra };
+    g.authority.inspectGrant = value => value === copy ? { kind: 'BROWSER', runId: RUN, child: g.child,
+      purpose: 'CONFINEMENT_PROVED', session: null, remainingMs: 60000 } : null;
+    await q.activateOnce(copy);
+    assert.equal(g.count(), 1); assert.equal(g.received.length, 1);
+    const value = g.received[0];
+    assert.notEqual(value, copy); assert.ok(Object.isFrozen(value));
+    assert.deepEqual(Reflect.ownKeys(value).sort(), ['child', 'kind', 'purpose', 'runId', 'session']);
+    assert.equal(value.child, g.child); assert.equal(value.kind, 'BROWSER'); assert.equal(value.runId, RUN);
+    assert.equal(value.purpose, 'CONFINEMENT_PROVED'); assert.equal(value.session, null);
+    for (const key of Reflect.ownKeys(extra)) assert.equal(key in value, false, key);
   }
+});
+test('used_grant_replay_rejected', async () => {
+  // J1: two original children under one authority that accepts the grant for whichever child it was last asked
+  // about. Only the role ports' own used-grant record can refuse the replay on the second child.
+  const grant = Object.freeze({}), children = [Object.freeze({}), Object.freeze({})], activated = [];
+  const facts = children.map(child => ({ kind: 'BROWSER', runId: RUN, uid: 10002, child,
+    privatePipe: Object.freeze({}), waiting: true, confined: true }));
+  const handoffs = facts.map(() => Object.freeze({}));
+  let asked = null;
+  const authority = {
+    inspectHandoff: h => { const i = handoffs.indexOf(h); if (i < 0) return null; asked = facts[i].child; return { ...facts[i] }; },
+    inspectGrant: g => g === grant ? { kind: 'BROWSER', runId: RUN, child: asked, purpose: 'CONFINEMENT_PROVED',
+      session: null, remainingMs: 60000 } : null,
+    activate: async owned => { activated.push(owned); facts.find(x => x.child === owned).waiting = false; },
+    waitExit: async owned => ({ status: 'EXITED', runId: RUN, child: owned }),
+    stopOwned: async owned => ({ status: 'STOPPED', runId: RUN, child: owned }),
+  };
+  const boundary = roles.bindRoleBootstrap(authority, RUN);
+  for (const handoff of handoffs) boundary.audit(handoff);
+  const first = roles.adoptRole('BROWSER', handoffs[0]), second = roles.adoptRole('BROWSER', handoffs[1]);
+  await first.activateOnce(grant);
+  await assert.rejects(second.activateOnce(grant), /ACTIVATION_DENIED/);
+  assert.equal(activated.length, 1); assert.equal(activated[0], children[0]);
+});
+test('activate_once_bounded_by_remaining_budget', async () => {
+  // P5: an activation that never settles ends at the remaining activation time the authority reports. Only the
+  // stop path that follows uses the shared cleanup budget, and a routine activation never starts it (C1).
+  const f = fixture(); let allowance, starts = 0, reads = 0, guard;
+  f.authority.inspectGrant = g => g === f.grant ? { kind: 'BROWSER', runId: RUN, child: f.child,
+    purpose: 'CONFINEMENT_PROVED', session: null, remainingMs: 25 } : null;
+  f.authority.activate = () => new Promise(() => {});
+  f.authority.cleanupBudget = { remaining: () => { reads++; return 41; }, startTerminal: () => { starts++; return 41; } };
+  f.authority.stopOwned = async (child, ms) => { allowance = ms; return { status: 'STOPPED', runId: RUN, child }; };
+  const outcome = await Promise.race([
+    roles.adoptRole('BROWSER', f.handoff).activateOnce(f.grant).then(() => 'activated', e => e.code),
+    new Promise(resolve => { guard = setTimeout(() => resolve('unbounded'), 1000); })]);
+  clearTimeout(guard);
+  assert.equal(outcome, 'ACTIVATION_DENIED');
+  assert.equal(allowance, 41); assert.ok(starts >= 1, 'only the stop path starts the shared end');
+  for (const remainingMs of [undefined, 0, -1, 1.5, 2147483648, '25']) {
+    const g = fixture();
+    g.authority.inspectGrant = x => x === g.grant ? { kind: 'BROWSER', runId: RUN, child: g.child,
+      purpose: 'CONFINEMENT_PROVED', session: null, ...(remainingMs === undefined ? {} : { remainingMs }) } : null;
+    await assert.rejects(roles.adoptRole('BROWSER', g.handoff).activateOnce(g.grant), /ACTIVATION_DENIED/);
+    assert.equal(g.count(), 0, String(remainingMs));
+  }
+  const h = fixture(); let hStarts = 0, hReads = 0;
+  h.authority.cleanupBudget = { remaining: () => { hReads++; return 41; }, startTerminal: () => { hStarts++; return 41; } };
+  await roles.adoptRole('BROWSER', h.handoff).activateOnce(h.grant);
+  assert.equal(h.count(), 1); assert.equal(hStarts, 0); assert.equal(hReads, 0);
 });
 test('exit_handle_bound_to_run_and_owned_child', async () => {
   const f = fixture(); const p = roles.adoptRole('BROWSER', f.handoff); const h = await p.activateOnce(f.grant);
@@ -94,7 +161,7 @@ test('verifier_requires_prior_session_one_use_grant', async () => {
   assert.equal(p.kind,'VERIFIER');
   await p.activateOnce(f.grant);
   await assert.rejects(p.activateOnce(f.grant),/ACTIVATION_DENIED/);
-  const g=fixture('VERIFIER');g.authority.inspectGrant=()=>({kind:'VERIFIER',runId:RUN,child:g.child,purpose:'CONFINEMENT_PROVED',session:null});
+  const g=fixture('VERIFIER');g.authority.inspectGrant=()=>({kind:'VERIFIER',runId:RUN,child:g.child,purpose:'CONFINEMENT_PROVED',session:null,remainingMs:60000});
   await assert.rejects(roles.adoptRole('VERIFIER',g.handoff).activateOnce(g.grant),/ACTIVATION_DENIED/);
 });
 test('invalid_grant_latches_before_any_await', async () => {

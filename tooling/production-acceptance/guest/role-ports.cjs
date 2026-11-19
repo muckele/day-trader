@@ -3,6 +3,11 @@
 // API exists. The injected bootstrap authority is trusted same-process code;
 // worker-authored booleans or copied handles cannot establish provenance.
 const handoffs = new WeakMap(), usedGrants = new WeakSet(), ownedChildren = new WeakSet(), ownedPipes = new WeakSet();
+// T8-11: authority.activate receives only a frozen projection of the facts the
+// authority itself verified; the caller's grant object never reaches it. Only
+// this module can map a projection back to the grant it verified.
+const projectedGrants = new WeakMap();
+const GRANT_FACTS = Object.freeze(['kind','runId','child','purpose','session','remainingMs']);
 const browserApplicationPipes = new WeakMap(), browserRequestEvidence = new WeakMap();
 const kinds = Object.freeze({ BROWSER: 10002, VERIFIER: 10003 });
 function fail(code) { const e = new Error(code); e.code = code; throw e; }
@@ -23,8 +28,9 @@ function bindRoleBootstrap(authority, runId) {
   if (typeof runId !== 'string' || !/^[0-9a-f]{32}$/.test(runId) || !authority ||
       ['inspectHandoff','inspectGrant','activate','waitExit','stopOwned'].some(n=>typeof authority[n] !== 'function')) fail('HANDOFF_DENIED');
   // This is a trusted embedding API, not a generic bootstrap RPC or verifier
-  // installed from incoming worker data. Capture the authority object so its
-  // current independent observations can be rechecked before/after each await.
+  // installed from incoming worker data. Capture the authority object; the
+  // facts it reports are rechecked before and after each await. Role ports do
+  // not observe the child themselves: the authority's facts are the evidence.
   return Object.freeze({audit(handoff) {
     if (!object(handoff) || handoffs.has(handoff)) fail('HANDOFF_DENIED');
     let f;
@@ -81,10 +87,20 @@ function adoptRole(kind, handoff) {
       usedGrants.add(grant);
       current('ACTIVATION_DENIED');
       const g=r.authority.inspectGrant(grant);
-      if (!g || g.kind !== kind || g.runId !== r.expected.runId || g.child !== r.expected.child ||
+      if (!object(g) || Reflect.ownKeys(g).length !== GRANT_FACTS.length || GRANT_FACTS.some(k=>!Object.hasOwn(g,k)) ||
+          g.kind !== kind || g.runId !== r.expected.runId || g.child !== r.expected.child ||
           g.purpose !== (kind === 'BROWSER' ? 'CONFINEMENT_PROVED' : 'PRIOR_SESSION') ||
-          (kind === 'VERIFIER' ? !object(g.session) : g.session !== null)) fail('ACTIVATION_DENIED');
-      await r.authority.activate(r.expected.child,grant);
+          (kind === 'VERIFIER' ? !object(g.session) : g.session !== null) ||
+          !Number.isSafeInteger(g.remainingMs) || g.remainingMs < 1 || g.remainingMs > 2147483647) fail('ACTIVATION_DENIED');
+      const projection=Object.freeze({kind:g.kind,runId:g.runId,child:g.child,purpose:g.purpose,session:g.session});
+      projectedGrants.set(projection,grant);
+      // P5 (C1): bounded by the activation/run deadline the authority reports,
+      // never by the shared cleanup budget, which only the stop path below uses.
+      let timer;
+      try {
+        await Promise.race([Promise.resolve().then(()=>r.authority.activate(r.expected.child,projection)),
+          new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('ACTIVATION_DENIED'),{code:'ACTIVATION_DENIED'})),g.remainingMs);})]);
+      } finally { clearTimeout(timer); }
       current('ACTIVATION_DENIED',false);
     } catch (cause) {
       let stopped;
@@ -337,8 +353,12 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
   }
   const authority={cleanupBudget:cleanup,
     inspectHandoff(h){current();const r=local.get(h);return r?{kind:r.kind,runId:binding.runId,uid:kinds[r.kind],child:r.child,privatePipe:r.pipe,waiting:!r.active,confined:true}:null;},
-    inspectGrant(g){const r=grants.get(g);if(!r)return null;current(r.proof);return {kind:'BROWSER',runId:binding.runId,child:r.child,purpose:'CONFINEMENT_PROVED',session:null};},
-    async activate(child,g){const r=grants.get(g);if(!r||r.child!==child||r.used)fail('ACTIVATION_DENIED');r.used=true;current(r.proof);const result=await request('BROWSER','COMMIT_BROWSER',{grantId:r.grantId,generation:r.proof.generation});current(r.proof);exact(result,['status','generation']);if(result.status!=='ACTIVE'||result.generation!==1)fail('ACTIVATION_DENIED');r.active=true;},
+    inspectGrant(g){const r=grants.get(g);if(!r)return null;current(r.proof);const [wall,mono]=sample();
+      // P5: the remaining activation time is the earliest of the proof's guest
+      // monotonic deadline, its wall expiry and the run binding's expiry.
+      const remainingMs=Math.min(r.proof.monotonicDeadlineMs-mono,r.proof.expiresAtMs-wall,binding.expiresAtMs-wall);
+      return {kind:'BROWSER',runId:binding.runId,child:r.child,purpose:'CONFINEMENT_PROVED',session:null,remainingMs};},
+    async activate(child,p){const g=projectedGrants.get(p),r=g&&grants.get(g);if(!r||r.child!==child||r.used)fail('ACTIVATION_DENIED');r.used=true;current(r.proof);const result=await request('BROWSER','COMMIT_BROWSER',{grantId:r.grantId,generation:r.proof.generation});current(r.proof);exact(result,['status','generation']);if(result.status!=='ACTIVE'||result.generation!==1)fail('ACTIVATION_DENIED');r.active=true;},
     async stopOwned(child,ms){const r=[...local.values()].find(r=>r.child===child);if(!r)fail('EXIT_DENIED');return {...await stop(r.kind,ms),child};},
     async waitExit(child,ms){const r=[...local.values()].find(r=>r.child===child);if(!r)fail('EXIT_DENIED');return {...await stop(r.kind,ms,'WAIT_EXIT'),child};}};
   const bootstrap=bindRoleBootstrap(authority,binding.runId), adopted=new Map();

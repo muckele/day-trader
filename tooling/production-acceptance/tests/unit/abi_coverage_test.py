@@ -30,7 +30,7 @@ ARCHIVE = Path('/Users/Matt/day-trader-references/m4-linux-aarch64-offline-repai
 ARCHIVE_SHA = 'c969dea4e8bb6be991bbf7c010ba0e0a5643a3a8d8fb0a2aaa053406f1e965f3'
 INVENTORY = ROOT / 'appliance/abi-inventory.json'
 COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
-COVERAGE_V2_SHA = '46d87a21cfbd0a9d8a25e748877f3c3371609a18a01097b74dc321e2258d7e65'
+COVERAGE_V2_SHA = '2687375382b23511f059b057f975f0f58fe7700ed09d69eb48372427572b7b9e'
 EVENT_REFERENCE = ROOT / 'appliance/bootstrap-event-reference.json'
 EVENT_REFERENCE_SHA = 'a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d'
 ORACLES_PATH = Path(__file__).resolve().parent / 'abi_oracles.py'
@@ -225,6 +225,21 @@ class CoverageTests(unittest.TestCase):
     def test_event_reference_unchanged(self):
         self.assertEqual(hashlib.sha256(EVENT_REFERENCE.read_bytes()).hexdigest(), EVENT_REFERENCE_SHA)
 
+    def test_coverage_event_values_equal_event_reference_records(self):
+        """Task 11: every id in both coverage v2 and the committed Task 2 event reference has one value; the ids this
+        task binds are all among them, and the R13 route kinds equal their reference records too."""
+        raw = EVENT_REFERENCE.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), EVENT_REFERENCE_SHA)
+        reference = {r['id']: r['value'] for r in json.loads(raw)['records']}
+        coverage = {r['id']: r['value'] for r in self.committed()['records']}
+        both = set(reference) & set(coverage)
+        self.assertEqual(sorted(EVENT_LITERAL_IDS - both), [])
+        for ident in sorted(both):
+            self.assertEqual(coverage[ident], reference[ident], ident)
+        for name in ('RTM_DELLINK', 'RTM_DELADDR', 'RTM_DELROUTE'):
+            self.assertNotIn(name, coverage)
+            self.assertEqual(R13_LITERALS[name][0], reference[name], name)
+
 
 GUEST = ROOT / 'guest'
 # Task 10 (Option A I1): the guest probe catalogue is swept with the guest modules' syscall and flag tables.
@@ -389,6 +404,15 @@ R13_LITERALS = {
     'SOCK_FPROG_BYTES': (16, 'R13 (Task 10): linux-6.8/include/uapi/linux/filter.h:31-34 struct sock_fprog {unsigned '
                              'short len; struct sock_filter *filter;} on LP64: 2 bytes, 6 padding, an 8-byte pointer; '
                              'the probe passes it empty'),
+    # Task 11 (P57, the P34 route): implicit enumerators the deriver refuses (SYMBOL_MISSING as enum,
+    # EXPRESSION_UNSUPPORTED as their self-referencing #define). Each equals its committed event reference record
+    # (CoverageTests), and the Task 11 oracle transcriber confirmed each value independently (reported, not appended).
+    'RTM_DELLINK': (17, 'R13 (P57): linux-6.8/include/uapi/linux/rtnetlink.h:30 RTM_DELLINK is the implicit '
+                        'enumerator after RTM_NEWLINK = 16 at :28'),
+    'RTM_DELADDR': (21, 'R13 (P57): linux-6.8/include/uapi/linux/rtnetlink.h:39 RTM_DELADDR is the implicit '
+                        'enumerator after RTM_NEWADDR = 20 at :37'),
+    'RTM_DELROUTE': (25, 'R13 (P57): linux-6.8/include/uapi/linux/rtnetlink.h:46 RTM_DELROUTE is the implicit '
+                         'enumerator after RTM_NEWROUTE = 24 at :44'),
 }
 # Task 10: literals of the guest probe catalogue that are probe choices, not ABI values. They are named only at
 # PROBE_FILE syscall sites and struct calls (never by build_filter, so POLICY_VALUES is unchanged).
@@ -515,22 +539,44 @@ _CLONE = ('__NR_clone', '__NR_clone3')
 # that function whose left operand is one of the expressions, against an int literal or a tuple of int literals.
 # names resolve through coverage v2 or POLICY_LITERALS; each comparator must equal the resolved tuple exactly.
 COMPARE_SITES = {
+    # Task 11 (P18, P58): no EXIT phase; process exit (exit_group), clone and exec in that source order.
     'transition': ('topology.py', 'BootstrapEventOwner._accept_browser_transition', ('number',), [
-        ('NotIn', _CLONE),                                   # CLONE phase
-        ('NotIn', ('__NR_execve', '__NR_execveat')),         # EXEC phase
-        ('NotIn', ('__NR_exit', '__NR_exit_group')),         # EXIT phase
+        ('Eq', ('__NR_exit_group',)),                        # root exit_group terminal, family exit_group removes
+        ('In', _CLONE),                                      # CLONE phase and family clones
+        ('In', ('__NR_execve', '__NR_execveat')),            # EXEC phase and family re-exec
     ]),
     'audit_syscalls': ('topology.py', 'BootstrapEventOwner._audit_record',
                        ("group['syscalls'][0]['number']", "syscall['number']", 'number'), [
         ('Eq', ('__NR_bind',)),
         ('NotEq', ('__NR_bind',)),
-        ('In', ('__NR_exit', '__NR_exit_group', '__NR_clone', '__NR_execve', '__NR_execveat', '__NR_clone3')),
+        ('Eq', ('__NR_exit',)),                              # P58: a thread's exit adds no event
+        ('In', ('__NR_exit_group', '__NR_clone', '__NR_execve', '__NR_execveat', '__NR_clone3')),
         ('Eq', ('__NR_mknodat',)),
         ('Eq', ('__NR_bind',)),
         ('In', ('__NR_bind', '__NR_listen')),
-        ('NotIn', AUDITED_SYSCALLS),
+        ('In', ('__NR_exit', '__NR_exit_group')),            # Task 11: exit records carry no success=/exit=
         ('In', _CLONE),
         ('NotIn', _CLONE),
+        ('NotIn', AUDITED_SYSCALLS),
+    ]),
+    # Task 11 (CB-I3): netlink message kinds, each by its named symbol.
+    'event_health_kinds': ('topology.py', 'BootstrapEventOwner._verify_health_and_rules', ('kind',), [
+        ('NotEq', ('AUDIT_GET',)),
+        ('Eq', ('NLMSG_DONE',)),
+        ('Eq', ('AUDIT_LIST_RULES',)),
+    ]),
+    'event_audit_kinds': ('topology.py', 'BootstrapEventOwner._audit_record', ('kind',), [
+        ('Eq', ('AUDIT_EOE',)),
+        ('NotIn', ('AUDIT_SYSCALL', 'AUDIT_PATH', 'AUDIT_CONFIG_CHANGE', 'AUDIT_SOCKADDR', 'AUDIT_CWD',
+                   'AUDIT_EXECVE', 'AUDIT_PROCTITLE')),
+        ('In', ('AUDIT_SYSCALL', 'AUDIT_PATH', 'AUDIT_EXECVE')),
+        ('Eq', ('AUDIT_SYSCALL',)),
+        ('Eq', ('AUDIT_PATH',)),
+        ('Eq', ('AUDIT_EXECVE',)),
+        ('Eq', ('AUDIT_SOCKADDR',)),
+    ]),
+    'event_route_kinds': ('topology.py', 'BootstrapEventOwner._record', ('kind',), [
+        ('NotIn', ('RTM_NEWLINK', 'RTM_DELLINK', 'RTM_NEWADDR', 'RTM_DELADDR', 'RTM_NEWROUTE', 'RTM_DELROUTE')),
     ]),
     'audit_families': ('topology.py', 'BootstrapEventOwner._audit_record', ("group['sockaddrs'][0]", 'family'), [
         ('Eq', ('AF_UNIX',)),
@@ -546,6 +592,48 @@ COMPARE_SITES = {
         ('Gt', ('NAME_MAX',)),
     ]),
 }
+
+# Task 11 (CB-I3, Option A I2/R17 C3): topology.py event constants whose OR elements, in source order, are exactly
+# these symbols.
+EVENT_MASK_CONSTANTS = {
+    '_ROUTE_GROUPS': ('RTMGRP_LINK', 'RTMGRP_IPV4_IFADDR', 'RTMGRP_IPV4_ROUTE', 'RTMGRP_IPV6_IFADDR',
+                      'RTMGRP_IPV6_ROUTE'),
+    '_INOTIFY_MASK': ('IN_MODIFY', 'IN_ATTRIB', 'IN_CLOSE_WRITE', 'IN_MOVED_FROM', 'IN_MOVED_TO', 'IN_CREATE',
+                      'IN_DELETE', 'IN_DELETE_SELF', 'IN_MOVE_SELF', 'IN_UNMOUNT', 'IN_Q_OVERFLOW', 'IN_IGNORED',
+                      'IN_DONT_FOLLOW', 'IN_MASK_CREATE'),
+}
+# The fixed audit rule (_fixed_audit_rule): struct.pack arguments 1..3, then the one rule field.
+AUDIT_RULE_HEADER = ('AUDIT_FILTER_EXIT', 'AUDIT_ALWAYS')       # flags, action; field_count is the one field below
+AUDIT_RULE_FIELD = ('AUDIT_ARCH', 'AUDIT_ARCH_AARCH64', 'AUDIT_EQUAL')  # fields[0], values[0], operators[0]
+AUDIT_RULE_ARRAYS = ('AUDIT_BITMASK_SIZE', 'AUDIT_MAX_FIELDS', 'AUDIT_MAX_FIELDS', 'AUDIT_MAX_FIELDS')
+AUDIT_STATUS_MASK = ('AUDIT_STATUS_ENABLED', 'AUDIT_STATUS_FAILURE', 'AUDIT_STATUS_PID', 'AUDIT_STATUS_RATE_LIMIT',
+                     'AUDIT_STATUS_BACKLOG_LIMIT')
+INOTIFY_OVERFLOW_BITS = ('IN_Q_OVERFLOW', 'IN_IGNORED', 'IN_UNMOUNT')
+AUDIT_EVENT_FLAGS = ('NLM_F_DUMP_INTR', 'NLM_F_ACK')
+# Every id this task binds, all present in both coverage v2 and the event reference.
+EVENT_LITERAL_IDS = frozenset(
+    AUDIT_RULE_HEADER + AUDIT_RULE_FIELD + AUDIT_RULE_ARRAYS + AUDIT_STATUS_MASK + INOTIFY_OVERFLOW_BITS
+    + AUDIT_EVENT_FLAGS + EVENT_MASK_CONSTANTS['_ROUTE_GROUPS'] + EVENT_MASK_CONSTANTS['_INOTIFY_MASK']
+    + ('AUDIT_GET', 'AUDIT_LIST_RULES', 'AUDIT_SYSCALL', 'AUDIT_PATH', 'AUDIT_CONFIG_CHANGE', 'AUDIT_SOCKADDR',
+       'AUDIT_CWD', 'AUDIT_EXECVE', 'AUDIT_EOE', 'AUDIT_PROCTITLE', 'RTM_NEWLINK', 'RTM_NEWADDR', 'RTM_NEWROUTE',
+       'NLM_F_MULTI', 'NLMSG_DONE', 'NLMSG_ERROR'))
+# E-1b (P45, task-8b brief): module constants -> symbols, and every comparison in _admit_browser_sandbox in source
+# order as (left, operator, comparator). chroot/unshare are unpacked once from _SANDBOX_ADMITTED_SYSCALLS.
+SANDBOX_ADMISSION_CONSTANTS = {
+    '_SANDBOX_ADMITTED_SYSCALLS': ('__NR_chroot', '__NR_unshare'),
+    '_SANDBOX_UNSHARE_FLAGS': ('CLONE_NEWUSER',),
+}
+SANDBOX_ADMISSION_COMPARES = [
+    ('transition', 'IsNot', 'None'),
+    ("transition['phase']", 'Eq', "'ACTIVE'"),
+    ("syscall['role']", 'Eq', "'BROWSER'"),
+    ("syscall['pid']", 'NotEq', "transition['root']"),
+    ("syscall['success']", 'Is', 'True'),
+    ("syscall['exit']", 'Eq', '0'),
+    ("syscall['number']", 'Eq', 'chroot'),
+    ("syscall['number']", 'Eq', 'unshare'),
+    ("syscall['argument0']", 'Eq', '_SANDBOX_UNSHARE_FLAGS'),
+]
 
 # open()/open_owned()/pipe2() calls whose flags argument holds an int constant: (file, qualname, callee, ordinal) -> a
 # frozenset of disjoint flag symbols whose OR equals the literal flags exactly, or a tuple naming the int constants
@@ -779,18 +867,19 @@ class CodeBindingTests(unittest.TestCase):
     """Binds the Linux ABI literals of the guest Python modules (confinement.py, proxy.py, storage.py, topology.py;
     intake.py and protocol.py carry none) and of the guest probe catalogue tests/guest/confinement_probe.py (Task 10)
     to the committed coverage v2, or to an explicit POLICY_LITERALS (probe: PROBE_POLICY_LITERALS) entry.
-    bootstrap_reference_test checks the committed event reference JSON against the Linux headers. The event-constant
-    literals in guest/topology.py are NOT bound to that reference by any test (recorded known gap, rulings R17/R18);
-    examples: the audit rule action (AUDIT_ALWAYS) at topology.py:189, the route kind at :723, and _ROUTE_GROUPS at
-    :173. Syscall numbers are bound here (ruling R14), and of the audit rule only its arch value is bound here
-    (test_topology_audit_rule_syscall_list_matches_named_symbols).
+    bootstrap_reference_test checks the committed event reference JSON against the Linux headers. Task 11 binds the
+    event-constant literals of guest/topology.py here (test_topology_event_literals_match_named_symbols: every audit
+    rule word, _ROUTE_GROUPS, _INOTIFY_MASK, the route, audit and netlink kinds and flags, the status mask, the
+    overflow bits and the 'c00000b7' arch text), and CoverageTests checks every id shared with the event reference
+    has the same value. Syscall numbers are bound here (ruling R14).
 
     Known uncovered ABI surface (ruling R13), deliberately NOT derived here: the capset structs (only divisibility of
     bytearray(24) by _LINUX_CAPABILITY_U32S_3 is checked; the 12-byte element size is not derivable), struct
     sock_fprog, the struct layouts of tests/guest/confinement_probe.py (iovec, user_msghdr, cmsghdr, sockaddr_un,
     sockaddr_vm, sockaddr_in, sockaddr_in6 and the capset header and data: recorded with a justification each in
     LAYOUT_LITERALS, Task 10), the LP64 data model (sizeof long/pointer, 64-bit syscall registers),
-    socket_state SS_* values (implicit enumerators; TCP_LISTEN likewise, bound only through R13_LITERALS, ruling P34),
+    socket_state SS_* values (implicit enumerators; TCP_LISTEN and RTM_DELLINK/RTM_DELADDR/RTM_DELROUTE likewise,
+    bound only through R13_LITERALS, ruling P34),
     and kernel text formats and behaviour (procfs field positions and number bases, the audit record text, inotify
     watch descriptor numbering, syscall success return values).
     """
@@ -1333,8 +1422,8 @@ class CodeBindingTests(unittest.TestCase):
         self.assertEqual(got, [(op, tuple(self.resolve(n) for n in names)) for op, names in want], name)
 
     def test_topology_audit_syscall_numbers_match_named_symbols(self):
-        """_accept_browser_transition: CLONE -> (clone, clone3), EXEC -> (execve, execveat), EXIT -> (exit,
-        exit_group), each tuple exact and in phase order."""
+        """_accept_browser_transition (Task 11): process exit (exit_group, P58), clones (clone, clone3) and execs
+        (execve, execveat), each exact and in source order; there is no EXIT phase."""
         self.check_compare_site('transition')
 
     def test_topology_audit_record_syscall_numbers_match_named_symbols(self):
@@ -1373,6 +1462,100 @@ class CodeBindingTests(unittest.TestCase):
         self.assertIsInstance(assigns[0].value, ast.Tuple)
         self.assertEqual(len(assigns[0].value.elts), 3)
         self.assertEqual(_eval_int(assigns[0].value.elts[1]), self.resolve('AUDIT_ARCH_AARCH64'))
+
+    def module_assign(self, name):
+        found = [n for n in self.nodes('topology.py', '<module>', ast.Assign)
+                 if [ast.unparse(t) for t in n.targets] == [name]]
+        self.assertEqual(len(found), 1, name)
+        return found[0].value
+
+    def or_elements(self, node):
+        """The int constants OR-ed in NODE, in source order; NODE must be a pure OR of int literals."""
+        self.assertIsNotNone(_eval_int(node), ast.unparse(node))
+        return _int_constants(node)
+
+    def test_topology_event_literals_match_named_symbols(self):
+        """Task 11 (CB-I3, Option A I2/R17 C3/C4): one assertion per event literal in topology.py."""
+        # The fixed audit rule: header words, the one rule field, the array sizes and the pack layout.
+        fn = self.nodes('topology.py', '_fixed_audit_rule', ast.FunctionDef)
+        self.assertEqual(len(fn), 1)
+        packs = [n for n in ast.walk(fn[0]) if isinstance(n, ast.Call) and ast.unparse(n.func) == 'struct.pack']
+        self.assertEqual(len(packs), 1)
+        layout = packs[0].args[0].value
+        for index, name in enumerate(AUDIT_RULE_HEADER, 1):
+            self.assertEqual(_eval_int(packs[0].args[index]), self.covered(name), name)
+        assigns = [n for n in ast.walk(fn[0]) if isinstance(n, ast.Assign)
+                   and ast.unparse(n.targets[0]) == '(fields[0], values[0], operators[0])']
+        self.assertEqual(len(assigns), 1)
+        self.assertEqual(_eval_int(packs[0].args[3]), len(assigns))  # field_count: the one field set below
+        for element, name in zip(assigns[0].value.elts, AUDIT_RULE_FIELD, strict=True):
+            self.assertEqual(_eval_int(element), self.covered(name), name)
+        sizes = [_eval_int(n.right) for n in ast.walk(fn[0]) if isinstance(n, ast.BinOp)
+                 and isinstance(n.op, ast.Mult) and ast.unparse(n.left) == '[0]']
+        self.assertEqual(sizes, [self.covered(name) for name in AUDIT_RULE_ARRAYS])
+        self.assertEqual(layout, '<III%dI%dI%dI%dII' % tuple(self.covered(n) for n in AUDIT_RULE_ARRAYS))
+        # Every mask word: run the isolated rule builder and compare each word with the covered syscall numbers.
+        namespace = {'struct': struct}
+        exec(compile(ast.Module([fn[0]], []), 'topology._fixed_audit_rule', 'exec'), namespace)
+        rule = namespace['_fixed_audit_rule']()
+        words = struct.unpack(layout, rule)
+        width = self.covered('AUDIT_BITMASK_SIZE')
+        mask = [0] * width
+        for name in AUDITED_SYSCALLS:
+            mask[self.covered(name) // 32] |= 1 << (self.covered(name) % 32)
+        for index in range(width):
+            self.assertEqual(words[3 + index], mask[index], 'mask word %d' % index)
+        self.assertEqual(words[:3], (self.covered('AUDIT_FILTER_EXIT'), self.covered('AUDIT_ALWAYS'), 1))
+        # Subscribed route groups and the inotify watch mask: each OR element, in order.
+        for name, symbols in EVENT_MASK_CONSTANTS.items():
+            self.assertEqual(self.or_elements(self.module_assign(name)), [self.covered(s) for s in symbols], name)
+        # Route kinds, audit kinds and the netlink reply kinds.
+        for site in ('event_route_kinds', 'event_audit_kinds', 'event_health_kinds'):
+            self.check_compare_site(site)
+        # AUDIT_GET status mask.
+        status = self.compares('topology.py', 'BootstrapEventOwner._verify_health_and_rules', ('status[0]',))
+        self.assertEqual(status, [('NotEq', (self.or_names(AUDIT_STATUS_MASK),))])
+        # Overflow bits and the watch mask test in _record's inotify branch.
+        masks = [n.right for n in self.nodes('topology.py', 'BootstrapEventOwner._record', ast.BinOp)
+                 if isinstance(n.op, ast.BitAnd) and ast.unparse(n.left) == 'mask']
+        self.assertEqual([ast.unparse(m) for m in masks][1:], ['_INOTIFY_MASK'])
+        self.assertEqual(self.or_elements(masks[0]), [self.covered(n) for n in INOTIFY_OVERFLOW_BITS])
+        # Netlink flags: an audit event carries neither DUMP_INTR nor ACK; rule enumeration replies are MULTI.
+        flags = [n.right for n in self.nodes('topology.py', 'BootstrapEventOwner._audit_record', ast.BinOp)
+                 if isinstance(n.op, ast.BitAnd) and ast.unparse(n.left) == 'flags']
+        self.assertEqual(len(flags), 1)
+        self.assertEqual(self.or_elements(flags[0]), [self.covered(n) for n in AUDIT_EVENT_FLAGS])
+        multi = self.covered('NLM_F_MULTI')
+        health = self.compares('topology.py', 'BootstrapEventOwner._verify_health_and_rules', ('flags', 'flags & 2'))
+        self.assertEqual(health, [('NotEq', (0,)), ('NotIn', (0, multi)), ('NotEq', (multi,))])
+        multi_masks = [_eval_int(n.right) for n in self.nodes('topology.py',
+                       'BootstrapEventOwner._verify_health_and_rules', ast.BinOp)
+                       if isinstance(n.op, ast.BitAnd) and ast.unparse(n.left) == 'flags']
+        self.assertEqual(multi_masks, [multi])
+        # R17 C4: the record arch is the kernel's lowercase %x of AUDIT_ARCH_AARCH64.
+        arch = [n for n in self.nodes('topology.py', 'BootstrapEventOwner._audit_record', ast.Compare)
+                if ast.unparse(n.left) == "fields.get('arch')"]
+        self.assertEqual(len(arch), 1)
+        text = arch[0].comparators[0].value
+        self.assertEqual(int(text, 16), self.covered('AUDIT_ARCH_AARCH64'))
+        self.assertEqual(text, format(self.covered('AUDIT_ARCH_AARCH64'), 'x'))
+
+    def test_topology_sandbox_admission_constants_match_named_symbols(self):
+        """E-1b (P45): _SANDBOX_ADMITTED_SYSCALLS and _SANDBOX_UNSHARE_FLAGS bind to __NR_chroot, __NR_unshare and
+        CLONE_NEWUSER; _admit_browser_sandbox compares exactly SANDBOX_ADMISSION_COMPARES, unpacks the syscall pair
+        once and holds no other int literal (exit 0 is the success return, R13 behaviour)."""
+        for name, symbols in SANDBOX_ADMISSION_CONSTANTS.items():
+            node = self.module_assign(name)
+            elements = node.elts if isinstance(node, ast.Tuple) else [node]
+            self.assertEqual([_eval_int(e) for e in elements], [self.covered(s) for s in symbols], name)
+        qual = 'BootstrapEventOwner._admit_browser_sandbox'
+        got = [(ast.unparse(n.left), type(n.ops[0]).__name__, ast.unparse(n.comparators[0]))
+               for n in self.nodes('topology.py', qual, ast.Compare)]
+        self.assertEqual(got, SANDBOX_ADMISSION_COMPARES)
+        unpacks = [ast.unparse(n) for n in self.nodes('topology.py', qual, ast.Assign)
+                   if ast.unparse(n.value) == '_SANDBOX_ADMITTED_SYSCALLS']
+        self.assertEqual(unpacks, ['chroot, unshare = _SANDBOX_ADMITTED_SYSCALLS'])
+        self.assertEqual(_int_constants(self.nodes('topology.py', qual, ast.FunctionDef)[0]), [0])
 
     def test_confinement_seccomp_install_flags_match_named_symbol(self):
         """exec_role: kernel.install_seccomp(launch.filter, <flags>) passes exactly SECCOMP_FILTER_FLAG_TSYNC."""

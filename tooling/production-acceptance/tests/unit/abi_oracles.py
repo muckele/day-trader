@@ -154,4 +154,52 @@ ORACLES = {
     'PTRACE_ATTACH': 16,  # linux-6.8/include/uapi/linux/ptrace.h:22 #define PTRACE_ATTACH		  16 (arm64 uapi/asm/ptrace.h does not define it)
     'PTRACE_SEIZE': 16902,  # linux-6.8/include/uapi/linux/ptrace.h:53 #define PTRACE_SEIZE		0x4206 (arm64 uapi/asm/ptrace.h does not define it)
     'SIGSYS': 31,  # linux-6.8/include/uapi/asm-generic/signal.h:46 #define SIGSYS		31 (arm64 uapi/asm/signal.h defines only SIGSTKSZ and includes asm-generic/signal.h; no override)
+    'AUDIT_FILTER_EXIT': 4,  # linux-6.8/include/uapi/linux/audit.h:169 #define AUDIT_FILTER_EXIT 0x04 (= 4)
+    'AUDIT_ALWAYS': 2,  # linux-6.8/include/uapi/linux/audit.h:182 #define AUDIT_ALWAYS 2
+    'AUDIT_ARCH': 11,  # linux-6.8/include/uapi/linux/audit.h:260 #define AUDIT_ARCH 11
+    'AUDIT_EQUAL': 1073741824,  # linux-6.8/include/uapi/linux/audit.h:322 #define AUDIT_EQUAL 0x40000000 (0x40000000 = 1073741824)
+    'AUDIT_GET': 1000,  # linux-6.8/include/uapi/linux/audit.h:54 #define AUDIT_GET 1000
+    'AUDIT_LIST_RULES': 1013,  # linux-6.8/include/uapi/linux/audit.h:67 #define AUDIT_LIST_RULES 1013
+    'AUDIT_SYSCALL': 1300,  # linux-6.8/include/uapi/linux/audit.h:87 #define AUDIT_SYSCALL 1300
+    'AUDIT_PATH': 1302,  # linux-6.8/include/uapi/linux/audit.h:89 #define AUDIT_PATH 1302
+    'AUDIT_CONFIG_CHANGE': 1305,  # linux-6.8/include/uapi/linux/audit.h:92 #define AUDIT_CONFIG_CHANGE 1305
+    'AUDIT_SOCKADDR': 1306,  # linux-6.8/include/uapi/linux/audit.h:93 #define AUDIT_SOCKADDR 1306
+    'AUDIT_CWD': 1307,  # linux-6.8/include/uapi/linux/audit.h:94 #define AUDIT_CWD 1307
+    'AUDIT_EXECVE': 1309,  # linux-6.8/include/uapi/linux/audit.h:95 #define AUDIT_EXECVE 1309
+    'AUDIT_EOE': 1320,  # linux-6.8/include/uapi/linux/audit.h:105 #define AUDIT_EOE 1320
+    'AUDIT_PROCTITLE': 1327,  # linux-6.8/include/uapi/linux/audit.h:112 #define AUDIT_PROCTITLE 1327
+    'AUDIT_STATUS_ENABLED': 1,  # linux-6.8/include/uapi/linux/audit.h:342 #define AUDIT_STATUS_ENABLED 0x0001 (= 1)
+    'AUDIT_STATUS_FAILURE': 2,  # linux-6.8/include/uapi/linux/audit.h:343 #define AUDIT_STATUS_FAILURE 0x0002 (= 2)
+    'AUDIT_STATUS_PID': 4,  # linux-6.8/include/uapi/linux/audit.h:344 #define AUDIT_STATUS_PID 0x0004 (= 4)
+    'AUDIT_STATUS_RATE_LIMIT': 8,  # linux-6.8/include/uapi/linux/audit.h:345 #define AUDIT_STATUS_RATE_LIMIT 0x0008 (= 8)
+    'AUDIT_STATUS_BACKLOG_LIMIT': 16,  # linux-6.8/include/uapi/linux/audit.h:346 #define AUDIT_STATUS_BACKLOG_LIMIT 0x0010 (= 16)
+    'AUDIT_BITMASK_SIZE': 64,  # linux-6.8/include/uapi/linux/audit.h:188 #define AUDIT_BITMASK_SIZE 64
+    'AUDIT_MAX_FIELDS': 64,  # linux-6.8/include/uapi/linux/audit.h:186 #define AUDIT_MAX_FIELDS 64
+    'RTMGRP_LINK': 1,  # linux-6.8/include/uapi/linux/rtnetlink.h:682 #define RTMGRP_LINK 1
+    'RTMGRP_IPV4_IFADDR': 16,  # linux-6.8/include/uapi/linux/rtnetlink.h:687 #define RTMGRP_IPV4_IFADDR 0x10 (= 16)
+    'RTMGRP_IPV4_ROUTE': 64,  # linux-6.8/include/uapi/linux/rtnetlink.h:689 #define RTMGRP_IPV4_ROUTE 0x40 (= 64)
+    'RTMGRP_IPV6_IFADDR': 256,  # linux-6.8/include/uapi/linux/rtnetlink.h:692 #define RTMGRP_IPV6_IFADDR 0x100 (= 256)
+    'RTMGRP_IPV6_ROUTE': 1024,  # linux-6.8/include/uapi/linux/rtnetlink.h:694 #define RTMGRP_IPV6_ROUTE 0x400 (= 1024)
+    'RTM_NEWLINK': 16,  # linux-6.8/include/uapi/linux/rtnetlink.h:28 enum member `RTM_NEWLINK = 16,` (explicit; self-define `#define RTM_NEWLINK RTM_NEWLINK` at :29 does not change value)
+    'RTM_NEWADDR': 20,  # linux-6.8/include/uapi/linux/rtnetlink.h:37 enum member `RTM_NEWADDR = 20,` (explicit; self-define `#define RTM_NEWADDR RTM_NEWADDR` at :38 does not change value)
+    'RTM_NEWROUTE': 24,  # linux-6.8/include/uapi/linux/rtnetlink.h:44 enum member `RTM_NEWROUTE = 24,` (explicit; self-define `#define RTM_NEWROUTE RTM_NEWROUTE` at :45 does not change value)
+    'NLM_F_MULTI': 2,  # linux-6.8/include/uapi/linux/netlink.h:63 #define NLM_F_MULTI 0x02 (= 2)
+    'NLM_F_ACK': 4,  # linux-6.8/include/uapi/linux/netlink.h:64 #define NLM_F_ACK 0x04 (= 4)
+    'NLM_F_DUMP_INTR': 16,  # linux-6.8/include/uapi/linux/netlink.h:66 #define NLM_F_DUMP_INTR 0x10 (= 16)
+    'NLMSG_ERROR': 2,  # linux-6.8/include/uapi/linux/netlink.h:113 #define NLMSG_ERROR 0x2 (= 2)
+    'NLMSG_DONE': 3,  # linux-6.8/include/uapi/linux/netlink.h:114 #define NLMSG_DONE 0x3 (= 3)
+    'IN_MODIFY': 2,  # linux-6.8/include/uapi/linux/inotify.h:31 #define IN_MODIFY 0x00000002 (= 2)
+    'IN_ATTRIB': 4,  # linux-6.8/include/uapi/linux/inotify.h:32 #define IN_ATTRIB 0x00000004 (= 4)
+    'IN_CLOSE_WRITE': 8,  # linux-6.8/include/uapi/linux/inotify.h:33 #define IN_CLOSE_WRITE 0x00000008 (= 8)
+    'IN_MOVED_FROM': 64,  # linux-6.8/include/uapi/linux/inotify.h:36 #define IN_MOVED_FROM 0x00000040 (= 64)
+    'IN_MOVED_TO': 128,  # linux-6.8/include/uapi/linux/inotify.h:37 #define IN_MOVED_TO 0x00000080 (= 128)
+    'IN_CREATE': 256,  # linux-6.8/include/uapi/linux/inotify.h:38 #define IN_CREATE 0x00000100 (= 256)
+    'IN_DELETE': 512,  # linux-6.8/include/uapi/linux/inotify.h:39 #define IN_DELETE 0x00000200 (= 512)
+    'IN_DELETE_SELF': 1024,  # linux-6.8/include/uapi/linux/inotify.h:40 #define IN_DELETE_SELF 0x00000400 (= 1024)
+    'IN_MOVE_SELF': 2048,  # linux-6.8/include/uapi/linux/inotify.h:41 #define IN_MOVE_SELF 0x00000800 (= 2048)
+    'IN_UNMOUNT': 8192,  # linux-6.8/include/uapi/linux/inotify.h:44 #define IN_UNMOUNT 0x00002000 (= 8192)
+    'IN_Q_OVERFLOW': 16384,  # linux-6.8/include/uapi/linux/inotify.h:45 #define IN_Q_OVERFLOW 0x00004000 (= 16384)
+    'IN_IGNORED': 32768,  # linux-6.8/include/uapi/linux/inotify.h:46 #define IN_IGNORED 0x00008000 (= 32768)
+    'IN_DONT_FOLLOW': 33554432,  # linux-6.8/include/uapi/linux/inotify.h:54 #define IN_DONT_FOLLOW 0x02000000 (= 33554432)
+    'IN_MASK_CREATE': 268435456,  # linux-6.8/include/uapi/linux/inotify.h:56 #define IN_MASK_CREATE 0x10000000 (= 268435456)
 }

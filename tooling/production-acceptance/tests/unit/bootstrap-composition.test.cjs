@@ -56,7 +56,7 @@ function fixture(options={}) {
   const proof=transcript?Object.fromEntries(Object.entries(preparePayload).filter(([key])=>key!=='grantId')):
     {proofDigest:'e'.repeat(64),generation:1,expiresAtMs:9000,monotonicDeadlineMs:9000};
   const checkpoint=transcript&&transcript.frames.browserCurrent?decoded('browserCurrent').payload.eventCheckpoint:
-    {binding:runBinding,generation:1,sequence:1,sourceIdentity:'f'.repeat(32),lostCount:0};
+    {binding:runBinding,generation:1,sequence:options.checkpointSequence??1,sourceIdentity:'f'.repeat(32),lostCount:0};
   const grantId=transcript?preparePayload.grantId:'a1'.repeat(16);
   const commitId=transcript&&transcript.frames.browserCommit?decoded('browserCommit').payload.commitId:'b2'.repeat(16);
   const keyC=transcript?initC.channelKeyHex:'c3'.repeat(32),keyW=transcript?initW.channelKeyHex:'d4'.repeat(32);
@@ -76,12 +76,12 @@ function fixture(options={}) {
     async write(bytes){const v=JSON.parse(bytes.subarray(4));const unsigned={...v};delete unsigned.mac;assert.equal(v.mac,mac(unsigned,keyW,'BROWSER','TO_BOOTSTRAP'));
       if(transcript){const names={PREPARED:'browserPrepared',REFRESH:'browserRefresh',STARTED:'browserStarted',CANCELLED:'browserCancelled'};assert.deepEqual(bytes,recorded(names[v.action]));}
       if(v.action==='PREPARED'){reservationId=v.payload.reservationId;hooks.prepared?.(f);}
-      if(v.action==='REFRESH'){hooks.refresh?.(f);if(transcript){if(options.cancelAt==='REFRESH')await f.cancelFromController();else if(transcript.frames.browserCurrent)queue.push(recorded('browserCurrent'));hooks.current?.(f);}else{deliver('CURRENT',{requestSequence:v.sequence,grantId,reservationId,commitId,...proof,eventCheckpoint:checkpoint});hooks.current?.(f);}}
+      if(v.action==='REFRESH'){hooks.refresh?.(f);if(transcript){if(options.cancelAt==='REFRESH')await f.cancelFromController();else if(transcript.frames.browserCurrent)queue.push(recorded('browserCurrent'));hooks.current?.(f);}else{const current={requestSequence:v.sequence,grantId,reservationId,commitId,...proof,eventCheckpoint:checkpoint};deliver('CURRENT',options.current?options.current(current):current);hooks.current?.(f);}}
       if(v.action==='STARTED')hooks.started?.(f);
       if(v.action==='APP_CHUNK')workerAppChunks.push(v.payload);
     },
     drain(){hooks.drain?.(f);return pending.splice(0);},
-    effectFence(value){assert.equal(value.sourceIdentity,checkpoint.sourceIdentity);hooks.fence?.(f);return options.fence===false?null:checkpoint;},
+    effectFence(value){assert.equal(value.sourceIdentity,checkpoint.sourceIdentity);hooks.fence?.(f);return options.fence===false?null:options.fenceValue?options.fenceValue(checkpoint):checkpoint;},
     stopOwned:async remaining=>{stops.push(['worker-family',remaining]);return {status:'STOPPED',runId:runBinding.runId};}};
   queue.push(transcript?recorded('workerInit'):frame({version:1,kind:'BROWSER_WORKER_INIT',binding:runBinding,...roleMap[1],channelKeyHex:keyW}));
   const controllerQueue=[transcript?recorded('controllerInit'):frame({version:1,kind:'BOOTSTRAP_INIT',binding:runBinding,channelKeyHex:keyC,roles:roleMap})];
@@ -105,6 +105,7 @@ function fixture(options={}) {
   }
   const f={controller,worker,clock,proof,checkpoint,stops,launches,workerFacts,controllerFacts,workerChannel,controllerChannel,
     cancelRecord(){return cancellationRecord();},
+    deliverCommit(){return deliver('COMMIT',{grantId,reservationId,commitId,generation:1});},
     cancel(){pending.push(cancellationRecord());},
     async cancelFromController(){
       if(!controllerCancellation)controllerCancellation=this.bound.cancel();
@@ -120,6 +121,51 @@ test('v1_controller_and_worker_nominal_stores_are_disjoint',async()=>{
   const f=await fixture().init(), tx=await f.bound.prepareBrowser(f.proof);
   await assert.rejects(f.workerBinding.commitFixedBrowserLaunch(tx,()=>{throw Error('foreign launch');}));
   assert.equal(f.launches.length,0);
+  // compB M-6: two module instances with two stores. A nominal object minted in one is unknown to the other.
+  assert.notEqual(f.controller,f.worker);
+  const g=await fixture().init(),granted=await g.bound.prepareBrowser(g.proof),handle=await granted.port.activateOnce(granted.grant);
+  const payload={runId:binding.runId,requestId:'r1',sequence:1,method:'GET',url:'https://frontend.example/',headers:[],byteLength:2,schema:'ABSENT'};
+  const bytes=frame({version:1,runId:binding.runId,sequence:1,type:'ROUTE',payload});
+  const evidence=g.controller.claimBrowserRequestEvidence(handle.privatePipe,bytes,payload);
+  assert.equal(g.controller.inspectBrowserRequestEvidence(evidence).requestId,'r1');
+  assert.equal(g.worker.inspectBrowserRequestEvidence(evidence),null,'controller evidence is unknown to the worker store');
+  assert.throws(()=>g.controller.claimBrowserRequestEvidence(g.outcome.applicationPipe,bytes,payload),/IDENTITY_MISMATCH/);
+  assert.equal(g.worker.claimBrowserRequestEvidence(g.outcome.applicationPipe,bytes,payload)!==null,true);
+});
+test('v1_second_commit_on_one_reservation_launches_nothing',async()=>{
+  // CB-I6 (J1+J6): the worker reservation and the final guard's effect latch are each one-use. A second commit on
+  // one reservation records zero launches, whether or not a second COMMIT frame arrives.
+  for(const second of ['without-frame','with-frame']){
+    const f=await fixture().init(),tx=await f.bound.prepareBrowser(f.proof);
+    await tx.port.activateOnce(tx.grant);assert.equal(f.launches.length,1,second);
+    if(second==='with-frame')f.deliverCommit();
+    let launches=0,guard;
+    const attempt=f.workerBinding.commitFixedBrowserLaunch(f.reservation,()=>{launches++;
+      return {stopOwned:async()=>({status:'STOPPED',runId:binding.runId})};});
+    const outcome=await Promise.race([attempt.then(()=>'launched',()=>'rejected'),
+      new Promise(resolve=>{guard=setTimeout(()=>resolve('pending'),200);})]);
+    clearTimeout(guard);
+    assert.equal(outcome,'rejected',second);assert.equal(launches,0,second);assert.equal(f.launches.length,1,second);
+  }
+});
+test('v1_fence_from_foreign_source_launches_nothing',async()=>{
+  // CB-I6 (J3): the final effect fence must come from the CURRENT checkpoint's own event source.
+  const f=await fixture({fenceValue:c=>({...c,sourceIdentity:'0'.repeat(32)})}).init(),tx=await f.bound.prepareBrowser(f.proof);
+  await assert.rejects(tx.port.activateOnce(tx.grant));assert.equal(f.launches.length,0);
+});
+test('v1_fence_with_lower_sequence_or_changed_lost_count_launches_nothing',async()=>{
+  for(const [name,change] of [['lower-sequence',c=>({...c,sequence:c.sequence-1})],['lost-count',c=>({...c,lostCount:1})]]){
+    const f=await fixture({checkpointSequence:5,fenceValue:change}).init(),tx=await f.bound.prepareBrowser(f.proof);
+    await assert.rejects(tx.port.activateOnce(tx.grant));assert.equal(f.launches.length,0,name);
+  }
+  // Control: a later fence from the same source, with no loss, launches once.
+  const f=await fixture({checkpointSequence:5,fenceValue:c=>({...c,sequence:c.sequence+1})}).init(),tx=await f.bound.prepareBrowser(f.proof);
+  await tx.port.activateOnce(tx.grant);assert.equal(f.launches.length,1);
+});
+test('v1_current_with_foreign_proof_digest_launches_nothing',async()=>{
+  // CB-I6 (J9): the worker compares the CURRENT proofDigest with its own reservation's proof.
+  const f=await fixture({current:c=>({...c,proofDigest:'0'.repeat(64)})}).init(),tx=await f.bound.prepareBrowser(f.proof);
+  await assert.rejects(tx.port.activateOnce(tx.grant));assert.equal(f.launches.length,0);
 });
 test('v1_original_child_pipe_required_for_nominal_adoption',async()=>{
   const f=await fixture().init();f.controllerFacts.command={};
