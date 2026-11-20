@@ -1654,6 +1654,46 @@ test('route_denial_latches_session_and_fails_next_perform', async () => {
   assert.equal(timer.stops(), 1);
 });
 
+test('replayed_market_timer_request_aborts_as_replay_private_without_latch', async () => {
+  // Task 18 F2 (RB-M1, deferred Task 15 m4): the frontend market timer (frontend/src/hooks/useMarketStatus.js, every
+  // 30 s) replays /api/market/status in every real run. In OBSERVE_BEFORE_RESTART the first request takes the route's
+  // one B slot (CONTINUE); once its response is the phase's market response, every later timer request is a private
+  // replay (route-policy MARKET_RESPONSE): admission answers {decision: 'ABORT', reason: 'REPLAY_PRIVATE'}, the
+  // controller answers ABORT and nothing latches. Six replays exceed B's four timer-abort slots (contracts/routes.json
+  // abortCeilings.B), so none of them can be an ABORT_EXPECTED timer abort.
+  const h = await startHarness({ phase: 'OBSERVE_BEFORE_RESTART' });
+  const market = async () => {
+    let disposition;
+    await h.fake.calls.routeHandler({
+      request: () => ({ method: () => 'GET', url: () => BACKEND + '/api/market/status', headers: () => ({ accept: 'application/json' }), postDataBuffer: () => null }),
+      continue: async () => { disposition = 'CONTINUE'; }, abort: async () => { disposition = 'ABORT'; },
+    });
+    return disposition;
+  };
+  assert.equal(await market(), 'CONTINUE');
+  const first = decodedFrames(h.links.logs, 'worker').filter(frame => frame.type === 'ROUTE').map(frame => frame.payload);
+  assert.equal(first.length, 1);
+  const f = h.routeFixture;
+  f.state.marketResponse = f.brand('marketResponse', { requestId: first[0].requestId, sequence: first[0].sequence, runId: h.runId,
+    phase: 'OBSERVE_BEFORE_RESTART', sessionHandle: f.state.sessionHandle, sessionEpoch: f.state.sessionEpoch,
+    policyEpoch: f.state.policyEpoch, gateEpoch: f.state.gateEpoch, receivedAt: f.time.monotonicMs, asOf: f.time.wallMs,
+    status: 200, source: 'PAPER', marketState: 'OPEN', schemaValid: true });
+  for (let replay = 1; replay <= 6; replay++) {
+    assert.equal(await market(), 'ABORT', 'replay ' + replay);
+    for (let turn = 0; turn < 20; turn++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.session.failureCode(), null, 'replay ' + replay + ' must not latch');
+  }
+  assert.deepEqual(decodedFrames(h.links.logs, 'controller').filter(frame => frame.type === 'DECISION').map(frame => frame.payload.decision),
+    ['CONTINUE', 'ABORT', 'ABORT', 'ABORT', 'ABORT', 'ABORT', 'ABORT']);
+  // Only the first request reserved budget; a private replay reserves nothing.
+  assert.deepEqual(h.decisions.map(row => [row.routeId, row.phase, row.outcome]), [['market-status', 'OBSERVE_BEFORE_RESTART', 'RESERVED']]);
+  assert.equal(h.stops(), 0);
+  // The session is still live: a following action succeeds.
+  assert.equal(h.session.inspectResult(await h.session.perform('LOGIN_SESSION', login(), () => {})).kind, 'SESSION_BOUND');
+  await closeHarness(h);
+  assert.equal(h.stops(), 1);
+});
+
 test('startup_and_perform_bounded_by_run_expiry', async () => {
   // T13 m-6: the run binding's expiry (wall 200 here) bounds worker startup, controller startup and perform.
   const worker = steppedClock(), workerObserved = {};
