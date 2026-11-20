@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
-const { createPolicy, admitRequest, claimEligibility, revalidateEligibility } = require('../../guest/route-policy.cjs');
+const { ACCEPT_VALUES, createPolicy, admitRequest, claimEligibility, revalidateEligibility } = require('../../guest/route-policy.cjs');
 const P = 'PREFLIGHT', W = 'AWAIT_CREDENTIAL', A = 'AUTHENTICATING', B = 'OBSERVE_BEFORE_RESTART', H = 'HOLD_FOR_RESTART', C = 'OBSERVE_AFTER_RESTART', L = 'LOGOUT', V = 'VERIFY_REVOCATION';
 const F = 'https://frontend.example.test', BACK = 'https://backend.example.test', RUN = 'a'.repeat(32);
 // Independent transcription of every design row, including document-specific counters.
@@ -398,4 +398,26 @@ test('authenticated_browser_evidence_mints_module_local_body_proof_bound_to_exac
   const plain = f.request('/api/me');
   plain.bodyProof = { schema: 'ABSENT', bodyDigest: '0'.repeat(64) };
   assert.equal(admitRequest(plain, f.policy).kind, 'FAIL');
+});
+
+test('accept_admitted_only_by_exact_chromium_table', () => {
+  // P69: an exact-match table of the pinned Chromium's default accept values plus the existing API values.
+  const navigation = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8';
+  assert.deepEqual(ACCEPT_VALUES.map(row => row.value), [
+    'application/json', 'application/json, text/plain, */*', '*/*', 'text/html',
+    navigation + ',application/signed-exchange;v=b3;q=0.7', navigation, 'text/css,*/*;q=0.1',
+    'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+  ]);
+  assert.equal(Object.isFrozen(ACCEPT_VALUES), true);
+  for (const row of ACCEPT_VALUES) {
+    assert.deepEqual(Object.keys(row).sort(), ['kind', 'stage2', 'value']);
+    assert.equal(row.stage2, 'Stage 2 confirm on the pinned Chromium');
+    assert.equal(Object.isFrozen(row), true);
+  }
+  // Every listed value admits the /login document in phase P; nothing else does.
+  for (const { value } of ACCEPT_VALUES) eligible(fixture(P), '/login', { origin: F, headers: [['accept', value]] });
+  for (const value of ['text/html, application/xhtml+xml', navigation + ',', navigation.toUpperCase(), 'text/css,*/*;q=0.10', 'text/css',
+    'image/*', 'application/json;q=1', 'application/json,text/plain,*/*', ' */*', '*/*;q=0.8', '']) {
+    denied(fixture(P), '/login', { origin: F, headers: [['accept', value]] });
+  }
 });

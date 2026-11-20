@@ -662,11 +662,22 @@ async function runBrowserWorker(pipe, config) {
         const error=cause?.code==='OBSERVATION_FAILED'?cause:Object.assign(new Error('OBSERVATION_FAILED',{cause}),{code:'OBSERVATION_FAILED'});
         if(!assetFailure)assetFailure=error;rejectActionFailure(error);
       }
+      // P70: Playwright never sends redirect hops through the route handler, so a
+      // hop would reach its target without admission (307/308 keep the method and
+      // body). The acceptance flow never redirects: any redirect ends the worker, and
+      // its terminal ERROR latches the controller's session as ROUTE_DENIED.
+      function redirected() {rejectActionFailure(Object.assign(new Error('ROUTE_DENIED'),{code:'ROUTE_DENIED'}));}
+      launched.context.on('request', request => {
+        let from;try{from=request.redirectedFrom();}catch{from=true;}
+        if(from!==null)redirected();
+      });
       launched.context.on('page', async page => { if (primaryPending) { primaryPending = false; primary = page; } else { rejectedPages.add(page); await page.close(); } });
       await startup.race(launched.context.routeWebSocket('**/*', async socket => socket.close()));
       await startup.race(launched.context.addInitScript(() => { Object.defineProperty(globalThis, 'WebTransport', { configurable: false, value: undefined }); }));
       await startup.race(launched.context.route('**/*', async route => {
         const request = route.request();
+        if (typeof request.redirectedFrom === 'function') { let from; try { from = request.redirectedFrom(); } catch { from = true; }
+          if (from !== null) { redirected(); return route.abort(); } }
         if (typeof request.frame === 'function') { let page; try { page=request.frame().page(); } catch { return route.abort(); }
           if(!page||rejectedPages.has(page)||primary&&page!==primary)return route.abort(); }
         const before=Buffer.from(request.postDataBuffer()||Buffer.alloc(0)),sequence=++requestSequence,requestId='browser-'+sequence;
@@ -683,7 +694,12 @@ async function runBrowserWorker(pipe, config) {
         const after=Buffer.from(request.postDataBuffer()||Buffer.alloc(0));
         if(selected!=='CONTINUE'||before.length!==after.length||!timingSafeEqual(digest,createHash('sha256').update(after).digest()))await route.abort();else await route.continue();
       }));
-      launched.context.on('response',response=>{const task=(async()=>{
+      launched.context.on('response',response=>{
+        // P70: a 3xx answer to a routed request is a redirect (every request is routed).
+        let status;try{status=response.status();}catch{status=null;}
+        if(Number.isSafeInteger(status)&&status>=300&&status<=399){redirected();return;}
+        const task=(async()=>{
+        if(!Number.isSafeInteger(status))fail('OBSERVATION_FAILED');
         const url=new URL(response.url()),isDocument=SPA_DOCUMENT_PATHS.includes(url.pathname);
         const index=config.assetEntries.findIndex(item=>item.path===(isDocument?INDEX_ENTRY_PATH:url.pathname));
         if(index<0){if(isDocument)fail('OBSERVATION_FAILED');return;}

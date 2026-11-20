@@ -22,6 +22,11 @@ const FRONTEND = 'https://frontend.example.test';
 const BACKEND = 'https://backend.example.test';
 const INDEX_BODY = Buffer.from('<!doctype html><html><head><title>Day Trader</title></head><body><div id="root"></div></body></html>');
 const INDEX_ASSET = Object.freeze({ path: '/index.html', body: INDEX_BODY, mime: 'text/html' });
+const CSS_ASSET = Object.freeze({ path: '/static/css/main.css', body: Buffer.from('body{margin:0}'), mime: 'text/css' });
+// P69: the pinned Chromium's default accept values (route-policy ACCEPT_VALUES).
+const NAVIGATION_ACCEPT = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
+const NAVIGATION_ACCEPT_NO_SXG = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8';
+const STYLESHEET_ACCEPT = 'text/css,*/*;q=0.1';
 const PATHS = Object.freeze({
   profile: '/run/acceptance/browser/profile',
   support: '/run/acceptance/browser/support',
@@ -256,8 +261,9 @@ function fakePlaywright(options = {}) {
         let disposition;
         await calls.routeHandler({
           request: () => ({ method: () => 'GET', url: () => url,
-            headers: () => ({ accept: 'text/html', 'user-agent': 'Chromium', 'sec-fetch-mode': 'navigate',
-              'sec-fetch-dest': 'document', 'sec-fetch-site': 'none', 'upgrade-insecure-requests': '1' }), postDataBuffer: () => null }),
+            headers: () => ({ accept: options.navigationAccept || NAVIGATION_ACCEPT, 'user-agent': 'Chromium', 'sec-fetch-mode': 'navigate',
+              'sec-fetch-dest': 'document', 'sec-fetch-site': 'none', 'sec-fetch-user': '?1', 'upgrade-insecure-requests': '1',
+              'sec-ch-ua': '"Chromium";v="145"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Linux"' }), postDataBuffer: () => null }),
           continue: async () => { disposition = 'CONTINUE'; }, abort: async () => { disposition = 'ABORT'; },
         });
         calls.initialRouteDisposition = disposition;
@@ -269,7 +275,7 @@ function fakePlaywright(options = {}) {
       if (options.routeOnObservation && navigationCount > 1 && (options.routeOnObservation !== 'first' || navigationCount === 2)) {
         let disposition;
         await calls.routeHandler({
-          request: () => ({ method: () => 'GET', url: () => url, headers: () => ({ accept: 'text/html' }), postDataBuffer: () => null }),
+          request: () => ({ method: () => 'GET', url: () => url, headers: () => ({ accept: NAVIGATION_ACCEPT, 'sec-fetch-mode': 'navigate' }), postDataBuffer: () => null }),
           continue: async () => { disposition = 'CONTINUE'; }, abort: async () => { disposition = 'ABORT'; },
         });
         calls.observationRouteDispositions = [...(calls.observationRouteDispositions || []), disposition];
@@ -277,11 +283,15 @@ function fakePlaywright(options = {}) {
       }
       if (contextHandlers.response && navigationCount === 1) {
         if (!options.noDocumentResponse) await contextHandlers.response({
-          url: () => url,
+          url: () => url, status: () => options.documentStatus || 200,
           body: async () => { calls.documentBodies++; return Buffer.from(options.documentBody || INDEX_BODY); },
           headers: () => ({ 'content-type': 'text/html' }),
         });
-        await contextHandlers.response({
+        for (const asset of options.subresources || []) await contextHandlers.response({
+          url: () => FRONTEND + asset.path, status: () => 200, body: async () => Buffer.from(asset.body),
+          headers: () => ({ 'content-type': asset.mime }),
+        });
+        await contextHandlers.response({ status: () => 200,
           url: () => (options.assetOrigin || FRONTEND) + '/static/js/main.js',
           body: async () => { calls.assetBodies++; return Buffer.from('abc'); },
           headers: () => ({ 'content-type': 'application/javascript' }),
@@ -371,7 +381,7 @@ function fakePlaywright(options = {}) {
 async function startHarness(options = {}) {
   const api = controller();
   const testRun=crypto.randomBytes(16).toString('hex');
-  const fake = fakePlaywright(options.fake);
+  const fake = fakePlaywright({ ...(options.fake || {}), subresources: options.cssAsset ? [CSS_ASSET] : [] });
   const audit=topology({...(options.audit||{}),runId:testRun});
   const links = duplex(audit, options.family || family(), { strictWrites: options.strictWrites === true });
   const assetProofs = [];
@@ -380,7 +390,8 @@ async function startHarness(options = {}) {
   const activationReady=new Promise((resolve,reject)=>{activationResolve=resolve;activationReject=reject;});
   const routeFixture = budgetFixture({ phase: options.phase || A, journal: options.journal,
     runId: testRun, configIdentity: '3'.repeat(64), assetPath: '/static/js/main.js', assetBody: Buffer.from('abc'),
-    extraAssets: options.indexAsset === false ? [] : [INDEX_ASSET], inspectBrowserEvidence: roles.inspectBrowserRequestEvidence });
+    extraAssets: [...(options.indexAsset === false ? [] : [INDEX_ASSET]), ...(options.cssAsset ? [CSS_ASSET] : [])],
+    inspectBrowserEvidence: roles.inspectBrowserRequestEvidence });
   const bundle = receipts.createBrowserAssetBundle(routeFixture.release, routeFixture.assets, routeFixture.trust,
     routeFixture.releaseBytes, routeFixture.assetBytes);
   const binding = compositionBinding(testRun);
@@ -1284,7 +1295,7 @@ test('login_document_bytes_validated_against_index_entry', async () => {
   assert.equal(h.fake.calls.documentBodies, 1);
   // Every other SPA document path (/, and the fixed view paths) is validated the same way, for the whole run.
   for (const documentPath of ['/', '/robo', '/portfolio', '/activity']) {
-    await h.fake.contextHandlers.response({ url: () => FRONTEND + documentPath, body: async () => Buffer.from(INDEX_BODY),
+    await h.fake.contextHandlers.response({ url: () => FRONTEND + documentPath, status: () => 200, body: async () => Buffer.from(INDEX_BODY),
       headers: () => ({ 'content-type': 'text/html; charset=utf-8' }) });
   }
   assert.equal(await settled(() => h.assetProofs.filter(row => row.entry.path === '/index.html').length === 5), true);
@@ -1318,12 +1329,12 @@ test('post_ready_asset_tamper_latches_and_fails_next_action', async () => {
   // T13 I-3 / review D2: manifest assets are validated for the whole run, repeats included.
   const h = await startHarness();
   const before = h.assetProofs.length;
-  await h.fake.contextHandlers.response({ url: () => FRONTEND + '/static/js/main.js', body: async () => Buffer.from('abc'),
+  await h.fake.contextHandlers.response({ url: () => FRONTEND + '/static/js/main.js', status: () => 200, body: async () => Buffer.from('abc'),
     headers: () => ({ 'content-type': 'application/javascript' }) });
   assert.equal(await settled(() => h.assetProofs.length === before + 1), true);
   for (let turn = 0; turn < 20; turn++) await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.session.failureCode(), null, 'a valid repeat must not latch');
-  await h.fake.contextHandlers.response({ url: () => FRONTEND + '/static/js/main.js', body: async () => Buffer.from('EVIL-REPLACEMENT-SCRIPT'),
+  await h.fake.contextHandlers.response({ url: () => FRONTEND + '/static/js/main.js', status: () => 200, body: async () => Buffer.from('EVIL-REPLACEMENT-SCRIPT'),
     headers: () => ({ 'content-type': 'application/javascript' }) });
   assert.equal(await settled(() => h.session.failureCode() !== null), true);
   assert.equal(h.assetProofs.length, before + 2);
@@ -1496,4 +1507,90 @@ test('worker_inner_cleanup_budget_starts_only_at_the_terminal_event', async () =
   assert.ok(budget.deadline>=before+60000&&budget.deadline<=after+60000,String(budget.deadline));
   const left=budget.remaining();assert.ok(left>0&&left<=60000,String(left));
   const end=budget.deadline;budget.startTerminal();assert.equal(budget.deadline,end);
+});
+
+// ---- Task 15 fix round 1: P69 (exact Chromium accept values) and P70 (redirects are terminal) ----
+
+test('chromium_accept_values_admit_navigation_and_stylesheet_exactly', async () => {
+  // P69 / E1: the /login navigation is admitted with each realistic navigation accept value.
+  for (const navigationAccept of [NAVIGATION_ACCEPT, NAVIGATION_ACCEPT_NO_SXG]) {
+    const h = await startHarness({ phase: 'PREFLIGHT', fake: { initialRoute: true, navigationAccept } });
+    assert.equal(h.fake.calls.initialRouteDisposition, 'CONTINUE', navigationAccept);
+    const route = decodedFrames(h.links.logs, 'worker').find(frame => frame.type === 'ROUTE');
+    assert.deepEqual(route.payload.headers, [['accept', navigationAccept]]);
+    assert.equal(h.session.failureCode(), null);
+    await closeHarness(h);
+  }
+  // The CSS bundle (a signed manifest asset) is admitted with the stylesheet accept value.
+  const css = await startHarness({ cssAsset: true });
+  assert.deepEqual(css.assetProofs.map(row => row.entry.path).sort(), ['/index.html', '/static/css/main.css', '/static/js/main.js']);
+  const dispositions = [];
+  const sendCss = accept => css.fake.calls.routeHandler({
+    request: () => ({ method: () => 'GET', url: () => FRONTEND + CSS_ASSET.path, postDataBuffer: () => null,
+      headers: () => ({ accept, referer: FRONTEND + '/login', 'user-agent': 'Chromium', 'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'style', 'sec-ch-ua': '"Chromium";v="145"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Linux"' }) }),
+    continue: async () => { dispositions.push('CONTINUE'); }, abort: async () => { dispositions.push('ABORT'); },
+  });
+  await sendCss(STYLESHEET_ACCEPT);
+  assert.deepEqual(dispositions, ['CONTINUE']);
+  assert.equal(css.decisions.at(-1).routeId, 'frontend-asset:' + CSS_ASSET.path);
+  assert.equal(css.session.failureCode(), null);
+  await closeHarness(css);
+  // Exact match only: near misses (q-value, spacing, case, order, a prefix) are denied and latch.
+  for (const accept of ['text/css,*/*;q=0.2', 'text/css, */*;q=0.1', 'TEXT/CSS,*/*;q=0.1', '*/*;q=0.1,text/css', 'text/css',
+    'text/html,application/xhtml+xml', 'application/json,text/plain,*/*']) {
+    const h = await startHarness({ cssAsset: true });
+    let disposition;
+    await h.fake.calls.routeHandler({
+      request: () => ({ method: () => 'GET', url: () => FRONTEND + CSS_ASSET.path, headers: () => ({ accept }), postDataBuffer: () => null }),
+      continue: async () => { disposition = 'CONTINUE'; }, abort: async () => { disposition = 'ABORT'; },
+    });
+    assert.equal(disposition, 'ABORT', accept);
+    assert.equal(await settled(() => h.session.failureCode() !== null), true, accept);
+    assert.equal(h.session.failureCode(), 'ROUTE_DENIED', accept);
+  }
+});
+
+test('redirects_latch_route_denied', async () => {
+  // P70 / E3: redirect hops never pass through the route handler, so any redirect is terminal ROUTE_DENIED.
+  const cases = [
+    ['307 on POST /api/login', h => h.fake.contextHandlers.response({ url: () => BACKEND + '/api/login', status: () => 307,
+      request: () => ({ method: () => 'POST' }), headers: () => ({ location: BACKEND + '/api/other' }), body: async () => Buffer.alloc(0) })],
+    ['302 on GET /api/me', h => h.fake.contextHandlers.response({ url: () => BACKEND + '/api/me', status: () => 302,
+      request: () => ({ method: () => 'GET' }), headers: () => ({ location: BACKEND + '/api/other' }), body: async () => Buffer.alloc(0) })],
+    ['300 on a frontend asset', h => h.fake.contextHandlers.response({ url: () => FRONTEND + '/static/js/main.js', status: () => 300,
+      headers: () => ({ 'content-type': 'application/javascript' }), body: async () => Buffer.from('abc') })],
+    ['redirected request event', h => h.fake.contextHandlers.request({ url: () => BACKEND + '/api/other', method: () => 'POST',
+      redirectedFrom: () => ({ url: () => BACKEND + '/api/login' }) })],
+    ['redirected request reaching the route handler', h => h.fake.calls.routeHandler({
+      request: () => ({ method: () => 'GET', url: () => BACKEND + '/api/me', headers: () => ({ accept: 'application/json' }), postDataBuffer: () => null,
+        redirectedFrom: () => ({ url: () => BACKEND + '/api/old' }) }),
+      continue: async () => assert.fail('a redirected request was continued'), abort: async () => {} })],
+  ];
+  for (const [name, redirect] of cases) {
+    const h = await startHarness();
+    await h.session.perform('LOGIN_SESSION', login(), () => {});
+    await redirect(h);
+    assert.equal(await settled(() => h.session.failureCode() !== null), true, name);
+    assert.equal(h.session.failureCode(), 'ROUTE_DENIED', name);
+    const sent = decodedFrames(h.links.logs, 'controller').filter(frame => frame.type === 'ACTION').length;
+    await assert.rejects(h.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'ROBO' }), { code: 'ROUTE_DENIED' }, name);
+    assert.equal(decodedFrames(h.links.logs, 'controller').filter(frame => frame.type === 'ACTION').length, sent, name);
+    await assert.rejects(h.session.close(), { code: 'ROUTE_DENIED' }, name);
+    assert.deepEqual({ ...(await h.workerResult) }, { status: 'FAILED', code: 'ROUTE_DENIED' }, name);
+    assert.equal(h.fake.calls.browserCloses, 1, name);
+  }
+  // A redirected first navigation never reaches READY.
+  const observed = {};
+  await assert.rejects(startHarness({ fake: { documentStatus: 302 }, observed }), { code: 'ROUTE_DENIED' });
+  assert.equal(decodedFrames(observed.links.logs, 'worker').some(frame => ['ASSETS', 'READY'].includes(frame.type)), false);
+  // Non-redirect statuses (including the pre-auth 401 and a 404) and plain requests do not latch.
+  const h = await startHarness();
+  for (const status of [200, 204, 401, 404]) await h.fake.contextHandlers.response({ url: () => BACKEND + '/api/me', status: () => status,
+    request: () => ({ method: () => 'GET' }), headers: () => ({}), body: async () => Buffer.alloc(0) });
+  await h.fake.contextHandlers.request({ url: () => BACKEND + '/api/me', method: () => 'GET', redirectedFrom: () => null });
+  for (let turn = 0; turn < 20; turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.session.failureCode(), null);
+  assert.equal(h.session.inspectResult(await h.session.perform('LOGIN_SESSION', login(), () => {})).kind, 'SESSION_BOUND');
+  await closeHarness(h);
 });
