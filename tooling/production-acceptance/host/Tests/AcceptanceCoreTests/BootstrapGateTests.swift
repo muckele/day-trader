@@ -1266,6 +1266,12 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
                          "PROXY":"01e3ec748fdbadb0a0ac195855506cc19680fcc5aa3c6289d2c15e15ec981d7d"]
         let table = BootstrapHandoff.roles
         #expect(table.map { $0.0 } == order)
+        // Task 8c (C6, owner decision 2026-11-20): Task 8's BROWSER program denied
+        // socket(AF_INET/AF_INET6, SOCK_STREAM, IPPROTO_TCP). Neither the table nor
+        // either exported fixture may still carry it.
+        let retired = ["f84ca34690734a6a45871af34bfddf5941e4a2c8af2f1916eb10a248b74bb049"]
+        let pinned = try #require(table.first { $0.0 == "BROWSER" }?.2)
+        #expect(!retired.contains(pinned), "VMHost BROWSER row is retired")
         for key in ["TASK10_TOPOLOGY_INPUT","BOOTSTRAP_V1_HANDOFF_INPUT"] {
             let path = try #require(ProcessInfo.processInfo.environment[key])
             let envelope = try #require(try JSONSerialization.jsonObject(
@@ -1281,6 +1287,7 @@ private func handoff(_ run:RunConfiguration, sequence:Int = 1,
             for (role,digest) in unchanged { #expect(digests[role] == digest, "\(key) \(role)") }
             let browser = try #require(digests["BROWSER"])
             #expect(!unchanged.values.contains(browser), "\(key) BROWSER")
+            #expect(!retired.contains(browser), "\(key) BROWSER retired")
         }
         // The verifier compares each row with its own table entry: a row carrying
         // another role's digest is rejected, in both directions across BROWSER.

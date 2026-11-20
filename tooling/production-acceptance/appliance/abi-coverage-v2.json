@@ -985,6 +985,36 @@
     },
     {
       "conditions": [
+        "#ifndef _UAPI_LINUX_IN_H",
+        "#if __UAPI_DEF_IN_IPPROTO"
+      ],
+      "declaration": "  IPPROTO_TCP = 6,\t\t/* Transmission Control Protocol\t*/",
+      "firstLine": 38,
+      "id": "IPPROTO_TCP",
+      "lastLine": 38,
+      "memberPath": "linux-6.8/include/uapi/linux/in.h",
+      "memberSHA256": "b05f12366262c2df458f8ec8e4300f5254007d0976d75126aa035d0d0491b58f",
+      "signed": true,
+      "value": 6,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IN_H",
+        "#if __UAPI_DEF_IN_IPPROTO"
+      ],
+      "declaration": "  IPPROTO_UDP = 17,\t\t/* User Datagram Protocol\t\t*/",
+      "firstLine": 44,
+      "id": "IPPROTO_UDP",
+      "lastLine": 44,
+      "memberPath": "linux-6.8/include/uapi/linux/in.h",
+      "memberSHA256": "b05f12366262c2df458f8ec8e4300f5254007d0976d75126aa035d0d0491b58f",
+      "signed": true,
+      "value": 17,
+      "width": 32
+    },
+    {
+      "conditions": [
         "#ifndef _LINUX_FS_H"
       ],
       "declaration": "#define MNT_DETACH\t0x00000002\t/* Just detach from the tree */",

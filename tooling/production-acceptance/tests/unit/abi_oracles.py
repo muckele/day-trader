@@ -202,4 +202,6 @@ ORACLES = {
     'IN_IGNORED': 32768,  # linux-6.8/include/uapi/linux/inotify.h:46 #define IN_IGNORED 0x00008000 (= 32768)
     'IN_DONT_FOLLOW': 33554432,  # linux-6.8/include/uapi/linux/inotify.h:54 #define IN_DONT_FOLLOW 0x02000000 (= 33554432)
     'IN_MASK_CREATE': 268435456,  # linux-6.8/include/uapi/linux/inotify.h:56 #define IN_MASK_CREATE 0x10000000 (= 268435456)
+    'IPPROTO_TCP': 6,  # linux-6.8/include/uapi/linux/in.h:38 IPPROTO_TCP = 6,
+    'IPPROTO_UDP': 17,  # linux-6.8/include/uapi/linux/in.h:44 IPPROTO_UDP = 17,
 }

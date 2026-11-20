@@ -292,6 +292,11 @@ BROWSER_SANDBOX_SYSCALLS = (51, 91, 143, 144, 145, 146, 147, 149, 151, 152, 159)
 # SPEC_ALLOW and TSYNC|SPEC_ALLOW (C6). Never LOG, NEW_LISTENER or TSYNC_ESRCH.
 SECCOMP_FLAGS_BY_ROLE = MappingProxyType({
     'CONTROLLER': (0, 1), 'BROWSER': (0, 1, 4, 5), 'VERIFIER': (0, 1), 'PROXY': (0, 1)})
+# IPPROTO_TCP (Task 8c, contract C6, owner decision 2026-11-20). Chromium opens
+# socket(AF_INET/AF_INET6, SOCK_STREAM|..., IPPROTO_TCP); for SOCK_STREAM it
+# selects the same protocol as 0. BROWSER alone may name it, and only with
+# SOCK_STREAM. No other protocol value is admitted; IPPROTO_UDP is not.
+BROWSER_TCP_PROTOCOL = 6
 
 
 def build_filter(role):
@@ -301,7 +306,8 @@ def build_filter(role):
     of every constrained scalar are checked. Only ALLOW, EPERM, KILL_PROCESS
     exits exist. No TRACE/USER_NOTIF or listener flags. New restriction filters
     can only tighten this one. No AF_NETLINK exception is selected. BROWSER
-    differs only in its deny list and seccomp flag set (E1, contract C6).
+    differs only in its deny list and seccomp flag set (E1) and in admitting
+    IPPROTO_TCP for AF_INET/AF_INET6 SOCK_STREAM (Task 8c), contract C6.
     """
     if role not in UIDS or role not in SECCOMP_FLAGS_BY_ROLE: _fail('ROLE_DENIED')
     code, labels, jumps = [], {}, []
@@ -345,11 +351,17 @@ def build_filter(role):
     load(24); code.append((0x54, 0, 0, 0xfff7f7ff))
     for kind in (1, 2, 5): eq(kind, yes='allow')
     ret(0x00050001)
-    # Fail closed to the default protocol scalar 0. No unreviewed IPPROTO_*
-    # constants are consumed. Explicit protocol compatibility remains gated.
-    label('ip'); load(32); require(0)
+    # Fail closed to the default protocol scalar 0. The one reviewed nonzero
+    # scalar is BROWSER's IPPROTO_TCP, for SOCK_STREAM only (Task 8c, C6); no
+    # other IPPROTO_* constant is consumed. The high words were checked above.
+    label('ip'); load(32)
+    if role == 'BROWSER': eq(BROWSER_TCP_PROTOCOL, yes='ip-tcp')
+    require(0)
     load(24); code.append((0x54, 0, 0, 0xfff7f7ff))
     eq(1, yes='allow'); eq(2, yes='allow'); ret(0x00050001)
+    if role == 'BROWSER':
+        label('ip-tcp'); load(24); code.append((0x54, 0, 0, 0xfff7f7ff))
+        eq(1, yes='allow'); ret(0x00050001)
     if role == 'PROXY':
         label('vsock'); load(0); require(198)
         load(24); code.append((0x54, 0, 0, 0xfff7f7ff)); require(1)

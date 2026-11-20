@@ -81,6 +81,7 @@ This contract is normative for tasks 2-18 of `docs/superpowers/plans/2026-11-17-
   - Stage 2 must show the sandbox starts on a real VM.
   - E-1 (finding 2026-11-19; owner: 'Add the task now'): a chroot-based view blocks E1, because Linux 6.8 refuses a user namespace to a chrooted caller (kernel/user_namespace.c:104-106). Every role now enters its view by pivot_root inside its private mount namespace: self-bind of the view root, `pivot_root(".", ".")`, `umount2(".", MNT_DETACH)`, before seccomp. No role calls chroot. R1 is unchanged. (Task 8b)
   - E-1b: after the browser transition reaches ACTIVE, a successful `unshare` whose a0 is exactly `CLONE_NEWUSER`, or a successful `chroot`, by a BROWSER-family pid other than the transition root, is admitted without an event. Every other successful audited namespace/mount/device call still drifts, and is terminal while a transition exists. This reconciles composition amendment §7 ('namespace … mutation fails') for these two calls only. Decided in Task 8b; implemented in Task 11 (P-new-11a/11b).
+  - Owner decision 2026-11-20 ("Allow IPPROTO_TCP"): BROWSER may open AF_INET/AF_INET6 SOCK_STREAM sockets with protocol IPPROTO_TCP, which selects the same protocol as 0. No other protocol value is admitted; no IPPROTO_UDP is added. Other roles are unchanged. (Task 8c)
 - **Owning task:** Task 8 (P27: Task 10 relabels the two affected probes).
 
 ## C7. Per-role storage (E5)

@@ -508,10 +508,11 @@ enum BootstrapHandoff {
     private static let devices = ["LINUX_BOOT","VIRTIO_BLOCK_READ_ONLY","VIRTIO_ENTROPY","VIRTIO_SERIAL_PRIVATE_PIPE","VIRTIO_VSOCK_CID2_PORT4050"]
     // Role, UID, sha256 of the role's outer seccomp program (filter_bytes(build_filter(role)) in
     // guest/confinement.py). Internal so v1_role_filter_digests_match_python can compare it with the
-    // Python producer's export; E1 (C6) gives BROWSER its own program.
+    // Python producer's export; E1 (C6) gives BROWSER its own program, and Task 8c
+    // (C6) adds its IPPROTO_TCP stream admission.
     static let roles:[(String,Int,String)] = [
         ("CONTROLLER",10001,"294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3"),
-        ("BROWSER",10002,"f84ca34690734a6a45871af34bfddf5941e4a2c8af2f1916eb10a248b74bb049"),
+        ("BROWSER",10002,"42216444e1ccb8b7c6af75b7f1b7d59c4f4ac72eb653a890c65b570d62cf25cc"),
         ("VERIFIER",10003,"294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3"),
         ("PROXY",10004,"01e3ec748fdbadb0a0ac195855506cc19680fcc5aa3c6289d2c15e15ec981d7d"),
     ]

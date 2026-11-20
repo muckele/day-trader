@@ -30,7 +30,7 @@ ARCHIVE = Path('/Users/Matt/day-trader-references/m4-linux-aarch64-offline-repai
 ARCHIVE_SHA = 'c969dea4e8bb6be991bbf7c010ba0e0a5643a3a8d8fb0a2aaa053406f1e965f3'
 INVENTORY = ROOT / 'appliance/abi-inventory.json'
 COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
-COVERAGE_V2_SHA = '2687375382b23511f059b057f975f0f58fe7700ed09d69eb48372427572b7b9e'
+COVERAGE_V2_SHA = 'bcaa80dc8387bcc475269b4bf52e4d5f2e23fd5f56fab80751e544d18a20a646'
 EVENT_REFERENCE = ROOT / 'appliance/bootstrap-event-reference.json'
 EVENT_REFERENCE_SHA = 'a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d'
 ORACLES_PATH = Path(__file__).resolve().parent / 'abi_oracles.py'
@@ -278,6 +278,16 @@ SECCOMP_FLAG_NAMES_BY_ROLE = {
     'VERIFIER': _BASE_FLAGS,
     'PROXY': _BASE_FLAGS,
 }
+# socket(2) protocol values each role's AF_INET/AF_INET6 branch compares, in program order (Task 8c, C6). Each entry
+# names the POLICY_LITERALS or coverage v2 symbols whose OR is the compared value. BROWSER compares IPPROTO_TCP (true
+# branch: SOCK_STREAM only), then requires the default 0; every other role requires the default 0 only.
+_DEFAULT_PROTOCOL = (('PROTOCOL_DEFAULT',),)
+IP_PROTOCOL_NAMES_BY_ROLE = {
+    'CONTROLLER': _DEFAULT_PROTOCOL,
+    'BROWSER': (('IPPROTO_TCP',),) + _DEFAULT_PROTOCOL,
+    'VERIFIER': _DEFAULT_PROTOCOL,
+    'PROXY': _DEFAULT_PROTOCOL,
+}
 # Flag combinations the brief tests as denied (C6), each the OR of the named symbols: LOG, NEW_LISTENER,
 # NEW_LISTENER|TSYNC, NEW_LISTENER|SPEC_ALLOW, NEW_LISTENER|SPEC_ALLOW|TSYNC, TSYNC_ESRCH. For roles other than BROWSER
 # SPEC_ALLOW and TSYNC|SPEC_ALLOW are denied too.
@@ -293,14 +303,19 @@ SECCOMP_DENIED_FLAG_NAMES = (
 # BASE_DENY_SYSCALLS is DENY_ORDER; BROWSER_SANDBOX_SYSCALLS lists the eleven in this order.
 BROWSER_SANDBOX_ORDER = tuple('__NR_' + n for n in (
     'chroot capset setregid setgid setreuid setuid setresuid setresgid setfsuid setfsgid setgroups').split())
-# sha256(filter_bytes(build_filter(role))). E1 leaves CONTROLLER, VERIFIER and PROXY byte-identical; the BROWSER digest
-# was computed in Task 8 Step 3 from the E1 program (96 instructions).
+# sha256(filter_bytes(build_filter(role))). E1 and Task 8c leave CONTROLLER, VERIFIER and PROXY byte-identical; the
+# BROWSER digest was recomputed in Task 8c Step 3 from the E1 program plus the IPPROTO_TCP admission (101 instructions).
 ROLE_FILTER_DIGESTS = {
     'CONTROLLER': '294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3',
-    'BROWSER': 'f84ca34690734a6a45871af34bfddf5941e4a2c8af2f1916eb10a248b74bb049',
+    'BROWSER': '42216444e1ccb8b7c6af75b7f1b7d59c4f4ac72eb653a890c65b570d62cf25cc',
     'VERIFIER': '294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3',
     'PROXY': '01e3ec748fdbadb0a0ac195855506cc19680fcc5aa3c6289d2c15e15ec981d7d',
 }
+# Task 8c (C6, owner decision 2026-11-20): superseded BROWSER programs. Task 8's (96 instructions) denied
+# socket(AF_INET/AF_INET6, SOCK_STREAM, IPPROTO_TCP), so Chromium could never reach the guest CONNECT proxy.
+RETIRED_BROWSER_FILTER_DIGESTS = frozenset({
+    'f84ca34690734a6a45871af34bfddf5941e4a2c8af2f1916eb10a248b74bb049',
+})
 
 # syscall symbol -> files whose native syscall(...) call sites invoke it (R6). Direct call sites only: the rest of the
 # BPF deny list appears in the filter but is not called. Task 10 adds the probe catalogue's attempts (PROBE_FILE).
@@ -341,8 +356,13 @@ PROBE_SYSCALLS = frozenset(name for name, files in SYSCALL_SITES.items() if PROB
 # and, as an upper bound, by the BPF filter.
 _PRCTL_OPTIONS = frozenset({'PR_SET_KEEPCAPS', 'PR_SET_SECUREBITS', 'PR_SET_NO_NEW_PRIVS', 'PR_SET_DUMPABLE',
                             'PR_CAP_AMBIENT', 'PR_SET_SECCOMP', 'PR_CAPBSET_DROP'})
+# Argument 2 (Task 8c, C6): IPPROTO_TCP, the only named protocol symbol any filter compares (BROWSER's AF_INET/AF_INET6
+# SOCK_STREAM admission). This upper bound has no role dimension and is shared by socket and socketpair, which reach the
+# same filter branch; per-role exactness is IP_PROTOCOL_NAMES_BY_ROLE (test_ip_protocol_compares_match_named_symbols)
+# and the exact expected program. No native call site names it.
 _SOCKET_ARGS = {0: frozenset({'AF_UNIX', 'AF_INET', 'AF_INET6', 'AF_VSOCK'}),
-                1: frozenset({'SOCK_STREAM', 'SOCK_DGRAM', 'SOCK_SEQPACKET'})}
+                1: frozenset({'SOCK_STREAM', 'SOCK_DGRAM', 'SOCK_SEQPACKET'}),
+                2: frozenset({'IPPROTO_TCP'})}
 ARG_SYMBOLS = {
     '__NR_fcntl': {1: frozenset({'F_DUPFD_CLOEXEC'})},
     '__NR_mount': {3: frozenset({'MS_PRIVATE', 'MS_REC', 'MS_BIND', 'MS_REMOUNT', 'MS_RDONLY', 'MS_NOSUID', 'MS_NODEV',
@@ -373,7 +393,9 @@ POLICY_LITERALS = {
     'NR_HIGH_BITS_MASK': (0xc0000000, 'syscall-number high-bit mask: numbers with bits 30-31 set (x32-style/negative) are killed; no AArch64 header constant'),
     'NR_MASKED_CLEAN': (0, 'expected result of the nr high-bit mask: no high bits set'),
     'HIGH_WORD_ZERO': (0, 'every constrained scalar argument must have a zero upper 32-bit word'),
-    'PROTOCOL_DEFAULT': (0, 'socket protocol fails closed to the default scalar 0; no IPPROTO_* constant is consumed'),
+    'PROTOCOL_DEFAULT': (0, 'socket protocol default scalar 0, the only protocol every role may name; all other values '
+                            'fail closed, except BROWSER\'s IPPROTO_TCP for AF_INET/AF_INET6 SOCK_STREAM (Task 8c, C6), '
+                            'which is a coverage symbol, not this policy scalar'),
     'SECCOMP_NO_FLAGS': (0, 'seccomp(2) flags value meaning no flags'),
     'NNP_ENABLE': (1, 'PR_SET_NO_NEW_PRIVS arg is the boolean 1; the kernel tests it literally'),
     'FD_FLOOR': (64, 'lowest descriptor for F_DUPFD_CLOEXEC, above the audited FD0..4'),
@@ -1166,8 +1188,14 @@ class CodeBindingTests(unittest.TestCase):
         for name in ('SOCK_STREAM', 'SOCK_DGRAM', 'SOCK_SEQPACKET'):
             eq(V[name], yes='allow')
         ret(ERR)
-        lab('ip'); ld(lo(2)); req(P['PROTOCOL_DEFAULT']); ld(lo(1)); mask(self.sock_mask)
+        # Task 8c (C6, owner decision 2026-11-20): BROWSER alone may also name IPPROTO_TCP, and only for SOCK_STREAM.
+        lab('ip'); ld(lo(2))
+        if role == 'BROWSER':
+            eq(V['IPPROTO_TCP'], yes='ip-tcp')
+        req(P['PROTOCOL_DEFAULT']); ld(lo(1)); mask(self.sock_mask)
         eq(V['SOCK_STREAM'], yes='allow'); eq(V['SOCK_DGRAM'], yes='allow'); ret(ERR)
+        if role == 'BROWSER':
+            lab('ip-tcp'); ld(lo(1)); mask(self.sock_mask); eq(V['SOCK_STREAM'], yes='allow'); ret(ERR)
         if role == 'PROXY':
             lab('vsock'); ld(NR); req(nrv('socket')); ld(lo(1)); mask(self.sock_mask); req(V['SOCK_STREAM'])
             ld(lo(2)); req(P['PROTOCOL_DEFAULT'])
@@ -1216,6 +1244,9 @@ class CodeBindingTests(unittest.TestCase):
             self.assertEqual(digests[role], ROLE_FILTER_DIGESTS[role], role)
         self.assertNotIn(digests['BROWSER'], {digests[role] for role in ('CONTROLLER', 'VERIFIER', 'PROXY')})
         self.assertEqual(set(ROLE_FILTER_DIGESTS), set(confinement.UIDS))
+        # Task 8c: no superseded BROWSER program is produced or pinned.
+        self.assertNotIn(digests['BROWSER'], RETIRED_BROWSER_FILTER_DIGESTS)
+        self.assertNotIn(ROLE_FILTER_DIGESTS['BROWSER'], RETIRED_BROWSER_FILTER_DIGESTS)
         self.assertEqual(digests['BROWSER'], ROLE_FILTER_DIGESTS['BROWSER'])
 
     def module_constant(self, name):
@@ -1249,8 +1280,9 @@ class CodeBindingTests(unittest.TestCase):
         return got
 
     def test_module_filter_constants_match_named_symbols(self):
-        """guest/confinement.py BASE_DENY_SYSCALLS (24, in order), BROWSER_SANDBOX_SYSCALLS (11, in order) and
-        SECCOMP_FLAGS_BY_ROLE (per role): one assertion per element, each against its named symbol or named OR."""
+        """guest/confinement.py BASE_DENY_SYSCALLS (24, in order), BROWSER_SANDBOX_SYSCALLS (11, in order),
+        SECCOMP_FLAGS_BY_ROLE (per role) and BROWSER_TCP_PROTOCOL (Task 8c): one assertion per element, each against
+        its named symbol or named OR."""
         base = self.module_constant('BASE_DENY_SYSCALLS')
         self.assertIsInstance(base, ast.Tuple)
         self.assertEqual(len(base.elts), len(DENY_ORDER))
@@ -1275,11 +1307,15 @@ class CodeBindingTests(unittest.TestCase):
             self.assertEqual(len(value.elts), len(names), role)
             for index, (node, combination) in enumerate(zip(value.elts, names)):
                 self.assertEqual(_eval_int(node), self.or_names(combination), (role, index, combination))
+        # Task 8c (C6): the BROWSER stream protocol literal is the coverage symbol IPPROTO_TCP (never a policy name).
+        tcp = self.module_constant('BROWSER_TCP_PROTOCOL')
+        self.assertEqual(_eval_int(tcp), self.covered('IPPROTO_TCP'))
         # The runtime objects are exactly the bound literals.
         self.assertEqual(confinement.BASE_DENY_SYSCALLS, tuple(_eval_int(n) for n in base.elts))
         self.assertEqual(confinement.BROWSER_SANDBOX_SYSCALLS, tuple(_eval_int(n) for n in sandbox.elts))
         self.assertEqual(dict(confinement.SECCOMP_FLAGS_BY_ROLE),
                          {role: tuple(_eval_int(n) for n in value.elts) for role, value in zip(roles, table.values)})
+        self.assertEqual(confinement.BROWSER_TCP_PROTOCOL, _eval_int(tcp))
 
     def test_seccomp_flag_sets_match_named_symbols(self):
         """C6: each role's seccomp(2) flag comparisons, in program order, are exactly its named set; BROWSER's is
@@ -1303,6 +1339,57 @@ class CodeBindingTests(unittest.TestCase):
                 denied += [spec, tsync | spec]
             for value in denied:
                 self.assertNotIn(value, got, (role, value))
+
+    def ip_protocol_compares(self, program):
+        """In program order, (index, jt, jf, k) of every comparison on socket's protocol word (args[2] low word) reachable
+        from the AF_INET/AF_INET6 dispatch inside the socket branch. AF_INET and AF_INET6 must share one target."""
+        V = self.V
+        starts = [j + 1 + jt for j, (code, jt, jf, k), off, m in self.walk(program)
+                  if code == self.op_jeq and off == V['seccomp_data.nr'] and not m and jt and k == V['__NR_socket']]
+        self.assertEqual(len(starts), 1)
+        socket_branch = self.reach(program, starts[0])
+        family_word = V['seccomp_data.args']
+        targets = {j + 1 + jt for j, (code, jt, jf, k), off, m in self.walk(program)
+                   if j in socket_branch and code == self.op_jeq and off == family_word and not m and jt
+                   and k in (V['AF_INET'], V['AF_INET6'])}
+        self.assertEqual(len(targets), 1)
+        branch = self.reach(program, targets.pop())
+        protocol_word = V['seccomp_data.args'] + 2 * self.stride
+        return [(i, jt, jf, k) for i, (code, jt, jf, k), off, m in self.walk(program)
+                if i in branch and code == self.op_jeq and off == protocol_word and not m]
+
+    def test_ip_protocol_compares_match_named_symbols(self):
+        """Task 8c (C6, owner decision 2026-11-20): per role, the protocol comparisons of the AF_INET/AF_INET6 branch,
+        in program order, are exactly IP_PROTOCOL_NAMES_BY_ROLE (one assertion per value): BROWSER IPPROTO_TCP then the
+        default 0, every other role the default 0 only. The default comparison is a require (false branch EPERM).
+        BROWSER's IPPROTO_TCP true branch is exactly: load the type word, mask SOCK_NONBLOCK|SOCK_CLOEXEC, compare
+        SOCK_STREAM to the ALLOW return, else EPERM. IPPROTO_UDP is compared by no role. ARG_SYMBOLS (role-free) admits
+        IPPROTO_TCP for every role's filter; this test is what keeps it BROWSER's alone."""
+        V = self.V
+        allow = (self.op_ret, 0, 0, V['SECCOMP_RET_ALLOW'])
+        eperm = (self.op_ret, 0, 0, V['SECCOMP_RET_ERRNO'] | V['EPERM'])
+        tcp, udp, default = self.covered('IPPROTO_TCP'), self.covered('IPPROTO_UDP'), self.resolve('PROTOCOL_DEFAULT')
+        self.assertEqual(set(IP_PROTOCOL_NAMES_BY_ROLE), set(confinement.UIDS))
+        for role, program in self.programs().items():
+            got = self.ip_protocol_compares(program)
+            want = [self.or_names(names) for names in IP_PROTOCOL_NAMES_BY_ROLE[role]]
+            self.assertEqual(len(got), len(want), role)
+            for index, value in enumerate(want):
+                self.assertEqual(got[index][3], value, (role, index))
+            self.assertNotIn(udp, [k for _, _, _, k in got], role)
+            for i, jt, jf, k in got:
+                if k == default:
+                    self.assertEqual((jt, program[i + 1 + jf]), (0, eperm), (role, i))
+                    continue
+                self.assertEqual((role, k), ('BROWSER', tcp), i)
+                self.assertEqual(jf, 0, (role, i))
+                t = i + 1 + jt
+                self.assertEqual(program[t], (self.op_ld, 0, 0, V['seccomp_data.args'] + self.stride), (role, t))
+                self.assertEqual(program[t + 1], (self.op_and, 0, 0, self.sock_mask), (role, t + 1))
+                code, jt2, jf2, k2 = program[t + 2]
+                self.assertEqual((code, jf2, k2), (self.op_jeq, 0, self.covered('SOCK_STREAM')), (role, t + 2))
+                self.assertEqual(program[t + 3 + jt2], allow, (role, t + 2))
+                self.assertEqual(program[t + 3], eperm, (role, t + 3))
 
     def test_filter_dispatch_numbers_are_the_expected_syscalls(self):
         allowed_dispatch = {'__NR_socket', '__NR_socketpair', '__NR_prctl', '__NR_seccomp'}

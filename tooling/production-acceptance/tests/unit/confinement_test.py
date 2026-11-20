@@ -1059,12 +1059,22 @@ class ConfinementTests(unittest.TestCase):
             for args in ((17,1,0),(16,2,0),(41,1,0),(2,3,0),(1,1,99),(2,1|0x1000,0),(1<<32|1,1,0),(2,1<<32|1,0),(2,1,1<<32)):
                 self.assertEqual(evaluate(p,nr,args),DENY,args)
     def test_all_nonzero_protocol_scalars_fail_closed_without_unreviewed_constants(self):
-        p=self.api().build_filter('BROWSER')
-        for nr in (198,199):
-            for family,kind in ((1,1),(1,2),(1,5),(2,1),(2,2),(10,1),(10,2)):
-                self.assertEqual(evaluate(p,nr,(family,kind,0)),ALLOW)
-                for nonzero in (1,6,17,123,0xffffffff,1<<32):
-                    self.assertEqual(evaluate(p,nr,(family,kind,nonzero)),DENY,(nr,family,kind,nonzero))
+        # Task 8c (C6, owner decision 2026-11-20): the one reviewed nonzero scalar is IPPROTO_TCP, admitted for
+        # BROWSER's AF_INET/AF_INET6 SOCK_STREAM only (BrowserSandboxFilterTests binds it by name). Every other
+        # nonzero protocol, including IPPROTO_UDP, and IPPROTO_TCP with any other family or type, still fails closed,
+        # now checked for every role. IPPROTO_TCP and IPPROTO_UDP are read from coverage v2; 1, 123, 0xffffffff and
+        # 1<<32 stay raw arbitrary scalars.
+        V={r['id']:r['value'] for r in json.loads(COVERAGE_V2.read_bytes())['records']}
+        tcp_value,udp_value=V['IPPROTO_TCP'],V['IPPROTO_UDP']
+        for role in ('CONTROLLER','BROWSER','VERIFIER','PROXY'):
+            p=self.api().build_filter(role)
+            for nr in (198,199):
+                for family,kind in ((1,1),(1,2),(1,5),(2,1),(2,2),(10,1),(10,2)):
+                    self.assertEqual(evaluate(p,nr,(family,kind,0)),ALLOW,(role,nr,family,kind))
+                    for nonzero in (1,tcp_value,udp_value,123,0xffffffff,1<<32):
+                        tcp=role=='BROWSER' and family in (2,10) and kind==1 and nonzero==tcp_value
+                        self.assertEqual(evaluate(p,nr,(family,kind,nonzero)),ALLOW if tcp else DENY,
+                                         (role,nr,family,kind,nonzero))
     def test_io_uring_setup_register_enter_and_inherited_ring_denied(self):
         for role in ('CONTROLLER','BROWSER','VERIFIER','PROXY'):
             for nr in (425,426,427):
@@ -2528,7 +2538,8 @@ COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
 
 class BrowserSandboxFilterTests(unittest.TestCase):
     """E1 (contract C6, rulings R1 and R2): the BROWSER outer filter allows exactly what Chromium's namespace
-    sandbox needs, and keeps every other denial; CONTROLLER, VERIFIER and PROXY keep their filter.
+    sandbox needs, and keeps every other denial; CONTROLLER, VERIFIER and PROXY keep their filter. Task 8c (C6,
+    owner decision 2026-11-20) adds one BROWSER admission: IPPROTO_TCP for AF_INET/AF_INET6 SOCK_STREAM.
 
     Each vector runs the produced program through the independent interpreter above on synthetic seccomp_data.
     Syscall numbers, flags, families, types and return values are named and resolved from the committed coverage
@@ -2624,6 +2635,83 @@ class BrowserSandboxFilterTests(unittest.TestCase):
             for flags in (spec, tsync | spec) + denied:
                 with self.subTest(role=role, flags=flags):
                     self.assertEqual(evaluate(program, self.nr('seccomp'), (operation, flags, 1234)), eperm)
+
+    def socket_names(self):
+        """(IPPROTO_TCP, SOCK_STREAM, SOCK_DGRAM, SOCK_CLOEXEC|SOCK_NONBLOCK, AF_INET, AF_INET6), from coverage v2."""
+        return (self.v('IPPROTO_TCP'), self.v('SOCK_STREAM'), self.v('SOCK_DGRAM'),
+                self.v('SOCK_CLOEXEC', 'SOCK_NONBLOCK'), self.v('AF_INET'), self.v('AF_INET6'))
+
+    def test_browser_admits_ipproto_tcp_stream_only(self):
+        """Task 8c (contract C6, owner decision 2026-11-20): BROWSER may open AF_INET/AF_INET6 SOCK_STREAM sockets
+        with protocol IPPROTO_TCP, which selects the same protocol as 0. IPPROTO_TCP with any other type or family,
+        any other nonzero protocol and a nonzero protocol high word stay ERRNO|EPERM; protocol 0 is unchanged.
+
+        IPPROTO_UDP is named from coverage v2 (no IPPROTO_UDP is added, C6). 255 is a raw unknown protocol value: the
+        test claims no IPPROTO_* name for it."""
+        allow, eperm, _ = self.returns()
+        tcp, stream, dgram, flags, inet, inet6 = self.socket_names()
+        cloexec, nonblock = self.v('SOCK_CLOEXEC'), self.v('SOCK_NONBLOCK')
+        raw, seqpacket = self.v('SOCK_RAW'), self.v('SOCK_SEQPACKET')
+        udp = self.v('IPPROTO_UDP')
+        unknown = 255  # a raw unknown protocol value, outside the admitted set; no IPPROTO_* name is claimed
+        self.assertNotIn(udp, (0, tcp))
+        self.assertNotIn(unknown, (0, tcp, udp))
+        high = 1 << 32
+        browser = c.build_filter('BROWSER')
+        # Chromium's calls, with and without the SOCK_NONBLOCK/SOCK_CLOEXEC type flags.
+        for args in ((inet, stream, tcp), (inet6, stream | flags, tcp), (inet6, stream, tcp), (inet, stream | flags, tcp),
+                     (inet, stream | cloexec, tcp), (inet6, stream | nonblock, tcp)):
+            with self.subTest(expect='allow', args=args):
+                self.assertEqual(evaluate(browser, self.nr('socket'), args), allow)
+        # IPPROTO_TCP is admitted exactly where protocol 0 is admitted for a stream type, for socket and socketpair.
+        for call in ('socket', 'socketpair'):
+            for family in (inet, inet6):
+                for kind in (stream, stream | flags):
+                    with self.subTest(call=call, family=family, kind=kind, expect='same as protocol 0'):
+                        self.assertEqual(evaluate(browser, self.nr(call), (family, kind, 0)), allow)
+                        self.assertEqual(evaluate(browser, self.nr(call), (family, kind, tcp)), allow)
+        # Protocol 0 is unchanged: stream and datagram, with or without the flags.
+        for family in (inet, inet6):
+            for kind in (stream, dgram, stream | flags, dgram | flags):
+                with self.subTest(expect='allow', protocol=0, family=family, kind=kind):
+                    self.assertEqual(evaluate(browser, self.nr('socket'), (family, kind, 0)), allow)
+        denied = (
+            # IPPROTO_TCP with a type other than SOCK_STREAM.
+            (inet, dgram, tcp), (inet6, dgram, tcp), (inet, dgram | flags, tcp), (inet6, dgram | nonblock, tcp),
+            (inet, raw, tcp), (inet6, raw, tcp), (inet, seqpacket, tcp), (inet6, seqpacket | cloexec, tcp),
+            # IPPROTO_TCP with a family other than AF_INET/AF_INET6.
+            (self.v('AF_UNIX'), stream, tcp), (self.v('AF_VSOCK'), stream, tcp), (self.v('AF_PACKET'), stream, tcp),
+            # IPPROTO_UDP, for stream and datagram (no IPPROTO_UDP is added).
+            (inet, stream, udp), (inet6, stream, udp), (inet, dgram, udp), (inet6, dgram | flags, udp),
+            # The raw unknown protocol value, and two raw neighbours of IPPROTO_TCP.
+            (inet, stream, unknown), (inet6, stream | flags, unknown), (inet, stream, tcp | 0x100), (inet, stream, tcp - 1),
+            # A nonzero protocol high word, with IPPROTO_TCP and with 0 in the low word.
+            (inet, stream, high | tcp), (inet6, stream | flags, high | tcp), (inet, stream, high),
+            (inet6, stream, (0xffffffff << 32) | tcp),
+            # Unchanged: AF_VSOCK, AF_PACKET and raw sockets with protocol 0.
+            (self.v('AF_VSOCK'), stream, 0), (self.v('AF_PACKET'), raw, 0), (self.v('AF_PACKET'), dgram, 0),
+            (inet, raw, 0), (inet6, raw, 0),
+        )
+        for call in ('socket', 'socketpair'):
+            for args in denied:
+                with self.subTest(call=call, expect='eperm', args=args):
+                    self.assertEqual(evaluate(browser, self.nr(call), args), eperm)
+
+    def test_other_roles_still_require_protocol_zero(self):
+        """Task 8c: the IPPROTO_TCP admission is BROWSER's only. CONTROLLER, VERIFIER and PROXY still give
+        ERRNO|EPERM for AF_INET/AF_INET6 SOCK_STREAM with IPPROTO_TCP, and still allow protocol 0."""
+        allow, eperm, _ = self.returns()
+        tcp, stream, dgram, flags, inet, inet6 = self.socket_names()
+        for role in self.OTHER_ROLES:
+            program = c.build_filter(role)
+            for call in ('socket', 'socketpair'):
+                for family in (inet, inet6):
+                    for kind in (stream, stream | flags):
+                        with self.subTest(role=role, call=call, family=family, kind=kind):
+                            self.assertEqual(evaluate(program, self.nr(call), (family, kind, tcp)), eperm)
+                            self.assertEqual(evaluate(program, self.nr(call), (family, kind, 0)), allow)
+                    with self.subTest(role=role, call=call, family=family, kind=dgram):
+                        self.assertEqual(evaluate(program, self.nr(call), (family, dgram, tcp)), eperm)
 
 
 def probe_module(name):
