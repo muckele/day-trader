@@ -487,6 +487,16 @@ class V1RoleTests(unittest.TestCase):
                 with self.assertRaisesRegex(c.ConfinementError,'^'+fault+'$'):roles.commit_browser(owner)
                 self.assertFalse(owner._committed);self.assertTrue(roles._terminal)
                 self.assertEqual(roles._family_ordinal,0)
+        # Only the kernel port's exact clean result counts.
+        clean=lambda point,**change:types.MappingProxyType(dict({'point':point,'members':5,'attempts':1},**change))
+        for name,answer in (('another point',lambda point:clean('POST_LOAD')),('members 1',lambda point:clean(point,members=1)),
+                            ('members 257',lambda point:clean(point,members=257)),('attempts 0',lambda point:clean(point,attempts=0)),
+                            ('attempts 6',lambda point:clean(point,attempts=6)),('members text',lambda point:clean(point,members='5')),
+                            ('a plain dict',lambda point:dict(clean(point))),('an extra key',lambda point:clean(point,status='CLEAN'))):
+            with self.subTest(result=name):
+                roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof);k.family_answer=answer
+                with self.assertRaisesRegex(c.ConfinementError,'^AUTHORITY_LOST$'):roles.commit_browser(owner)
+                self.assertFalse(owner._committed);self.assertTrue(roles._terminal)
         # No kernel-type gate: a kernel without the method fails closed.
         roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof)
         k.inspect_browser_family=None
@@ -807,11 +817,13 @@ class Kernel:
         self.family_calls = []
         self.family_probe = None
         self.family_fault = None
+        self.family_answer = None   # family_answer(point): the result to return instead of the clean one
 
     def inspect_browser_family(self, handoff, point, *, limit_ms):
         self.family_calls.append((point, limit_ms, self.family_probe() if self.family_probe else None, handoff))
         code = self.family_fault(point) if self.family_fault else None
         if code: raise c.ConfinementError(code)
+        if self.family_answer: return self.family_answer(point)
         return types.MappingProxyType({'point': point, 'members': 5, 'attempts': 1})
 
     def spawn_waiting(self, launch, entry):
@@ -3031,6 +3043,15 @@ class BrowserFamilyInspectionTests(unittest.TestCase):
                     if len(scans) % 2 == 0: p.add(400 + len(scans), 204, filters='3', ns='SANDBOX', owner=0, fds={0: P.NULL})
             proc.before.append(churn)
             self.denied(proc, 'FAMILY_UNREADABLE', 5)
+        with self.subTest(case='(h) a clean attempt that ends past the limit'):
+            proc = P(); scans = []
+            def slow(p, kind, path):
+                if (kind, path) == ('listdir', '/proc'):
+                    scans.append(1)
+                    if len(scans) == 2: p.clock += 1.5   # scan B of attempt 1 starts 1.5 s in
+            proc.before.append(slow)
+            self.denied(proc, 'FAMILY_UNREADABLE', 1)
+            self.assertEqual(proc.sleeps, [])
         with self.subTest(case='(g) limit_ms=120'):
             proc = P(); proc.procs[205]['fds'][6] = P.sock(9999); seen = []
             proc.before.append(lambda p, kind, path: seen.append(p.clock))
