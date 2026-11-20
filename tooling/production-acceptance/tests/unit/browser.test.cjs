@@ -20,6 +20,8 @@ const RUN = '1'.repeat(32);
 const KEY = '4'.repeat(64);
 const FRONTEND = 'https://frontend.example.test';
 const BACKEND = 'https://backend.example.test';
+const INDEX_BODY = Buffer.from('<!doctype html><html><head><title>Day Trader</title></head><body><div id="root"></div></body></html>');
+const INDEX_ASSET = Object.freeze({ path: '/index.html', body: INDEX_BODY, mime: 'text/html' });
 const PATHS = Object.freeze({
   profile: '/run/acceptance/browser/profile',
   support: '/run/acceptance/browser/support',
@@ -33,7 +35,7 @@ function controller() {
   return require(CONTROLLER);
 }
 
-function worker(playwright, receiptAPI, bindBrowserWorkerChannel) {
+function worker(playwright, receiptAPI, bindBrowserWorkerChannel, globals = {}) {
   assert.equal(fs.existsSync(WORKER), true, 'browser worker contract is absent');
   const source = fs.readFileSync(WORKER, 'utf8');
   const module = { exports: {} };
@@ -46,7 +48,7 @@ function worker(playwright, receiptAPI, bindBrowserWorkerChannel) {
   }
   vm.runInNewContext(source, {
     module, exports: module.exports, require: localRequire, Buffer, TextDecoder,
-    URL, setTimeout, clearTimeout, queueMicrotask,
+    URL, setTimeout, clearTimeout, queueMicrotask, ...globals,
   }, { filename: WORKER });
   return module.exports;
 }
@@ -163,7 +165,7 @@ function fakePlaywright(options = {}) {
   const calls = {
     launch: [], persistent: [], contexts: [], pages: [], selectors: [], events: [],
     websocketCloses: 0, popupCloses: 0, browserCloses: 0, contextCloses: 0,
-    assetBodies: 0, routeFetches: 0,
+    assetBodies: 0, documentBodies: 0, routeFetches: 0,
   };
   const contextHandlers = {};
   let navigationCount = 0;
@@ -250,15 +252,20 @@ function fakePlaywright(options = {}) {
       calls.events.push('goto:' + url);
       calls.goto = { url, options: gotoOptions };
       navigationCount++;
-      if (options.initialRoute) {
+      if (options.initialRoute && navigationCount === 1) {
         let disposition;
         await calls.routeHandler({
-          request: () => ({ method: () => 'GET', url: () => FRONTEND + '/',
-            headers: () => ({ accept: 'text/html', 'user-agent': 'Chromium', 'sec-fetch-mode': 'navigate' }), postDataBuffer: () => null }),
+          request: () => ({ method: () => 'GET', url: () => url,
+            headers: () => ({ accept: 'text/html', 'user-agent': 'Chromium', 'sec-fetch-mode': 'navigate',
+              'sec-fetch-dest': 'document', 'sec-fetch-site': 'none', 'upgrade-insecure-requests': '1' }), postDataBuffer: () => null }),
           continue: async () => { disposition = 'CONTINUE'; }, abort: async () => { disposition = 'ABORT'; },
         });
         calls.initialRouteDisposition = disposition;
+        // Like Playwright, an aborted navigation request rejects goto.
+        if (disposition !== 'CONTINUE') throw Object.assign(new Error('net::ERR_FAILED at ' + url), { code: 'NAVIGATION_ABORTED' });
       }
+      if (options.gotoError && navigationCount === 1) throw Object.assign(new Error('synthetic navigation failure'), { code: options.gotoError });
+      if (options.gotoHang && navigationCount === 1) { calls.events.push('goto:hang'); options.gotoHang(); await new Promise(() => {}); }
       if (options.routeOnObservation && navigationCount > 1 && (options.routeOnObservation !== 'first' || navigationCount === 2)) {
         let disposition;
         await calls.routeHandler({
@@ -269,6 +276,11 @@ function fakePlaywright(options = {}) {
         if(disposition==='ABORT')throw Object.assign(new Error('synthetic navigation aborted: '+url),{code:'ROUTE_DENIED'});
       }
       if (contextHandlers.response && navigationCount === 1) {
+        if (!options.noDocumentResponse) await contextHandlers.response({
+          url: () => url,
+          body: async () => { calls.documentBodies++; return Buffer.from(options.documentBody || INDEX_BODY); },
+          headers: () => ({ 'content-type': 'text/html' }),
+        });
         await contextHandlers.response({
           url: () => (options.assetOrigin || FRONTEND) + '/static/js/main.js',
           body: async () => { calls.assetBodies++; return Buffer.from('abc'); },
@@ -279,6 +291,7 @@ function fakePlaywright(options = {}) {
     },
     async evaluate(_callback,url) {
       calls.events.push('evaluate:'+url);
+      if(options.evaluateHang){options.evaluateHang();await new Promise(()=>{});}
       if(options.routeOnObservation&&(!calls.observationRouteDispositions?.length||options.routeOnObservation!=='first')){
         let disposition;
         await calls.routeHandler({
@@ -292,7 +305,8 @@ function fakePlaywright(options = {}) {
     url(){return currentUrl;},
     async waitForLoadState() { calls.events.push('load'); },
     getByPlaceholder(name) {
-      return { fill: async value => { calls.selectors.push(['placeholder', name, value]); } };
+      return { fill: async value => { calls.selectors.push(['placeholder', name, value]);
+        if (options.fillError !== undefined) throw Object.assign(new Error('synthetic fill failure'), { code: options.fillError }); } };
     },
     getByRole(role, query = {}) {
       const locator={
@@ -366,7 +380,7 @@ async function startHarness(options = {}) {
   const activationReady=new Promise((resolve,reject)=>{activationResolve=resolve;activationReject=reject;});
   const routeFixture = budgetFixture({ phase: options.phase || A, journal: options.journal,
     runId: testRun, configIdentity: '3'.repeat(64), assetPath: '/static/js/main.js', assetBody: Buffer.from('abc'),
-    inspectBrowserEvidence: roles.inspectBrowserRequestEvidence });
+    extraAssets: options.indexAsset === false ? [] : [INDEX_ASSET], inspectBrowserEvidence: roles.inspectBrowserRequestEvidence });
   const bundle = receipts.createBrowserAssetBundle(routeFixture.release, routeFixture.assets, routeFixture.trust,
     routeFixture.releaseBytes, routeFixture.assetBytes);
   const binding = compositionBinding(testRun);
@@ -375,9 +389,15 @@ async function startHarness(options = {}) {
   const projected = receipts.inspectBrowserControllerConfig(cfg);
   const workerCfg = JSON.parse(JSON.stringify(projected));
   if (options.workerConfig) Object.assign(workerCfg, options.workerConfig);
+  // C1 double: the shared cleanup end exists only after the terminal start.
+  let cleanupStarted = false;
   const launchContext = Object.freeze({
-    channel: Object.freeze({}), expected: Object.freeze({ binding: options.expectedBinding || binding }), clock: Object.freeze({ sample: () => [160, 1000] }),
-    cleanupBudget: Object.freeze({ remaining: () => 120000 }), prepareRecord: Buffer.from('synthetic-prepare'),
+    channel: Object.freeze({}), expected: Object.freeze({ binding: options.expectedBinding || binding }),
+    clock: options.workerClock || Object.freeze({ sample: () => [160, 1000] }),
+    cleanupBudget: Object.freeze({
+      startTerminal() { cleanupStarted = true; return 120000; },
+      remaining() { if (!cleanupStarted) throw Object.assign(new Error('CLEANUP_NOT_STARTED'), { code: 'CLEANUP_NOT_STARTED' }); return 120000; },
+    }), prepareRecord: Buffer.from('synthetic-prepare'),
   });
   links.worker.launchContext = launchContext;
   const workerAPI = worker({ chromium: fake.chromium }, { ...receipts, validateAssetResponse(entry, body, contentType) {
@@ -427,11 +447,12 @@ async function startHarness(options = {}) {
   const workerResult = workerAPI.runBrowserWorker(links.worker, workerCfg);
   workerResult.then(result=>{if(result?.status==='FAILED')activationReject(Object.assign(new Error(result.code),{code:result.code}));}).catch(activationReject);
   if (options.observed) Object.assign(options.observed, {
-    fake, links, workerResult, stops: () => stops, waits: () => waits,
+    fake, links, workerResult, assetProofs, stops: () => stops, waits: () => waits,
   });
-  const session = await api.openBrowser(cfg, { rolePort, grant, admissionPort });
+  const clock = options.controllerClock || Object.freeze({ sample: () => [160, 1000] });
+  const session = await api.openBrowser(cfg, { rolePort, grant, admissionPort, clock });
   return { api, fake, links, cfg, session, workerResult, assetProofs, decisions:routeFixture.intents, launchEvents,runId:testRun,
-    activations: () => activations, stops: () => stops, waits: () => waits };
+    activations: () => activations, stops: () => stops, waits: () => waits, cleanupStarted: () => cleanupStarted };
 }
 
 async function closeHarness(h) {
@@ -439,6 +460,21 @@ async function closeHarness(h) {
   const workerExit = await h.workerResult;
   return { result, workerExit };
 }
+
+async function settled(condition, turns = 200) {
+  for (let turn = 0; turn < turns && !condition(); turn++) await new Promise(resolve => setImmediate(resolve));
+  return condition();
+}
+function within(promise, milliseconds) {
+  let timer;
+  return Promise.race([promise.then(() => 'RESOLVED', error => 'REJECTED:' + error.code),
+    new Promise(resolve => { timer = setTimeout(() => resolve('BLOCKED'), milliseconds); })]).finally(() => clearTimeout(timer));
+}
+function steppedClock(start = [160, 1000]) {
+  let now = [...start];
+  return { clock: Object.freeze({ sample: () => [...now] }), set(value) { now = [...value]; } };
+}
+const login = () => ({ ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password' });
 
 test('no_bootstrap_proof_no_launch', async () => {
   const api = controller();
@@ -511,13 +547,33 @@ test('worker_local_guard_commits_the_only_playwright_launch', async () => {
   await closeHarness(h);
 });
 
-test('initial_navigation_route_is_decided_before_assets_and_ready', async () => {
-  const h = await startHarness({ fake: { initialRoute: true } });
-  assert.ok(['CONTINUE', 'ABORT'].includes(h.fake.calls.initialRouteDisposition));
+test('initial_navigation_is_login_and_continued_in_phase_P', async () => {
+  // T13 I-1: the first navigation is FRONTEND/login, decided by admission before assets and READY.
+  const first = {};
+  const h = await startHarness({ phase: 'PREFLIGHT', fake: { initialRoute: true }, observed: first }).catch(error => error);
+  const target = new URL(first.fake.calls.goto.url);
+  assert.equal(target.origin, FRONTEND);
+  assert.equal(target.pathname, '/login');
+  assert.equal(target.search + target.hash, '');
+  assert.equal(first.fake.calls.goto.options.waitUntil, 'domcontentloaded');
+  assert.equal(first.fake.calls.initialRouteDisposition, 'CONTINUE');
+  assert.equal(h instanceof Error, false, h?.code);
   const frames = decodedFrames(h.links.logs, 'worker');
   assert.deepEqual(frames.slice(0, 3).map(frame => frame.type), ['ROUTE', 'ASSETS', 'READY']);
-  assert.equal(decodedFrames(h.links.logs, 'controller')[0].type, 'DECISION');
+  assert.equal(frames[0].payload.url, FRONTEND + '/login');
+  assert.equal(frames[0].payload.method, 'GET');
+  const decision = decodedFrames(h.links.logs, 'controller')[0];
+  assert.equal(decision.type, 'DECISION');
+  assert.deepEqual(decision.payload, { requestId: frames[0].payload.requestId, decision: 'CONTINUE' });
+  assert.deepEqual(h.decisions.map(row => [row.routeId, row.phase, row.outcome]), [['frontend-document', 'PREFLIGHT', 'RESERVED']]);
+  assert.equal(h.session.failureCode(), null);
   await closeHarness(h);
+  // The fake goto rejects an aborted navigation: /login is not admissible in phase A, so READY is never reached.
+  const observed = {};
+  await assert.rejects(startHarness({ fake: { initialRoute: true }, observed }), { code: 'ROUTE_DENIED' });
+  assert.equal(observed.fake.calls.initialRouteDisposition, 'ABORT');
+  assert.equal(decodedFrames(observed.links.logs, 'worker').some(frame => ['ASSETS', 'READY'].includes(frame.type)), false);
+  assert.equal(observed.stops(), 1);
 });
 
 test('worker_local_guard_denial_never_launches', async () => {
@@ -555,13 +611,18 @@ test('SW_registration_and_fetch_blocked_extensions_downloads_capture_disabled', 
   for (const key of ['recordHar', 'recordVideo']) assert.equal(Object.hasOwn(context, key), false);
   assert.ok(launch.args.includes('--disable-extensions'));
   assert.equal(h.fake.calls.assetBodies, 1);
-  assert.equal(h.assetProofs.length, 1);
-  assert.deepEqual([...h.assetProofs[0].body], [...Buffer.from('abc')]);
+  assert.equal(h.fake.calls.documentBodies, 1);
+  assert.deepEqual(h.assetProofs.map(row => row.entry.path).sort(), ['/index.html', '/static/js/main.js']);
+  assert.deepEqual([...h.assetProofs.find(row => row.entry.path === '/static/js/main.js').body], [...Buffer.from('abc')]);
+  assert.deepEqual([...h.assetProofs.find(row => row.entry.path === '/index.html').body], [...INDEX_BODY]);
   assert.equal(h.fake.calls.routeFetches, 0);
   const workerFrames = decodedFrames(h.links.logs, 'worker');
   assert.deepEqual(workerFrames.slice(0, 2).map(frame => frame.type), ['ASSETS', 'READY']);
   assert.deepEqual(workerFrames[0].payload.proofs, [{
     entryId: 'frontend-asset:/static/js/main.js', hash: crypto.createHash('sha256').update('abc').digest('hex'),
+    sizeMatch: true, hashMatch: true, mimeMatch: true,
+  }, {
+    entryId: 'frontend-asset:/index.html', hash: crypto.createHash('sha256').update(INDEX_BODY).digest('hex'),
     sizeMatch: true, hashMatch: true, mimeMatch: true,
   }]);
   await closeHarness(h);
@@ -797,7 +858,7 @@ test('task14_wrong_owner_and_cookie_widening_fail_closed', async () => {
   const wrongOwner = await startHarness({ fake: { ownerId: 'different-owner' } });
   await assert.rejects(wrongOwner.session.perform('LOGIN_SESSION', {
     ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
-  },()=>{}), { code: 'OWNER_MISMATCH' });
+  },()=>{}), { code: 'IDENTITY_MISMATCH', workerCode: 'OWNER_MISMATCH' });
   for (const cookie of [
     { secure: false }, { httpOnly: false }, { sameSite: 'Lax' }, { path: '/api' },
     { domain: '.backend.example.test' }, { domain: 'frontend.example.test' },
@@ -805,7 +866,7 @@ test('task14_wrong_owner_and_cookie_widening_fail_closed', async () => {
     const h = await startHarness({ fake: { cookie } });
     await assert.rejects(h.session.perform('LOGIN_SESSION', {
       ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
-    },()=>{}), { code: 'COOKIE_INVALID' });
+    },()=>{}), { code: 'SESSION_MISMATCH', workerCode: 'COOKIE_INVALID' });
   }
 });
 
@@ -817,7 +878,7 @@ test('task14_second_login_fails_and_continuity_uses_worker_local_cookie', async 
   },()=>{});
   await assert.rejects(h.session.perform('LOGIN_SESSION', {
     ownerId: 'owner-id', username: 'synthetic-owner', password: 'second-password',
-  },()=>{}), { code: 'LOGIN_ALREADY_ATTEMPTED' });
+  },()=>{}), { code: 'REPLAY', workerCode: 'LOGIN_ALREADY_ATTEMPTED' });
   assert.equal(h.fake.calls.contexts.length, 1);
   assert.equal(Buffer.concat(h.links.logs.map(row => row.bytes)).toString().includes('private-cookie'), false);
   // The second login intentionally terminates this worker. A fresh synthetic
@@ -868,7 +929,11 @@ test('concurrent_intercepted_routes_are_serialized_on_the_original_application_p
   await Promise.all([h.fake.calls.routeHandler(intercepted('first')),h.fake.calls.routeHandler(intercepted('second'))]);
   assert.equal(dispositions.length,2);
   assert.equal(decodedFrames(h.links.logs,'worker').filter(frame=>frame.type==='ROUTE').length,2);
-  await closeHarness(h);
+  // The login route's phase-A ceiling is 1: the second login is denied, and that denial latches (T13 I-7).
+  assert.deepEqual([...dispositions].sort(),['ABORT','CONTINUE']);
+  assert.equal(await settled(()=>h.session.failureCode()!==null),true);
+  assert.equal(h.session.failureCode(),'ROUTE_DENIED');
+  await assert.rejects(h.session.close(),{code:'ROUTE_DENIED'});
 });
 
 test('held_admission_serializes_controller_action_before_route_decision', async () => {
@@ -921,7 +986,9 @@ test('malformed_authenticated_channel_input_stops_original_role', async () => {
   await h.links.worker.write(Buffer.concat([prefix, body]));
   for (let attempt = 0; attempt < 10 && h.stops() === 0; attempt++) await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.stops(), 1);
-  await assert.rejects(h.session.perform('LOGIN_SESSION', { ownerId:'owner-id',username: 'user', password: 'secret' },()=>{}), { code: 'ACTION_DENIED' });
+  assert.equal(h.session.failureCode(), 'INVALID_FRAME');
+  await assert.rejects(h.session.perform('LOGIN_SESSION', { ownerId:'owner-id',username: 'user', password: 'secret' },()=>{}), { code: 'INVALID_FRAME' });
+  assert.equal(decodedFrames(h.links.logs, 'controller').some(frame => frame.type === 'ACTION'), false);
 });
 
 test('tampered_runtime_pipe_or_body_fails_closed', async () => {
@@ -1014,7 +1081,7 @@ test('task15_changed_cookie_fails_before_readiness_or_view_navigation', async ()
   const before=h.fake.calls.events.filter(event=>event.startsWith('goto:')).length;value='replacement-cookie';
   await assert.rejects(h.session.perform('OBSERVE_VIEW', {
     phase:'OBSERVE_BEFORE_RESTART',view:'ROBO',
-  }),{code:'SESSION_CHANGED'});
+  }),{code:'SESSION_MISMATCH',workerCode:'SESSION_CHANGED'});
   assert.equal(h.fake.calls.events.filter(event=>event.startsWith('goto:')).length,before);
   assert.equal(h.fake.calls.events.filter(event=>event.startsWith('evaluate:')).length,0);
 });
@@ -1030,7 +1097,9 @@ test('task15_observation_navigation_keeps_route_decision_loop_live', async () =>
     new Promise(resolve => setTimeout(() => resolve('BLOCKED'), 100)),
   ]);
   assert.equal(outcome, 'ERROR:ROUTE_DENIED');
-  assert.equal(h.fake.calls.observationRouteDispositions.length, 1);
+  // The controller's latch can reject the action before the worker's route handler records its abort.
+  assert.equal(await settled(() => h.fake.calls.observationRouteDispositions?.length === 1), true);
+  assert.equal(h.session.failureCode(), 'ROUTE_DENIED');
   assert.deepEqual(h.fake.calls.observationRouteDispositions, ['ABORT']);
 });
 
@@ -1147,4 +1216,284 @@ test('task15_malformed_portfolio_history_and_missing_activity_row_identity_fail'
       phase: 'OBSERVE_BEFORE_RESTART', view,
     }), { code: 'OBSERVATION_FAILED' });
   }
+});
+
+// ---- Task 15 (Stage 1 remediation): routing, headers and asset integrity ----
+
+test('authorization_x_header_and_method_override_abort_locally', async () => {
+  // T13 I-2 / review D3: credential and method-override headers never reach admission or the network.
+  const body = Buffer.from('{"username":"synthetic-owner","password":"synthetic-password"}');
+  for (const extra of [
+    { authorization: 'Bearer other-identity-jwt', 'x-http-method-override': 'DELETE', 'x-arbitrary': '1' },
+    { authorization: 'Bearer other-identity-jwt' },
+    { Authorization: 'Bearer other-identity-jwt' },
+    { 'proxy-authorization': 'Basic c3ludGhldGljOnZhbHVl' },
+    { 'x-http-method-override': 'DELETE' },
+    { 'x-method-override': 'DELETE' },
+    { 'x-arbitrary': '1' },
+    { 'X-Requested-With': 'XMLHttpRequest' },
+  ]) {
+    const h = await startHarness();
+    let continues = 0, aborts = 0;
+    await h.fake.calls.routeHandler({
+      request: () => ({ method: () => 'POST', url: () => BACKEND + '/api/login',
+        headers: () => ({ 'content-type': 'application/json', ...extra }), postDataBuffer: () => Buffer.from(body) }),
+      continue: async () => { continues++; }, abort: async () => { aborts++; },
+    });
+    assert.deepEqual([continues, aborts], [0, 1], JSON.stringify(extra));
+    assert.equal(decodedFrames(h.links.logs, 'worker').filter(frame => frame.type === 'ROUTE').length, 0, JSON.stringify(extra));
+    assert.equal(h.decisions.length, 0);
+    await closeHarness(h);
+  }
+});
+
+test('non_generated_headers_reach_controller_admission', async () => {
+  // T13 I-2: only the fixed browser-generated headers are withheld; every other header is a ROUTE fact.
+  const h = await startHarness();
+  const generated = { 'user-agent': 'Chromium', 'accept-language': 'en-US', 'accept-encoding': 'gzip, br', referer: FRONTEND + '/login',
+    cookie: 'secret-cookie', 'sec-ch-ua': '"Chromium";v="145"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Linux"',
+    'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty', 'sec-fetch-user': '?1', 'upgrade-insecure-requests': '1' };
+  const dispositions = [];
+  const send = extra => h.fake.calls.routeHandler({
+    request: () => ({ method: () => 'GET', url: () => BACKEND + '/api/me',
+      headers: () => ({ accept: 'application/json', origin: FRONTEND, ...generated, ...extra }), postDataBuffer: () => null }),
+    continue: async () => { dispositions.push('CONTINUE'); }, abort: async () => { dispositions.push('ABORT'); },
+  });
+  await send({});
+  await send({ foo: 'bar' });
+  const routes = decodedFrames(h.links.logs, 'worker').filter(frame => frame.type === 'ROUTE');
+  assert.deepEqual(routes.map(frame => frame.payload.headers), [
+    [['accept', 'application/json'], ['origin', FRONTEND]],
+    [['accept', 'application/json'], ['foo', 'bar'], ['origin', FRONTEND]],
+  ]);
+  assert.equal(Buffer.concat(h.links.logs.map(row => row.bytes)).toString().includes('secret-cookie'), false);
+  // The same request is admitted without `foo`; with it, the policy allowlist denies it and the denial latches.
+  assert.deepEqual(dispositions, ['CONTINUE', 'ABORT']);
+  assert.equal(await settled(() => h.session.failureCode() !== null), true);
+  assert.equal(h.session.failureCode(), 'ROUTE_DENIED');
+  assert.equal(await settled(() => h.stops() === 1), true);
+});
+
+test('login_document_bytes_validated_against_index_entry', async () => {
+  // T13 I-3: SPA documents carry index.html bytes and are validated against the signed /index.html entry.
+  const h = await startHarness();
+  const index = h.assetProofs.filter(row => row.entry.path === '/index.html');
+  assert.equal(index.length, 1);
+  assert.deepEqual([...index[0].body], [...INDEX_BODY]);
+  assert.equal(index[0].contentType, 'text/html');
+  assert.equal(h.fake.calls.documentBodies, 1);
+  // Every other SPA document path (/, and the fixed view paths) is validated the same way, for the whole run.
+  for (const documentPath of ['/', '/robo', '/portfolio', '/activity']) {
+    await h.fake.contextHandlers.response({ url: () => FRONTEND + documentPath, body: async () => Buffer.from(INDEX_BODY),
+      headers: () => ({ 'content-type': 'text/html; charset=utf-8' }) });
+  }
+  assert.equal(await settled(() => h.assetProofs.filter(row => row.entry.path === '/index.html').length === 5), true);
+  assert.equal(h.session.failureCode(), null);
+  await closeHarness(h);
+
+  const tampered = Buffer.from(INDEX_BODY); tampered[tampered.length - 8] ^= 0x01;
+  const observed = {};
+  await assert.rejects(startHarness({ fake: { documentBody: tampered }, observed }), { code: 'OBSERVATION_FAILED' });
+  const checked = observed.assetProofs.filter(row => row.entry.path === '/index.html');
+  assert.equal(checked.length, 1);
+  assert.deepEqual([...checked[0].body], [...tampered]);
+  assert.equal(decodedFrames(observed.links.logs, 'worker').some(frame => ['ASSETS', 'READY'].includes(frame.type)), false);
+  assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'OBSERVATION_FAILED' });
+  assert.equal(observed.fake.calls.contextCloses, 1);
+  assert.equal(observed.fake.calls.browserCloses, 1);
+  assert.equal(observed.stops(), 1);
+
+  // Without a signed /index.html entry a document can never be validated, so READY is never reached:
+  // neither when the /login document arrives, nor when no document response is seen at all.
+  for (const fake of [{}, { noDocumentResponse: true }]) {
+    const unsigned = {};
+    await assert.rejects(startHarness({ indexAsset: false, fake, observed: unsigned }), { code: 'OBSERVATION_FAILED' }, JSON.stringify(fake));
+    assert.equal(decodedFrames(unsigned.links.logs, 'worker').some(frame => ['ASSETS', 'READY'].includes(frame.type)), false);
+    assert.deepEqual(unsigned.assetProofs.map(row => row.entry.path), ['/static/js/main.js']);
+    assert.equal(unsigned.stops(), 1);
+  }
+});
+
+test('post_ready_asset_tamper_latches_and_fails_next_action', async () => {
+  // T13 I-3 / review D2: manifest assets are validated for the whole run, repeats included.
+  const h = await startHarness();
+  const before = h.assetProofs.length;
+  await h.fake.contextHandlers.response({ url: () => FRONTEND + '/static/js/main.js', body: async () => Buffer.from('abc'),
+    headers: () => ({ 'content-type': 'application/javascript' }) });
+  assert.equal(await settled(() => h.assetProofs.length === before + 1), true);
+  for (let turn = 0; turn < 20; turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.session.failureCode(), null, 'a valid repeat must not latch');
+  await h.fake.contextHandlers.response({ url: () => FRONTEND + '/static/js/main.js', body: async () => Buffer.from('EVIL-REPLACEMENT-SCRIPT'),
+    headers: () => ({ 'content-type': 'application/javascript' }) });
+  assert.equal(await settled(() => h.session.failureCode() !== null), true);
+  assert.equal(h.assetProofs.length, before + 2);
+  assert.deepEqual([...h.assetProofs[before + 1].body], [...Buffer.from('EVIL-REPLACEMENT-SCRIPT')]);
+  assert.equal(h.session.failureCode(), 'OBSERVATION_FAILED');
+  let filled = 0;
+  await assert.rejects(h.session.perform('LOGIN_SESSION', login(), () => { filled++; }), { code: 'OBSERVATION_FAILED' });
+  assert.equal(filled, 0);
+  assert.equal(decodedFrames(h.links.logs, 'controller').some(frame => frame.type === 'ACTION'), false);
+  await assert.rejects(h.session.close(), { code: 'OBSERVATION_FAILED' });
+  assert.deepEqual({ ...(await h.workerResult) }, { status: 'FAILED', code: 'OBSERVATION_FAILED' });
+  assert.equal(h.fake.calls.contextCloses, 1);
+  assert.equal(h.fake.calls.browserCloses, 1);
+  assert.equal(h.stops(), 1);
+});
+
+test('route_denial_latches_session_and_fails_next_perform', async () => {
+  // T13 I-7 / review D7: an admission denial is terminal ROUTE_DENIED, not a swallowed ABORT.
+  const h = await startHarness();
+  await h.session.perform('LOGIN_SESSION', login(), () => {});
+  let disposition;
+  await h.fake.calls.routeHandler({
+    request: () => ({ method: () => 'POST', url: () => BACKEND + '/api/trade', headers: () => ({ 'content-type': 'application/json' }), postDataBuffer: () => null }),
+    continue: async () => { disposition = 'CONTINUE'; }, abort: async () => { disposition = 'ABORT'; },
+  });
+  assert.equal(disposition, 'ABORT');
+  await settled(() => h.stops() === 1);
+  await assert.rejects(h.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'ROBO' }), { code: 'ROUTE_DENIED' });
+  assert.equal(decodedFrames(h.links.logs, 'controller').filter(frame => frame.type === 'ACTION').length, 1);
+  assert.equal(h.session.failureCode(), 'ROUTE_DENIED');
+  assert.equal(h.stops(), 1);
+  await assert.rejects(h.session.close(), { code: 'ROUTE_DENIED' });
+  assert.equal(h.stops(), 1);
+
+  // An expected timer abort (market status in LOGOUT) is an ABORT that does not latch.
+  const timer = await startHarness({ phase: 'LOGOUT' });
+  let timerDisposition;
+  await timer.fake.calls.routeHandler({
+    request: () => ({ method: () => 'GET', url: () => BACKEND + '/api/market/status', headers: () => ({ accept: 'application/json' }), postDataBuffer: () => null }),
+    continue: async () => { timerDisposition = 'CONTINUE'; }, abort: async () => { timerDisposition = 'ABORT'; },
+  });
+  assert.equal(timerDisposition, 'ABORT');
+  for (let turn = 0; turn < 20; turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(timer.session.failureCode(), null);
+  assert.equal(timer.session.inspectResult(await timer.session.perform('LOGIN_SESSION', login(), () => {})).kind, 'SESSION_BOUND');
+  await closeHarness(timer);
+  assert.equal(timer.stops(), 1);
+});
+
+test('startup_and_perform_bounded_by_run_expiry', async () => {
+  // T13 m-6: the run binding's expiry (wall 200 here) bounds worker startup, controller startup and perform.
+  const worker = steppedClock(), workerObserved = {};
+  const workerStart = startHarness({ workerClock: worker.clock, observed: workerObserved,
+    fake: { gotoHang: () => worker.set([250, 1090]) } });
+  assert.equal(await within(workerStart, 2000), 'REJECTED:EXPIRED');
+  assert.deepEqual({ ...(await workerObserved.workerResult) }, { status: 'FAILED', code: 'EXPIRED' });
+  assert.equal(workerObserved.fake.calls.contextCloses, 1);
+  assert.equal(workerObserved.fake.calls.browserCloses, 1);
+  assert.equal(workerObserved.stops(), 1);
+
+  const control = steppedClock(), stalled = steppedClock(), controlObserved = {};
+  const controlStart = startHarness({ controllerClock: control.clock, workerClock: stalled.clock, observed: controlObserved,
+    fake: { gotoHang: () => control.set([200, 1040]) } });
+  assert.equal(await within(controlStart, 2000), 'REJECTED:EXPIRED');
+  assert.equal(controlObserved.stops(), 1);
+  stalled.set([200, 1040]);
+  assert.deepEqual({ ...(await controlObserved.workerResult) }, { status: 'FAILED', code: 'EXPIRED' });
+
+  const clock = steppedClock();
+  const h = await startHarness({ controllerClock: clock.clock, fake: { evaluateHang: () => clock.set([201, 1041]) } });
+  await h.session.perform('LOGIN_SESSION', login(), () => {});
+  const actions = () => decodedFrames(h.links.logs, 'controller').filter(frame => frame.type === 'ACTION').length;
+  assert.equal(await within(h.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'ROBO' }), 2000), 'REJECTED:EXPIRED');
+  assert.equal(h.session.failureCode(), 'EXPIRED');
+  assert.equal(await settled(() => h.stops() === 1), true);
+  const sent = actions();
+  await assert.rejects(h.session.perform('SESSION_OBSERVATION', {}), { code: 'EXPIRED' });
+  assert.equal(actions(), sent);
+  await assert.rejects(h.session.close(), { code: 'EXPIRED' });
+
+  // A perform that starts after expiry is refused before any ACTION frame.
+  const late = steppedClock(), lateHarness = await startHarness({ controllerClock: late.clock });
+  late.set([200, 1040]);
+  await assert.rejects(lateHarness.session.perform('LOGIN_SESSION', login(), () => {}), { code: 'EXPIRED' });
+  assert.equal(decodedFrames(lateHarness.links.logs, 'controller').some(frame => frame.type === 'ACTION'), false);
+  assert.equal(lateHarness.session.failureCode(), 'EXPIRED');
+  assert.equal(await settled(() => lateHarness.stops() === 1), true);
+});
+
+test('worker_codes_map_to_closed_enum', async () => {
+  // T13 m-8: free worker strings never leave browser.cjs as failure codes.
+  const wrongOwner = await startHarness({ fake: { ownerId: 'different-owner' } });
+  await assert.rejects(wrongOwner.session.perform('LOGIN_SESSION', login(), () => {}), { code: 'IDENTITY_MISMATCH', workerCode: 'OWNER_MISMATCH' });
+  const api = controller();
+  const closed = JSON.parse(fs.readFileSync(path.join(ROOT, 'contracts/schema.json'))).definitions.Failure.values;
+  assert.equal(typeof api.WORKER_CODE_MAP, 'object');
+  assert.equal(Object.isFrozen(api.WORKER_CODE_MAP), true);
+  assert.equal(Object.getPrototypeOf(api.WORKER_CODE_MAP), null);
+  for (const [code, mapped] of Object.entries(api.WORKER_CODE_MAP)) assert.ok(closed.includes(mapped), code + ' -> ' + mapped);
+  for (const code of closed) assert.equal(api.WORKER_CODE_MAP[code], code);
+  assert.deepEqual(Object.fromEntries(Object.entries(api.WORKER_CODE_MAP).filter(([code]) => !closed.includes(code))), {
+    ACTION_DENIED: 'INVALID_FRAME', FRAME_DENIED: 'INVALID_FRAME', CHANNEL_DENIED: 'INVALID_FRAME', CHANNEL_EOF: 'TRANSPORT_LOST',
+    AUTHORITY_LOST: 'ROLE_INVALID', BOOTSTRAP_REQUIRED: 'ROLE_INVALID', ACTIVATION_DENIED: 'ROLE_INVALID', HANDOFF_DENIED: 'ROLE_INVALID',
+    NATIVE_EFFECT_FENCE_UNAVAILABLE: 'ROLE_INVALID', CONFIG_INVALID: 'IDENTITY_MISMATCH', RUNTIME_IDENTITY_MISMATCH: 'IDENTITY_MISMATCH',
+    OWNER_MISMATCH: 'IDENTITY_MISMATCH', COOKIE_INVALID: 'SESSION_MISMATCH', SESSION_CHANGED: 'SESSION_MISMATCH',
+    SESSION_INVALID: 'SESSION_MISMATCH', LOGIN_ALREADY_ATTEMPTED: 'REPLAY', CLEANUP_UNCERTAIN: 'CLEANUP_INCOMPLETE',
+  });
+  // Through the real session: an action error, the worker's terminal error and a startup error.
+  for (const [workerCode, code] of [['OWNER_MISMATCH', 'IDENTITY_MISMATCH'], ['E_PLAYWRIGHT_SELECTOR', 'INTERNAL_FAILURE'],
+    ['constructor', 'INTERNAL_FAILURE'], ['__proto__', 'INTERNAL_FAILURE'], ['route_denied', 'INTERNAL_FAILURE']]) {
+    const h = await startHarness({ fake: workerCode === 'OWNER_MISMATCH' ? { ownerId: 'different-owner' } : { fillError: workerCode } });
+    await assert.rejects(h.session.perform('LOGIN_SESSION', login(), () => {}), { code, workerCode });
+    assert.equal(await settled(() => h.session.failureCode() !== null), true);
+    assert.equal(h.session.failureCode(), code);
+    await assert.rejects(h.session.close(), { code });
+  }
+  await assert.rejects(startHarness({ fake: { gotoError: 'E_NAVIGATION' } }), { code: 'INTERNAL_FAILURE', workerCode: 'E_NAVIGATION' });
+});
+
+test('worker_inner_cleanup_budget_starts_only_at_the_terminal_event', async () => {
+  // P56 / P5 (C1, E7): a routine read of the worker's inner cleanup budget never allocates the shared end.
+  const api=controller(),fake=fakePlaywright(),runId=crypto.randomBytes(16).toString('hex'),key='6'.repeat(64);
+  const binding=compositionBinding(runId),identity={childId:'7'.repeat(32),pipeId:'8'.repeat(32)};
+  const routeFixture=budgetFixture({runId,configIdentity:binding.configIdentity,assetPath:'/static/js/main.js',assetBody:Buffer.from('abc'),extraAssets:[INDEX_ASSET]});
+  const bundle=receipts.createBrowserAssetBundle(routeFixture.release,routeFixture.assets,routeFixture.trust,routeFixture.releaseBytes,routeFixture.assetBytes);
+  const configValue=receipts.inspectBrowserControllerConfig(receipts.createBrowserControllerConfig(routeFixture.release,routeFixture.assets,routeFixture.trust,bundle,
+    {runtime:JSON.parse(JSON.stringify(api.RUNTIME_PINS)),paths:{...PATHS}},binding));
+  const init=inheritedFrame({version:1,kind:'BROWSER_WORKER_INIT',binding,role:'BROWSER',...identity,channelKeyHex:key});
+  const proof={proofDigest:'9'.repeat(64),generation:1,expiresAtMs:190,monotonicDeadlineMs:Number.MAX_SAFE_INTEGER-1},grantId='a'.repeat(32),commitId='b'.repeat(32);
+  const prepare=browserBootstrapFrame(binding,key,1,'PREPARE',{grantId,...proof,browserConfig:configValue},identity);
+  const queued=[init,prepare],waiters=[],outputFrames=[];
+  const deliver=bytes=>{const waiter=waiters.shift();if(waiter)waiter(bytes);else queued.push(bytes);};
+  const reader={read:async()=>queued.length?queued.shift():new Promise(resolve=>waiters.push(resolve)),drain:()=>queued.splice(0),close(){}};
+  const fsBinding={
+    writeSync(fd,bytes,start,length){const value=Buffer.from(bytes.subarray(start,start+length));
+      if(value.toString('ascii')!=='WAITING\n'){const frame=JSON.parse(value.subarray(4).toString('ascii'));outputFrames.push(frame);
+        if(frame.action==='PREPARED')setImmediate(()=>deliver(browserBootstrapFrame(binding,key,2,'COMMIT',{grantId,reservationId:frame.payload.reservationId,commitId,generation:1},identity)));
+        if(frame.action==='REFRESH')setImmediate(()=>deliver(browserBootstrapFrame(binding,key,3,'CURRENT',{requestSequence:frame.sequence,grantId,reservationId:frame.payload.reservationId,commitId,generation:1,...proof,
+          eventCheckpoint:{binding,generation:1,sequence:1,sourceIdentity:'c'.repeat(32),lostCount:0}},identity)));
+      }return length;},
+    closeSync(){},
+    readlinkSync(target){const fd=target.split('/').pop();return fd==='3'?'pipe:[3]':fd==='4'?'pipe:[4]':'/dev/null';},
+    readdirSync(){return ['0','1','2','3','4'];},
+    readFileSync(target){if(target==='/proc/self/status')return 'Uid:\t10002\t10002\t10002\t10002\nNoNewPrivs:\t1\nSeccomp:\t2\nCapEff:\t0000000000000000\n';
+      if(target==='/proc/net/dev')return 'Inter-| Receive | Transmit\n face |bytes\n lo: 0\n';
+      if(target==='/proc/self/mountinfo')return '36 25 0:32 / / rw,nosuid - tmpfs tmpfs rw\n';throw new Error('unexpected read '+target);},
+  };
+  // The worker's inner budget runs on the host monotonic clock, so the injected launch clock uses it too.
+  const monotonic=()=>Number(process.hrtime.bigint()/1000000n);
+  let budget;const seen=[];
+  const workerAPI=worker({chromium:fake.chromium},receipts,async(...args)=>{
+    budget=args[3];seen.push(['bind',budget.deadline]);
+    let routine;try{routine=budget.remaining();}catch(error){routine=error.code;}
+    seen.push(['routine-remaining',routine,budget.deadline]);
+    const real=await roles.bindBrowserWorkerChannel(...args);
+    return Object.freeze({
+      async prepare(record){const value=await real.prepare(record);seen.push(['prepared',budget.deadline]);return value;},
+      inspectPreparedBrowserConfig:value=>real.inspectPreparedBrowserConfig(value),
+      async commitFixedBrowserLaunch(...commit){seen.push(['commit',budget.deadline]);return real.commitFixedBrowserLaunch(...commit);},
+    });
+  },{process});
+  const before=monotonic();
+  assert.equal(await workerAPI.inheritedMain(['--inherited'],{fs:fsBinding,reader,clock:{sample:()=>[160,monotonic()]},platform:'linux',arch:'arm64',uid:10002}),1);
+  const after=monotonic();
+  assert.deepEqual(seen,[['bind',null],['routine-remaining','CLEANUP_NOT_STARTED',null],['prepared',null],['commit',null]]);
+  assert.equal(fake.calls.launch.length,0);
+  assert.equal(outputFrames.some(frame=>frame.action==='FAILED'),true,JSON.stringify(outputFrames));
+  // The native-fence denial is the first terminal event: it started the one 60000 ms end, once.
+  assert.ok(Number.isSafeInteger(budget.deadline));
+  assert.ok(budget.deadline>=before+60000&&budget.deadline<=after+60000,String(budget.deadline));
+  const left=budget.remaining();assert.ok(left>0&&left<=60000,String(left));
+  const end=budget.deadline;budget.startTerminal();assert.equal(budget.deadline,end);
 });

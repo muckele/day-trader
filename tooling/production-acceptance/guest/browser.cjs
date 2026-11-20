@@ -13,6 +13,24 @@ const FIXED_PATHS = Object.freeze({
   cache: '/run/acceptance/browser/cache', shm: '/dev/shm',
 });
 const sessions = new WeakMap(), browserResults = new WeakMap();
+// T13 m-8: worker codes are free strings (up to 128 characters). browser.cjs
+// raises only closed failure-enum codes: each closed code maps to itself, the
+// known worker codes below map to their class, and anything else (including
+// prototype names) is INTERNAL_FAILURE. The worker's own string stays on the
+// error as `workerCode`, never as its code.
+const FAILURE_CODES = Object.freeze([...require('../contracts/schema.json').definitions.Failure.values]);
+const WORKER_CODE_MAP = Object.freeze(Object.assign(Object.create(null), Object.fromEntries(FAILURE_CODES.map(code => [code, code])), {
+  ACTION_DENIED: 'INVALID_FRAME', FRAME_DENIED: 'INVALID_FRAME', CHANNEL_DENIED: 'INVALID_FRAME', CHANNEL_EOF: 'TRANSPORT_LOST',
+  AUTHORITY_LOST: 'ROLE_INVALID', BOOTSTRAP_REQUIRED: 'ROLE_INVALID', ACTIVATION_DENIED: 'ROLE_INVALID', HANDOFF_DENIED: 'ROLE_INVALID',
+  NATIVE_EFFECT_FENCE_UNAVAILABLE: 'ROLE_INVALID', CONFIG_INVALID: 'IDENTITY_MISMATCH', RUNTIME_IDENTITY_MISMATCH: 'IDENTITY_MISMATCH',
+  OWNER_MISMATCH: 'IDENTITY_MISMATCH', COOKIE_INVALID: 'SESSION_MISMATCH', SESSION_CHANGED: 'SESSION_MISMATCH',
+  SESSION_INVALID: 'SESSION_MISMATCH', LOGIN_ALREADY_ATTEMPTED: 'REPLAY', CLEANUP_UNCERTAIN: 'CLEANUP_INCOMPLETE',
+}));
+function closedCode(code) { return typeof code === 'string' && Object.hasOwn(WORKER_CODE_MAP, code) ? WORKER_CODE_MAP[code] : 'INTERNAL_FAILURE'; }
+function workerError(workerCode) {
+  const code = closedCode(workerCode);
+  return Object.assign(new Error(code), { code, workerCode });
+}
 
 function fail(code, cause) { const error = new Error(code, cause ? { cause } : undefined); error.code = code; throw error; }
 function deepFreeze(value) { if (value && typeof value === 'object') { for (const item of Object.values(value)) deepFreeze(item); Object.freeze(value); } return value; }
@@ -32,6 +50,32 @@ async function bounded(promise, milliseconds, code) {
   let timer;
   const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error(code), { code })), milliseconds); timer.unref?.(); });
   try { return await Promise.race([promise, timeout]); } finally { clearTimeout(timer); }
+}
+// T13 m-6: a wait bounded by the run binding's expiry. The injected clock alone
+// decides expiry (wall ms against expiresAt); the timer only schedules the next
+// clock check, so a stalled step still ends once the clock passes expiry. A
+// failing, malformed or regressing sample counts as expired (fail closed).
+function runExpiry(clock, expiresAt) {
+  let timer = null, cleared = false, expired = false, last = null, reject;
+  const promise = new Promise((_, no) => { reject = no; }); promise.catch(() => {});
+  function left() {
+    let sample; try { sample = clock.sample(); } catch { return 0; }
+    if (!Array.isArray(sample) || sample.length !== 2 || !sample.every(value => safe(value, 0)) || last && (sample[0] < last[0] || sample[1] < last[1])) return 0;
+    last = sample; return Math.max(0, expiresAt - sample[0]);
+  }
+  function expire() { expired = true; if (timer !== null) clearTimeout(timer); timer = null; reject(Object.assign(new Error('EXPIRED'), { code: 'EXPIRED' })); }
+  function check() {
+    timer = null; if (cleared || expired) return;
+    const milliseconds = left();
+    if (milliseconds < 1) { expire(); return; }
+    timer = setTimeout(check, Math.min(milliseconds, 2147483647)); timer.unref?.();
+  }
+  check();
+  return Object.freeze({
+    promise, get expired() { return expired; },
+    race: operation => Promise.race([operation, promise]),
+    clear() { cleared = true; if (timer !== null) clearTimeout(timer); timer = null; },
+  });
 }
 function frameError(payload) {
   if (!exactObject(payload) || Object.keys(payload).sort().join(',') !== 'code' || typeof payload.code !== 'string' || payload.code.length < 1 || payload.code.length > 128) fail('FRAME_DENIED');
@@ -138,7 +182,9 @@ function actionPayload(action, payload) {
 async function openBrowser(config, ports) {
   try { config = inspectBrowserControllerConfig(config); } catch (cause) { fail('CONFIG_INVALID', cause); }
   validateConfig(config);
-  if (!ports || !ports.rolePort || !ports.grant || typeof ports.rolePort.activateOnce !== 'function' || !ports.admissionPort) fail('BOOTSTRAP_REQUIRED');
+  if (!ports || !ports.rolePort || !ports.grant || typeof ports.rolePort.activateOnce !== 'function' || !ports.admissionPort ||
+      !ports.clock || typeof ports.clock.sample !== 'function') fail('BOOTSTRAP_REQUIRED');
+  const clock = ports.clock, expiresAt = config.runBinding.expiresAt;
   let role;
   try { role = await ports.rolePort.activateOnce(ports.grant); } catch (cause) { fail(cause && cause.code || 'BOOTSTRAP_REQUIRED', cause); }
   let facts, wire, stopped;
@@ -159,26 +205,47 @@ async function openBrowser(config, ports) {
     throw cause;
   }
   const pending = new Map(), sessionToken = Object.freeze({});
-  let nextId = 0, terminal = false, closeSignal, closeOperation;
+  let nextId = 0, terminal = false, closeSignal, closeOperation, failure = null;
+  // The first terminal failure latches the session: its closed-enum code is kept,
+  // pending actions and an in-flight close reject with it, and the role is stopped.
+  function latch(code, cause) {
+    if (failure === null) failure = closedCode(code);
+    terminal = true;
+    const error = Object.assign(new Error(failure, cause ? { cause } : undefined), { code: failure });
+    for (const slot of pending.values()) slot.reject(error);
+    pending.clear(); if (closeSignal) closeSignal.reject(error);
+    stopRole().catch(() => {});
+    return error;
+  }
+  // T13 I-7: only the expected timer and replay aborts are ordinary ABORT
+  // decisions. Any other admission outcome is answered ABORT and then latches
+  // the session as terminal ROUTE_DENIED; nothing is swallowed.
   async function decideRoute(received) {
-    const frame=received.frame;let evidence;
-    try { evidence = claimBrowserRequestEvidence(role.privatePipe, received.bytes, frame.payload); }
-    catch { await wire.write('DECISION', { requestId: frame.payload?.requestId ?? '', decision: 'ABORT' }); return; }
-    let decision;
-    try { decision = await bounded(admitBrowserRequest(ports.admissionPort, evidence), 10000, 'DEADLINE'); }
-    catch { decision = { requestId: frame.payload.requestId, decision: 'ABORT' }; }
-    const allowed = decision && decision.requestId === frame.payload.requestId && ['CONTINUE', 'ABORT'].includes(decision.decision) ? decision.decision : 'ABORT';
-    await wire.write('DECISION', { requestId: frame.payload.requestId, decision: allowed });
+    const frame = received.frame, requestId = typeof frame.payload?.requestId === 'string' ? frame.payload.requestId : '';
+    let decision, denied = null;
+    try {
+      const evidence = claimBrowserRequestEvidence(role.privatePipe, received.bytes, frame.payload);
+      decision = await bounded(admitBrowserRequest(ports.admissionPort, evidence), 10000, 'DEADLINE');
+      if (!decision || decision.requestId !== requestId || !(decision.decision === 'CONTINUE' ||
+          decision.decision === 'ABORT' && ['ABORT_EXPECTED', 'REPLAY_PRIVATE'].includes(decision.reason))) fail('ROUTE_DENIED');
+    } catch (cause) { denied = cause; }
+    let written = null;
+    try { await wire.write('DECISION', { requestId, decision: denied ? 'ABORT' : decision.decision }); } catch (cause) { written = cause; }
+    if (denied) fail('ROUTE_DENIED', denied);
+    if (written) throw written;
   }
   try {
     let assets=false,ready=false;
-    while(!ready){const received=await wire.read(),frame=received.frame;
-      if(frame.type==='ROUTE'){await decideRoute(received);continue;}
-      if(frame.type==='ERROR')fail(frameError(frame.payload));
-      if(frame.type==='ASSETS'&&!assets){validateAssetProofs(frame.payload,config.assetEntries);assets=true;continue;}
-      if(frame.type==='READY'&&assets){exact(frame.payload,['status']);if(frame.payload.status!=='READY')fail('FRAME_DENIED');ready=true;continue;}
-      fail('FRAME_DENIED');
-    }
+    const startup=runExpiry(clock,expiresAt);
+    try {
+      while(!ready){const received=await startup.race(wire.read()),frame=received.frame;
+        if(frame.type==='ROUTE'){await startup.race(decideRoute(received));continue;}
+        if(frame.type==='ERROR')throw workerError(frameError(frame.payload));
+        if(frame.type==='ASSETS'&&!assets){validateAssetProofs(frame.payload,config.assetEntries);assets=true;continue;}
+        if(frame.type==='READY'&&assets){exact(frame.payload,['status']);if(frame.payload.status!=='READY')fail('FRAME_DENIED');ready=true;continue;}
+        fail('FRAME_DENIED');
+      }
+    } finally { startup.clear(); }
   } catch (cause) {
     try { await stopRole(); } catch {}
     throw cause;
@@ -223,15 +290,13 @@ async function openBrowser(config, ports) {
           const keys = exactObject(frame.payload) ? Object.keys(frame.payload).sort().join(',') : '';
           if (!['code', 'actionId,code'].includes(keys) || typeof frame.payload.code !== 'string' || frame.payload.code.length < 1 || frame.payload.code.length > 128 ||
               keys === 'actionId,code' && !safe(frame.payload.actionId)) fail('FRAME_DENIED');
-          const slot = pending.get(frame.payload.actionId); if (slot) { pending.delete(frame.payload.actionId); slot.reject(Object.assign(new Error(frame.payload.code), { code: frame.payload.code })); }
-          else fail(frame.payload.code || 'BROWSER_FAILED');
+          const slot = pending.get(frame.payload.actionId); if (slot) { pending.delete(frame.payload.actionId); slot.reject(workerError(frame.payload.code)); }
+          else throw workerError(frame.payload.code);
         } else if (frame.type === 'EXIT') { exact(frame.payload, ['status', 'runId']); if (frame.payload.runId !== facts.runId || !['STOPPED', 'EXITED'].includes(frame.payload.status)) fail('FRAME_DENIED'); terminal = true; if (closeSignal) closeSignal.resolve(frame.payload); }
         else fail('FRAME_DENIED');
       }
     } catch (cause) {
-      terminal = true;
-      for (const slot of pending.values()) slot.reject(cause);
-      pending.clear(); if (closeSignal) closeSignal.reject(cause);
+      latch(cause?.code, cause);
       try { await stopRole(); } catch {}
     }
   }
@@ -242,13 +307,21 @@ async function openBrowser(config, ports) {
           binding.runId !== facts.runId || binding.configIdentity !== config.runBinding.configIdentity) fail('IDENTITY_MISMATCH');
       return true;
     },
+    // Any latched failure (route denial, asset failure, expiry, worker error) fails later actions with its code.
+    failureCode() { return failure; },
     async perform(action, payload, onFilled) {
+      if (failure !== null) fail(failure);
       if (terminal || closeOperation || pending.size !== 0 || !ALLOWED_ACTIONS.has(action)) fail('ACTION_DENIED');
       actionPayload(action, payload);
       if (action === 'LOGIN_SESSION' ? arguments.length !== 3 || typeof onFilled !== 'function' : arguments.length !== 2) fail('ACTION_DENIED');
+      // T13 m-6: every action is bounded by the run binding's expiry; expiry is terminal.
+      const expiry = runExpiry(clock, expiresAt);
+      if (expiry.expired) throw latch('EXPIRED');
+      expiry.promise.catch(cause => { latch('EXPIRED', cause); });
       const actionId = ++nextId;
       const result = new Promise((resolve, reject) => pending.set(actionId, { action, filled:false, onFilled, payload, resolve, reject }));
-      try { await wire.write('ACTION', { actionId, action, payload }); } catch (cause) { pending.delete(actionId); throw cause; }
+      result.then(() => expiry.clear(), () => expiry.clear());
+      try { await wire.write('ACTION', { actionId, action, payload }); } catch (cause) { pending.delete(actionId); expiry.clear(); throw cause; }
       return result;
     },
     inspectResult(result) {
@@ -259,6 +332,9 @@ async function openBrowser(config, ports) {
     },
     async close() {
       if (closeOperation) return closeOperation;
+      // A latched session is stopped, not closed over the wire; close then rejects
+      // with the latched code (or CLEANUP_UNCERTAIN if the stop itself fails).
+      if (failure !== null) { closeOperation = (async () => { await stopRole(); fail(failure); })(); return closeOperation; }
       let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); closeSignal = { promise, resolve, reject };
       closeOperation=(async()=>{try { await wire.write('CLOSE', {}); } catch (cause) { reject(cause); }
         try { return Object.freeze(await bounded(promise, role.cleanupRemaining(), 'CLEANUP_UNCERTAIN')); }
@@ -269,4 +345,4 @@ async function openBrowser(config, ports) {
   sessions.set(session, { role, wire }); return session;
 }
 
-module.exports = Object.freeze({ RUNTIME_PINS, openBrowser });
+module.exports = Object.freeze({ RUNTIME_PINS, WORKER_CODE_MAP, openBrowser });

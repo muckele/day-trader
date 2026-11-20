@@ -71,6 +71,15 @@ const VIEW_SPECS=Object.freeze({
     ['/api/paper-trades/orders',[]],['/api/paper-trades/trades',[]],['/api/robotrader/notifications',[]],
   ])}),
 });
+// T13 I-2 (C9): the only request headers withheld from the ROUTE facts. Every
+// other header reaches the controller, where the route policy's allowlist decides.
+const BROWSER_GENERATED_HEADERS=Object.freeze(['user-agent','accept-language','accept-encoding','referer','cookie','sec-ch-ua','sec-ch-ua-mobile','sec-ch-ua-platform','sec-fetch-site','sec-fetch-mode','sec-fetch-dest','sec-fetch-user','upgrade-insecure-requests']);
+// Credential and method-override headers never leave the worker: local abort, no ROUTE frame.
+const LOCAL_ABORT_HEADERS=Object.freeze(['authorization','proxy-authorization','x-http-method-override','x-method-override']);
+// T13 I-3: every SPA document (/, /login and the fixed view paths) carries the
+// index.html bytes, so its response is validated against the /index.html entry.
+const SPA_DOCUMENT_PATHS=Object.freeze(['/','/login',...Object.values(VIEW_SPECS).map(spec=>spec.path)]);
+const INDEX_ENTRY_PATH='/index.html';
 const READINESS_CHECKS=Object.freeze(['ownerConfiguration','authenticationConfiguration','databaseConnected','ownerIdentity','ownerSettings','persistence','paperMode','automationDisabled','schedulerSuppressed','paperDestination','paperBindingConfiguration','paperCredentialConfiguration']);
 function plain(value){return value!==null&&typeof value==='object'&&!Array.isArray(value);}
 function finite(value){return typeof value==='number'&&Number.isFinite(value);}
@@ -275,6 +284,31 @@ async function bounded(promise,milliseconds) {
   let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('CLEANUP_UNCERTAIN'),{code:'CLEANUP_UNCERTAIN'})),milliseconds);timer.unref?.();})]);}
   finally{clearTimeout(timer);}
 }
+// T13 m-6: startup is bounded by the run binding's expiry. The injected clock
+// alone decides expiry (wall ms against expiresAt); the timer only schedules the
+// next clock check, so a stalled step still ends once the clock passes expiry.
+// A failing, malformed or regressing sample counts as expired (fail closed).
+function runExpiry(clock,expiresAt) {
+  let timer=null,cleared=false,expired=false,last=null,reject;
+  const promise=new Promise((_,no)=>{reject=no;});promise.catch(()=>{});
+  function left(){
+    let sample;try{sample=clock.sample();}catch{return 0;}
+    if(!Array.isArray(sample)||sample.length!==2||!sample.every(value=>safe(value,0))||last&&(sample[0]<last[0]||sample[1]<last[1]))return 0;
+    last=sample;return Math.max(0,expiresAt-sample[0]);
+  }
+  function expire(){expired=true;if(timer!==null)clearTimeout(timer);timer=null;reject(Object.assign(new Error('EXPIRED'),{code:'EXPIRED'}));}
+  function check(){
+    timer=null;if(cleared||expired)return;const milliseconds=left();
+    if(milliseconds<1){expire();return;}
+    timer=setTimeout(check,Math.min(milliseconds,2147483647));timer.unref?.();
+  }
+  check();
+  return Object.freeze({
+    race:operation=>Promise.race([operation,promise]),
+    assert(){if(!cleared&&!expired&&left()<1)expire();if(expired)fail('EXPIRED');},
+    clear(){cleared=true;if(timer!==null)clearTimeout(timer);timer=null;},
+  });
+}
 function validateConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config) || Object.keys(config).sort().join(',') !== 'assetBundle,assetEntries,paths,runBinding,runtime' || !equal(config.runtime, RUNTIME_PINS)) fail('CONFIG_INVALID');
   exact(config.paths, ['profile', 'support', 'cache', 'shm']);
@@ -362,18 +396,20 @@ function loginJSON(bytes) {
   } catch { return false; }
 }
 function bodyProof(runId, requestId, sequence, method, url, headers, bytes) {
+  // Header pairs pass through uncollapsed, so a repeated name reaches the policy.
+  const contentTypes = headers.filter(([name]) => name === 'content-type');
   let schema = 'INVALID';
-  if (method === 'POST' && new URL(url).pathname === '/api/login' && headers['content-type'] === 'application/json' && loginJSON(bytes)) schema = 'LOGIN_JSON';
+  if (method === 'POST' && new URL(url).pathname === '/api/login' && contentTypes.length === 1 && contentTypes[0][1] === 'application/json' && loginJSON(bytes)) schema = 'LOGIN_JSON';
   else if (bytes.length === 0) schema = 'ABSENT';
-  return { runId, requestId, sequence, method, url,
-    headers:Object.entries(headers).sort((a,b)=>a[0].localeCompare(b[0])),byteLength: bytes.length, schema };
+  return { runId, requestId, sequence, method, url, headers: headers.map(pair => [...pair]), byteLength: bytes.length, schema };
 }
+// Returns null when the request carries a header that must be aborted locally.
 function factsFor(request, requestId) {
-  const admittedHeaders = new Set(['origin', 'content-type', 'accept', 'access-control-request-method', 'access-control-request-headers']);
-  const headers = Object.entries(request.headers()).map(([name, value]) => [name.toLowerCase(), String(value)])
-    .filter(([name]) => admittedHeaders.has(name)).sort((a, b) => a[0].localeCompare(b[0]));
+  const headers = Object.entries(request.headers()).map(([name, value]) => [String(name).toLowerCase(), String(value)]);
+  if (headers.some(([name]) => LOCAL_ABORT_HEADERS.includes(name) || name.startsWith('x-'))) return null;
   const method = request.method(), url = request.url();
-  return { requestId, method, url, headers };
+  return { requestId, method, url, headers: headers.filter(([name]) => !BROWSER_GENERATED_HEADERS.includes(name))
+    .sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1])) };
 }
 function launchOptions(config) {
   return {
@@ -473,11 +509,17 @@ function inheritedPipe(fs,reader,init,initBytes,clock) {
     async write(bytes){writeExactly(fs,4,bytes);},
     drain(){return reader.drain();},
   };
+  // P56/P5 (C1, E7): the one 60000 ms cleanup end starts only at the worker's
+  // first terminal event (startTerminal, or a terminal clamp). A routine read
+  // never allocates it: remaining() refuses until the terminal start.
   let cleanupEnd=null;
-  const monotonic=()=>Number(process.hrtime.bigint()/1000000n),cleanup={
+  const monotonic=()=>Number(process.hrtime.bigint()/1000000n);
+  function startCleanup(){if(cleanupEnd===null)cleanupEnd=monotonic()+60000;return cleanupEnd;}
+  const cleanup={
     get deadline(){return cleanupEnd;},
-    remaining(){const now=monotonic();if(cleanupEnd===null)cleanupEnd=now+60000;return Math.max(0,cleanupEnd-now);},
-    clamp(end){if(!Number.isSafeInteger(end)||end<0)fail('CLEANUP_UNCERTAIN');const now=monotonic();if(cleanupEnd===null)cleanupEnd=now+60000;cleanupEnd=Math.min(cleanupEnd,end);},
+    startTerminal(){const end=startCleanup();return Math.max(0,end-monotonic());},
+    remaining(){if(cleanupEnd===null)fail('CLEANUP_NOT_STARTED');return Math.max(0,cleanupEnd-monotonic());},
+    clamp(end){if(!Number.isSafeInteger(end)||end<0)fail('CLEANUP_UNCERTAIN');startCleanup();cleanupEnd=Math.min(cleanupEnd,end);},
   };
   const pipe={audit:()=>topology,inspectBrowserFamily:()=>inspectNativeFamily(fs,controlTargets)};
   const launchClock=clock&&typeof clock.sample==='function'?clock:Object.freeze({sample:()=>[Date.now(),Number(process.hrtime.bigint()/1000000n)]});
@@ -503,14 +545,18 @@ function systemBindings() {
 async function main(args=process.argv.slice(2)) {return inheritedMain(args,systemBindings());}
 
 async function runBrowserWorker(pipe, config) {
-  let wire, state;
+  let wire, state, startup;
   try {
     const topology = audit(pipe);
     const launch = pipe.launchContext;
     if (!launch || !launch.channel) fail('BOOTSTRAP_REQUIRED');
-    const binding = await bindBrowserWorkerChannel(launch.channel, launch.expected, launch.clock, launch.cleanupBudget);
-    const prepareRecord=Buffer.isBuffer(launch.prepareRecord)?launch.prepareRecord:await launch.channel.read();
-    const reservation = await binding.prepare(prepareRecord);
+    // T13 m-6: startup, through READY, is bounded by the run binding's expiry.
+    const expiresAt = launch.expected?.binding?.expiresAtMs;
+    if (!safe(expiresAt) || typeof launch.clock?.sample !== 'function') fail('BOOTSTRAP_REQUIRED');
+    startup = runExpiry(launch.clock, expiresAt);
+    const binding = await startup.race(bindBrowserWorkerChannel(launch.channel, launch.expected, launch.clock, launch.cleanupBudget));
+    const prepareRecord=Buffer.isBuffer(launch.prepareRecord)?launch.prepareRecord:await startup.race(launch.channel.read());
+    const reservation = await startup.race(binding.prepare(prepareRecord));
     const transported=typeof binding.inspectPreparedBrowserConfig==='function'?binding.inspectPreparedBrowserConfig(reservation):null;
     if(config===undefined||config===null)config=transported;
     else if(transported!==null&&!equal(config,transported))fail('CONFIG_INVALID');
@@ -523,6 +569,9 @@ async function runBrowserWorker(pipe, config) {
         config.runBinding.manifestIdentity!==launch.expected.binding.manifestDigest||
         config.runBinding.expiresAt!==launch.expected.binding.expiresAtMs))fail('RUNTIME_IDENTITY_MISMATCH');
     let launched, primaryPending=true, primary;
+    // The commit is not raced: abandoning it could orphan a browser launched after
+    // the race. It is bounded by its proof deadlines and the controller's P5
+    // activation bound, and expiry is asserted as soon as it returns.
     const outcome = await binding.commitFixedBrowserLaunch(reservation, async () => {
       let browser, context;
       try {
@@ -535,7 +584,9 @@ async function runBrowserWorker(pipe, config) {
       }
       let closed = false,closing;
       const owner = Object.freeze({ async stopOwned(requested) {
-        const remaining=typeof launch.cleanupBudget?.remaining==='function'?launch.cleanupBudget.remaining():0;
+        // Stopping the browser is terminal: it starts the one cleanup end (C1, P56).
+        const budget=launch.cleanupBudget;
+        const remaining=typeof budget?.startTerminal==='function'?budget.startTerminal():typeof budget?.remaining==='function'?budget.remaining():0;
         const allowance=requested===undefined?remaining:Math.min(remaining,requested);
         if(!closing)closing=Promise.allSettled([Promise.resolve().then(()=>context.close()),Promise.resolve().then(()=>browser.close())]);
         const outcomes=await bounded(closing,allowance);
@@ -545,7 +596,7 @@ async function runBrowserWorker(pipe, config) {
       launched = { browser, context, owner, get closed() { return closed; } };
       return owner;
     });
-    if (!outcome || outcome.status !== 'STARTED' || !launched) fail('LAUNCH_FAILED');state=launched;
+    if (!outcome || outcome.status !== 'STARTED' || !launched) fail('LAUNCH_FAILED');state=launched;startup.assert();
     wire=rpc(outcome.applicationPipe,auditApplication(outcome.applicationPipe,topology.runId));
     inspectFamily(pipe);
     const decisions=new Map();launched.decisions=decisions;let ready=false,commandFailure,loginSpent=false,boundSession=null,activeAction=null;
@@ -602,39 +653,64 @@ async function runBrowserWorker(pipe, config) {
     commandLoop.catch(()=>{});
     try {
       const validatedAssets = new Map(), assetTasks = [];
-      let requestSequence = 0, assetFailure;
+      let requestSequence = 0, assetFailure, documentValidated = false;
       const rejectedPages = new WeakSet();
+      // T13 I-3: asset and document integrity holds for the whole run. Any failure,
+      // before or after READY, ends the worker; its terminal ERROR then latches the
+      // controller's session as OBSERVATION_FAILED.
+      function assetFailed(cause) {
+        const error=cause?.code==='OBSERVATION_FAILED'?cause:Object.assign(new Error('OBSERVATION_FAILED',{cause}),{code:'OBSERVATION_FAILED'});
+        if(!assetFailure)assetFailure=error;rejectActionFailure(error);
+      }
       launched.context.on('page', async page => { if (primaryPending) { primaryPending = false; primary = page; } else { rejectedPages.add(page); await page.close(); } });
-      await launched.context.routeWebSocket('**/*', async socket => socket.close());
-      await launched.context.addInitScript(() => { Object.defineProperty(globalThis, 'WebTransport', { configurable: false, value: undefined }); });
-      await launched.context.route('**/*', async route => {
+      await startup.race(launched.context.routeWebSocket('**/*', async socket => socket.close()));
+      await startup.race(launched.context.addInitScript(() => { Object.defineProperty(globalThis, 'WebTransport', { configurable: false, value: undefined }); }));
+      await startup.race(launched.context.route('**/*', async route => {
         const request = route.request();
         if (typeof request.frame === 'function') { let page; try { page=request.frame().page(); } catch { return route.abort(); }
           if(!page||rejectedPages.has(page)||primary&&page!==primary)return route.abort(); }
         const before=Buffer.from(request.postDataBuffer()||Buffer.alloc(0)),sequence=++requestSequence,requestId='browser-'+sequence;
-        const facts=factsFor(request,requestId),proof=bodyProof(topology.runId,requestId,sequence,facts.method,facts.url,Object.fromEntries(facts.headers),before);
-        if(proof.schema==='INVALID'||decisions.size>=16)return route.abort();
+        let facts,proof;
+        try{facts=factsFor(request,requestId);if(facts)proof=bodyProof(topology.runId,requestId,sequence,facts.method,facts.url,facts.headers,before);}
+        catch{return route.abort();}
+        // T13 I-2: a credential or method-override header is aborted here, before any ROUTE frame.
+        if(!facts||proof.schema==='INVALID'||decisions.size>=16)return route.abort();
         const digest=createHash('sha256').update(before).digest(),decision=new Promise((resolve,reject)=>decisions.set(requestId,{resolve,reject}));
-        await wire.write('ROUTE',proof);const selected=await decision,after=Buffer.from(request.postDataBuffer()||Buffer.alloc(0));
+        decision.catch(()=>{});
+        // An unsendable ROUTE frame (for example one over the frame bound) never leaves the request pending.
+        try{await wire.write('ROUTE',proof);}catch(cause){decisions.delete(requestId);await route.abort();rejectActionFailure(cause);return;}
+        let selected;try{selected=await decision;}catch{selected='ABORT';}
+        const after=Buffer.from(request.postDataBuffer()||Buffer.alloc(0));
         if(selected!=='CONTINUE'||before.length!==after.length||!timingSafeEqual(digest,createHash('sha256').update(after).digest()))await route.abort();else await route.continue();
-      });
+      }));
       launched.context.on('response',response=>{const task=(async()=>{
-        const url=new URL(response.url()),index=config.assetEntries.findIndex(item=>item.path===url.pathname);if(index<0)return;
-        const entry=imported.assets.entries[index];if(url.origin!==config.runBinding.origins.FRONTEND||url.search||url.hash||validatedAssets.has(entry.path))fail('OBSERVATION_FAILED');
+        const url=new URL(response.url()),isDocument=SPA_DOCUMENT_PATHS.includes(url.pathname);
+        const index=config.assetEntries.findIndex(item=>item.path===(isDocument?INDEX_ENTRY_PATH:url.pathname));
+        if(index<0){if(isDocument)fail('OBSERVATION_FAILED');return;}
+        const entry=imported.assets.entries[index];if(url.origin!==config.runBinding.origins.FRONTEND||url.search||url.hash)fail('OBSERVATION_FAILED');
         const declared=response.headers()['content-length'];if(declared!==undefined&&(!/^(?:0|[1-9][0-9]*)$/.test(declared)||Number(declared)!==entry.size))fail('OBSERVATION_FAILED');
-        const body=await response.body(),type=String(response.headers()['content-type']||'').split(';',1)[0];validatedAssets.set(entry.path,validateAssetResponse(entry,body,type));
-      })().catch(cause=>{assetFailure=cause;});assetTasks.push(task);});
-      const page=await launched.context.newPage();primary=primary||page;await page.goto(config.runBinding.origins.FRONTEND,{waitUntil:'domcontentloaded'});
-      if(typeof page.waitForLoadState==='function')await page.waitForLoadState('load');await Promise.all(assetTasks);
+        const body=await response.body(),type=String(response.headers()['content-type']||'').split(';',1)[0];
+        const proof=validateAssetResponse(entry,body,type);
+        // Repeats are validated too; the first proof stands for the entry.
+        if(!validatedAssets.has(entry.path))validatedAssets.set(entry.path,proof);
+        if(isDocument)documentValidated=true;
+      })().catch(assetFailed);if(!ready)assetTasks.push(task);});
+      const page=await startup.race(launched.context.newPage());primary=primary||page;
+      // T13 I-1: the first navigation is the login document, which phase P admits.
+      await startup.race(page.goto(config.runBinding.origins.FRONTEND+'/login',{waitUntil:'domcontentloaded'}));
+      if(typeof page.waitForLoadState==='function')await startup.race(page.waitForLoadState('load'));
+      await startup.race(Promise.all(assetTasks));
       if(commandFailure)throw commandFailure;
-      if(assetFailure||validatedAssets.size!==config.assetEntries.length)fail('OBSERVATION_FAILED',assetFailure);
+      if(assetFailure||!documentValidated||validatedAssets.size!==config.assetEntries.length)fail('OBSERVATION_FAILED',assetFailure);
       launched.page=primary;launched.assetProofs=config.assetEntries.map(entry=>validatedAssets.get(entry.path));
     } catch(cause){try{await launched.owner.stopOwned();}catch{}throw cause;}
-    await wire.write('ASSETS', { proofs: state.assetProofs });
+    await startup.race(wire.write('ASSETS', { proofs: state.assetProofs }));
     ready=true;
-    await wire.write('READY', { status: 'READY' });
+    await startup.race(wire.write('READY', { status: 'READY' }));
+    startup.clear();
     return await commandLoop;
   } catch (cause) {
+    startup?.clear();
     const code = cause && cause.code || 'BROWSER_FAILED';
     try { if (state && state.owner) await state.owner.stopOwned(); } catch {}
     try { if (wire) await wire.write('ERROR', { code }); } catch {}
