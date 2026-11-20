@@ -34,7 +34,7 @@ RUNTIME_IDS = frozenset(['node','python','playwright','chromium'])
 ARCHIVE_IDS = frozenset(['rootfs','node','python','playwright','chromium','contracts','guestProbes'])
 REQUIRED_FILES = {'node':'bin/node','python':'bin/python3','chromium':'chrome'}
 LEGACY_FEATURES = tuple(sorted(['CONFIG_NAMESPACES','CONFIG_PID_NS','CONFIG_SECCOMP','CONFIG_SECCOMP_FILTER','CONFIG_TMPFS','CONFIG_USER_NS','CONFIG_VIRTIO','CONFIG_VIRTIO_BLK','CONFIG_VIRTIO_CONSOLE','CONFIG_VIRTIO_VSOCKETS','CONFIG_VSOCKETS']))
-FEATURES = tuple(sorted((*LEGACY_FEATURES,'CONFIG_AUDIT','CONFIG_AUDITSYSCALL','CONFIG_INOTIFY_USER')))
+FEATURES = tuple(sorted((*LEGACY_FEATURES,'CONFIG_AUDIT','CONFIG_AUDITSYSCALL','CONFIG_INOTIFY_USER','CONFIG_PROC_CHILDREN')))
 EXECUTABLE_MAPPING = (
     ('browserWorker','','/opt/acceptance/guest/browser-worker.cjs'),
     ('chromium','chrome','/opt/acceptance/runtime/chromium/chrome'),

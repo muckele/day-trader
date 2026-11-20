@@ -58,7 +58,7 @@ public struct ApplianceManifest: @unchecked Sendable {
             let policy = value["policy"] as! [String:Any]
             do { _ = try Contracts.canonicalDocument(policy,rule:schema.definitions[schema.policyName]!,definitions:schema.definitions,maxBytes:65536) }
             catch { throw ApplianceFailure.policy }
-            let features = (version.intValue == 2 ? ["CONFIG_AUDIT","CONFIG_AUDITSYSCALL","CONFIG_INOTIFY_USER"]:[]) + ["CONFIG_NAMESPACES","CONFIG_PID_NS","CONFIG_SECCOMP","CONFIG_SECCOMP_FILTER","CONFIG_TMPFS","CONFIG_USER_NS","CONFIG_VIRTIO","CONFIG_VIRTIO_BLK","CONFIG_VIRTIO_CONSOLE","CONFIG_VIRTIO_VSOCKETS","CONFIG_VSOCKETS"]
+            let features = (version.intValue == 2 ? ["CONFIG_AUDIT","CONFIG_AUDITSYSCALL","CONFIG_INOTIFY_USER"]:[]) + ["CONFIG_NAMESPACES","CONFIG_PID_NS"] + (version.intValue == 2 ? ["CONFIG_PROC_CHILDREN"]:[]) + ["CONFIG_SECCOMP","CONFIG_SECCOMP_FILTER","CONFIG_TMPFS","CONFIG_USER_NS","CONFIG_VIRTIO","CONFIG_VIRTIO_BLK","CONFIG_VIRTIO_CONSOLE","CONFIG_VIRTIO_VSOCKETS","CONFIG_VSOCKETS"]
             guard policy["kernelFeatures"] as? [String] == features else { throw ApplianceFailure.kernelFeature }
             let components = value["components"] as! [[String:Any]], ids = components.map { $0["id"] as! String }
             let base:Set<String> = ["rootfs","kernel","initramfs","kernelConfig","node","python","playwright","chromium","hostLauncher","hostBroker","contracts"]

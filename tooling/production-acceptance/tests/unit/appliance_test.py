@@ -26,7 +26,7 @@ FEATURES = ['CONFIG_NAMESPACES', 'CONFIG_PID_NS', 'CONFIG_SECCOMP', 'CONFIG_SECC
 PAYLOAD = ['controller', 'guestBootstrap', 'guestProbes', 'proxy', 'rolePolicy', 'routePolicy', 'seccompPolicy', 'verifier']
 LEGACY_FEATURES = FEATURES[:]
 LEGACY_PAYLOAD = PAYLOAD[:]
-FEATURES = sorted(FEATURES + ['CONFIG_AUDIT', 'CONFIG_AUDITSYSCALL', 'CONFIG_INOTIFY_USER'])
+FEATURES = sorted(FEATURES + ['CONFIG_AUDIT', 'CONFIG_AUDITSYSCALL', 'CONFIG_INOTIFY_USER', 'CONFIG_PROC_CHILDREN'])
 PAYLOAD = sorted(PAYLOAD + ['browserWorker'])
 REFERENCE_DIGEST = 'a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d'
 MEMBER_MAPPING = {
@@ -436,9 +436,17 @@ class ApplianceTests(unittest.TestCase):
         for key,value in [('referenceDigest','f'*64),('version',True),('eventQueueCount',257)]:
             m=copy.deepcopy(self.f.manifest); m['policy']['bootstrapComposition'][key]=value
             self.denied('INVALID_MANIFEST' if type(value) is bool else 'POLICY',lambda:a.decode_inputs(wire(m)))
-        for feature in ['CONFIG_AUDIT','CONFIG_AUDITSYSCALL','CONFIG_INOTIFY_USER']:
+        for feature in ['CONFIG_AUDIT','CONFIG_AUDITSYSCALL','CONFIG_INOTIFY_USER','CONFIG_PROC_CHILDREN']:
             m=copy.deepcopy(self.f.manifest); m['policy']['kernelFeatures'].remove(feature)
             self.denied('KERNEL_FEATURE',lambda:a.decode_inputs(wire(m)))
+
+    def test_v1_proc_children_required_for_composition_only(self):
+        self.assertIn('CONFIG_PROC_CHILDREN',self.f.manifest['policy']['kernelFeatures'])
+        self.assertEqual(self.f.manifest['policy']['kernelFeatures'],sorted(set(self.f.manifest['policy']['kernelFeatures'])))
+        self.assertEqual(a.decode_inputs(wire(self.f.manifest)),self.f.manifest)
+        self.assertEqual(list(a.LEGACY_FEATURES),['CONFIG_NAMESPACES','CONFIG_PID_NS','CONFIG_SECCOMP','CONFIG_SECCOMP_FILTER','CONFIG_TMPFS','CONFIG_USER_NS','CONFIG_VIRTIO','CONFIG_VIRTIO_BLK','CONFIG_VIRTIO_CONSOLE','CONFIG_VIRTIO_VSOCKETS','CONFIG_VSOCKETS'])
+        self.assertNotIn('CONFIG_PROC_CHILDREN',a.LEGACY_FEATURES)
+        self.assertIn('CONFIG_PROC_CHILDREN',a.FEATURES)
 
     def population_contract_fixture(self):
         """Trusted adapter double over inert files; never a native population."""
