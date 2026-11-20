@@ -667,6 +667,51 @@ def audit_aux(serial, kind=1302, size=0):
     return audit_nlmsg(kind, text)
 
 
+# --- Task 18 F4 (P86): standalone records the kernel delivers -----------------
+def audit_kernel_record(serial=1, *, seconds=0, millis=4, enabled=1, tail=''):
+    """AUDIT_KERNEL (2000) exactly as audit_init logs it with boot audit=1:
+    audit_log(NULL, ..., "state=initialized audit_enabled=%u res=1", audit_enabled)
+    (kernel/audit.c:1722-1724) after the header "audit(%llu.%03lu:%u): " (:1924-1925);
+    no context, so a fresh serial (:1836-1842). With no receiver kauditd holds it
+    (:577-606) and flushes the hold queue to the first registered receiver before
+    the main queue (:865-868, :885-893). Unicast framing (P62)."""
+    text = 'audit(%d.%03d:%d): state=initialized audit_enabled=%d res=1%s' % (
+        seconds, millis, serial, enabled, tail)
+    return audit_nlmsg(2000, text.encode('ascii'))
+
+
+def audit_anom_abend(serial, *, pid=501, uid=10002, signal=11):
+    """AUDIT_ANOM_ABEND (1701) per audit_core_dumps (kernel/auditsc.c:2973-2989):
+    audit_log_task (:2944-2964) "auid=%u uid=%u gid=%u ses=%u" " pid=%d comm=" exe=,
+    then " sig=%ld res=1". Logged in signal delivery after the syscall context was
+    reset, so a fresh standalone serial with no EOE."""
+    text = ('audit(1.000:%d): auid=4294967295 uid=%d gid=%d ses=4294967295 pid=%d '
+            'comm="chrome" exe="%s" sig=%d res=1' % (serial, uid, uid, pid, confinement.CHROME, signal))
+    return audit_nlmsg(1701, text.encode('ascii'))
+
+
+def audit_config_change(serial, body):
+    """AUDIT_CONFIG_CHANGE (1305): audit_log_config_change "op=set %s=%u old=%u " then
+    audit_log_session_info "auid=%u ses=%u" and " res=%d" (kernel/audit.c:383-399,
+    :2164-2170), or audit_log_rule_change (kernel/auditfilter.c:1108-1124)."""
+    return audit_nlmsg(1305, ('audit(1.000:%d): %s' % (serial, body)).encode('ascii'))
+
+
+class InstallRecords(EventNative):
+    """Asynchronous records the kernel unicasts to the newly registered receiver
+    during install, interleaved ahead of the first AUDIT_GET reply."""
+    def __init__(self, records=(), **values):
+        super().__init__(**values)
+        self.install_records = list(records)
+
+    def audit_request(self, owner, request, sequence):
+        values = list(super().audit_request(owner, request, sequence))
+        if request == 'HEALTH' and self.install_records:
+            values[0:0] = [self.message('AUDIT', raw) for raw in self.install_records]
+            self.install_records = []
+        return tuple(values)
+
+
 _SELECTOR_KINDS = ('PROXY_STOP_SELECTOR', 'PROXY_CONNECT_SELECTOR')
 
 
@@ -1609,6 +1654,101 @@ class TopologyTests(unittest.TestCase):
             masked(native, mask)
             with self.subTest(at='barrier', mask=mask):
                 self.assert_terminal(owner)
+
+    def test_v1_boot_audit_kernel_record_accepted_once_first_before_install(self):
+        # P86 (a) (Task 18 F4, review a I-2): with boot audit=1 the kernel holds its
+        # AUDIT_KERNEL record and unicasts it to the first registered receiver ahead
+        # of the main queue (audit_kernel_record). It is accepted at most once, only
+        # as the first record after registration and before install completes, in the
+        # exact 6.8 text, and adds no drift. Anything else is terminal.
+        for name, records in (('serial 1', [audit_kernel_record(1)]),
+                              ('epoch 0', [audit_kernel_record(3, seconds=0, millis=0)]),
+                              ('RTC time', [audit_kernel_record(2, seconds=1732000000, millis=999)])):
+            try:
+                owner, native, _ = self.install_events(InstallRecords(records))
+            except topology.TopologyError as error:
+                self.fail('%s: the boot AUDIT_KERNEL record must install, got %s' % (name, error))
+            with self.subTest(case=name):
+                self.assertEqual(native.install_records, [])  # consumed during install
+                checkpoint = self.assert_publishes(owner)
+                self.assertEqual(checkpoint.generation, 1)
+        # Its serial is taken (P63): a fresh serial still publishes; reusing it is terminal.
+        owner, native, _ = self.install_events(InstallRecords([audit_kernel_record(1)]))
+        native.events += audit_group(native, 2, 93, pid=500, ppid=1)
+        self.assertEqual(self.assert_publishes(owner).generation, 1)
+        owner, native, _ = self.install_events(InstallRecords([audit_kernel_record(1)]))
+        native.events += audit_group(native, 1, 93, pid=500, ppid=1)
+        self.assert_terminal(owner)
+
+        def text(value):
+            return audit_nlmsg(2000, value.encode('ascii'))
+
+        def full(kind, payload):  # nlmsg_len counts the header: the reply/multicast form
+            return struct.pack('<IHHII', 16 + len(payload), kind, 0, 0, 0) + payload
+        body = 'state=initialized audit_enabled=1 res=1'
+        install_terminal = {
+            'second 2000': [audit_kernel_record(1), audit_kernel_record(2)],
+            'repeated 2000': [audit_kernel_record(1), audit_kernel_record(1)],
+            'not the first record': [audit_event(3, 93, pid=500), audit_eoe(3), audit_kernel_record(4)],
+            'audit_enabled=0': [audit_kernel_record(1, enabled=0)],
+            'audit_enabled=2': [audit_kernel_record(1, enabled=2)],
+            'extra field': [audit_kernel_record(1, tail=' extra=1')],
+            'trailing space': [audit_kernel_record(1, tail=' ')],
+            'res=0': [text('audit(0.004:1): state=initialized audit_enabled=1 res=0')],
+            'two-digit milliseconds': [text('audit(0.04:1): ' + body)],
+            'leading-zero seconds': [text('audit(01.004:1): ' + body)],
+            'serial 0': [text('audit(0.004:0): ' + body)],
+            'other state': [text('audit(0.004:1): state=reset audit_enabled=1 res=1')],
+            'full nlmsg_len (not the unicast form, P62)': [full(2000, ('audit(0.004:1): ' + body).encode('ascii'))],
+        }
+        for name, records in install_terminal.items():
+            with self.subTest(case=name), self.assertRaisesRegex(topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
+                self.install_events(InstallRecords(records))
+        # After install completes any AUDIT_KERNEL record is terminal.
+        owner, native, _ = self.install_events()
+        native.events.append(native.message('AUDIT', audit_kernel_record(1)))
+        self.assert_terminal(owner)
+        owner, native, _ = self.install_events(InstallRecords([audit_kernel_record(1)]))
+        native.events.append(native.message('AUDIT', audit_kernel_record(2)))
+        self.assert_terminal(owner)
+
+    def test_v1_anom_abend_always_terminal_role_abnormal_end(self):
+        # P86 (c) (Task 18 F4): a core-dump-signal death anywhere logs a standalone
+        # AUDIT_ANOM_ABEND (audit_anom_abend). It is complete on arrival and always
+        # terminal ROLE_ABNORMAL_END: a deliberate classification (C10), so any crash of
+        # any process, a Chromium helper included, ends the run.
+        for name, pid in (('role pid', 501), ('unattributed pid', 9999)):
+            owner, native, _ = self.install_events()
+            native.events.append(native.message('AUDIT', audit_anom_abend(30, pid=pid)))
+            with self.subTest(case=name):
+                self.assert_terminal(owner, 'ROLE_ABNORMAL_END')
+        owner, native, _ = self.install_events()
+        native.events += [native.message('AUDIT', audit_event(40, 93, pid=500)),
+                          native.message('AUDIT', audit_anom_abend(40))]
+        with self.subTest(case='serial of a pending group'):
+            self.assert_terminal(owner, 'ROLE_ABNORMAL_END')
+        for name, records in (('first record during install', [audit_anom_abend(2)]),
+                              ('after the boot record', [audit_kernel_record(1), audit_anom_abend(2)])):
+            with self.subTest(case=name), self.assertRaisesRegex(topology.TopologyError, '^ROLE_ABNORMAL_END$'):
+                self.install_events(InstallRecords(records))
+
+    def test_v1_config_change_after_install_terminal_audit_config_changed(self):
+        # P86 (b), after-install clause (Task 18 F4): once install completes no
+        # configuration change is expected, so any AUDIT_CONFIG_CHANGE is terminal
+        # AUDIT_CONFIG_CHANGED on arrival, standalone or inside a syscall group, and is
+        # never left pending.
+        bodies = ('op=set audit_backlog_limit=8192 old=256 auid=4294967295 ses=4294967295 res=1',
+                  'op=set audit_pid=0 old=4242 auid=4294967295 ses=4294967295 res=1',
+                  'auid=4294967295 ses=4294967295 op=remove_rule key=(null) list=4 res=1')
+        for body in bodies:
+            owner, native, _ = self.install_events()
+            native.events.append(native.message('AUDIT', audit_config_change(50, body)))
+            with self.subTest(body=body):
+                self.assert_terminal(owner, 'AUDIT_CONFIG_CHANGED')
+        owner, native, _ = self.install_events()
+        native.events += [native.message('AUDIT', audit_config_change(51, bodies[0]))] + audit_group(native, 51, 93, pid=500, ppid=1)
+        with self.subTest(case='inside a complete group'):
+            self.assert_terminal(owner, 'AUDIT_CONFIG_CHANGED')
 
     def test_v1_exec_must_name_pinned_chromium_executable(self):
         source, native, root = self.browser_source()

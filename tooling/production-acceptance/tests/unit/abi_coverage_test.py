@@ -30,7 +30,7 @@ ARCHIVE = Path('/Users/Matt/day-trader-references/m4-linux-aarch64-offline-repai
 ARCHIVE_SHA = 'c969dea4e8bb6be991bbf7c010ba0e0a5643a3a8d8fb0a2aaa053406f1e965f3'
 INVENTORY = ROOT / 'appliance/abi-inventory.json'
 COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
-COVERAGE_V2_SHA = 'bcaa80dc8387bcc475269b4bf52e4d5f2e23fd5f56fab80751e544d18a20a646'
+COVERAGE_V2_SHA = '9a26cde78f7ff6e1e96e43c3c5040e8431e697c27e5f4f1a9d9262754c6bf768'
 EVENT_REFERENCE = ROOT / 'appliance/bootstrap-event-reference.json'
 EVENT_REFERENCE_SHA = 'a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d'
 ORACLES_PATH = Path(__file__).resolve().parent / 'abi_oracles.py'
@@ -603,6 +603,12 @@ COMPARE_SITES = {
         ('Eq', ('AUDIT_LIST_RULES',)),
     ]),
     'event_audit_kinds': ('topology.py', 'BootstrapEventOwner._audit_record', ('kind',), [
+        # Task 18 F4 (P86 a, c and the after-install clause of b): ANOM_ABEND is always terminal, the boot
+        # AUDIT_KERNEL record is accepted once before install completes, and any CONFIG_CHANGE after install is
+        # terminal.
+        ('Eq', ('AUDIT_ANOM_ABEND',)),
+        ('Eq', ('AUDIT_KERNEL',)),
+        ('Eq', ('AUDIT_CONFIG_CHANGE',)),
         ('Eq', ('AUDIT_EOE',)),
         ('NotIn', ('AUDIT_SYSCALL', 'AUDIT_PATH', 'AUDIT_CONFIG_CHANGE', 'AUDIT_SOCKADDR', 'AUDIT_CWD',
                    'AUDIT_EXECVE', 'AUDIT_PROCTITLE')),

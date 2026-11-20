@@ -204,4 +204,6 @@ ORACLES = {
     'IN_MASK_CREATE': 268435456,  # linux-6.8/include/uapi/linux/inotify.h:56 #define IN_MASK_CREATE 0x10000000 (= 268435456)
     'IPPROTO_TCP': 6,  # linux-6.8/include/uapi/linux/in.h:38 IPPROTO_TCP = 6,
     'IPPROTO_UDP': 17,  # linux-6.8/include/uapi/linux/in.h:44 IPPROTO_UDP = 17,
+    'AUDIT_KERNEL': 2000,  # linux-6.8/include/uapi/linux/audit.h:162 #define AUDIT_KERNEL 2000 /* Asynchronous audit record. NOT A REQUEST. */
+    'AUDIT_ANOM_ABEND': 1701,  # linux-6.8/include/uapi/linux/audit.h:150 #define AUDIT_ANOM_ABEND 1701 /* Process ended abnormally */
 }

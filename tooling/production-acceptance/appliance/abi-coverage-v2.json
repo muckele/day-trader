@@ -89,6 +89,20 @@
       "conditions": [
         "#ifndef _UAPI_LINUX_AUDIT_H_"
       ],
+      "declaration": "#define AUDIT_ANOM_ABEND            1701 /* Process ended abnormally */",
+      "firstLine": 150,
+      "id": "AUDIT_ANOM_ABEND",
+      "lastLine": 150,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1701,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
       "declaration": "#define AUDIT_ARCH\t11",
       "firstLine": 260,
       "id": "AUDIT_ARCH",
@@ -223,6 +237,20 @@
       "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
       "signed": true,
       "value": 1000,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_KERNEL\t\t2000\t/* Asynchronous audit record. NOT A REQUEST. */",
+      "firstLine": 162,
+      "id": "AUDIT_KERNEL",
+      "lastLine": 162,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 2000,
       "width": 32
     },
     {

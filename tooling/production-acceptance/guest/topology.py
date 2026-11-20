@@ -332,6 +332,14 @@ _NLMSG_HDRLEN = 16
 # the record is queued only at audit_log_end, kernel/audit.c:2442). A new group
 # may start below the highest serial seen, within this window, never twice.
 _AUDIT_SERIAL_WINDOW = 1024
+# P86 (a): the boot AUDIT_KERNEL record exactly as audit_init logs it,
+# audit_log(NULL, ..., "state=initialized audit_enabled=%u res=1") (kernel/
+# audit.c:1722-1724), under the header "audit(%llu.%03lu:%u): " (:1924-1925):
+# seconds with no leading zero, three-digit milliseconds, a fresh nonzero serial
+# (no context, :1836-1842). Boot audit=1 sets audit_enabled to AUDIT_ON (:1734-
+# 1747; include/linux/audit.h:153 AUDIT_ON 1; C10).
+_AUDIT_KERNEL_TEXT = re.compile(r'audit\((?:0|[1-9][0-9]*)\.[0-9]{3}:[1-9][0-9]*\): '
+                                r'state=initialized audit_enabled=1 res=1')
 _AUDIT_FIELD = re.compile(r'(?:^| )([A-Za-z_][A-Za-z0-9_]*)=([^ ]+)')
 _AUDIT_A0 = re.compile(r'0|[1-9a-f][0-9a-f]{0,15}')
 _AUDIT_INODE = re.compile(r'[1-9][0-9]{0,19}')
@@ -513,6 +521,9 @@ class BootstrapEventOwner:
         self._audit_sequence, self._lost, self._last_health = 0, None, None
         self._audit_pids = dict(self._port.audit_role_pids)
         self._highest_audit_serial, self._seen_audit_serials = 0, set()
+        # P86: asynchronous AUDIT records consumed so far, and whether install
+        # completed (the end of the install window).
+        self._audit_records, self._installed = 0, False
         self._uevent_sequence = None
         self._drift = False
         self._last_clock = None
@@ -580,6 +591,7 @@ class BootstrapEventOwner:
             if self._drift:
                 self._terminate('EVENT_DRIFT')
             self._check_pending()
+            self._installed = True  # P86: the install window closes here
         except Exception as error:
             if isinstance(error, TopologyError): failure = error
             else: failure = TopologyError('EVENT_SETUP_DENIED')
@@ -927,6 +939,33 @@ class BootstrapEventOwner:
         match = re.search(r'audit\([^:]+:([1-9][0-9]*)\):', text)
         if match is None: self._terminate('EVENT_SOURCE_TERMINAL')
         serial = int(match.group(1))
+        # P86 (c): a core-dump-signal death anywhere logs a standalone
+        # AUDIT_ANOM_ABEND (audit_core_dumps, kernel/auditsc.c:2973-2989). It is
+        # complete on arrival and deliberately always terminal (C10): any crash of
+        # any process, a Chromium helper included, ends the run.
+        if kind == 1701:
+            self._terminate('ROLE_ABNORMAL_END')
+        first = self._audit_records == 0
+        self._audit_records += 1
+        if kind == 2000:
+            # P86 (a): with boot audit=1 the kernel holds its AUDIT_KERNEL record
+            # (kauditd_hold_skb, kernel/audit.c:577-606) and unicasts the hold
+            # queue to the first registered receiver ahead of the main queue
+            # (:865-868, :885-893). Accepted at most once: only as the first record
+            # after registration, before install completes, in the exact 6.8 text.
+            # Complete on arrival, no drift; its serial is the first one seen (P63).
+            if (self._installed or not first
+                    or _AUDIT_KERNEL_TEXT.fullmatch(text) is None):
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            self._seen_audit_serials.add(serial)
+            self._highest_audit_serial = serial
+            self.sequence += 1
+            return
+        # P86 (b), after-install clause: once install completes no configuration
+        # change is expected; any AUDIT_CONFIG_CHANGE is terminal on arrival,
+        # standalone or inside a syscall group, and never left pending.
+        if kind == 1305 and self._installed:
+            self._terminate('AUDIT_CONFIG_CHANGED')
         if kind == 1320:
             group = self._pending_groups.pop(serial, None)
             if group is None: self._terminate('EVENT_SOURCE_TERMINAL')
