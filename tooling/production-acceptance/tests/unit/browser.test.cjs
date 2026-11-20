@@ -1231,8 +1231,12 @@ test('action_frame_with_a_raw_byte_above_0x7f_is_refused_before_fill', async () 
       assert.equal(await settled(() => typed().length === 1), true, 'the escaped frame is typed');
       assert.equal(typed()[0][2], secret);
     } else {
+      // Bounded: the worker's terminal ERROR (or, if a raw frame were ever read, its FILLED for an action the controller
+      // never sent) latches the controller. Nothing may be typed; only then is the worker result awaited.
+      assert.equal(await settled(() => h.session.failureCode() !== null), true, 'the controller latches');
+      assert.equal(h.fake.calls.selectors.some(row => row[0] === 'placeholder'), false, 'nothing is typed');
+      assert.equal(h.session.failureCode(), 'INVALID_FRAME');
       assert.deepEqual({ ...(await h.workerResult) }, { status: 'FAILED', code: 'FRAME_DENIED' });
-      assert.equal(h.fake.calls.selectors.some(row => row[0] === 'placeholder'), false);
     }
   }
 });
