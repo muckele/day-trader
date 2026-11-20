@@ -9,10 +9,17 @@ const { readinessPredicate } = require('./observation.cjs');
 const RUNTIME_PINS = require('../package.json').acceptanceRuntime;
 
 function fail(code, cause) { const error = new Error(code, cause ? { cause } : undefined); error.code = code; throw error; }
+// Task 18 F1 (RB-I1): the same printable-ASCII encoder as browser.cjs. Every UTF-16 unit above 0x7E is a lowercase
+// \uXXXX escape (a surrogate pair as two escapes), so a UTF-8 credential arrives exactly and the action is typed as the
+// operator entered it; the reader below still refuses any raw byte above 127.
+function jsonText(value) {
+  const text = JSON.stringify(value);
+  return typeof text === 'string' ? text.replace(/[\u007f-￿]/g, unit => '\\u' + unit.charCodeAt(0).toString(16).padStart(4, '0')) : text;
+}
 function canonical(value) {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
-  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}';
-  return JSON.stringify(value);
+  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(key => jsonText(key) + ':' + canonical(value[key])).join(',') + '}';
+  return jsonText(value);
 }
 function equal(left, right) { return canonical(left) === canonical(right); }
 function exact(value, keys) {

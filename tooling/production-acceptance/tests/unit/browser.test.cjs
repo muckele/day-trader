@@ -1210,6 +1210,57 @@ test('malformed_authenticated_channel_input_stops_original_role', async () => {
   assert.equal(decodedFrames(h.links.logs, 'controller').some(frame => frame.type === 'ACTION'), false);
 });
 
+test('action_frame_with_a_raw_byte_above_0x7f_is_refused_before_fill', async () => {
+  // Task 18 F1 (RB-I1): the worker reads only printable-ASCII frames. The same LOGIN_SESSION frame at the worker's next
+  // sequence is accepted and typed exactly when `ä` and `ö` travel as \u escapes, and refused (FRAME_DENIED, nothing
+  // typed) when they travel as raw UTF-8 bytes. Their UTF-8 bytes with the high bit cleared are printable ASCII
+  // (C3 A4 -> 'C' '$', C3 B6 -> 'C' '6'), so only the byte check, never JSON.parse, can refuse the raw form.
+  const secret = 'pässwörd';
+  for (const form of ['escaped', 'raw']) {
+    const h = await startHarness();
+    const sequence = decodedFrames(h.links.logs, 'controller').length + 1;
+    const text = canonical({ version: 1, runId: h.runId, sequence, type: 'ACTION', payload: { actionId: 1, action: 'LOGIN_SESSION',
+      payload: { ownerId: 'owner-id', password: secret, username: 'synthetic-owner' } } });
+    const body = form === 'raw' ? Buffer.from(text, 'utf8') :
+      Buffer.from(text.replace(/[\u007f-\uffff]/g, unit => '\\u' + unit.charCodeAt(0).toString(16).padStart(4, '0')), 'ascii');
+    assert.equal(body.some(value => value > 0x7f), form === 'raw');
+    const prefix = Buffer.alloc(4); prefix.writeUInt32BE(body.length);
+    await h.links.controller.write(Buffer.concat([prefix, body]));
+    const typed = () => h.fake.calls.selectors.filter(row => row[0] === 'placeholder' && row[1] === 'Password');
+    if (form === 'escaped') {
+      assert.equal(await settled(() => typed().length === 1), true, 'the escaped frame is typed');
+      assert.equal(typed()[0][2], secret);
+    } else {
+      assert.deepEqual({ ...(await h.workerResult) }, { status: 'FAILED', code: 'FRAME_DENIED' });
+      assert.equal(h.fake.calls.selectors.some(row => row[0] === 'placeholder'), false);
+    }
+  }
+});
+
+test('worker_route_frame_carries_non_ascii_header_value_exactly_never_a_lookalike', async () => {
+  // Task 18 F1 (RB-I1): the worker's canonical() escapes too. `š` is U+0161, whose low byte is 'a': the old low-byte
+  // encoding turned the header value `špplication/json` into the admitted `application/json` while the browser would
+  // send the real value. The ROUTE frame now carries the exact value as a \u escape (printable ASCII only), and the
+  // request is aborted and latches ROUTE_DENIED (role-ports refuses escaped non-ASCII evidence; the policy admits
+  // only the exact accept values).
+  const h = await startHarness();
+  let disposition;
+  await h.fake.calls.routeHandler({
+    request: () => ({ method: () => 'GET', url: () => BACKEND + '/api/me',
+      headers: () => ({ accept: 'špplication/json', origin: FRONTEND }), postDataBuffer: () => null }),
+    continue: async () => { disposition = 'CONTINUE'; }, abort: async () => { disposition = 'ABORT'; },
+  });
+  const routes = h.links.logs.filter(row => row.from === 'worker').map(row => row.bytes.subarray(4))
+    .filter(body => body.toString('ascii').includes('"type":"ROUTE"'));
+  assert.equal(routes.length, 1);
+  assert.equal(routes[0].every(value => value >= 0x20 && value <= 0x7e), true);
+  assert.equal(routes[0].toString('ascii').includes('["accept","\\u0161pplication/json"]'), true, routes[0].toString('ascii'));
+  assert.deepEqual(JSON.parse(routes[0].toString('ascii')).payload.headers, [['accept', 'špplication/json'], ['origin', FRONTEND]]);
+  assert.equal(disposition, 'ABORT');
+  assert.equal(await settled(() => h.session.failureCode() !== null), true);
+  assert.equal(h.session.failureCode(), 'ROUTE_DENIED');
+});
+
 test('tampered_runtime_pipe_or_body_fails_closed', async () => {
   const api = controller();
   const badRuntimeValue = JSON.parse(JSON.stringify(api.RUNTIME_PINS));

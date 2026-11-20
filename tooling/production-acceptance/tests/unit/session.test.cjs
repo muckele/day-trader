@@ -59,6 +59,39 @@ test('Username_Password_Log_In_actual_UI', async () => {
   await closeHarness(h);
 });
 
+test('non_ascii_credential_arrives_byte_exact_at_fill', async () => {
+  // Task 18 F1 (RB-I1): C8 credentials are UTF-8. The action channel carries only printable ASCII: both canonical()
+  // encoders write every UTF-16 unit above 0x7E as a lowercase \uXXXX escape (a surrogate pair as two escapes), and the
+  // real worker types the exact original string. Before the fix `Łodz` was typed as `Aodz` and `ő` as `Q`.
+  const cases = [
+    ['Łodz', '"password":"\\u0141odz"'],
+    ['ő', '"password":"\\u0151"'],
+    ['日本', '"password":"\\u65e5\\u672c"'],
+    ['😀', '"password":"\\ud83d\\ude00"'],
+    ['Lodz-Łódź-kőr-ŝtar-pässwörd-€-日本-😀-\u007f-end', null],
+  ];
+  for (const [secret, escaped] of cases) {
+    const expected = Buffer.from(secret, 'utf8');
+    const c = credential(secret), h = await startHarness();
+    await api.loginOnce(h.session, c.handle, HARNESS_OWNER);
+    const typed = h.fake.calls.selectors.filter(row => row[0] === 'placeholder' && row[1] === 'Password');
+    assert.equal(typed.length, 1, secret);
+    assert.equal(typed[0][2], secret);
+    assert.equal(Buffer.from(typed[0][2], 'utf8').equals(expected), true, secret);
+    // Every frame body, in both directions, is printable ASCII (0x20..0x7E): no raw byte above 0x7E is ever written.
+    for (const row of h.links.logs) {
+      assert.equal(row.bytes.subarray(4).every(value => value >= 0x20 && value <= 0x7e), true, secret + ' ' + row.from);
+    }
+    const action = h.links.logs.filter(row => row.from === 'controller').map(row => row.bytes.subarray(4).toString('ascii'))
+      .filter(text => text.includes('"type":"ACTION"'));
+    assert.equal(action.length, 1, secret);
+    if (escaped) assert.equal(action[0].includes(escaped), true, secret + ': ' + action[0]);
+    assert.equal(c.consumes(), 1); assert.equal(c.destroys(), 1);
+    assert.equal(c.bytes.every(value => value === 0), true, secret);
+    await closeHarness(h);
+  }
+});
+
 test('wrong_owner_fail_before_deeper_read', async () => {
   // T13 m-5: through the real worker. /api/me names a different owner id, or a different username.
   for (const fake of [{ ownerId: 'different-owner' }, { ownerUsername: 'different-username' }]) {

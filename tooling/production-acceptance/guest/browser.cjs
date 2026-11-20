@@ -47,10 +47,18 @@ function workerError(workerCode) {
 
 function fail(code, cause) { const error = new Error(code, cause ? { cause } : undefined); error.code = code; throw error; }
 function deepFreeze(value) { if (value && typeof value === 'object') { for (const item of Object.values(value)) deepFreeze(item); Object.freeze(value); } return value; }
+// Task 18 F1 (RB-I1): the application channel is printable ASCII. A key or leaf is JSON text with every UTF-16 unit
+// above 0x7E written as a lowercase \uXXXX escape (a surrogate pair as two escapes), so a UTF-8 credential (C8) is
+// carried exactly: JSON.parse restores the original string and the readers' canonical(frame) === text check holds on
+// both ends (browser-worker.cjs uses the same encoder). A raw byte above 127 is still refused by both readers.
+function jsonText(value) {
+  const text = JSON.stringify(value);
+  return typeof text === 'string' ? text.replace(/[\u007f-￿]/g, unit => '\\u' + unit.charCodeAt(0).toString(16).padStart(4, '0')) : text;
+}
 function canonical(value) {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
-  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}';
-  return JSON.stringify(value);
+  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(key => jsonText(key) + ':' + canonical(value[key])).join(',') + '}';
+  return jsonText(value);
 }
 function privateHandle(value) { return Object.freeze(Object.defineProperty(value, 'toJSON', { value: () => fail('PRIVATE_HANDLE') })); }
 function equal(left, right) { return canonical(left) === canonical(right); }
