@@ -591,6 +591,9 @@ COMPARE_SITES = {
         ('Eq', ('__NR_mknodat',)),
         ('Eq', ('__NR_bind',)),
         ('In', ('__NR_bind', '__NR_listen')),
+        # Task 18 F4 (P86(b'), P88): an install group's one SYSCALL is the event owner's sendto(2).
+        ('Eq', ('__NR_sendto',)),
+        ('NotEq', ('__NR_sendto',)),
         ('In', ('__NR_exit', '__NR_exit_group')),            # Task 11: exit records carry no success=/exit=
         ('In', _CLONE),
         ('NotIn', _CLONE),
@@ -617,6 +620,9 @@ COMPARE_SITES = {
         ('Eq', ('AUDIT_PATH',)),
         ('Eq', ('AUDIT_EXECVE',)),
         ('Eq', ('AUDIT_SOCKADDR',)),
+        # Task 18 F4 (P86(b')): install-group CONFIG_CHANGE bodies and the PROCTITLE count.
+        ('Eq', ('AUDIT_CONFIG_CHANGE',)),
+        ('Eq', ('AUDIT_PROCTITLE',)),
     ]),
     'event_route_kinds': ('topology.py', 'BootstrapEventOwner._record', ('kind',), [
         ('NotIn', ('RTM_NEWLINK', 'RTM_DELLINK', 'RTM_NEWADDR', 'RTM_DELADDR', 'RTM_NEWROUTE', 'RTM_DELROUTE')),
@@ -644,7 +650,15 @@ EVENT_MASK_CONSTANTS = {
     '_INOTIFY_MASK': ('IN_MODIFY', 'IN_ATTRIB', 'IN_CLOSE_WRITE', 'IN_MOVED_FROM', 'IN_MOVED_TO', 'IN_CREATE',
                       'IN_DELETE', 'IN_DELETE_SELF', 'IN_MOVE_SELF', 'IN_UNMOUNT', 'IN_Q_OVERFLOW', 'IN_IGNORED',
                       'IN_DONT_FOLLOW', 'IN_MASK_CREATE'),
+    # Task 18 F4 (P85, P86(b')): the install's AUDIT_SET request mask, the real site of the AUDIT_STATUS_* OR (31).
+    '_AUDIT_SET_MASK': ('AUDIT_STATUS_ENABLED', 'AUDIT_STATUS_FAILURE', 'AUDIT_STATUS_PID', 'AUDIT_STATUS_RATE_LIMIT',
+                        'AUDIT_STATUS_BACKLOG_LIMIT'),
 }
+# Task 18 F4 (P86(b')): _AUDIT_SET_CHANGES names one status field per _AUDIT_SET_MASK bit, in bit order; each field's
+# AUDIT_STATUS_* bit is 1 << its position (the bit _install_config_bodies tests), the order audit_receive_msg logs them.
+AUDIT_SET_CHANGE_FIELDS = (('AUDIT_STATUS_ENABLED', 'audit_enabled'), ('AUDIT_STATUS_FAILURE', 'audit_failure'),
+                           ('AUDIT_STATUS_PID', 'audit_pid'), ('AUDIT_STATUS_RATE_LIMIT', 'audit_rate_limit'),
+                           ('AUDIT_STATUS_BACKLOG_LIMIT', 'audit_backlog_limit'))
 # The fixed audit rule (_fixed_audit_rule): struct.pack arguments 1..3, then the one rule field.
 AUDIT_RULE_HEADER = ('AUDIT_FILTER_EXIT', 'AUDIT_ALWAYS')       # flags, action; field_count is the one field below
 AUDIT_RULE_FIELD = ('AUDIT_ARCH', 'AUDIT_ARCH_AARCH64', 'AUDIT_EQUAL')  # fields[0], values[0], operators[0]
@@ -1682,6 +1696,16 @@ class CodeBindingTests(unittest.TestCase):
         text = arch[0].comparators[0].value
         self.assertEqual(int(text, 16), self.covered('AUDIT_ARCH_AARCH64'))
         self.assertEqual(text, format(self.covered('AUDIT_ARCH_AARCH64'), 'x'))
+
+    def test_topology_install_audit_set_fields_follow_the_status_bits(self):
+        """Task 18 F4 (P86(b')): each _AUDIT_SET_CHANGES field, at position i, is the field whose AUDIT_STATUS_* bit
+        is 1 << i, so the install's expected CONFIG_CHANGE bodies follow the mask bit by bit."""
+        changes = ast.literal_eval(self.module_assign('_AUDIT_SET_CHANGES'))
+        self.assertEqual([name for name, _, _ in changes], [field for _, field in AUDIT_SET_CHANGE_FIELDS])
+        for position, (symbol, field) in enumerate(AUDIT_SET_CHANGE_FIELDS):
+            self.assertEqual(self.covered(symbol), 1 << position, (symbol, field))
+        self.assertEqual(self.or_elements(self.module_assign('_AUDIT_SET_MASK')),
+                         [self.covered(symbol) for symbol, _ in AUDIT_SET_CHANGE_FIELDS])
 
     def test_topology_sandbox_admission_constants_match_named_symbols(self):
         """E-1b (P45): _SANDBOX_ADMITTED_SYSCALLS and _SANDBOX_UNSHARE_FLAGS bind to __NR_chroot, __NR_unshare and

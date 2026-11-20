@@ -451,6 +451,10 @@ class EventNative:
         # The installed confinement.CHROME identity as audit PATH prints it
         # (MAJOR, MINOR, inode); test literals, never topology.py values.
         self.browser_executable = CHROME_IDENTITY
+        # P86(b'), P88 (Task 18 F4): the kernel always delivers the install's own
+        # two groups (kernel_install_records) to the new receiver; this double
+        # unicasts them ahead of the first AUDIT_GET reply.
+        self.install_records = kernel_install_records(self.audit_receiver_pid)
 
     def retain_pending(self, kind):
         token = object(); self.visible.append((kind, token)); return token
@@ -491,7 +495,9 @@ class EventNative:
     def audit_request(self, owner, request, sequence):
         if request == 'HEALTH':
             sender, observed, raw = self.audit_health(owner, sequence)
-            return (self.message('AUDIT', raw, sender=sender),)
+            records = [self.message('AUDIT', row) for row in self.install_records]
+            self.install_records = []
+            return (*records, self.message('AUDIT', raw, sender=sender))
         if request == 'LIST_RULES':
             return tuple(self.message('AUDIT', raw, sender=sender)
                          for sender, observed, raw in self.audit_rules(owner, sequence))
@@ -699,17 +705,66 @@ def audit_config_change(serial, body):
 
 class InstallRecords(EventNative):
     """Asynchronous records the kernel unicasts to the newly registered receiver
-    during install, interleaved ahead of the first AUDIT_GET reply."""
-    def __init__(self, records=(), **values):
+    during install, ahead of the first AUDIT_GET reply: RECORDS, then the kernel's
+    two install groups, or GROUPS in their place."""
+    def __init__(self, records=(), *, groups=None, **values):
         super().__init__(**values)
-        self.install_records = list(records)
+        self.install_records = list(records) + list(
+            self.install_records if groups is None else groups)
 
-    def audit_request(self, owner, request, sequence):
-        values = list(super().audit_request(owner, request, sequence))
-        if request == 'HEALTH' and self.install_records:
-            values[0:0] = [self.message('AUDIT', raw) for raw in self.install_records]
-            self.install_records = []
-        return tuple(values)
+
+# --- Task 18 F4 (P86(b'), P87, P88): the install's own two audit groups --------
+INSTALL_SET_SERIAL, INSTALL_RULE_SERIAL = 600, 601
+AUDIT_UNSET_SESSION = 'auid=4294967295 ses=4294967295'
+
+
+def install_set_bodies(pid):
+    """The CONFIG_CHANGE bodies of the owner's one AUDIT_SET (mask 31: enabled 1,
+    failure 0, pid, rate_limit 0, backlog_limit 256), one per mask bit in the order
+    audit_receive_msg tests them (kernel/audit.c:1259, :1264, :1269, :1330, :1335).
+    Each is audit_log_config_change "op=set %s=%u old=%u " then audit_log_session_info
+    "auid=%u ses=%u" then " res=%d" (:383-399, :2164-2170). old is the 6.8 value
+    before the owner's request: audit_enabled 1 (boot audit=1, :1734-1747),
+    audit_failure 1 (:79), no receiver 0, audit_rate_limit 0 (:115),
+    audit_backlog_limit 64 (:119). auid/ses are unset (init/init_task.c:133-134;
+    include/uapi/linux/audit.h:503-504); no LSM adds subj= (:2188-2190). Test
+    literals, never topology.py values."""
+    return tuple('op=set %s=%d old=%d %s res=1' % (name, new, old, AUDIT_UNSET_SESSION)
+                 for name, new, old in (('audit_enabled', 1, 1), ('audit_failure', 0, 1),
+                                        ('audit_pid', pid, 0), ('audit_rate_limit', 0, 0),
+                                        ('audit_backlog_limit', 256, 64)))
+
+
+# The owner's one AUDIT_ADD_RULE: audit_log_rule_change (kernel/auditfilter.c:
+# 1108-1124) with no filterkey (" key=(null)", kernel/audit.c:2172-2179) and list
+# AUDIT_FILTER_EXIT 4 (auditfilter.c:245, :277).
+INSTALL_RULE_BODIES = (AUDIT_UNSET_SESSION + ' op=add_rule key=(null) list=4 res=1',)
+
+
+def install_group(serial, bodies, *, pid=4242, syscall=206, success='yes', exit_code=60,
+                  proctitle=True, extra=()):
+    """One install group as Linux 6.8 delivers it for the owner's pre-rule sendto(2)
+    (P88): the CONFIG_CHANGE records logged in the syscall, then audit_log_exit's
+    SYSCALL, PROCTITLE and EOE with the same serial. Logging the first record
+    stamps the syscall context (one serial, AUDIT_STATE_RECORD, kernel/auditsc.c:
+    2522-2537) and cancels its dummy flag (kernel/audit.c:1920-1923), so the exit
+    path is not skipped (kernel/auditsc.c:2064-2079, :1678-1818). EXTRA rows go
+    between the SYSCALL and the PROCTITLE."""
+    rows = [audit_config_change(serial, body) for body in bodies]
+    rows.append(audit_nlmsg(1300, audit_text(serial, syscall, pid=pid, ppid=1, success=success,
+                                             exit_code=exit_code, argument0='a').encode('ascii')))
+    rows += list(extra)
+    if proctitle:
+        rows.append(audit_nlmsg(1327, ('audit(1.000:%d): proctitle=626F6F747374726170' % serial).encode('ascii')))
+    rows.append(audit_eoe(serial))
+    return rows
+
+
+def kernel_install_records(pid=4242):
+    """Both install groups in kernel order: the AUDIT_SET request is 16 + 44 bytes,
+    the AUDIT_ADD_RULE request 16 + 1040 (sendto returns the bytes sent)."""
+    return (install_group(INSTALL_SET_SERIAL, install_set_bodies(pid), pid=pid, exit_code=60)
+            + install_group(INSTALL_RULE_SERIAL, INSTALL_RULE_BODIES, pid=pid, exit_code=1056))
 
 
 _SELECTOR_KINDS = ('PROXY_STOP_SELECTOR', 'PROXY_CONNECT_SELECTOR')
@@ -1749,6 +1804,151 @@ class TopologyTests(unittest.TestCase):
         native.events += [native.message('AUDIT', audit_config_change(51, bodies[0]))] + audit_group(native, 51, 93, pid=500, ppid=1)
         with self.subTest(case='inside a complete group'):
             self.assert_terminal(owner, 'AUDIT_CONFIG_CHANGED')
+
+    def test_v1_install_audit_set_bodies_derive_from_the_health_check_values(self):
+        # P86(b'), P85 (Task 18 F4): the install's one AUDIT_SET carries the five
+        # status fields the health check requires (enabled 1, failure 0, the receiver
+        # pid, rate_limit 0, backlog_limit 256), and topology.py derives exactly the
+        # kernel-format bodies written independently above (install_set_bodies,
+        # INSTALL_RULE_BODIES).
+        changes = topology._AUDIT_SET_CHANGES
+        self.assertEqual([name for name, _, _ in changes], ['audit_enabled', 'audit_failure', 'audit_pid',
+                                                            'audit_rate_limit', 'audit_backlog_limit'])
+        status = struct.unpack('<11I', EventNative().audit_health(None, 1)[2][16:])
+        self.assertEqual(tuple(4242 if new is None else new for _, new, _ in changes), status[1:6])
+        for pid in (4242, 1, 4194304):
+            with self.subTest(pid=pid):
+                self.assertEqual(topology._install_config_bodies(pid),
+                                 {0: install_set_bodies(pid), 1: INSTALL_RULE_BODIES})
+
+    def test_v1_install_groups_are_exactly_the_owners_own_set_and_rule(self):
+        # P86(b'), P88 (Task 18 F4): during install exactly the owner's two groups
+        # are accepted, each complete by EOE: its CONFIG_CHANGE bodies in order and
+        # count, one SYSCALL naming sendto with pid = the receiver and success=yes,
+        # one PROCTITLE, nothing else. P63: either group may come first.
+        pid, bodies = 4242, install_set_bodies(4242)
+        set_rows = install_group(INSTALL_SET_SERIAL, bodies, exit_code=60)
+        rule_rows = install_group(INSTALL_RULE_SERIAL, INSTALL_RULE_BODIES, exit_code=1056)
+        accepted = {
+            'in kernel order': set_rows + rule_rows,
+            'ADD_RULE group first': rule_rows + set_rows,
+            'records interleaved across serials': (set_rows[:5] + rule_rows[:1] + set_rows[5:6] + rule_rows[1:2]
+                                                   + set_rows[6:] + rule_rows[2:]),
+            'ADD_RULE on the lower serial': (install_group(INSTALL_RULE_SERIAL, bodies, exit_code=60)
+                                             + install_group(INSTALL_SET_SERIAL, INSTALL_RULE_BODIES, exit_code=1056)),
+        }
+        for name, groups in accepted.items():
+            try:
+                owner, native, _ = self.install_events(InstallRecords(groups=groups))
+            except topology.TopologyError as error:
+                self.fail('%s: the install groups must install, got %s' % (name, error))
+            with self.subTest(case=name):
+                self.assertEqual(native.install_records, [])
+                self.assertEqual(self.assert_publishes(owner).generation, 1)
+
+        syscall_first = install_group(INSTALL_SET_SERIAL, bodies)
+        terminal = {
+            'wrong first SET body': install_group(INSTALL_SET_SERIAL, (bodies[0].replace('old=1', 'old=0'),) + bodies[1:]) + rule_rows,
+            'wrong later SET body': install_group(INSTALL_SET_SERIAL, bodies[:1] + (bodies[1].replace('old=1', 'old=0'),) + bodies[2:]) + rule_rows,
+            'wrong pid in the audit_pid body': install_group(INSTALL_SET_SERIAL, install_set_bodies(4243)) + rule_rows,
+            'wrong ADD_RULE body': set_rows + install_group(INSTALL_RULE_SERIAL, (INSTALL_RULE_BODIES[0].replace('list=4', 'list=5'),), exit_code=1056),
+            'SET bodies out of order': install_group(INSTALL_SET_SERIAL, (bodies[1], bodies[0]) + bodies[2:]) + rule_rows,
+            'extra 1305 in the SET group': install_group(INSTALL_SET_SERIAL, bodies + bodies[4:]) + rule_rows,
+            'extra 1305 in the ADD_RULE group': set_rows + install_group(INSTALL_RULE_SERIAL, INSTALL_RULE_BODIES * 2, exit_code=1056),
+            'missing 1305': install_group(INSTALL_SET_SERIAL, bodies[:4]) + rule_rows,
+            'foreign SYSCALL pid': install_group(INSTALL_SET_SERIAL, bodies, pid=4243) + rule_rows,
+            'SYSCALL pid of a role': install_group(INSTALL_SET_SERIAL, bodies, pid=501) + rule_rows,
+            'sendmsg, not sendto': install_group(INSTALL_SET_SERIAL, bodies, syscall=211) + rule_rows,
+            'write, not sendto': set_rows + install_group(INSTALL_RULE_SERIAL, INSTALL_RULE_BODIES, syscall=64, exit_code=1056),
+            'failed send': install_group(INSTALL_SET_SERIAL, bodies, success='no', exit_code=-13) + rule_rows,
+            'missing PROCTITLE': install_group(INSTALL_SET_SERIAL, bodies, proctitle=False) + rule_rows,
+            'extra CWD record': install_group(INSTALL_SET_SERIAL, bodies, extra=[audit_nlmsg(1307, b'audit(1.000:600): cwd="/"')]) + rule_rows,
+            'a second SYSCALL record': install_group(INSTALL_SET_SERIAL, bodies, extra=[syscall_first[5]]) + rule_rows,
+            'SYSCALL before its CONFIG_CHANGE': [syscall_first[5]] + syscall_first[:5] + syscall_first[6:] + rule_rows,
+            'a second SET group': set_rows + rule_rows + install_group(602, bodies),
+            'standalone 1305 with another body': [audit_config_change(610, AUDIT_UNSET_SESSION + ' op=remove_rule key=(null) list=4 res=1')] + set_rows + rule_rows,
+            'CONFIG_CHANGE inside a role syscall group': ([audit_event(7, 40, pid=500, success='no', exit_code=-1),
+                                                           audit_config_change(7, bodies[0]), audit_eoe(7)] + set_rows + rule_rows),
+        }
+        for name, groups in terminal.items():
+            with self.subTest(case=name), self.assertRaisesRegex(topology.TopologyError, '^AUDIT_CONFIG_CHANGED$'):
+                self.install_events(InstallRecords(groups=groups))
+
+    def keep_drain_open(self, owner, native, until):
+        """Barriers every 100 ms (inside the health interval) while the install
+        drain is open: each is EVENT_PENDING, never a checkpoint, never terminal."""
+        while native.mono + 100 <= until:
+            with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
+                owner.barrier()
+            native.mono += 100
+
+    def test_v1_install_drain_waits_for_both_groups_within_the_bound(self):
+        # P87 (Task 18 F4): install completes only after both groups (and at most one
+        # boot record) were consumed. A group may complete after install returns,
+        # inside the drain; a group still missing or open at the 1000 ms bound is
+        # terminal EVENT_INSTALL_INCOMPLETE.
+        set_rows = install_group(INSTALL_SET_SERIAL, install_set_bodies(4242), exit_code=60)
+        rule_rows = install_group(INSTALL_RULE_SERIAL, INSTALL_RULE_BODIES, exit_code=1056)
+        for name, during, after in (('ADD_RULE group after install', set_rows, rule_rows),
+                                    ('both groups after install', [], set_rows + rule_rows),
+                                    ('ADD_RULE EOE after install', set_rows + rule_rows[:-1], rule_rows[-1:])):
+            try:
+                owner, native, _ = self.install_events(InstallRecords(groups=during))
+            except topology.TopologyError as error:
+                self.fail('%s: install must return into the drain, got %s' % (name, error))
+            with self.subTest(case=name):
+                self.keep_drain_open(owner, native, 910)
+                native.events += [native.message('AUDIT', row) for row in after]
+                self.assertEqual(self.assert_publishes(owner).generation, 1)
+                # Install completed: a later CONFIG_CHANGE is terminal (P86 b).
+                native.events += [native.message('AUDIT', audit_config_change(620, install_set_bodies(4242)[0]))]
+                self.assert_terminal(owner, 'AUDIT_CONFIG_CHANGED')
+        for name, during in (('ADD_RULE group missing', set_rows),
+                             ('ADD_RULE group without EOE', set_rows + rule_rows[:-1]),
+                             ('both groups missing', [])):
+            owner, native, _ = self.install_events(InstallRecords(groups=during))
+            with self.subTest(case=name):
+                self.keep_drain_open(owner, native, 1010)
+                with self.assertRaisesRegex(topology.TopologyError, '^EVENT_PENDING$'):
+                    owner.barrier()  # 1000 ms after install began: still inside the bound
+                native.mono += 1
+                self.assert_terminal(owner, 'EVENT_INSTALL_INCOMPLETE')
+        # An install group whose EOE arrives after the bound is terminal too.
+        owner, native, _ = self.install_events(InstallRecords(groups=set_rows + rule_rows[:-1]))
+        self.keep_drain_open(owner, native, 1010)
+        native.mono += 1
+        native.events.append(native.message('AUDIT', rule_rows[-1]))
+        self.assert_terminal(owner, 'EVENT_INSTALL_INCOMPLETE')
+
+    def test_v1_boot_record_only_before_the_install_groups(self):
+        # P86 (a) with P87 (Task 18 F4): kauditd unicasts the hold queue (the boot
+        # AUDIT_KERNEL record) ahead of the main queue (kernel/audit.c:865-868,
+        # :885-893), so the boot record is only ever the first record: accepted before
+        # the groups (during install or in the drain), terminal between or after them.
+        boot = audit_kernel_record(1)
+        set_rows = install_group(INSTALL_SET_SERIAL, install_set_bodies(4242), exit_code=60)
+        rule_rows = install_group(INSTALL_RULE_SERIAL, INSTALL_RULE_BODIES, exit_code=1056)
+        try:
+            owner, native, _ = self.install_events(InstallRecords(groups=[boot] + set_rows + rule_rows))
+        except topology.TopologyError as error:
+            self.fail('the boot record before both groups must install, got %s' % error)
+        self.assertEqual(self.assert_publishes(owner).generation, 1)
+        owner, native, _ = self.install_events(InstallRecords(groups=[]))
+        native.events += [native.message('AUDIT', row) for row in [boot] + set_rows + rule_rows]
+        with self.subTest(case='before the groups, in the drain'):
+            self.assertEqual(self.assert_publishes(owner).generation, 1)
+        for name, groups in (('between the groups', set_rows + [boot] + rule_rows),
+                             ('after the groups, during install', set_rows + rule_rows + [boot])):
+            with self.subTest(case=name), self.assertRaisesRegex(topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
+                self.install_events(InstallRecords(groups=groups))
+        owner, native, _ = self.install_events(InstallRecords(groups=set_rows))
+        native.events += [native.message('AUDIT', row) for row in [boot] + rule_rows]
+        with self.subTest(case='between the groups, in the drain'):
+            self.assert_terminal(owner)
+        owner, native, _ = self.install_events()
+        native.events.append(native.message('AUDIT', boot))
+        with self.subTest(case='after install completed'):
+            self.assert_terminal(owner)
 
     def test_v1_exec_must_name_pinned_chromium_executable(self):
         source, native, root = self.browser_source()

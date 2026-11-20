@@ -340,6 +340,29 @@ _AUDIT_SERIAL_WINDOW = 1024
 # 1747; include/linux/audit.h:153 AUDIT_ON 1; C10).
 _AUDIT_KERNEL_TEXT = re.compile(r'audit\((?:0|[1-9][0-9]*)\.[0-9]{3}:[1-9][0-9]*\): '
                                 r'state=initialized audit_enabled=1 res=1')
+# P86(b'), P85: the install's own audit operations. One AUDIT_SET whose request
+# mask is the OR of AUDIT_STATUS_ENABLED, _FAILURE, _PID, _RATE_LIMIT and
+# _BACKLOG_LIMIT, then one AUDIT_ADD_RULE of _FIXED_AUDIT_RULE, each sent as one
+# sendto(2) to sockaddr_nl{AF_NETLINK, nl_pid 0} (P88, a C10 contract for the
+# native binding).
+_AUDIT_SET_MASK = 1 | 2 | 4 | 8 | 16
+# One (status field, new value, value before the request) per _AUDIT_SET_MASK bit,
+# in bit order, the order audit_receive_msg tests them (kernel/audit.c:1259,
+# :1264, :1269, :1330, :1335). The new values are the ones the health check
+# requires; None is the owner's own pid. The previous values are Linux 6.8's:
+# audit_enabled 1 with boot audit=1 (:1734-1747), audit_failure AUDIT_FAIL_PRINTK
+# 1 (:79), no receiver 0, audit_rate_limit 0 (:115), audit_backlog_limit 64
+# (:119; C10: no audit_backlog_limit= boot parameter).
+_AUDIT_SET_CHANGES = (('audit_enabled', 1, 1), ('audit_failure', 0, 1),
+                      ('audit_pid', None, 0), ('audit_rate_limit', 0, 0),
+                      ('audit_backlog_limit', 256, 64))
+# audit_log_session_info "auid=%u ses=%u" (kernel/audit.c:2164-2170) of a task
+# that inherits init_task's unset loginuid and sessionid (init/init_task.c:
+# 133-134; AUDIT_UID_UNSET and AUDIT_SID_UNSET are (unsigned int)-1, include/uapi/
+# linux/audit.h:503-504). C10: nothing writes the bootstrap's loginuid, and no LSM
+# adds " subj=" (kernel/audit.c:2188-2190).
+_AUDIT_UNSET_SESSION = 'auid=4294967295 ses=4294967295'
+_EVENT_OWNER = 'EVENT_OWNER'
 _AUDIT_FIELD = re.compile(r'(?:^| )([A-Za-z_][A-Za-z0-9_]*)=([^ ]+)')
 _AUDIT_A0 = re.compile(r'0|[1-9a-f][0-9a-f]{0,15}')
 _AUDIT_INODE = re.compile(r'[1-9][0-9]{0,19}')
@@ -359,6 +382,24 @@ def _fixed_audit_rule():
 
 
 _FIXED_AUDIT_RULE = _fixed_audit_rule()
+
+
+def _install_config_bodies(pid):
+    """P86(b'): the exact AUDIT_CONFIG_CHANGE bodies (after the "audit(...): "
+    header) of the install's two groups, keyed 0 (AUDIT_SET) and 1 (AUDIT_ADD_RULE).
+    audit_log_config_change prints "op=set %s=%u old=%u ", the session and
+    " res=%d" (kernel/audit.c:383-399): one record per mask bit. The rule change is
+    audit_log_rule_change (kernel/auditfilter.c:1108-1124): the session, " op=",
+    " key=(null)" with no filterkey (kernel/audit.c:2172-2179) and " list=%d res=%d"
+    with listnr = flags & ~AUDIT_FILTER_PREPEND (auditfilter.c:245, :277), here the
+    fixed rule's own flags word."""
+    changes = [change for bit, change in enumerate(_AUDIT_SET_CHANGES)
+               if _AUDIT_SET_MASK >> bit & 1]
+    listnr = struct.unpack_from('<I', _FIXED_AUDIT_RULE)[0]
+    return {0: tuple('op=set %s=%d old=%d %s res=1' % (
+                name, pid if new is None else new, old, _AUDIT_UNSET_SESSION)
+                for name, new, old in changes),
+            1: ('%s op=add_rule key=(null) list=%d res=1' % (_AUDIT_UNSET_SESSION, listnr),)}
 _OFFLINE_EVENT_NATIVE_SEAL = object()
 _EVENT_CHECKPOINT_SEAL = object()
 
@@ -524,6 +565,11 @@ class BootstrapEventOwner:
         # P86: asynchronous AUDIT records consumed so far, and whether install
         # completed (the end of the install window).
         self._audit_records, self._installed = 0, False
+        # P86(b'), P87: the install's two expected groups still to consume (0
+        # AUDIT_SET, 1 AUDIT_ADD_RULE), the pending group claiming each, the
+        # install's start on the event clock and whether its steps returned.
+        self._install_expected = _install_config_bodies(self._port.audit_receiver_pid)
+        self._install_claims, self._install_started, self._install_done = {}, None, False
         self._uevent_sequence = None
         self._drift = False
         self._last_clock = None
@@ -554,6 +600,10 @@ class BootstrapEventOwner:
     def _install(self):
         try:
             self._check_binding()
+            started = self._port.current_monotonic_ms()
+            if type(started) is not int or started < 0:
+                self._terminate('EVENT_SOURCE_TERMINAL')
+            self._install_started = started  # P87: the drain bound counts from here
             self._sources['AUDIT'] = self._acquire('AUDIT', self._port.open_audit)
             self._port.install_audit_rule(self._sources['AUDIT'], _FIXED_AUDIT_RULE)
             self._sources['ROUTE'] = self._acquire(
@@ -590,8 +640,12 @@ class BootstrapEventOwner:
             self._verify_health_and_rules()
             if self._drift:
                 self._terminate('EVENT_DRIFT')
-            self._check_pending()
-            self._installed = True  # P86: the install window closes here
+            # P87: the install steps returned. Install completes (the P86 window
+            # closes) once both expected groups are consumed, here or later in
+            # the drain, bounded by the 1000 ms pending bound.
+            self._install_done = True
+            self._complete_install()
+            self._check_pending(installing=True)
         except Exception as error:
             if isinstance(error, TopologyError): failure = error
             else: failure = TopologyError('EVENT_SETUP_DENIED')
@@ -972,7 +1026,12 @@ class BootstrapEventOwner:
             self._pending_count -= group['count']
             self._pending_bytes -= group['bytes']
             if observed - group['first'] > 1000:
-                self._terminate('EVENT_SOURCE_TERMINAL')
+                self._terminate('EVENT_INSTALL_INCOMPLETE' if 'install' in group
+                                else 'EVENT_SOURCE_TERMINAL')
+            if 'install' in group:
+                self._close_install_group(group, observed)
+                self.sequence += 1
+                return
             if (len(group['syscalls']) != 1
                     or (group['syscalls'][0]['number'] == 200
                         and group['syscalls'][0]['success']
@@ -1024,13 +1083,16 @@ class BootstrapEventOwner:
                         if ended >= floor}
         group = self._pending_groups.setdefault(serial, {
             'first': observed, 'events': set(), 'count': 0, 'bytes': 0,
-            'syscalls': [], 'sockaddrs': [], 'paths': [], 'execves': []})
+            'syscalls': [], 'sockaddrs': [], 'paths': [], 'execves': [],
+            'configs': [], 'proctitles': 0})
         group['count'] += 1; group['bytes'] += len(raw)
         self._pending_count += 1; self._pending_bytes += len(raw)
         if (len(self._pending_groups) > 64 or self._pending_count > 256
-                or self._pending_bytes > 1048576
-                or observed - group['first'] > 1000):
+                or self._pending_bytes > 1048576):
             self._terminate('EVENT_SOURCE_TERMINAL')
+        if observed - group['first'] > 1000:
+            self._terminate('EVENT_INSTALL_INCOMPLETE' if 'install' in group
+                            else 'EVENT_SOURCE_TERMINAL')
         pairs = _AUDIT_FIELD.findall(text)
         fields = dict(pairs)
         if kind in (1300, 1302, 1309) and len(fields) != len(pairs):
@@ -1046,7 +1108,26 @@ class BootstrapEventOwner:
                 pid, ppid = int(fields['pid']), int(fields['ppid'])
             except (KeyError, ValueError):
                 self._terminate('EVENT_SOURCE_TERMINAL')
-            if number in (93, 94):
+            # P86(b'), P88: an install group's one SYSCALL record is the event
+            # owner's own sendto(2) of its AUDIT_SET or AUDIT_ADD_RULE request.
+            # Logging the group's first CONFIG_CHANGE stamped the dummy syscall
+            # context (kernel/auditsc.c:2522-2537) and cancelled its dummy flag
+            # (kernel/audit.c:1920-1923), so audit_log_exit writes it (kernel/
+            # auditsc.c:2064-2079, :1678-1818): pid= is the registered receiver
+            # (kernel/audit.c:2255-2262) and sendto returns the bytes sent. During
+            # install a sendto record outside a claimed install group, or anything
+            # else in one, is terminal AUDIT_CONFIG_CHANGED.
+            owner_send = 'install' in group or (number == 206 and not self._installed)
+            if owner_send:
+                try: exit_code = int(fields['exit'])
+                except (KeyError, ValueError):
+                    self._terminate('AUDIT_CONFIG_CHANGED')
+                if ('install' not in group or number != 206 or group['syscalls']
+                        or pid != self._port.audit_receiver_pid
+                        or fields.get('success') != 'yes' or exit_code <= 0):
+                    self._terminate('AUDIT_CONFIG_CHANGED')
+                success = True
+            elif number in (93, 94):
                 if 'success' in fields or 'exit' in fields:
                     self._terminate('EVENT_SOURCE_TERMINAL')
                 success, exit_code = True, None
@@ -1062,14 +1143,15 @@ class BootstrapEventOwner:
                     self._terminate('EVENT_SOURCE_TERMINAL')
                 success = fields['success'] == 'yes'
             if (fields.get('arch') != 'c00000b7'
-                    or number not in (33, 39, 40, 41, 51, 93, 94, 97, 200,
-                                      201, 220, 221, 268, 281, 435)
+                    or (not owner_send
+                        and number not in (33, 39, 40, 41, 51, 93, 94, 97, 200,
+                                           201, 220, 221, 268, 281, 435))
                     or pid < 1 or ppid < 0):
                 self._terminate('EVENT_SOURCE_TERMINAL')
             group['syscalls'].append(dict(number=number,
                 success=success, exit=exit_code,
-                role=self._attribute(pid, ppid), pid=pid, ppid=ppid,
-                argument0=int(fields['a0'], 16), serial=serial))
+                role=_EVENT_OWNER if owner_send else self._attribute(pid, ppid),
+                pid=pid, ppid=ppid, argument0=int(fields['a0'], 16), serial=serial))
         elif kind == 1302:
             group['paths'].append(fields)
         elif kind == 1309:
@@ -1083,6 +1165,47 @@ class BootstrapEventOwner:
             if family not in (1, 2, 10):
                 self._terminate('EVENT_SOURCE_TERMINAL')
             group['sockaddrs'].append(family)
+        elif kind == 1305:
+            # Only reached during install (after install it ended the run above).
+            body = (text[match.end() + 1:] if match.start() == 0
+                    and text[match.end():match.end() + 1] == ' ' else '')
+            self._install_config(group, body)
+        elif kind == 1327:
+            group['proctitles'] += 1
+
+    def _install_config(self, group, body):
+        """P86(b'): during install a CONFIG_CHANGE is only the next expected body
+        of one of the install's own two groups, before that group's SYSCALL record.
+        The first body claims the group's expectation (P63: either group may come
+        first); anything else is terminal AUDIT_CONFIG_CHANGED."""
+        if 'install' not in group:
+            matches = [index for index, bodies in self._install_expected.items()
+                       if index not in self._install_claims and bodies[0] == body]
+            if len(matches) != 1:
+                self._terminate('AUDIT_CONFIG_CHANGED')
+            group['install'] = matches[0]
+            self._install_claims[matches[0]] = group
+        expected = self._install_expected[group['install']]
+        index = len(group['configs'])
+        if group['syscalls'] or (index < len(expected) and expected[index] != body):
+            self._terminate('AUDIT_CONFIG_CHANGED')
+        group['configs'].append(body)
+
+    def _close_install_group(self, group, observed):
+        """P86(b'), P87: an install group closed by EOE inside the drain holds
+        exactly its expected CONFIG_CHANGE bodies (compared on arrival, counted
+        here), the owner's one sendto SYSCALL record and one PROCTITLE, and nothing
+        else. Consuming the second group completes install."""
+        if observed - self._install_started > 1000:
+            self._terminate('EVENT_INSTALL_INCOMPLETE')
+        index, syscalls = group['install'], group['syscalls']
+        if (len(group['configs']) != len(self._install_expected[index])
+                or len(syscalls) != 1 or syscalls[0]['role'] != _EVENT_OWNER
+                or group['proctitles'] != 1
+                or group['count'] != len(group['configs']) + 2):
+            self._terminate('AUDIT_CONFIG_CHANGED')
+        del self._install_expected[index], self._install_claims[index]
+        self._complete_install()
 
     def _record(self, value):
         if type(value) is not tuple or len(value) != 5:
@@ -1137,10 +1260,20 @@ class BootstrapEventOwner:
         for value in records:
             self._record(value)
 
-    def _check_pending(self):
+    def _complete_install(self):
+        """P87: install completes once its steps returned and both expected install
+        groups were consumed."""
+        if self._install_done and not self._install_expected:
+            self._installed = True
+
+    def _check_pending(self, *, installing=False):
         now = self._port.current_monotonic_ms()
         if type(now) is not int or now < 0:
             self._terminate('EVENT_SOURCE_TERMINAL')
+        # P87: the install drain is bounded by the 1000 ms pending bound. An
+        # expected install group still missing or open at the bound is terminal.
+        if not self._installed and now - self._install_started > 1000:
+            self._terminate('EVENT_INSTALL_INCOMPLETE')
         # A committed transition whose launch is not yet observed (CLONE or
         # EXEC) is pending at every barrier and terminal after the same
         # 1000 ms bound as an incomplete group.
@@ -1153,9 +1286,15 @@ class BootstrapEventOwner:
             if any(now - group['first'] > 1000
                    for group in self._pending_groups.values()):
                 self._terminate('EVENT_SOURCE_TERMINAL')
-            _fail('EVENT_PENDING')
+            # At the end of the install steps only the install's own open groups
+            # may stay pending (P87); anything else still fails the install.
+            if not installing or any('install' not in group
+                                     for group in self._pending_groups.values()):
+                _fail('EVENT_PENDING')
         if launching:
             _fail('EVENT_PENDING')
+        if not self._installed and not installing:
+            _fail('EVENT_PENDING')  # P87: the install drain is still open
 
     def _sealed_fence(self):
         """Process every source through one sealed all-source fence."""
