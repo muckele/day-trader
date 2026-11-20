@@ -2926,6 +2926,9 @@ class BrowserFamilyInspectionTests(unittest.TestCase):
             ('character device at a non-/dev path', lambda p: p.procs[204]['fds'].update(
                 {6: ('/run/acceptance/browser/profile/console', P.CHR, P.HVC0_RDEV)}), 1),
             ('block device', lambda p: p.procs[204]['fds'].update({6: ('/dev/vda', P.BLK, P.VDA_RDEV)}), 1),
+            # Fix round 1 (review I-1): every block device, even one numbered like /dev/null (brd's /dev/ram3, b 1:3).
+            ("block device numbered like /dev/null", lambda p: p.procs[204]['fds'].update(
+                {6: ('/dev/ram3', P.BLK, P.NULL_RDEV)}), 1),
             ("the root's control pipe held by 203", lambda p: p.procs[203]['fds'].update({6: P.pipe(40)}), 1),
             ("the root's other control pipe held by 202", lambda p: p.procs[202]['fds'].update({8: P.pipe(30)}), 1),
             ('netlink-like socket on 202 (no table read)', lambda p: p.procs[202]['fds'].update({7: P.sock(9998)}), 5))
@@ -3013,6 +3016,26 @@ class BrowserFamilyInspectionTests(unittest.TestCase):
                         if len(scans) == 2: p.add(206, 204, filters='3', ns='SANDBOX', owner=0, fds=fds)
                 proc.before.append(spawn)
                 if outcome is not None: self.assertEqual(dict(proc.inspect()), outcome)
+                else: self.denied(proc, 'FAMILY_DENIED', 5)
+        # Fix round 1 (review M-1): a member of A absent from B is dropped only when proven gone or exited. Here 206's
+        # parent 205 is reaped during scan B, so the live 206 drops out of B; on the next attempt it is reparented to
+        # the namespace init (the root, kernel/exit.c:623-656) and inspected.
+        for fds, state, outcome in (({0: P.NULL}, 'S (sleeping)', dict(self.CLEAN, attempts=2)),
+                                    ({0: P.NULL, 3: P.sock(9999)}, 'S (sleeping)', None),
+                                    ({0: P.NULL}, 'Z (zombie)', dict(self.CLEAN, members=4))):
+            with self.subTest(case='(c2) a member of A absent from B', state=state, vsock=outcome is None):
+                proc = P(); proc.add(206, 205, filters='3', ns='SANDBOX', owner=0, fds=fds); scans = []
+                def orphan(p, kind, path, state=state):
+                    if (kind, path) == ('listdir', '/proc'):
+                        scans.append(1)
+                        if len(scans) == 2:
+                            p.procs.pop(205); p.procs[206]['state'] = state
+                            if state.startswith('Z'): p.procs[206]['fds'] = {}
+                        if len(scans) == 3 and 206 in p.procs: p.procs[206]['ppid'] = 101
+                proc.before.append(orphan)
+                if outcome is not None:
+                    self.assertEqual(dict(proc.inspect()), outcome)
+                    if not state.startswith('Z'): self.assertEqual(proc.count('listdir', '/proc/206/fd'), 2, 'read in both attempts')
                 else: self.denied(proc, 'FAMILY_DENIED', 5)
         with self.subTest(case='(d) a closed descriptor, absent from the second listing, is dropped'):
             def close(p): p.procs[204]['fds'].pop(4); raise FileNotFoundError('/proc/204/fd/4')

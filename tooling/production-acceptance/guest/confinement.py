@@ -1668,7 +1668,9 @@ _FAMILY_PID=re.compile('[1-9][0-9]{0,9}')
 _FAMILY_DECIMAL=re.compile('0|[1-9][0-9]*')
 _FAMILY_SOCKET=re.compile(r'socket:\[(0|[1-9][0-9]*)\]')
 # fs/proc/array.c:126-140 task_state_array, as task_state prints it (:181-182). A zombie or dead task has already
-# run exit_files and exit_task_namespaces (kernel/exit.c:866, :870): no descriptors, no net directory (K6).
+# run exit_files and exit_task_namespaces (kernel/exit.c:866, :870): no descriptors, no net directory (K6). That is
+# per task: a zombie group leader whose other threads still run, or a thread with its own descriptor table, can hold
+# descriptors /proc/<tgid>/fd does not show (C10 residual, review E-2/M-2).
 _FAMILY_STATES=frozenset(('R (running)','S (sleeping)','D (disk sleep)','T (stopped)','t (tracing stop)','X (dead)',
                           'Z (zombie)','P (parked)','I (idle)'))
 _FAMILY_EXITED=frozenset(('X (dead)','Z (zombie)'))
@@ -1997,9 +1999,13 @@ class _KernelPortCore:
         union={}
         for pid in sorted(family-gone):
             if facts[pid]['state'] not in _FAMILY_EXITED and not self._family_tables(pid,root,union): gone.add(pid)
-        # 5. Scan B: complete only if every member of B was in A and fully read. A's members absent from B exited.
+        # 5. Scan B: complete only if every member of B was in A and fully read. A member of A absent from B is
+        #    dropped only when a fresh status proves it gone or exited (fix round 1, review M-1): a live one, missing
+        #    from B because its parent was reaped mid-scan (a pid wrap), would leave its sockets unattributed.
         later,_=self._family_scan(root,state['outer'])
         if not later<=family-gone: raise _FamilyRetry(False)
+        for pid in sorted(family-gone-later):
+            if self._family_present(pid)=='LIVE': raise _FamilyRetry(False)
         # 6. The worker root plus Chromium at least, and every socket of B attributed.
         if len(later)<2: raise _FamilyStop('FAMILY_DENIED')
         for pid in sorted(later):
@@ -2091,7 +2097,9 @@ class _KernelPortCore:
             if pid!=root and link in controls: raise _FamilyStop('FAMILY_DENIED')
             mode=metadata.st_mode
             if type(mode) is not int: raise _FamilyStop('FAMILY_UNREADABLE')
-            if (_statmod.S_ISCHR(mode) or _statmod.S_ISBLK(mode)) and metadata.st_rdev!=null_rdev:
+            # C9 (fix round 1, review I-1): every block device is denied; a character device only when it is not
+            # /dev/null's number (a block device may share it: brd's /dev/ram3 is b 1:3).
+            if _statmod.S_ISBLK(mode) or (_statmod.S_ISCHR(mode) and metadata.st_rdev!=null_rdev):
                 raise _FamilyStop('FAMILY_DENIED')
         return inodes
 
