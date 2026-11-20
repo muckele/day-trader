@@ -14,7 +14,7 @@ function fail(code, cause) { const error = new Error(code, cause ? { cause } : u
 // operator entered it; the reader below still refuses any raw byte above 127.
 function jsonText(value) {
   const text = JSON.stringify(value);
-  return typeof text === 'string' ? text.replace(/[\u007f-￿]/g, unit => '\\u' + unit.charCodeAt(0).toString(16).padStart(4, '0')) : text;
+  return typeof text === 'string' ? text.replace(/[\u007f-\uffff]/g, unit => '\\u' + unit.charCodeAt(0).toString(16).padStart(4, '0')) : text;
 }
 function canonical(value) {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';

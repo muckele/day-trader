@@ -53,7 +53,7 @@ function deepFreeze(value) { if (value && typeof value === 'object') { for (cons
 // both ends (browser-worker.cjs uses the same encoder). A raw byte above 127 is still refused by both readers.
 function jsonText(value) {
   const text = JSON.stringify(value);
-  return typeof text === 'string' ? text.replace(/[\u007f-￿]/g, unit => '\\u' + unit.charCodeAt(0).toString(16).padStart(4, '0')) : text;
+  return typeof text === 'string' ? text.replace(/[\u007f-\uffff]/g, unit => '\\u' + unit.charCodeAt(0).toString(16).padStart(4, '0')) : text;
 }
 function canonical(value) {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
