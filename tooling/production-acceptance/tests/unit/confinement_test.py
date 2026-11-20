@@ -2587,6 +2587,17 @@ class NativeAttestationTests(unittest.TestCase):
             ('T14 crash gid', lambda p: p.tmpfs['/run/acceptance/crash'].update(gid=0), 'VIEW_DENIED'),
             ('T14 missing crash row', drop('/run/acceptance/crash'), 'VIEW_DENIED'),
             ('T14 crash missing from /run/acceptance', lambda p: p.run.remove('crash'), 'VIEW_DENIED'),
+            # Task 18 F5 (review a m-2 = deferred Task 9 M-2): the seccomp mode and the FD3/FD4 directions are observed
+            # from literal /proc, never echoed. Seccomp is p->seccomp.mode (fs/proc/array.c:337): 0 DISABLED, 1 STRICT,
+            # 2 FILTER (include/uapi/linux/seccomp.h:10-12). fdinfo prints f_flags as "flags:\t0%o" (fs/proc/fd.c:59);
+            # its O_ACCMODE bits are O_RDONLY 0, O_WRONLY 1, O_RDWR 2 (include/uapi/asm-generic/fcntl.h:19-22). FD3 is the
+            # read end (0) and FD4 the write end (1).
+            ('F5 Seccomp mode 0 (disabled)', status(Seccomp='0'), 'ATTESTATION_FAILED'),
+            ('F5 Seccomp mode 1 (strict)', status(Seccomp='1'), 'ATTESTATION_FAILED'),
+            ('F5 FD3 opened write-only', lambda p: p.fds.update({3: p.fds[3][:3] + (1,)}), 'FD_DENIED'),
+            ('F5 FD3 opened read-write', lambda p: p.fds.update({3: p.fds[3][:3] + (2,)}), 'FD_DENIED'),
+            ('F5 FD4 opened read-only', lambda p: p.fds.update({4: p.fds[4][:3] + (0,)}), 'FD_DENIED'),
+            ('F5 FD4 opened read-write', lambda p: p.fds.update({4: p.fds[4][:3] + (2,)}), 'FD_DENIED'),
         )
         with self.subTest(case='control parent view'): self.parent()
         with self.subTest(case='control local view'): self.local()
