@@ -764,16 +764,86 @@ class StorageView:
         del self.fds[fd]
 
     def content(self, *args): raise AssertionError('empty scopes need no content operation')
-    open_file = open_directory = readable = unlink = remove_directory = content
+    open_file = open_directory = readable = unlink = remove_directory = chmod = content
+
+
+class ContentView(StorageView):
+    """A StorageView whose run root holds Chromium-like profile content the role created after launch (P66): the
+    Singleton* symlinks (their targets lie outside the five scopes, so here they are only links), a socket and a
+    FIFO (kind OTHER), a 0500 directory holding a 0000 file, a 0644 file and nested directories. The role's owner
+    bits apply: listing needs r, unlink and rmdir need w and x on the directory. A symlink is never opened as a
+    directory (O_NOFOLLOW) and no file content is ever opened. Each content effect is recorded in EVENTS as
+    ('content', operation, name or inode)."""
+    def __init__(self, role, events):
+        super().__init__(role, events)
+        self.inodes = iter(range(900, 1000))
+        def node(kind, mode, **children):
+            return {'kind': kind, 'mode': mode, 'inode': next(self.inodes), 'children': children}
+        self.tree = {'kind': 'DIRECTORY', 'mode': 0o700, 'inode': 500, 'children': {
+            'SingletonLock': node('SYMLINK', 0o777), 'SingletonSocket': node('SYMLINK', 0o777),
+            'SingletonCookie': node('SYMLINK', 0o777), 'socket': node('OTHER', 0o755), 'fifo': node('OTHER', 0o644),
+            'Default': node('DIRECTORY', 0o500, Lock=node('FILE', 0o000), Preferences=node('FILE', 0o644),
+                            Cache=node('DIRECTORY', 0o700, Cache_Data=node('DIRECTORY', 0o755,
+                                                                           index=node('FILE', 0o600))))}}
+
+    def node(self, fd):
+        kind, value = self.fds[fd]
+        if kind == 'node': return value
+        if kind == 'root': return self.tree if value == self.scopes[0] else {'mode': 0o700, 'children': {}}
+        return None
+
+    def node_metadata(self, value):
+        return c.storage.NodeMetadata(value['kind'], value['mode'], self.uid, self.uid, 7, value['inode'], 1, 0, 0)
+
+    def need(self, value, bits):
+        if (value['mode'] >> 6) & bits != bits: raise PermissionError(13, 'inert permission denied')
+
+    def stat(self, fd):
+        return self.node_metadata(self.fds[fd][1]) if self.fds[fd][0] == 'node' else super().stat(fd)
+
+    def stat_child(self, fd, name):
+        if self.fds[fd][0] == 'parent': return super().stat_child(fd, name)
+        self.need(self.node(fd), 1)
+        return self.node_metadata(self.node(fd)['children'][name])
+
+    def list_names(self, fd):
+        self.need(self.node(fd), 4)
+        return tuple(self.node(fd)['children'])
+
+    def open_directory(self, fd, name, expected):
+        self.need(self.node(fd), 1)
+        child = self.node(fd)['children'][name]
+        if child['kind'] != 'DIRECTORY' or self.node_metadata(child) != expected:
+            raise OSError(40, 'O_DIRECTORY|O_NOFOLLOW refused')
+        self.events.append(('content', 'open_directory', name))
+        descriptor = self.next_fd; self.next_fd += 1
+        self.fds[descriptor] = ('node', child)
+        return descriptor
+
+    def chmod(self, fd, mode):
+        self.events.append(('content', 'chmod', self.node(fd)['inode'], mode))
+        self.node(fd)['mode'] = mode
+
+    def unlink(self, fd, name, expected):
+        self.need(self.node(fd), 3)
+        if self.node(fd)['children'][name]['kind'] == 'DIRECTORY': raise IsADirectoryError(21, 'inert EISDIR')
+        del self.node(fd)['children'][name]
+        self.events.append(('content', 'unlink', name))
+
+    def remove_directory(self, fd, name, expected):
+        self.need(self.node(fd), 3)
+        if self.node(fd)['children'][name]['children']: raise OSError(39, 'inert ENOTEMPTY')
+        del self.node(fd)['children'][name]
+        self.events.append(('content', 'rmdir', name))
 
 
 class CleanupChild:
     """The child port a storage cleanup child runs over (C7, R8): it records each call, in order, in LOG; its storage
-    side is a StorageView sharing LOG; FD4 writes go to OUT (the result pipe); FD3 yields the parent's EXIT; _exit
-    ends the child. fail='uid' makes the port report UID 0, so admission must fail."""
-    def __init__(self, launch, log, out, *, fail=None):
+    side is a VIEW (StorageView by default) sharing LOG; FD4 writes go to OUT (the result pipe); FD3 yields the
+    parent's EXIT; _exit ends the child. fail='uid' makes the port report UID 0, so admission must fail."""
+    def __init__(self, launch, log, out, *, fail=None, view=None):
         self.launch, self.log, self.out, self.fail = launch, log, out, fail
-        self.storage, self.ready = StorageView(launch.role, log), None
+        self.storage, self.ready = (view or StorageView)(launch.role, log), None
         uid = launch.uid
         self.facts = dict(pid=401, run_id=RUN, role=launch.role, uids=(uid,) * 3, gids=(uid,) * 3, groups=(),
                           capabilities=(0,) * 5, no_new_privs=1, seccomp=2,
@@ -1708,10 +1778,11 @@ class ConfinementTests(unittest.TestCase):
         b.os.stat=stat
         self.assertEqual(p.scope_digest(),view.digest())
         self.assertEqual(seen,list(c.storage.ROLE_SCOPES['VERIFIER']))
-    def cleanup_port(self,*,live=None,fail=None,rmdir_fail=None):
+    def cleanup_port(self,*,live=None,fail=None,rmdir_fail=None,view=None):
         """An OfflineKernelPort whose four original role children are reaped (LIVE names one still running) and
-        whose spawn_waiting runs the given entry, in process, over a CleanupChild double (pid 401). The parent's own
-        effects and the child's calls share LOG; the child's FD4 writes are the result pipe."""
+        whose spawn_waiting runs the given entry, in process, over a CleanupChild double (pid 401) whose storage is
+        VIEW (a StorageView by default). The parent's own effects and the child's calls share LOG; the child's FD4
+        writes are the result pipe."""
         b=InertBindings(); log=[]; out=bytearray(); children={}
         def rmdir(path):
             log.append(('rmdir',path))
@@ -1726,7 +1797,7 @@ class ConfinementTests(unittest.TestCase):
                                 None if role==live else {'status':'STOPPED','pid':301+index,'run_id':RUN}}
         def spawn(launch,entry):
             log.append(('spawn',launch))
-            child=children[launch.role]=CleanupChild(launch,log,out,fail=fail)
+            child=children[launch.role]=CleanupChild(launch,log,out,fail=fail,view=view)
             try: entry(child)
             except ExecBoundary: pass
             owned=c.NativeOwned(401,RUN,launch.role,'command2','result2')
@@ -1786,6 +1857,30 @@ class ConfinementTests(unittest.TestCase):
                 # P16: the bootstrap never unmounts (nor makes any raw syscall); teardown reclaimed /dev/shm.
                 self.assertEqual([e for e in b.calls if type(e[0]) is int],[])
         self.assertEqual(k.crash_summary(),c.storage.CrashAggregate('a'*64,0,0,0,0,False))
+    def test_storage_cleanup_removes_role_created_content_without_admission_strictness(self):
+        # P66: the cleanup child verifies its scope roots as admitted, then removes whatever the role created there
+        # (symlinks as links, sockets, FIFOs, a 0500 directory made u+rwx through its descriptor, a 0000 file),
+        # never through a symlink and never by opening content. The pre-exec admission still refuses that content.
+        self.assertTrue(callable(getattr(c.storage,'verify_role_scopes',None)),'no cleanup scope verification')
+        k,b,log,launches,children=self.cleanup_port(view=ContentView)
+        self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER']),c.storage.CleanupResult(True,False,'COMPLETE'))
+        view=children['BROWSER'].storage
+        self.assertEqual(view.tree['children'],{})
+        content=[e[1:] for e in log if e[0]=='content']
+        default=ContentView('BROWSER',[]).tree['children']['Default']['inode']  # the numbering is deterministic
+        self.assertEqual([e for e in content if e[0]=='chmod'],[('chmod',default,0o700)])
+        self.assertEqual(sorted(e[1] for e in content if e[0]=='unlink'),
+                         sorted(('SingletonLock','SingletonSocket','SingletonCookie','socket','fifo','Lock','Preferences','index')))
+        self.assertEqual(sorted(e[1] for e in content if e[0]=='rmdir'),['Cache','Cache_Data','Default'])
+        self.assertEqual(sorted(e[1] for e in content if e[0]=='open_directory'),['Cache','Cache_Data','Default'])
+        frame=[e for e in log if e[:2]==('write',4) and e[2]!=b'WAITING\n']
+        self.assertEqual(json.loads(frame[0][2][4:])['removed'],True)
+        # The same content before exec: the strict admission refuses it and the role never execs.
+        launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
+        child=ChildKernel(Kernel(),201,launch); child._storage=ContentView('BROWSER',child.events)
+        with self.assertRaisesRegex(c.ConfinementError,'^STORAGE_INVALID$'): c.exec_role(launch,kernel=child)
+        self.assertFalse(any(type(e) is tuple and e[0]=='exec' for e in child.events))
+        self.assertEqual(len(child._storage.tree['children']),6)
     def test_storage_cleanup_preconditions_and_failures_stay_incomplete(self):
         self.assertTrue(callable(getattr(c._KernelPortCore,'run_storage_cleanup',None)),'no per-role storage cleanup')
         incomplete=c.storage.CleanupResult(False,False,'CLEANUP_INCOMPLETE')

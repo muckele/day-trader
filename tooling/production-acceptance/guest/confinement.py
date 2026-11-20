@@ -1328,8 +1328,9 @@ def _storage_cleanup_child(launch,port):
     """C7 (R8): the storage cleanup child's one fixed operation; never an exec, a caller entry or a caller path.
 
     The role's own view (re-binding the state its stopped children left; a fresh /dev/shm, since the old one went
-    with its namespace, P16), descriptors, UID and filter; its own admission; a metadata-only crash aggregate; the
-    ready frame; removal; one fixed result frame; then it waits for the parent's EXIT and exits.
+    with its namespace, P16), descriptors, UID and filter; its own scope-root verification (P66: the roots exactly
+    as admitted, never the pre-exec strictness on the content the role created); a metadata-only crash aggregate;
+    the ready frame; removal; one fixed result frame; then it waits for the parent's EXIT and exits.
     """
     code=78
     try:
@@ -1340,7 +1341,7 @@ def _storage_cleanup_child(launch,port):
         if type(result) is not int or result!=0: _fail('TSYNC_FAILED')
         _check(_attestation(port.inspect()),launch,waiting=False)
         policy,filesystem=port.storage_ports()
-        proof=storage.admit_role_storage(launch.role,policy,filesystem,port)
+        proof=storage.verify_role_scopes(launch.role,policy,filesystem,port)
         aggregate=storage.crash_aggregate(proof.crash_root_fd,proof=proof)
         port.write_ready(proof.digest)
         if port.b.os.write(4,b'WAITING\n')!=8: _fail('ROLE_START_FAILED')
@@ -2025,8 +2026,9 @@ class _KernelPortCore:
         """C7 (E5, R8, P11): clean one role's private storage as that role, inside its own view; one use per role.
 
         A fixed operation in a fresh confined child (_storage_cleanup_child) with the role's views, UID and filter:
-        its own admission, a metadata-only crash aggregate, removal, one fixed result frame. Never an exec, a
-        caller entry, path or operation. It runs only once every child this port spawned in that role's view has
+        its own scope-root verification (P66), a metadata-only crash aggregate, removal of whatever the role created
+        there (never through a symlink, across a device or into another UID's entry), one fixed result frame. Never
+        an exec, a caller entry, path or operation. It runs only once every child this port spawned in that role's view has
         its terminal receipt, so each such view's mount namespace, its /dev/shm tmpfs included, is gone (P16).
         The bootstrap removes only its own root-owned skeleton and, after the child, the emptied backing
         directories; it records the role's crash aggregate for crash_summary. Uses only core state (P11).

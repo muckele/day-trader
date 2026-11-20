@@ -45,14 +45,19 @@ class Node:
     next_inode = 100
 
     def __init__(self, kind, mode, uid, *, gid=None, size=0, allocated=0, nlink=1,
-                 device=RUN_DEV, readable=True, children=None, purpose='RUN'):
+                 device=RUN_DEV, readable=True, children=None, purpose='RUN', target=None):
         self.kind, self.mode, self.uid = kind, mode, uid
         self.gid = uid if gid is None else gid
         self.size, self.allocated, self.nlink = size, allocated, nlink
         self.device, self.readable, self.purpose = device, readable, purpose
         self.children = dict(children or {})
+        self.target = target  # a SYMLINK's absolute target path in this view, which may not exist
         self.inode = Node.next_inode
         Node.next_inode += 1
+
+
+def link(target, uid, **kwargs):
+    return Node('SYMLINK', 0o777, uid, size=len(target), target=target, **kwargs)
 
 
 class Filesystem:
@@ -62,11 +67,18 @@ class Filesystem:
     re-stat in storage is the only thing that can refuse a swapped node (Task 18 review M18-4). With shared=True the
     /run/acceptance parent also holds every other role's run root and an 'outside' sibling, each with a marker.
     With markers=False the scopes are fresh and empty, as at a role's first launch.
+
+    The port runs as the role (P66): Linux owner bits apply to nodes the role owns, other bits to the rest. Listing
+    needs r, a child lookup or open needs x, and an unlink or rmdir needs w and x on the directory. chmod(fd) is
+    fchmod: EPERM unless the role owns the node. Every removal and chmod attempt is recorded in ATTEMPTS before it is
+    checked. stat_child and open_directory are lstat and O_NOFOLLOW; their follow=True form, which models a path
+    that follows a symlink, is offered only so that a mutant can use it.
     """
     def __init__(self, role='BROWSER', *, shared=False, markers=True):
         self.role, self.uid = role, UIDS[role]
         self.fds, self.next_fd, self.closed = {}, 10, []
         self.removed, self.file_opens, self.opened_roots = [], [], []
+        self.attempts, self.chmods = [], []
         self.swap_node, self.swap_reads = None, 0
         self.root_name_override, self.open_shape = None, 'VALID'
         self.close_failures, self.stat_failure = set(), None
@@ -138,21 +150,45 @@ class Filesystem:
 
     def stat(self, fd): return self.metadata(self.fds[fd])
 
-    def list_names(self, fd): return tuple(self.fds[fd].children)
+    def need(self, node, bits):
+        granted = (node.mode >> 6) & 7 if node.uid == self.uid else node.mode & 7
+        if granted & bits != bits: raise PermissionError(13, 'inert permission denied')
 
-    def stat_child(self, fd, name):
+    def resolve(self, path):
+        try: return self.node(path)
+        except KeyError: raise FileNotFoundError(2, 'dangling symlink') from None
+
+    def list_names(self, fd):
+        self.need(self.fds[fd], 4)
+        return tuple(self.fds[fd].children)
+
+    def stat_child(self, fd, name, follow=False):
+        self.need(self.fds[fd], 1)
         node = self.fds[fd].children[name]
+        if follow and node.kind == 'SYMLINK':
+            return self.metadata(self.resolve(node.target))
         changed = False
         if node is self.swap_node:
             self.swap_reads += 1
             changed = self.swap_reads >= 2
         return self.metadata(node, changed=changed)
 
-    def open_directory(self, fd, name, expected):
+    def open_directory(self, fd, name, expected, follow=False):
+        self.need(self.fds[fd], 1)
         node = self.fds[fd].children[name]
+        if node.kind == 'SYMLINK':
+            if not follow: raise OSError(40, 'O_NOFOLLOW: a symlink')
+            node = self.resolve(node.target)
         if node.kind != 'DIRECTORY' or self.metadata(node) != expected:
             raise OSError('directory identity changed')
         return self._fd(node)
+
+    def chmod(self, fd, mode):
+        node = self.fds[fd]
+        self.attempts.append(('chmod', node.inode))
+        if node.uid != self.uid: raise PermissionError(1, 'inert fchmod EPERM: not the owner')
+        node.mode = mode
+        self.chmods.append((node.inode, mode))
 
     def open_file(self, fd, name, expected):
         node = self.fds[fd].children[name]
@@ -172,12 +208,18 @@ class Filesystem:
         self.fds.pop(fd, None)
 
     def unlink(self, fd, name, expected):
+        # unlinkat(fd, name, 0): the name itself, a symlink's link and never its target; never a directory.
+        self.attempts.append(('unlink', self.fds[fd].children[name].inode))
+        self.need(self.fds[fd], 3)
+        if self.fds[fd].children[name].kind == 'DIRECTORY': raise IsADirectoryError(21, 'inert EISDIR')
         node = self.fds[fd].children.pop(name)
         self.removed.append(('FILE', node.inode))
 
     def remove_directory(self, fd, name, expected):
+        self.attempts.append(('rmdir', self.fds[fd].children[name].inode))
+        self.need(self.fds[fd], 3)
         node = self.fds[fd].children[name]
-        if node.children:
+        if node.kind != 'DIRECTORY' or node.children:
             raise OSError('directory not empty')
         del self.fds[fd].children[name]
         self.removed.append(('DIRECTORY', node.inode))
@@ -402,7 +444,8 @@ class StorageTests(unittest.TestCase):
     def test_deletion_owned_scope_only(self):
         self.need('admit_role_storage', 'remove_role_state')
         # Task 18 review T18-I3: one shared /run/acceptance parent holds every role's run root and an outside
-        # sibling; after admission a device-drifted child and a symlink are planted in scope and a file beside them.
+        # sibling; after admission a device-drifted child and a symlink to the outside marker are planted in scope
+        # and a file beside them. P66: the symlink itself is removed, never its target; the drifted subtree stays.
         fs, kernel = Filesystem('BROWSER', shared=True), Kernel('BROWSER')
         proof = self.admit(fs=fs, kernel=kernel)
         acceptance = fs.node('/run/acceptance')
@@ -410,19 +453,25 @@ class StorageTests(unittest.TestCase):
         kept = Node('FILE', 0o600, UIDS['BROWSER'], size=5, device=23)
         drifted = fs.node('/tmp').children['drifted'] = Node(
             'DIRECTORY', 0o700, UIDS['BROWSER'], device=23, children={'kept': kept})
-        link = fs.node('/var').children['link'] = Node('SYMLINK', 0o777, UIDS['BROWSER'])
+        target = acceptance.children['outside'].children['marker']
+        symlink = fs.node('/var').children['link'] = link('/run/acceptance/outside/marker', UIDS['BROWSER'])
         scope_nodes = {node.inode for path in scopes('BROWSER') for node in fs.everything(fs.node(path))}
         outside = [node for node in fs.everything() if node.inode not in scope_nodes]
         result = storage.remove_role_state(proof)
         self.assertEqual(dataclasses.asdict(result), {
             'guest_private_state_removed': False, 'host_residue_erased': False, 'code': 'CLEANUP_INCOMPLETE'})
-        # Every node outside the role's five scopes survives, and so do the drifted subtree and the symlink.
+        # Every node outside the role's five scopes survives, and so does the drifted subtree.
         survivors = {node.inode for node in fs.everything()}
         self.assertEqual([node.inode for node in outside if node.inode not in survivors], [])
-        for node in (planted, drifted, kept, link, acceptance.children['outside'],
+        for node in (planted, drifted, kept, target, acceptance.children['outside'],
                      acceptance.children['controller'].children['marker']):
             self.assertIn(node.inode, survivors)
-        self.assertLessEqual(self.removed_inodes(fs), scope_nodes - {drifted.inode, kept.inode, link.inode})
+        self.assertEqual((target.size, target.mode), (99, 0o600))
+        self.assertNotIn(symlink.inode, survivors)
+        self.assertLessEqual(self.removed_inodes(fs), scope_nodes - {drifted.inode, kept.inode})
+        # Nothing outside the scopes, nor the drifted subtree, is ever even attempted (removal or chmod).
+        self.assertEqual([attempt for attempt in fs.attempts
+                          if attempt[1] not in scope_nodes or attempt[1] in (drifted.inode, kept.inode)], [])
         # Scope roots are the role's mount points: never removed, identity unchanged.
         for path in scopes('BROWSER'):
             self.assertIn(fs.node(path).inode, survivors)
@@ -512,16 +561,169 @@ class StorageTests(unittest.TestCase):
 
     def test_cleanup_continues_across_roots(self):
         self.need('admit_role_storage', 'remove_role_state')
-        # Task 18 review T18-M2: a non-conforming file planted in the first scope after admission leaves that
-        # scope incomplete; every later scope is still cleaned and the result stays incomplete.
+        # Task 18 review T18-M2: an entry cleanup must leave (P66: another UID's file) planted in the first scope
+        # after admission leaves that scope incomplete; every later scope is still cleaned and the result stays
+        # incomplete.
         fs = Filesystem(); proof = self.admit(fs=fs, kernel=Kernel())
-        loose = fs.node('/run/acceptance/browser').children['loose'] = Node('FILE', 0o644, UIDS['BROWSER'])
+        loose = fs.node('/run/acceptance/browser').children['loose'] = Node('FILE', 0o600, UIDS['CONTROLLER'])
         result = storage.remove_role_state(proof)
         self.assertEqual(dataclasses.asdict(result), {
             'guest_private_state_removed': False, 'host_residue_erased': False, 'code': 'CLEANUP_INCOMPLETE'})
         self.assertNotIn(loose.inode, self.removed_inodes(fs))
         for path in ('/tmp', '/var', '/dev/shm', '/run/acceptance/crash'):
             self.assertEqual(fs.node(path).children, {}, path)
+
+    # --- P66: post-run cleanup removes what the role created, without admission strictness --------------------------
+    @staticmethod
+    def plant_profile(fs, uid):
+        """Chromium-like profile content the role created after launch: Singleton* symlinks pointing outside every
+        scope (to a file, to a directory, and dangling), a Unix socket and a FIFO (kind OTHER), a 0500 directory
+        holding a 0000 file and 0644 files, directories nested a few levels deep, and a socket directory in /tmp.
+        Returns the role-owned directory outside the scopes that the links point into."""
+        elsewhere = fs.place('/run/acceptance/elsewhere', Node('DIRECTORY', 0o700, uid, children={
+            'lock-target': Node('FILE', 0o600, uid, size=12),
+            'socket-dir': Node('DIRECTORY', 0o700, uid, children={'SingletonSocket': Node('OTHER', 0o755, uid)})}))
+        fs.node('/run/acceptance/browser').children.update({
+            'SingletonLock': link('/run/acceptance/elsewhere/lock-target', uid),
+            'SingletonSocket': link('/run/acceptance/elsewhere/socket-dir', uid),
+            'SingletonCookie': link('/run/acceptance/elsewhere/missing', uid),
+            'socket': Node('OTHER', 0o755, uid), 'fifo': Node('OTHER', 0o644, uid),
+            'Default': Node('DIRECTORY', 0o500, uid, children={
+                'Preferences': Node('FILE', 0o644, uid, size=300), 'Lock': Node('FILE', 0o000, uid),
+                'Cache': Node('DIRECTORY', 0o700, uid, children={
+                    'Cache_Data': Node('DIRECTORY', 0o755, uid, children={
+                        'index': Node('FILE', 0o600, uid, size=24), 'data_0': Node('FILE', 0o644, uid, size=8192),
+                        'Code Cache': Node('DIRECTORY', 0o700, uid, children={
+                            'js': Node('FILE', 0o600, uid, size=5)})})})})})
+        fs.node('/tmp').children['.org.chromium.Chromium.Ab12Cd'] = Node(
+            'DIRECTORY', 0o700, uid, children={'SingletonSocket': Node('OTHER', 0o755, uid)})
+        return elsewhere
+
+    @staticmethod
+    def snapshot(nodes):
+        return {node.inode: (node.kind, node.mode, node.uid, node.size, tuple(sorted(node.children)), node.target)
+                for node in nodes}
+
+    def test_cleanup_removes_chromium_profile_content_without_following_links(self):
+        self.need('verify_role_scopes', 'remove_role_state')
+        uid = UIDS['BROWSER']
+        for when in ('planted after a pre-exec admission', 'present at the cleanup verification'):
+            with self.subTest(content=when):
+                fs = Filesystem('BROWSER', shared=True)
+                if when.startswith('planted'):
+                    proof = self.admit(fs=fs, kernel=Kernel()); elsewhere = self.plant_profile(fs, uid)
+                else:
+                    elsewhere = self.plant_profile(fs, uid)
+                    proof = storage.verify_role_scopes('BROWSER', self.policy(), fs, Kernel())
+                scope_nodes = {node.inode for path in scopes('BROWSER') for node in fs.everything(fs.node(path))}
+                outside = [node for node in fs.everything() if node.inode not in scope_nodes]
+                before = self.snapshot(outside)
+                default = fs.node('/run/acceptance/browser').children['Default']
+                opened = list(fs.file_opens)
+                result = storage.remove_role_state(proof)
+                self.assertEqual(dataclasses.asdict(result), {
+                    'guest_private_state_removed': True, 'host_residue_erased': False, 'code': 'COMPLETE'})
+                for path in scopes('BROWSER'):
+                    self.assertEqual(fs.node(path).children, {}, path)
+                # Nothing outside the scopes changed: the link targets (a file, a directory and its socket) included.
+                self.assertEqual(self.snapshot(outside), before)
+                self.assertEqual(sorted(elsewhere.children), ['lock-target', 'socket-dir'])
+                self.assertEqual(sorted(elsewhere.children['socket-dir'].children), ['SingletonSocket'])
+                self.assertEqual([a for a in fs.attempts if a[1] not in scope_nodes], [])
+                # Only the role's own 0500 directory was made u+rwx, through its descriptor; no content was opened.
+                self.assertEqual(fs.chmods, [(default.inode, 0o700)])
+                self.assertEqual(fs.file_opens, opened)
+
+    def test_cleanup_leaves_foreign_owned_device_crossing_and_too_deep_entries(self):
+        self.need('admit_role_storage', 'remove_role_state')
+        uid = UIDS['BROWSER']
+        fs = Filesystem(); proof = self.admit(fs=fs, kernel=Kernel())
+        var = fs.node('/var')
+        foreign_file = var.children['root-owned'] = Node('FILE', 0o644, 0, size=7)
+        foreign_dir = var.children['foreign-dir'] = Node('DIRECTORY', 0o500, 0, children={'x': Node('FILE', 0o600, 0)})
+        crossed = fs.node('/tmp').children['mnt'] = Node('DIRECTORY', 0o500, uid, device=23, children={
+            'inside': Node('FILE', 0o600, uid, device=23)})
+        chain = parent = fs.node('/dev/shm')
+        for _ in range(storage.MAX_DEPTH + 1):
+            parent.children['d'] = Node('DIRECTORY', 0o700, uid, device=SHM_DEV)
+            parent = parent.children['d']
+        deepest = parent
+        left = [foreign_file, foreign_dir, foreign_dir.children['x'], crossed, crossed.children['inside']]
+        before = self.snapshot(left)
+        result = storage.remove_role_state(proof)
+        self.assertEqual(dataclasses.asdict(result), {
+            'guest_private_state_removed': False, 'host_residue_erased': False, 'code': 'CLEANUP_INCOMPLETE'})
+        # Left exactly as found: never removed, never chmod'ed, never even attempted.
+        self.assertEqual(self.snapshot(left), before)
+        self.assertEqual([a for a in fs.attempts if a[1] in {node.inode for node in left}], [])
+        self.assertEqual(fs.chmods, [])
+        self.assertIn('root-owned', var.children); self.assertIn('foreign-dir', var.children)
+        self.assertIn('mnt', fs.node('/tmp').children)
+        # The directory past MAX_DEPTH stays, so its ancestors stay too; nothing below the bound was skipped.
+        self.assertIs(fs.everything(chain)[-1], deepest)
+        self.assertEqual(len(fs.everything(chain)), storage.MAX_DEPTH + 2)
+        # Everything else in those scopes, and every other scope, is removed.
+        for path in ('/var', '/tmp', '/dev/shm'):
+            self.assertNotIn('marker', fs.node(path).children, path)
+        for path in ('/run/acceptance/browser', '/run/acceptance/crash'):
+            self.assertEqual(fs.node(path).children, {}, path)
+
+    def test_cleanup_verification_checks_roots_as_admitted_and_admission_stays_strict(self):
+        self.need('verify_role_scopes', 'admit_role_storage', 'remove_role_state')
+        uid = UIDS['BROWSER']
+        fs = Filesystem(); self.plant_profile(fs, uid)
+        self.admit_denied(fs, Kernel())          # pre-exec admission is exactly as strict as before
+        fs = Filesystem(); self.plant_profile(fs, uid)
+        proof = storage.verify_role_scopes('BROWSER', self.policy(), fs, Kernel())
+        self.assertEqual(proof.digest, storage.scope_digest('BROWSER', uid, tuple(
+            (path, fs.node(path).device, fs.node(path).inode) for path in scopes('BROWSER'))))
+        def device(fs, kernel):
+            kernel.mount('/var', device=23)
+        def shm_on_run(fs, kernel):
+            kernel.mount('/dev/shm', device=RUN_DEV)
+            for node in fs.everything(fs.node('/dev/shm')): node.device = RUN_DEV
+        for name, change, port in (
+                ('root mode 0755', lambda fs, k: setattr(fs.node('/tmp'), 'mode', 0o755), None),
+                ('root owned by another role', lambda fs, k: setattr(fs.node('/var'), 'uid', UIDS['CONTROLLER']), None),
+                ('root gid', lambda fs, k: setattr(fs.node('/var'), 'gid', UIDS['VERIFIER']), None),
+                ('root not on its mount device', device, None),
+                ('/dev/shm on the run device', shm_on_run, None),
+                ('privileged port', None, Kernel(uid=0)),
+                ('another role port', None, Kernel(uid=UIDS['PROXY']))):
+            with self.subTest(verify=name):
+                fs, kernel = Filesystem(), port or Kernel()
+                self.plant_profile(fs, uid)
+                if change: change(fs, kernel)
+                self.denied(lambda: storage.verify_role_scopes('BROWSER', self.policy(), fs, kernel))
+        # A root changed after verification leaves that scope untouched and incomplete; the others are cleaned.
+        fs = Filesystem(); proof = storage.verify_role_scopes('BROWSER', self.policy(), fs, Kernel())
+        fs.node('/var').mode = 0o755
+        self.assertEqual(storage.remove_role_state(proof).code, 'CLEANUP_INCOMPLETE')
+        self.assertIn('marker', fs.node('/var').children)
+        self.assertEqual(fs.node('/tmp').children, {})
+
+    def test_cleanup_crash_aggregate_is_metadata_only_without_admission_strictness(self):
+        self.need('verify_role_scopes', 'crash_aggregate')
+        uid = UIDS['BROWSER']
+        fs = Filesystem(); crash = fs.node('/run/acceptance/crash')
+        pending = Node('DIRECTORY', 0o500, uid, size=40, allocated=4096, device=CRASH_DEV, purpose='CRASH', children={
+            'a.dmp': Node('FILE', 0o600, uid, size=10, allocated=4096, device=CRASH_DEV, purpose='CRASH')})
+        crash.children.update({
+            'report.dmp': Node('FILE', 0o644, uid, size=100, allocated=4096, device=CRASH_DEV, purpose='CRASH'),
+            'pending': pending,
+            'latest': link('/run/acceptance/browser/marker', uid, device=CRASH_DEV, purpose='CRASH'),
+            'foreign': Node('FILE', 0o600, 0, size=5, allocated=4096, device=CRASH_DEV, purpose='CRASH')})
+        self.admit_denied(fs, Kernel())          # the pre-exec admission still refuses this content
+        opened = list(fs.file_opens)
+        proof = storage.verify_role_scopes('BROWSER', self.policy(), fs, Kernel())
+        aggregate = storage.crash_aggregate(proof.crash_root_fd, proof=proof)
+        # marker, report.dmp, a.dmp and the link (its own 30 bytes); pending; never the foreign file.
+        self.assertEqual(dataclasses.asdict(aggregate), {
+            'policy_digest': 'a' * 64, 'file_count': 4, 'directory_count': 1, 'logical_bytes': 4 + 100 + 10 + 30 + 40,
+            'allocated_bytes': 4096 * 4, 'crash_contents_read': False})
+        self.assertEqual(fs.file_opens, opened)  # verification and the aggregate open no file at all
+        self.assertEqual(fs.chmods, [(pending.inode, 0o700)])
+        self.assertEqual(fs.node('/run/acceptance/browser').children['marker'].size, 4)
 
     # --- retained Task 18 contract, per role ----------------------------------------------------------------------
     def test_readonly_base_all_writable_tmpfs_no_swap(self):
