@@ -1804,6 +1804,12 @@ class TopologyTests(unittest.TestCase):
         native.events += [native.message('AUDIT', audit_config_change(51, bodies[0]))] + audit_group(native, 51, 93, pid=500, ppid=1)
         with self.subTest(case='inside a complete group'):
             self.assert_terminal(owner, 'AUDIT_CONFIG_CHANGED')
+        # The classification precedes the P63 serial rules: a CONFIG_CHANGE that
+        # reuses an install group's serial (seen) is still AUDIT_CONFIG_CHANGED.
+        owner, native, _ = self.install_events()
+        native.events.append(native.message('AUDIT', audit_config_change(INSTALL_SET_SERIAL, install_set_bodies(4242)[0])))
+        with self.subTest(case='reusing a seen serial'):
+            self.assert_terminal(owner, 'AUDIT_CONFIG_CHANGED')
 
     def test_v1_install_audit_set_bodies_derive_from_the_health_check_values(self):
         # P86(b'), P85 (Task 18 F4): the install's one AUDIT_SET carries the five
