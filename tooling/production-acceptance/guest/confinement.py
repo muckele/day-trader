@@ -1329,8 +1329,9 @@ def _storage_cleanup_child(launch,port):
 
     The role's own view (re-binding the state its stopped children left; a fresh /dev/shm, since the old one went
     with its namespace, P16), descriptors, UID and filter; its own scope-root verification (P66: the roots exactly
-    as admitted, never the pre-exec strictness on the content the role created); a metadata-only crash aggregate;
-    the ready frame; removal; one fixed result frame; then it waits for the parent's EXIT and exits.
+    as admitted, never the pre-exec strictness on the content the role created); the ready frame; then (P67) the
+    metadata-only crash aggregate and the removal, both inside the parent's result-frame wait, which the shared
+    cleanup end clamps; one fixed result frame; then it waits for the parent's EXIT and exits.
     """
     code=78
     try:
@@ -1342,9 +1343,9 @@ def _storage_cleanup_child(launch,port):
         _check(_attestation(port.inspect()),launch,waiting=False)
         policy,filesystem=port.storage_ports()
         proof=storage.verify_role_scopes(launch.role,policy,filesystem,port)
-        aggregate=storage.crash_aggregate(proof.crash_root_fd,proof=proof)
         port.write_ready(proof.digest)
         if port.b.os.write(4,b'WAITING\n')!=8: _fail('ROLE_START_FAILED')
+        aggregate=storage.crash_aggregate(proof.crash_root_fd,proof=proof)
         cleanup=storage.remove_role_state(proof)
         frame=_v1_encode(dict(version=1,kind='STORAGE_CLEANUP',role=launch.role,
                               removed=cleanup.guest_private_state_removed,code=cleanup.code,
@@ -1803,8 +1804,16 @@ class _KernelPortCore:
         if type(ready) is not list or any(endpoint is not owned.result and endpoint!=owned.result for endpoint in ready):_fail('CHANNEL_EOF')
         return bool(ready)
 
-    def spawn_waiting(self,launch,entry):
+    @staticmethod
+    def _start_step(limit_ms):
+        """One fixed 2000 ms start-up wait. A terminal caller's shared cleanup end (P67, C1) can only shorten it."""
+        if limit_ms is None: return 2000
+        value=limit_ms()
+        return min(2000,value) if type(value) is int and value>=0 else 0
+
+    def spawn_waiting(self,launch,entry,*,limit_ms=None):
         if type(launch) is not RoleLaunch or launch._seal is not _SEAL: _fail('ROLE_DENIED')
+        if limit_ms is not None and not callable(limit_ms): _fail('ROLE_DENIED')
         runtime=getattr(self.b,'_runtime',None)
         if runtime is not None and runtime.identity.python not in launch.programs: _fail('NATIVE_RUNTIME_MISMATCH')
         b=self.b; b.check_appliance(); pins=b.pin_programs(launch.programs)
@@ -1896,12 +1905,12 @@ class _KernelPortCore:
             for fd in pins.values(): b.os.close(fd)
             for fd in (command[0],result[1],stop[0],ready[1]): b.os.close(fd)
             b.os.set_blocking(stop[1],False)
-            frame=self._read_exact(ready[0],_READY_FRAME_BYTES,2000)
+            frame=self._read_exact(ready[0],_READY_FRAME_BYTES,self._start_step(limit_ms))
             digest=frame[:64].decode('ascii')
             if not re.fullmatch('[0-9a-f]{64}',digest): _fail('ROLE_START_FAILED')
             # A worker-owned fixed waiting frame is necessary, never infer
             # readiness from a successful fork or an empty pipe.
-            if self._read_exact(result[0],8,2000)!=b'WAITING\n': _fail('ROLE_START_FAILED')
+            if self._read_exact(result[0],8,self._start_step(limit_ms))!=b'WAITING\n': _fail('ROLE_START_FAILED')
             child=self._child_pid(outer)
             # P17 (C7): the frame's last 32 bytes must bind this child's own five scope roots exactly as this
             # bootstrap observes them through /proc/<child>/root. A role launch sends its admission proof's digest.
@@ -2022,21 +2031,29 @@ class _KernelPortCore:
             except Exception: complete=False
         return complete
 
-    def run_storage_cleanup(self,role,launch):
+    def run_storage_cleanup(self,role,launch,*,budget):
         """C7 (E5, R8, P11): clean one role's private storage as that role, inside its own view; one use per role.
 
         A fixed operation in a fresh confined child (_storage_cleanup_child) with the role's views, UID and filter:
         its own scope-root verification (P66), a metadata-only crash aggregate, removal of whatever the role created
         there (never through a symlink, across a device or into another UID's entry), one fixed result frame. Never
-        an exec, a caller entry, path or operation. It runs only once every child this port spawned in that role's view has
-        its terminal receipt, so each such view's mount namespace, its /dev/shm tmpfs included, is gone (P16).
-        The bootstrap removes only its own root-owned skeleton and, after the child, the emptied backing
+        an exec, a caller entry, path or operation. It runs only once every child this port spawned in that role's
+        view has its terminal receipt, so each such view's mount namespace, its /dev/shm tmpfs included, is gone
+        (P16). The bootstrap removes only its own root-owned skeleton and, after the child, the emptied backing
         directories; it records the role's crash aggregate for crash_summary. Uses only core state (P11).
+
+        P67 (C1): BUDGET is the run's one terminal-start cleanup budget, shared by all four roles' cleanups. Cleanup
+        is terminal work, so it starts that shared end if no earlier terminal event did, and never allocates another.
+        Every wait (the child's start and ready frame, its crash walk and removal, its result frame and exit) is
+        clamped to budget.remaining(). On exhaustion the child is stopped (its helper kills it) and the result is
+        sticky-incomplete with code CLEANUP_TIMEOUT.
         """
         incomplete=storage.CleanupResult(False,False,'CLEANUP_INCOMPLETE')
+        timeout=storage.CleanupResult(False,False,'CLEANUP_TIMEOUT')
         try:
             if (role not in UIDS or type(launch) is not RoleLaunch or launch._seal is not _SEAL or launch.role!=role
-                    or launch!=prepare_role(role,RoleConfig(BootstrapConfig(self,launch.run_id,launch.programs),launch.fds))):
+                    or launch!=prepare_role(role,RoleConfig(BootstrapConfig(self,launch.run_id,launch.programs),launch.fds))
+                    or any(not callable(getattr(budget,name,None)) for name in ('start_terminal','remaining'))):
                 return incomplete
         except Exception: return incomplete
         if (role in self._storage_cleaned or
@@ -2044,17 +2061,26 @@ class _KernelPortCore:
                     if getattr(state.get('launch'),'role',None)==role)):
             return incomplete
         self._storage_cleaned.add(role)
+        def left():
+            # The shared end only; 0 once it has passed or the budget cannot answer.
+            try: value=budget.remaining()
+            except Exception: return 0
+            return value if type(value) is int and value>0 else 0
+        try: budget.start_terminal()
+        except Exception: return timeout
+        if not left(): return timeout
         if not self._remove_view(launch.views,()): return incomplete
         owned=None
         try:
-            try: owned=self.spawn_waiting(launch,lambda port,launch=launch: _storage_cleanup_child(launch,port))
+            try: owned=self.spawn_waiting(launch,lambda port,launch=launch: _storage_cleanup_child(launch,port),
+                                          limit_ms=left)
             except RoleStartFailure as error:
                 owned=error.owned
                 raise
-            header=self._read_exact(owned.result,4,_STORAGE_CLEANUP_MS)
+            header=self._read_exact(owned.result,4,left())
             count=struct.unpack('>I',header)[0]
             if not 0<count<=16384: _fail('FRAME_DENIED')
-            value=_v1_decode(header+self._read_exact(owned.result,count,_STORAGE_CLEANUP_MS))
+            value=_v1_decode(header+self._read_exact(owned.result,count,left()))
             _v1_exact(value,('version','kind','role','removed','code','policyDigest','fileCount','directoryCount',
                              'logicalBytes','allocatedBytes'))
             if (type(value['version']) is not int or value['version']!=1 or value['kind']!='STORAGE_CLEANUP'
@@ -2065,14 +2091,15 @@ class _KernelPortCore:
             aggregate=storage.CrashAggregate(value['policyDigest'],*(_v1_int(value[name],0) for name in (
                 'fileCount','directoryCount','logicalBytes','allocatedBytes')),False)
             if self.b.os.write(owned.command,b'EXIT')!=4: _fail('CHANNEL_DENIED')
-            receipt=self.wait_owned(owned,2000)
+            receipt=self.wait_owned(owned,min(2000,left()))
             if type(receipt) is not dict or receipt.get('status')!='EXITED' or receipt.get('pid')!=owned.pid:
                 _fail('CLEANUP_UNCERTAIN')
         except Exception:
             if owned is not None:
-                try: self.stop_owned(owned,2000)
+                # Stop the original child: its helper kills it; no wait beyond the shared end.
+                try: self.stop_owned(owned,min(2000,left()))
                 except Exception: pass
-            return incomplete
+            return incomplete if left() else timeout
         self._crash_aggregates[role]=aggregate
         complete=self._remove_view(launch.views,_view_backing(launch.views)) and value['removed']
         return storage.CleanupResult(complete,False,'COMPLETE' if complete else 'CLEANUP_INCOMPLETE')
@@ -2087,8 +2114,6 @@ class _KernelPortCore:
         return summary
 
 
-# A storage cleanup child's result frame wait: bounded, and inside the shared 60 s cleanup window (C1).
-_STORAGE_CLEANUP_MS=30000
 _NATIVE_KERNEL_SEAL=object()
 
 

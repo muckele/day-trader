@@ -1782,8 +1782,10 @@ class ConfinementTests(unittest.TestCase):
         """An OfflineKernelPort whose four original role children are reaped (LIVE names one still running) and
         whose spawn_waiting runs the given entry, in process, over a CleanupChild double (pid 401) whose storage is
         VIEW (a StorageView by default). The parent's own effects and the child's calls share LOG; the child's FD4
-        writes are the result pipe."""
+        writes are the result pipe. self.budget is the run's one started-at-terminal cleanup budget (P67, C1); every
+        wait the cleanup asks of this port is recorded in self.waits as (kind, allowance in ms)."""
         b=InertBindings(); log=[]; out=bytearray(); children={}
+        self.budget=V1Budget(); self.waits=waits=[]
         def rmdir(path):
             log.append(('rmdir',path))
             if rmdir_fail is not None and rmdir_fail(path): raise OSError(39,'inert directory not empty')
@@ -1795,8 +1797,9 @@ class ConfinementTests(unittest.TestCase):
             original=c.NativeOwned(301+index,RUN,role,'command','result')
             k._owned[original]={'outer':300+index,'child':301+index,'launch':launches[role],'terminal':
                                 None if role==live else {'status':'STOPPED','pid':301+index,'run_id':RUN}}
-        def spawn(launch,entry):
+        def spawn(launch,entry,*,limit_ms=None):
             log.append(('spawn',launch))
+            waits.append(('start',None if limit_ms is None else limit_ms()))
             child=children[launch.role]=CleanupChild(launch,log,out,fail=fail,view=view)
             try: entry(child)
             except ExecBoundary: pass
@@ -1807,12 +1810,15 @@ class ConfinementTests(unittest.TestCase):
             del out[:8]
             return owned
         def read_exact(fd,count,deadline,**kwargs):
+            waits.append(('read',deadline))
             data=bytes(out[:count]); del out[:count]
             if fd!='result2' or len(data)!=count: c._fail('ROLE_START_FAILED')
             return data
         k.spawn_waiting,k._read_exact=spawn,read_exact
-        k.wait_owned=lambda owned,ms: log.append(('wait',owned.pid)) or {'status':'EXITED','pid':owned.pid,'run_id':RUN}
-        k.stop_owned=lambda owned,ms: log.append(('stop',owned.pid)) or {'status':'STOPPED','pid':owned.pid,'run_id':RUN}
+        k.wait_owned=lambda owned,ms: (log.append(('wait',owned.pid)), waits.append(('wait',ms)))[0] or {
+            'status':'EXITED','pid':owned.pid,'run_id':RUN}
+        k.stop_owned=lambda owned,ms: (log.append(('stop',owned.pid)), waits.append(('stop',ms)))[0] or {
+            'status':'STOPPED','pid':owned.pid,'run_id':RUN}
         return k,b,log,launches,children
     @staticmethod
     def view_paths(role):
@@ -1828,13 +1834,16 @@ class ConfinementTests(unittest.TestCase):
         # caller entry, path or operation. Only after every child of that role's view has its terminal receipt
         # (its /dev/shm went with its mount namespace, P16) does the bootstrap remove its own root-owned skeleton.
         self.assertTrue(callable(getattr(c._KernelPortCore,'run_storage_cleanup',None)),'no per-role storage cleanup')
-        self.assertEqual(list(inspect.signature(c._KernelPortCore.run_storage_cleanup).parameters),['self','role','launch'])
+        parameters=inspect.signature(c._KernelPortCore.run_storage_cleanup).parameters
+        self.assertEqual(list(parameters),['self','role','launch','budget'])  # P67: the caller's shared budget
+        self.assertIs(parameters['budget'].kind,inspect.Parameter.KEYWORD_ONLY)
+        self.assertIs(parameters['budget'].default,inspect.Parameter.empty)
         k,b,log,launches,children=self.cleanup_port()
         for role in c.UIDS:
             with self.subTest(role=role):
                 del log[:]
                 launch=launches[role]; child_uid=launch.uid
-                result=k.run_storage_cleanup(role,launch)
+                result=k.run_storage_cleanup(role,launch,budget=self.budget)
                 self.assertEqual(result,c.storage.CleanupResult(True,False,'COMPLETE'))
                 skeleton,backing=self.view_paths(role)
                 spawn=log.index(('spawn',launch))
@@ -1857,13 +1866,100 @@ class ConfinementTests(unittest.TestCase):
                 # P16: the bootstrap never unmounts (nor makes any raw syscall); teardown reclaimed /dev/shm.
                 self.assertEqual([e for e in b.calls if type(e[0]) is int],[])
         self.assertEqual(k.crash_summary(),c.storage.CrashAggregate('a'*64,0,0,0,0,False))
+    # --- P67 (C1): every cleanup wait is clamped to the run's one shared cleanup budget --------------------------------
+    def test_storage_cleanup_normal_child_completes_well_inside_the_shared_budget(self):
+        # A normal child completes, and every wait it was given is the shared end's remainder, never a fixed 30 s:
+        # the start step is min(2000, remaining), the result frame waits are the remaining allowance itself.
+        k,b,log,launches,children=self.cleanup_port()
+        self.budget.start_terminal(); self.budget.clamp_end(self.budget.clock.mono+5000)
+        self.assertEqual(k.run_storage_cleanup('PROXY',launches['PROXY'],budget=self.budget),
+                         c.storage.CleanupResult(True,False,'COMPLETE'))
+        self.assertEqual(self.waits,[('start',5000),('read',5000),('read',5000),('wait',2000)])
+        self.assertEqual(self.budget.remaining(),5000)  # the shared end was neither moved nor reallocated
+    def sim_port(self,stage,budget_ms):
+        """The real spawn_waiting, _read_exact and stop_owned over inert pipes and a simulated clock, which advances
+        only while a wait polls (10 ms per empty poll), with topology's real CleanupBudget on the same clock: started
+        once (the run's terminal event) and clamped to BUDGET_MS. STAGE 'ready': no cleanup child ever writes its
+        ready frame. STAGE 'result': each child starts (a valid ready frame for its own view, then WAITING) but never
+        writes its result frame. Returns (port, launches, budget, now_ms, writes, spawned)."""
+        topology=topology_module()
+        b=InertBindings(); b.check_appliance=lambda:None; b.pin_programs=lambda pins:{c.NODE:19}
+        fds=iter(range(20,4000,2)); pids=iter(range(501,600)); pairs=[]; streams={}; spawned=[]; writes=[]; role=[None]
+        def pipe2(flags):
+            n=next(fds); pairs.append((n,n+1)); return (n,n+1)
+        def fork():
+            outer=next(pids); spawned.append(outer)
+            command,result,stop,ready=pairs[-4:]
+            if stage=='result':
+                view=StorageView(role[0],[])
+                streams[ready[0]]=bytearray(b'd'*64+view.digest()); streams[result[0]]=bytearray(b'WAITING\n')
+            return outer
+        def select(reads,writes_,errors,timeout):
+            ready=[fd for fd in reads if streams.get(fd)]
+            if not ready: b.advance(0.01)
+            return ready,[],[]
+        def read(fd,size):
+            data=bytes(streams[fd][:size]); del streams[fd][:size]; return data
+        def stat(path):
+            _,dev,ino=StorageView(role[0],[]).identity(path.split('/root',1)[1])
+            return types.SimpleNamespace(st_dev=dev,st_ino=ino)
+        b.os.pipe2,b.os.fork,b.select,b.os.read,b.os.stat=pipe2,fork,select,read,stat
+        b.os.close=b.os.unlink=b.os.rmdir=lambda path:None; b.os.set_blocking=lambda fd,flag:None
+        b.os.fstat=lambda fd:types.SimpleNamespace(st_dev=254,st_ino=999)
+        b.os.write=lambda fd,data: writes.append((fd,data)) or len(data)
+        b.read_file=lambda path,limit=65536:(str(int(path.split('/')[2])+200)+'\n').encode()
+        b.os.readlink=lambda path:'pipe:[30]' if path.endswith('/3') else 'pipe:[40]'
+        k=c.OfflineKernelPort(b)
+        spawn=k.spawn_waiting
+        def spawn_as(launch,entry,**kwargs):
+            role[0]=launch.role; return spawn(launch,entry,**kwargs)
+        k.spawn_waiting=spawn_as
+        now=lambda:int(round(b.clock*1000))
+        budget=topology.CleanupBudget(types.SimpleNamespace(sample=lambda:(now(),now())),real_clock=now)
+        budget.start_terminal(); budget.clamp_end(now()+budget_ms)
+        launches={name:c.prepare_role(name,c.RoleConfig(self.config(k),c.role_fds(name,RUN))) for name in c.UIDS}
+        return k,launches,budget,now,writes,spawned
+    def test_storage_cleanup_stalled_child_is_stopped_within_the_shared_budget(self):
+        # A child that never writes its ready frame, or never its result frame, is stopped (its helper kills it) and
+        # the cleanup returns TIMEOUT and sticky-incomplete within the shared budget plus one poll (10 ms).
+        timeout=c.storage.CleanupResult(False,False,'CLEANUP_TIMEOUT')
+        for stage in ('ready','result'):
+            with self.subTest(stall=stage):
+                k,launches,budget,now,writes,spawned=self.sim_port(stage,300)
+                end=budget.deadline; start=now()
+                self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER'],budget=budget),timeout)
+                self.assertGreaterEqual(now()-start,290)          # it did wait for the child, up to the shared end
+                self.assertLessEqual(now()-start,300+10)
+                self.assertEqual(budget.deadline,end)
+                owned=next(o for o,s in k._owned.items() if s['outer']==spawned[0])
+                self.assertIn((k._owned[owned]['stop'],b'STOP'),writes)  # the original child was stopped
+                self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER'],budget=budget),
+                                 c.storage.CleanupResult(False,False,'CLEANUP_INCOMPLETE'))  # sticky, one use
+    def test_storage_cleanup_of_four_roles_never_exceeds_the_one_shared_budget(self):
+        # C1: the four roles' cleanups share the run's one budget. The first stalled child uses all of it; the
+        # others find it exhausted and return TIMEOUT at once, spawning nothing. The end is never moved or renewed.
+        k,launches,budget,now,writes,spawned=self.sim_port('ready',400)
+        end=budget.deadline; start=now()
+        results=[k.run_storage_cleanup(role,launches[role],budget=budget) for role in c.UIDS]
+        self.assertEqual(results,[c.storage.CleanupResult(False,False,'CLEANUP_TIMEOUT')]*4)
+        self.assertLessEqual(now()-start,400+10)
+        self.assertEqual(len(spawned),1)
+        self.assertEqual(budget.deadline,end)
+        self.assertEqual(budget.remaining(),0)
+    def test_storage_cleanup_refuses_anything_that_is_not_a_cleanup_budget(self):
+        k,b,log,launches,children=self.cleanup_port()
+        for budget in (None,object(),types.SimpleNamespace(remaining=lambda:60000)):
+            with self.subTest(budget=budget):
+                self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER'],budget=budget),
+                                 c.storage.CleanupResult(False,False,'CLEANUP_INCOMPLETE'))
+                self.assertEqual(log,[])
     def test_storage_cleanup_removes_role_created_content_without_admission_strictness(self):
         # P66: the cleanup child verifies its scope roots as admitted, then removes whatever the role created there
         # (symlinks as links, sockets, FIFOs, a 0500 directory made u+rwx through its descriptor, a 0000 file),
         # never through a symlink and never by opening content. The pre-exec admission still refuses that content.
         self.assertTrue(callable(getattr(c.storage,'verify_role_scopes',None)),'no cleanup scope verification')
         k,b,log,launches,children=self.cleanup_port(view=ContentView)
-        self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER']),c.storage.CleanupResult(True,False,'COMPLETE'))
+        self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER'],budget=self.budget),c.storage.CleanupResult(True,False,'COMPLETE'))
         view=children['BROWSER'].storage
         self.assertEqual(view.tree['children'],{})
         content=[e[1:] for e in log if e[0]=='content']
@@ -1886,7 +1982,7 @@ class ConfinementTests(unittest.TestCase):
         incomplete=c.storage.CleanupResult(False,False,'CLEANUP_INCOMPLETE')
         # A role child still running holds its view and /dev/shm: nothing is touched (P16).
         k,b,log,launches,children=self.cleanup_port(live='BROWSER')
-        self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER']),incomplete)
+        self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER'],budget=self.budget),incomplete)
         self.assertEqual(log,[])
         # Launch records not recomputed from the role's own contract, and another role's launch.
         k,b,log,launches,children=self.cleanup_port()
@@ -1894,30 +1990,30 @@ class ConfinementTests(unittest.TestCase):
                                  ('unsealed','BROWSER',dataclasses.replace(launches['BROWSER'],_seal=None)),
                                  ('another role','PROXY',launches['BROWSER']),('unknown role','ROOT',launches['BROWSER'])):
             with self.subTest(launch=name):
-                self.assertEqual(k.run_storage_cleanup(role,launch),incomplete)
+                self.assertEqual(k.run_storage_cleanup(role,launch,budget=self.budget),incomplete)
                 self.assertEqual(log,[])
         # One-use per role.
-        self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER']).code,'COMPLETE')
+        self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER'],budget=self.budget).code,'COMPLETE')
         del log[:]
-        self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER']),incomplete)
+        self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER'],budget=self.budget),incomplete)
         self.assertEqual(log,[])
         # A child that cannot admit never writes its ready frame: it is stopped, nothing is recorded.
         k,b,log,launches,children=self.cleanup_port(fail='uid')
-        self.assertEqual(k.run_storage_cleanup('VERIFIER',launches['VERIFIER']),incomplete)
+        self.assertEqual(k.run_storage_cleanup('VERIFIER',launches['VERIFIER'],budget=self.budget),incomplete)
         self.assertIn(('stop',401),log); self.assertIn(('_exit',78),log)
         self.assertNotIn(('wait',401),log)
         with self.assertRaisesRegex(c.ConfinementError,'^CLEANUP_INCOMPLETE$'): k.crash_summary()
         # The bootstrap cannot clear the old skeleton: no child is spawned.
         k,b,log,launches,children=self.cleanup_port(rmdir_fail=lambda path: path.endswith('/.root/dev/shm'))
-        self.assertEqual(k.run_storage_cleanup('PROXY',launches['PROXY']),incomplete)
+        self.assertEqual(k.run_storage_cleanup('PROXY',launches['PROXY'],budget=self.budget),incomplete)
         self.assertFalse(any(e[0]=='spawn' for e in log))
         # Backing state the child left behind keeps the result incomplete (sticky), after the child has exited.
         k,b,log,launches,children=self.cleanup_port(rmdir_fail=lambda path: path.endswith('/.state/tmp'))
-        self.assertEqual(k.run_storage_cleanup('CONTROLLER',launches['CONTROLLER']),incomplete)
+        self.assertEqual(k.run_storage_cleanup('CONTROLLER',launches['CONTROLLER'],budget=self.budget),incomplete)
         self.assertIn(('wait',401),log)
         # Only the four role summaries combine.
         k,b,log,launches,children=self.cleanup_port()
-        for role in ('CONTROLLER','BROWSER','VERIFIER'): k.run_storage_cleanup(role,launches[role])
+        for role in ('CONTROLLER','BROWSER','VERIFIER'): k.run_storage_cleanup(role,launches[role],budget=self.budget)
         with self.assertRaisesRegex(c.ConfinementError,'^CLEANUP_INCOMPLETE$'): k.crash_summary()
     def test_role_shm_is_reclaimed_by_namespace_teardown_never_unmounted(self):
         # P16 (C7): a parent cannot unmount a mount of a child's private mount namespace; the role's /dev/shm
@@ -2536,6 +2632,17 @@ def probe_module(name):
     module = importlib.util.module_from_spec(spec_)
     spec_.loader.exec_module(module)
     return module
+
+
+def topology_module():
+    """guest/topology.py, once per process, for its real CleanupBudget (Task 2, C1) in the P67 cleanup tests."""
+    name = 'task14_cleanup_budget_topology'
+    if name not in sys.modules:
+        spec_ = importlib.util.spec_from_file_location(name, ROOT / 'guest/topology.py')
+        module = importlib.util.module_from_spec(spec_)
+        sys.modules[name] = module
+        spec_.loader.exec_module(module)
+    return sys.modules[name]
 
 
 # Linux 6.8 values the Task 10 probe tests name, transcribed from the pinned archive; abi_coverage_test binds the
