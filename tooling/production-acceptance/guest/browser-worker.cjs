@@ -4,6 +4,8 @@ const { createHash, createHmac, randomBytes, timingSafeEqual } = require('node:c
 const { chromium } = require('playwright');
 const { validateAssetResponse, importBrowserAssetBundle } = require('./receipts.cjs');
 const { bindBrowserWorkerChannel } = require('./role-ports.cjs');
+// T13 I-4: the single copy of the readiness checks (observation.cjs loads no controller module).
+const { readinessPredicate } = require('./observation.cjs');
 const RUNTIME_PINS = require('../package.json').acceptanceRuntime;
 
 function fail(code, cause) { const error = new Error(code, cause ? { cause } : undefined); error.code = code; throw error; }
@@ -27,6 +29,11 @@ function sessionAction(action,payload) {
     return;
   }
   if(action==='SESSION_OBSERVATION'&&Reflect.ownKeys(payload).length===0)return;
+  if(action==='SESSION_READINESS'){
+    exact(payload,['phase','sequence']);
+    if(!['OBSERVE_BEFORE_RESTART','OBSERVE_AFTER_RESTART'].includes(payload.phase)||!safe(payload.sequence))fail('ACTION_DENIED');
+    return;
+  }
   if(action==='OBSERVE_VIEW'){
     exact(payload,['phase','view']);
     if(!['OBSERVE_BEFORE_RESTART','OBSERVE_AFTER_RESTART'].includes(payload.phase)||
@@ -42,11 +49,15 @@ function meResponse(response,origin) {
       (!request||typeof request.method!=='function'||request.method()==='GET');}
   catch{return false;}
 }
+// The one owner check, for the login's /api/me and for each SESSION_READINESS /api/me.
+function ownerMatches(body,expectedOwner) {
+  return !!body&&typeof body==='object'&&!Array.isArray(body)&&!!body.user&&typeof body.user==='object'&&!Array.isArray(body.user)&&
+    body.user.id===expectedOwner.id&&body.user.username===expectedOwner.username;
+}
 async function sessionSnapshot(context,response,backend,expectedOwner,key) {
   if(!response||typeof response.status!=='function'||response.status()!==200||typeof response.json!=='function')fail('OWNER_MISMATCH');
   let body;try{body=await response.json();}catch{fail('OWNER_MISMATCH');}
-  if(!body||typeof body!=='object'||Array.isArray(body)||!body.user||typeof body.user!=='object'||Array.isArray(body.user)||
-      body.user.id!==expectedOwner.id||body.user.username!==expectedOwner.username)fail('OWNER_MISMATCH');
+  if(!ownerMatches(body,expectedOwner))fail('OWNER_MISMATCH');
   return sessionFingerprint(context,backend,key);
 }
 async function sessionFingerprint(context,backend,key) {
@@ -80,7 +91,6 @@ const LOCAL_ABORT_HEADERS=Object.freeze(['authorization','proxy-authorization','
 // index.html bytes, so its response is validated against the /index.html entry.
 const SPA_DOCUMENT_PATHS=Object.freeze(['/','/login',...Object.values(VIEW_SPECS).map(spec=>spec.path)]);
 const INDEX_ENTRY_PATH='/index.html';
-const READINESS_CHECKS=Object.freeze(['ownerConfiguration','authenticationConfiguration','databaseConnected','ownerIdentity','ownerSettings','persistence','paperMode','automationDisabled','schedulerSuppressed','paperDestination','paperBindingConfiguration','paperCredentialConfiguration']);
 function plain(value){return value!==null&&typeof value==='object'&&!Array.isArray(value);}
 function finite(value){return typeof value==='number'&&Number.isFinite(value);}
 function textValue(value){return typeof value==='string'&&value.length>0;}
@@ -107,13 +117,45 @@ function sourceRows(rows,kind){
     return instant(row.filledAt)&&numeric(row.price)&&optionalNumeric(row.realizedPnl);
   });
 }
-function validReadiness(body){
-  if(!plain(body)||body.contractVersion!==2||body.profile!=='owner-paper-maintenance'||body.runtimeReady!==true||body.maintenanceReady!==true||
-     !plain(body.checks)||Object.keys(body.checks).sort().join(',')!==[...READINESS_CHECKS].sort().join(',')||
-     !plain(body.automation)||Object.keys(body.automation).sort().join(',')!=='activationAuthorized,enabled,isEnabled,liveEnabled,schedulerSuppressed')return false;
-  if(READINESS_CHECKS.some(name=>!plain(body.checks[name])||body.checks[name].status!=='pass'))return false;
-  return body.automation.enabled===false&&body.automation.isEnabled===false&&body.automation.liveEnabled===false&&
-    body.automation.schedulerSuppressed===true&&body.automation.activationAuthorized===false;
+// C9 SESSION_READINESS: a fixed GET's response, matched by origin, path and method only, so that a
+// non-200 readiness answer (503) is observed and classified rather than timed out.
+function fixedResponse(response,backend,path){
+  try{const url=new URL(response.url()),request=typeof response.request==='function'?response.request():null;
+    return url.origin===backend&&url.pathname===path&&!url.search&&!url.hash&&typeof response.status==='function'&&
+      (!request||typeof request.method!=='function'||request.method()==='GET');}
+  catch{return false;}
+}
+// The exact response bytes (bounded) and their strict UTF-8 JSON value; both from the same bytes.
+async function exactBody(response,code){
+  let bytes;try{bytes=typeof response.body==='function'?await response.body():null;}catch{fail(code);}
+  if(!Buffer.isBuffer(bytes)||bytes.length<1||bytes.length>65536)fail(code);
+  const copy=Buffer.from(bytes);let value;
+  try{value=JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(copy));}catch{fail(code);}
+  return {bytes:copy,value};
+}
+function digestHex(bytes){return createHash('sha256').update(bytes).digest('hex');}
+// T13 I-4/I-5 (C9): GET /api/readiness, then GET /api/me. Readiness passes only as HTTP 200 with a
+// body the single readinessPredicate accepts; the owner must be the login's owner and the cookie
+// the login's cookie. The result carries SHA-256 digests of the exact response bytes, never content.
+async function observeReadiness(page,context,backend,phase,sequence,boundSession,sessionKey,clock,runId){
+  const before=await sessionFingerprint(context,backend,sessionKey);
+  if(before.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
+  const readinessPending=page.waitForResponse(response=>fixedResponse(response,backend,'/api/readiness'),{timeout:10000});
+  await fixedGet(page,backend+'/api/readiness');
+  const readinessResponse=await readinessPending;
+  if(readinessResponse.status()!==200)fail('READINESS_FAILED');
+  const readiness=await exactBody(readinessResponse,'READINESS_FAILED');
+  if(readinessPredicate(readiness.value)!==true)fail('READINESS_FAILED');
+  const ownerPending=page.waitForResponse(value=>meResponse(value,backend),{timeout:10000});
+  await fixedGet(page,backend+'/api/me');
+  const owner=await exactBody(await ownerPending,'OWNER_MISMATCH');
+  if(!ownerMatches(owner.value,boundSession.expectedOwner))fail('OWNER_MISMATCH');
+  const after=await sessionFingerprint(context,backend,sessionKey);
+  if(after.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
+  let sample;try{sample=clock.sample();}catch{fail('EXPIRED');}
+  if(!Array.isArray(sample)||sample.length!==2||!safe(sample[1],0))fail('EXPIRED');
+  return Object.freeze({status:'READINESS_OBSERVED',runId,phase,sequence,sessionFingerprint:after.fingerprint,
+    readinessDigest:digestHex(readiness.bytes),ownerDigest:digestHex(owner.bytes),checkedAtMonotonicMs:sample[1]});
 }
 function rowIdentities(rows,field){
   if(!Array.isArray(rows))fail('OBSERVATION_FAILED');
@@ -164,7 +206,14 @@ function validateViewBodies(view,bodies){
     const visibleOrderIndexes=orders.orders.map((row,index)=>({row,index})).filter(({row})=>String(row.status).toLowerCase()!=='rejected').slice(0,8);
     const visibleDecisions=decisions.decisions.slice(0,10),visiblePositions=performance.positions.slice(0,8),visibleAudit=audit.events;
     const visibleReconciliation=reconciliation.orders.slice(0,4);
-    return {sections:[
+    // T13 I-9: source and brokerError are derived from the validated PAPER-health body. The source
+    // is the single connected Alpaca adapter the health body reports (none, or more than one, is
+    // no source); brokerError is any broker fault that body or the performance body reports.
+    const connected=Object.keys(health.alpaca).filter(name=>plain(health.alpaca[name])&&health.alpaca[name].connected===true);
+    const paperHealth=health.alpaca.paper;
+    const paper=Object.freeze({source:connected.length===1?'alpaca-'+connected[0]:null,
+      brokerError:paperHealth.connected!==true||paperHealth.error!==null||paperHealth.tradingBlocked!==false||performance.brokerError!==null});
+    return {paper,sections:[
       {title:'Recent strategy decisions',rows:visibleDecisions,samples:rowIdentities(visibleDecisions,'symbol'),empty:'No decisions saved yet.',selector:'tbody tr'},
       {title:'RoboTrader orders',rows:visibleOrderIndexes,samples:visibleOrderIndexes.map(({index})=>orderLabels[index]),empty:'No RoboTrader orders submitted yet.',selector:'tbody tr'},
       {title:'Current positions',rows:visiblePositions,samples:rowIdentities(visiblePositions,'symbol'),empty:'No positions returned.',selector:'tbody tr'},
@@ -227,23 +276,21 @@ function assertCurveHistory(path,rows){const points=curvePoints(path);if(points.
     const expected=(equities[index]-dataMin)/(dataMax-dataMin),rendered=(pixelMax-ys[index])/(pixelMax-pixelMin);
     if(Math.abs(expected-rendered)>0.02)fail('OBSERVATION_FAILED');
   }}
+// The response status is checked from the observed response (fixedResponse / meResponse), so that a
+// non-200 answer is classified by the action that made the GET.
 async function fixedGet(page,url){if(typeof page.evaluate!=='function')fail('OBSERVATION_FAILED');
   await page.evaluate(async target=>{const response=await fetch(target,{method:'GET',credentials:'include',redirect:'error',headers:{accept:'application/json'}});
-    if(!response.ok)throw new Error('FIXED_GET_FAILED');await response.arrayBuffer();},url);}
-async function observeFixedView(page,context,backend,frontend,phase,view,boundSession,sessionKey){
+    await response.arrayBuffer();},url);}
+// T13 I-9: measured, not assumed. A role=alert or role=status element that does not settle at zero
+// within the same 200 x 25 ms bound waitCount uses is a measured error state.
+async function settlesAtZero(locator){for(let attempt=0;attempt<200;attempt++){if(await locatorCount(locator)===0)return true;
+    await new Promise(resolve=>setTimeout(resolve,25));}return false;}
+// The view runs only after the phase's SESSION_READINESS (the caller checks it); `facts` are the
+// phase's PAPER-health facts (from its ROBO view), or none.
+async function observeFixedView(page,context,backend,frontend,phase,view,sequence,facts,boundSession,sessionKey){
   const spec=VIEW_SPECS[view];if(!spec)fail('ACTION_DENIED');
   const beforeSession=await sessionFingerprint(context,backend,sessionKey);
   if(beforeSession.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
-  let readinessValidation=false;
-  if(view==='ROBO'){
-    const readinessPending=page.waitForResponse(response=>viewResponse(response,backend,'/api/readiness',[]),{timeout:10000});
-    await fixedGet(page,backend+'/api/readiness');
-    const readinessResponse=await readinessPending;let readinessBody;try{readinessBody=await readinessResponse.json();}catch{fail('READINESS_FAILED');}
-    if(!validReadiness(readinessBody))fail('READINESS_FAILED');readinessValidation=true;
-    const ownerPending=page.waitForResponse(value=>meResponse(value,backend),{timeout:10000});await fixedGet(page,backend+'/api/me');
-    const ownerSession=await sessionSnapshot(context,await ownerPending,backend,boundSession.expectedOwner,sessionKey);
-    if(ownerSession.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
-  }
   const pending=spec.routes.map(([path,query])=>page.waitForResponse(response=>viewResponse(response,backend,path,query),{timeout:10000}));
   const links=page.getByRole('link',{name:spec.nav,exact:true}),link=typeof links.first==='function'?links.first():links;
   if(!link||typeof link.click!=='function')fail('OBSERVATION_FAILED');await link.click();
@@ -253,7 +300,7 @@ async function observeFixedView(page,context,backend,frontend,phase,view,boundSe
   for(const response of responses){let body;try{body=await response.json();}catch{fail('OBSERVATION_FAILED');}bodies.push(body);}
   const validated=validateViewBodies(view,bodies);
   const heading=page.getByRole('heading',{name:spec.heading,exact:true});await waitVisible(heading);
-  await waitCount(page.getByRole('alert'),value=>value===0);await waitCount(page.getByRole('status'),value=>value===0);
+  const noError=await settlesAtZero(page.getByRole('alert'))&&await settlesAtZero(page.getByRole('status'));
   let domRows=0;
   for(const section of validated.sections){
     const card=await sectionCard(page,section.title),rows=section.rows,samples=section.samples;
@@ -275,9 +322,12 @@ async function observeFixedView(page,context,backend,frontend,phase,view,boundSe
     await visibleMatches(card.getByText(money(value),{exact:true}),1);}
   const session=await sessionFingerprint(context,backend,sessionKey);
   if(session.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
-  return Object.freeze({status:'VIEW_OBSERVED',view,phase,schemaValidation:true,renderedData:domRows>0,
-    validEmptyState:domRows===0,noError:true,fresh:true,source:'alpaca-paper',brokerError:false,
-    routeCount:spec.routes.length,renderedCount:domRows,fingerprint:session.fingerprint,readinessValidation});
+  // T13 I-9: no freshness is claimed. ROBO reports the facts derived from its own PAPER-health body;
+  // the phase's later views report the same facts, or none before ROBO.
+  const paper=validated.paper||facts||Object.freeze({source:null,brokerError:null});
+  return Object.freeze({observed:Object.freeze({status:'VIEW_OBSERVED',view,phase,sequence,schemaValidation:true,renderedData:domRows>0,
+    validEmptyState:domRows===0,noError,source:paper.source,brokerError:paper.brokerError,
+    routeCount:spec.routes.length,renderedCount:domRows,fingerprint:session.fingerprint}),paper:validated.paper||null});
 }
 async function bounded(promise,milliseconds) {
   if(!Number.isSafeInteger(milliseconds)||milliseconds<0)fail('CLEANUP_UNCERTAIN');
@@ -692,6 +742,7 @@ async function runBrowserWorker(pipe, config) {
     wire=rpc(outcome.applicationPipe,auditApplication(outcome.applicationPipe,topology.runId));
     inspectFamily(pipe);
     const decisions=new Map();launched.decisions=decisions;let ready=false,commandFailure,loginSpent=false,boundSession=null,activeAction=null;
+    let readinessState=null,paperFacts=null,lastReadinessSequence=0;const readinessPhases=new Set();
     const sessionKey=randomBytes(32);
     let rejectActionFailure;
     const actionFailure=new Promise((_,reject)=>{rejectActionFailure=reject;});actionFailure.catch(()=>{});
@@ -710,9 +761,23 @@ async function runBrowserWorker(pipe, config) {
         await wire.write('RESULT',{actionId,status:'SESSION_BOUND',fingerprint:boundSession.fingerprint});return;
       }
       if(!boundSession)fail('SESSION_INVALID');
+      // T13 I-4/I-5 (C9): one worker readiness per phase (phases only advance, sequences only
+      // increase); a view runs only after its own phase's readiness.
+      if(action==='SESSION_READINESS'){
+        if(readinessPhases.has(payload.phase)||payload.phase==='OBSERVE_BEFORE_RESTART'&&readinessPhases.has('OBSERVE_AFTER_RESTART')||
+           payload.sequence<=lastReadinessSequence)fail('REPLAY');
+        readinessPhases.add(payload.phase);lastReadinessSequence=payload.sequence;readinessState=null;paperFacts=null;
+        const observed=await observeReadiness(state.page,state.context,config.runBinding.origins.BACKEND,payload.phase,payload.sequence,
+          boundSession,sessionKey,launch.clock,topology.runId);
+        readinessState=Object.freeze({phase:payload.phase,sequence:payload.sequence});
+        await wire.write('RESULT',{actionId,...observed});return;
+      }
       if(action==='OBSERVE_VIEW'){
-        const observed=await observeFixedView(state.page,state.context,config.runBinding.origins.BACKEND,
-          config.runBinding.origins.FRONTEND,payload.phase,payload.view,boundSession,sessionKey);
+        if(!readinessState||readinessState.phase!==payload.phase)fail('READINESS_FAILED');
+        const facts=paperFacts&&paperFacts.phase===readinessState.phase&&paperFacts.sequence===readinessState.sequence?paperFacts:null;
+        const {observed,paper}=await observeFixedView(state.page,state.context,config.runBinding.origins.BACKEND,
+          config.runBinding.origins.FRONTEND,payload.phase,payload.view,readinessState.sequence,facts,boundSession,sessionKey);
+        if(paper)paperFacts=Object.freeze({phase:readinessState.phase,sequence:readinessState.sequence,source:paper.source,brokerError:paper.brokerError});
         await wire.write('RESULT',{actionId,...observed});return;
       }
       const observed=await sessionFingerprint(state.context,config.runBinding.origins.BACKEND,sessionKey);

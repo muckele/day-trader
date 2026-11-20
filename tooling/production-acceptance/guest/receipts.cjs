@@ -4,6 +4,12 @@ const {decodeFrame,canonicalBytes,receiptSigningBytes} = require('./contracts.cj
 const kinds = ['RELEASE_RECEIPT','RESTART_RECEIPT','LEDGER_RECEIPT','MAINTENANCE_RECEIPT','DB_RECEIPT'];
 const admissionGuards = new WeakMap(), browserBundles = new WeakMap(), browserConfigs = new WeakMap();
 const trusts = new WeakMap(), receipts = new WeakMap(), manifests = new WeakMap(), entries = new WeakMap();
+// Task 17 (P20): the WorkerGateHandle brand registry, the private release trust of each browser
+// controller config, and the release trust each BrowserSession was opened under.
+const workerGates = new WeakMap(), configReleases = new WeakMap(), sessionTrusts = new WeakMap();
+const WORKER_GATE_KINDS = Object.freeze({ readiness: 'READINESS_GATE', owner: 'OWNER_GATE' });
+const OBSERVE_PHASES = Object.freeze(['OBSERVE_BEFORE_RESTART', 'OBSERVE_AFTER_RESTART']);
+let workerGateAuthorityClaimed = false;
 const hash = x => crypto.createHash('sha256').update(x).digest('hex');
 const safe = x => Number.isSafeInteger(x) && x >= 0;
 function fail(code='IDENTITY_MISMATCH') { const e = new Error(code);e.code=code;throw e; }
@@ -142,7 +148,9 @@ function createBrowserControllerConfig(release,assets,trust,bundle,candidate,com
   const value=freeze({runBinding:{runId:r.runId,manifestIdentity:compositionBinding.manifestDigest,configIdentity:r.configIdentity,
       expiresAt:compositionBinding.expiresAtMs,origins:copy(r.origins)},runtime:copy(candidate.runtime),paths:copy(candidate.paths),
     assetEntries:copy(a.entries),assetBundle:copy(bundle)});
-  const handle=opaque('BROWSER_CONFIG');browserConfigs.set(handle,value);return handle;
+  const handle=opaque('BROWSER_CONFIG');browserConfigs.set(handle,value);
+  // T13 m-9: the config privately keeps the release trust it was made under; it never leaves this module.
+  configReleases.set(handle,{trust,release});return handle;
 }
 function inspectBrowserControllerConfig(handle) {
   const value=browserConfigs.get(handle);if(!value)fail();return value;
@@ -182,12 +190,76 @@ function validateAdmissionReceiptGuard(guard,wallMs) {
   // policy capabilities, and reject instead of dropping a later observed time.
   for(const {frame,state} of saved.records)timeAt(frame,state,wallMs);
 }
-function createReceiptAdapters(trust) {
-  if(!trusts.has(trust))fail();return Object.freeze({
+// T13 m-9: a trust context is bound to a session's release trust when it is that context, or a
+// context (such as the independently selected post-restart one) for the same expected release
+// under the same pinned public keys.
+function releaseBound(candidate,release) {
+  const a=trusts.get(candidate),b=trusts.get(release);
+  return !!(a&&b&&(candidate===release||equal(a.expected.RELEASE_RECEIPT,b.expected.RELEASE_RECEIPT)&&equal(a.keys,b.keys)));
+}
+// T13 m-9: receipts read for a BrowserSession are inspected under the trust they were verified
+// under, which must be one context for all of them, release-bound to the session's private
+// release trust. No caller supplies the trust.
+function inspectSessionReceipts(session,pairs) {
+  try {
+    const bound=sessionTrusts.get(session);if(!bound||!Array.isArray(pairs)||pairs.length<1)return null;
+    const saved=pairs.map(pair=>Array.isArray(pair)&&pair.length===2?receipts.get(pair[0]):undefined);
+    if(saved.some(item=>!item||item.trust!==saved[0].trust)||!releaseBound(saved[0].trust,bound.trust))return null;
+    const values=pairs.map(([handle,kind])=>inspectReceipt(handle,kind,saved[0].trust));
+    return values.every(Boolean)?Object.freeze(values):null;
+  } catch { return null; }
+}
+// T13 I-4/I-5 (P20): browser.cjs claims the WorkerGateHandle minting authority once, at load; no
+// later caller can claim it, so no gate can be minted from a literal. A session is bound to the
+// release trust of the config it was opened with; a gate names its session, phase and sequence.
+function claimWorkerGateAuthority() {
+  if(workerGateAuthorityClaimed)fail('REPLAY');
+  workerGateAuthorityClaimed=true;
+  return Object.freeze({
+    bindSession(session,config) {
+      const bound=configReleases.get(config);
+      if(!bound||!session||typeof session!=='object'||sessionTrusts.has(session))fail();
+      sessionTrusts.set(session,bound);
+    },
+    mint(kind,facts) {
+      if(!Object.hasOwn(WORKER_GATE_KINDS,kind)||!facts||typeof facts!=='object'||!sessionTrusts.has(facts.session)||
+          typeof facts.runId!=='string'||!/^[0-9a-f]{32}$/.test(facts.runId)||typeof facts.configIdentity!=='string'||!/^[0-9a-f]{64}$/.test(facts.configIdentity)||
+          !OBSERVE_PHASES.includes(facts.phase)||!safe(facts.sequence)||facts.sequence<1||typeof facts.digest!=='string'||!/^[0-9a-f]{64}$/.test(facts.digest)||
+          !safe(facts.checkedAtMonotonicMs))fail();
+      const handle=opaque(WORKER_GATE_KINDS[kind]);
+      workerGates.set(handle,{kind,session:facts.session,runId:facts.runId,configIdentity:facts.configIdentity,phase:facts.phase,
+        sequence:facts.sequence,digest:facts.digest,checkedAtMonotonicMs:facts.checkedAtMonotonicMs,retired:false});
+      return handle;
+    },
+    retire(handle) { const gate=workerGates.get(handle);if(!gate)fail();gate.retired=true; },
+  });
+}
+function inspectWorkerGate(handle,session) {
+  const gate=workerGates.get(handle);if(!gate||gate.session!==session)return null;
+  return Object.freeze({kind:gate.kind,runId:gate.runId,configIdentity:gate.configIdentity,phase:gate.phase,sequence:gate.sequence,
+    digest:gate.digest,checkedAtMonotonicMs:gate.checkedAtMonotonicMs,current:gate.retired===false});
+}
+// The readiness and owner kinds: only a current WorkerGateHandle of that kind, minted for the
+// binding's BrowserSession (checked with the injected brand) and phase, of the binding's run and
+// config, under adapters whose trust is release-bound to that session's release trust.
+function workerGateCurrent(kind,handle,binding,trust,isBrowserSession) {
+  try {
+    const gate=workerGates.get(handle),bound=gate&&sessionTrusts.get(gate.session);
+    return !!(gate&&bound&&gate.kind===kind&&gate.retired===false&&typeof isBrowserSession==='function'&&binding&&typeof binding==='object'&&
+      isBrowserSession(binding.sessionHandle)===true&&gate.session===binding.sessionHandle&&gate.phase===binding.phase&&
+      gate.runId===binding.runId&&gate.configIdentity===binding.configIdentity&&releaseBound(trust,bound.trust)&&
+      safe(binding.wallMs)&&safe(binding.expiresAt)&&binding.wallMs<binding.expiresAt);
+  } catch { return false; }
+}
+// P20: verifyGate keeps its three arguments for every kind. The BrowserSession brand is injected
+// (browser.cjs's isBrowserSession), never required here: browser.cjs already requires this module.
+function createReceiptAdapters(trust,isBrowserSession) {
+  if(!trusts.has(trust)||isBrowserSession!==undefined&&typeof isBrowserSession!=='function')fail();return Object.freeze({
     verifyRelease:handle=>{const r=inspectReceipt(handle,'RELEASE_RECEIPT',trust);return r&&freeze({runId:r.runId,origins:r.origins,expiresAt:r.expiresAt,configIdentity:r.configIdentity,assetManifestDigest:r.assetManifestDigest});},
     verifyAssets:(assets,release)=>inspectReceipt(release,'RELEASE_RECEIPT',trust)&&inspectAssets(assets,release),
     verifyLedger:handle=>inspectReceipt(handle,'LEDGER_RECEIPT',trust),
-    verifyGate:(kind,handle,binding)=>{const receiptKind={maintenance:'MAINTENANCE_RECEIPT',restart:'RESTART_RECEIPT'}[kind];if(!receiptKind)return false;const r=inspectReceipt(handle,receiptKind,trust);return !!(r&&binding&&r.runId===binding.runId&&r.configIdentity===binding.configIdentity&&safe(binding.wallMs)&&binding.wallMs>=r.issuedAt&&binding.wallMs<r.expiresAt&&safe(binding.expiresAt)&&binding.wallMs<binding.expiresAt);}
+    verifyGate:(kind,handle,binding)=>{if(kind==='readiness'||kind==='owner')return workerGateCurrent(kind,handle,binding,trust,isBrowserSession);const receiptKind={maintenance:'MAINTENANCE_RECEIPT',restart:'RESTART_RECEIPT'}[kind];if(!receiptKind)return false;const r=inspectReceipt(handle,receiptKind,trust);return !!(r&&binding&&r.runId===binding.runId&&r.configIdentity===binding.configIdentity&&safe(binding.wallMs)&&binding.wallMs>=r.issuedAt&&binding.wallMs<r.expiresAt&&safe(binding.expiresAt)&&binding.wallMs<binding.expiresAt);}
   });
 }
-module.exports={createAdmissionReceiptGuard,sampleAdmissionReceiptGuard,validateAdmissionReceiptGuard,createTrustContext,verifyReceipt,inspectReceipt,verifyAssets,inspectAssets,validateAssetResponse,createBrowserAssetBundle,importBrowserAssetBundle,createBrowserControllerConfig,inspectBrowserControllerConfig,createReceiptAdapters};
+module.exports={createAdmissionReceiptGuard,sampleAdmissionReceiptGuard,validateAdmissionReceiptGuard,createTrustContext,verifyReceipt,inspectReceipt,verifyAssets,inspectAssets,validateAssetResponse,createBrowserAssetBundle,importBrowserAssetBundle,createBrowserControllerConfig,inspectBrowserControllerConfig,createReceiptAdapters,
+  claimWorkerGateAuthority,inspectWorkerGate,inspectSessionReceipts};

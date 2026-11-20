@@ -11,7 +11,7 @@ const test = require.main === module ? require('node:test') : () => {};
 const receipts = require('../../guest/receipts.cjs');
 const budgetAPI = require('../../guest/budget.cjs');
 const roles = require('../../guest/role-ports.cjs');
-const { fixture: budgetFixture, A } = require('./budget.test.cjs');
+const { fixture: budgetFixture, A, policyAPI } = require('./budget.test.cjs');
 
 const ROOT = path.resolve(__dirname, '../..');
 const CONTROLLER = path.join(ROOT, 'guest/browser.cjs');
@@ -35,6 +35,21 @@ const PATHS = Object.freeze({
   cache: '/run/acceptance/browser/cache',
   shm: '/dev/shm',
 });
+// Task 17: the synthetic backend's /api/readiness body (contract 2), shared by the fake and the tests.
+const READINESS_CHECKS = Object.freeze(['ownerConfiguration', 'authenticationConfiguration', 'databaseConnected', 'ownerIdentity',
+  'ownerSettings', 'persistence', 'paperMode', 'automationDisabled', 'schedulerSuppressed', 'paperDestination',
+  'paperBindingConfiguration', 'paperCredentialConfiguration']);
+function readinessBody(overrides = {}) {
+  return {
+    contractVersion: 2, profile: 'owner-paper-maintenance', runtimeReady: true, maintenanceReady: true,
+    checks: Object.fromEntries(READINESS_CHECKS.map(name => [name, { status: 'pass' }])),
+    automation: { enabled: false, isEnabled: false, liveEnabled: false, schedulerSuppressed: true, activationAuthorized: false },
+    ...overrides,
+  };
+}
+const B_PHASE = 'OBSERVE_BEFORE_RESTART', C_PHASE = 'OBSERVE_AFTER_RESTART';
+// Task 17 (C9): the fixed SESSION_READINESS action that sets the readiness and owner gates for a phase.
+function ready(session, phase = B_PHASE, sequence = 1) { return session.perform('SESSION_READINESS', { phase, sequence }); }
 
 function controller() {
   assert.equal(fs.existsSync(CONTROLLER), true, 'browser controller contract is absent');
@@ -51,6 +66,8 @@ function worker(playwright, receiptAPI, bindBrowserWorkerChannel, globals = {}) 
     if (name === 'playwright') return playwright;
     if (name === './receipts.cjs') return receiptAPI;
     if (name === './role-ports.cjs') return { bindBrowserWorkerChannel };
+    // Task 17: the worker takes the single readiness predicate from observation.cjs.
+    if (name === './observation.cjs') return require(path.join(ROOT, 'guest/observation.cjs'));
     if (name === '../package.json') return JSON.parse(fs.readFileSync(PACKAGE));
     return require(name);
   }
@@ -203,11 +220,7 @@ function fakePlaywright(options = {}) {
     '/api/paper-trades/orders': [],
     '/api/paper-trades/trades': [],
     '/api/robotrader/notifications': { events: [], executionSource: 'alpaca-paper' },
-    '/api/readiness': {
-      contractVersion: 2, profile: 'owner-paper-maintenance', runtimeReady: true, maintenanceReady: true,
-      checks: Object.fromEntries(['ownerConfiguration','authenticationConfiguration','databaseConnected','ownerIdentity','ownerSettings','persistence','paperMode','automationDisabled','schedulerSuppressed','paperDestination','paperBindingConfiguration','paperCredentialConfiguration'].map(name => [name, { status: 'pass' }])),
-      automation: { enabled: false, isEnabled: false, liveEnabled: false, schedulerSuppressed: true, activationAuthorized: false },
-    },
+    '/api/readiness': readinessBody(),
     ...(options.observationBodies || {}),
   };
   let context,currentUrl=FRONTEND+'/';
@@ -343,11 +356,15 @@ function fakePlaywright(options = {}) {
       const ownerId=typeof options.ownerId==='function'?options.ownerId():options.ownerId;
       const ownerUsername=typeof options.ownerUsername==='function'?options.ownerUsername():options.ownerUsername;
       for(const status of options.meStatuses||[200]){
-        const response={url:()=>BACKEND+'/api/me',status:()=>status,request:()=>({method:()=> 'GET'}),json:async()=>status===200?({user:{id:ownerId||'owner-id',username:ownerUsername||'synthetic-owner'}}):({message:'Unauthorized'})};
+        const owner=status===200?({user:{id:ownerId||'owner-id',username:ownerUsername||'synthetic-owner'}}):({message:'Unauthorized'});
+        // Task 17: body() is the exact response bytes the worker digests.
+        const response={url:()=>BACKEND+'/api/me',status:()=>status,request:()=>({method:()=> 'GET'}),json:async()=>owner,body:async()=>Buffer.from(JSON.stringify(owner))};
         const accepted=predicate(response);calls.responseCandidates=[...(calls.responseCandidates||[]),{status,accepted}];if(accepted)return response;
       }
       for(const [target,body] of Object.entries(observationBodies)){
-        const response={url:()=>BACKEND+target,status:()=>200,request:()=>({method:()=> 'GET'}),json:async()=>structuredClone(body)};
+        const raw=options.rawBodies?.[target];
+        const response={url:()=>BACKEND+target,status:()=>options.responseStatus?.[target]??200,request:()=>({method:()=> 'GET'}),json:async()=>structuredClone(body),
+          body:async()=>Buffer.from(typeof raw==='string'?raw:JSON.stringify(body))};
         if(predicate(response))return response;
       }
       throw new Error('synthetic response sequence exhausted');
@@ -475,7 +492,7 @@ async function startHarness(options = {}) {
   });
   const clock = options.controllerClock || Object.freeze({ sample: () => [160, 1000] });
   const session = await api.openBrowser(cfg, { rolePort, grant, admissionPort, clock });
-  return { api, fake, links, cfg, session, workerResult, assetProofs, decisions:routeFixture.intents, launchEvents,runId:testRun,
+  return { api, fake, links, cfg, session, workerResult, assetProofs, decisions:routeFixture.intents, launchEvents,runId:testRun, routeFixture,
     activations: () => activations, stops: () => stops, waits: () => waits, cleanupStarted: () => cleanupStarted,
     inspections: () => [...inspections] };
 }
@@ -518,6 +535,9 @@ function scriptedBrowser(options = {}) {
     return links.worker.write(inheritedFrame({ ...bare, ...mac }));
   }
   const fingerprint = (action, payload) => typeof hooks.fingerprint === 'function' ? hooks.fingerprint(action, payload) : options.fingerprint || 'b'.repeat(64);
+  // Task 17: the scripted worker echoes each SESSION_READINESS phase and sequence, and each view
+  // carries the sequence of its phase's readiness (as the real worker does).
+  const readySequences = {};
   async function respond({ actionId, action, payload }) {
     const code = typeof hooks.error === 'function' ? hooks.error(action, payload) : null;
     if (code) return send('ERROR', { actionId, code });
@@ -527,10 +547,17 @@ function scriptedBrowser(options = {}) {
       return send('RESULT', { actionId, status: 'SESSION_BOUND', fingerprint: fingerprint(action, payload) });
     }
     if (action === 'SESSION_OBSERVATION') return send('RESULT', { actionId, status: 'SESSION_OBSERVED', fingerprint: fingerprint(action, payload) });
+    if (action === 'SESSION_READINESS') {
+      readySequences[payload.phase] = payload.sequence;
+      return send('RESULT', { actionId, status: 'READINESS_OBSERVED', runId: pipeRunId, phase: payload.phase, sequence: payload.sequence,
+        sessionFingerprint: fingerprint(action, payload), readinessDigest: 'd'.repeat(64),
+        ownerDigest: typeof hooks.ownerDigest === 'function' ? hooks.ownerDigest(payload) : 'e'.repeat(64), checkedAtMonotonicMs: 1000,
+        ...(typeof hooks.readiness === 'function' ? hooks.readiness(payload) : {}) });
+    }
     if (typeof hooks.onView === 'function') hooks.onView(payload.view);
-    return send('RESULT', { actionId, status: 'VIEW_OBSERVED', view: payload.view, phase: payload.phase, schemaValidation: true,
-      renderedData: true, validEmptyState: false, noError: true, fresh: true, source: 'alpaca-paper', brokerError: false,
-      routeCount: VIEW_ROUTES[payload.view], renderedCount: 1, fingerprint: fingerprint(action, payload), readinessValidation: payload.view === 'ROBO',
+    return send('RESULT', { actionId, status: 'VIEW_OBSERVED', view: payload.view, phase: payload.phase, sequence: readySequences[payload.phase] ?? 1,
+      schemaValidation: true, renderedData: true, validEmptyState: false, noError: true, source: 'alpaca-paper', brokerError: false,
+      routeCount: VIEW_ROUTES[payload.view], renderedCount: 1, fingerprint: fingerprint(action, payload),
       ...(typeof hooks.view === 'function' ? hooks.view(payload.view) : {}) });
   }
   const valid = entries.map(entry => ({ entryId: 'frontend-asset:' + entry.path, hash: entry.hash, sizeMatch: true, hashMatch: true, mimeMatch: true }));
@@ -545,7 +572,7 @@ function scriptedBrowser(options = {}) {
   })().catch(() => {});
   const opened = api.openBrowser(cfg, { rolePort, grant, admissionPort: Object.freeze({}), clock: Object.freeze({ sample: () => [160, 1000] }) });
   opened.catch(() => {});
-  return { api, cfg, links, runId, opened, stops: () => stops,
+  return { api, cfg, links, runId, opened, stops: () => stops, routeFixture,
     actions: () => received.filter(frame => frame.type === 'ACTION').map(frame => frame.payload),
     written: () => Buffer.concat(links.logs.filter(row => row.from === 'controller').map(row => row.bytes)).toString('ascii') };
 }
@@ -1238,6 +1265,7 @@ test('task15_observe_view_action_is_fixed_and_nominal', async () => {
   await assert.rejects(h.session.perform('OBSERVE_VIEW', {
     phase: 'OBSERVE_AFTER_RESTART', view: 'PORTFOLIO',
   }), { code: 'ACTION_DENIED' });
+  await ready(h.session);
   const result = await h.session.perform('OBSERVE_VIEW', {
     phase: 'OBSERVE_BEFORE_RESTART', view: 'ROBO',
   });
@@ -1253,6 +1281,7 @@ test('task15_secondary_views_use_spa_links_without_extra_document_or_owner_load'
   await h.session.perform('LOGIN_SESSION',{
     ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password',
   },()=>{});
+  await ready(h.session);
   await h.session.perform('OBSERVE_VIEW',{phase:'OBSERVE_BEFORE_RESTART',view:'ROBO'});
   const afterRobo=h.fake.calls.events.filter(event=>event.startsWith('goto:')).length;
   await h.session.perform('OBSERVE_VIEW',{phase:'OBSERVE_BEFORE_RESTART',view:'PORTFOLIO'});
@@ -1269,6 +1298,7 @@ test('task15_activity_rows_without_exact_paper_source_fail_closed', async () => 
   await h.session.perform('LOGIN_SESSION', {
     ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
   }, () => {});
+  await ready(h.session);
   await assert.rejects(h.session.perform('OBSERVE_VIEW', {
     phase: 'OBSERVE_BEFORE_RESTART', view: 'ACTIVITY',
   }), { code: 'OBSERVATION_FAILED' });
@@ -1279,6 +1309,7 @@ test('task15_activity_rows_without_exact_paper_source_fail_closed', async () => 
   await wrongNotifications.session.perform('LOGIN_SESSION', {
     ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
   }, () => {});
+  await ready(wrongNotifications.session);
   await assert.rejects(wrongNotifications.session.perform('OBSERVE_VIEW', {
     phase: 'OBSERVE_BEFORE_RESTART', view: 'ACTIVITY',
   }), { code: 'OBSERVATION_FAILED' });
@@ -1290,11 +1321,17 @@ test('task15_changed_cookie_fails_before_readiness_or_view_navigation', async ()
     ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password',
   },()=>{});
   const before=h.fake.calls.events.filter(event=>event.startsWith('goto:')).length;value='replacement-cookie';
-  await assert.rejects(h.session.perform('OBSERVE_VIEW', {
-    phase:'OBSERVE_BEFORE_RESTART',view:'ROBO',
-  }),{code:'SESSION_MISMATCH',workerCode:'SESSION_CHANGED'});
+  // Task 17: readiness is its own action now; a changed cookie fails it before the readiness GET.
+  await assert.rejects(ready(h.session),{code:'SESSION_MISMATCH',workerCode:'SESSION_CHANGED'});
   assert.equal(h.fake.calls.events.filter(event=>event.startsWith('goto:')).length,before);
   assert.equal(h.fake.calls.events.filter(event=>event.startsWith('evaluate:')).length,0);
+  // After a passing readiness, a changed cookie still fails the view before its navigation.
+  value='private-cookie';const viewed=await startHarness({fake:{cookie:()=>({value})}});
+  await viewed.session.perform('LOGIN_SESSION',login(),()=>{});await ready(viewed.session);
+  const evaluated=viewed.fake.calls.events.filter(event=>event.startsWith('evaluate:')).length;value='replacement-cookie';
+  await assert.rejects(viewed.session.perform('OBSERVE_VIEW',{phase:'OBSERVE_BEFORE_RESTART',view:'ROBO'}),{code:'SESSION_MISMATCH',workerCode:'SESSION_CHANGED'});
+  assert.equal(viewed.fake.calls.selectors.some(row=>row[0]==='role'&&row[1]==='link'),false);
+  assert.equal(viewed.fake.calls.events.filter(event=>event.startsWith('evaluate:')).length,evaluated);
 });
 
 test('task15_observation_navigation_keeps_route_decision_loop_live', async () => {
@@ -1302,7 +1339,8 @@ test('task15_observation_navigation_keeps_route_decision_loop_live', async () =>
   await h.session.perform('LOGIN_SESSION', {
     ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
   }, () => {});
-  const action = h.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'ROBO' });
+  // Task 17: the readiness fixed GET is the first observation request; it now belongs to SESSION_READINESS.
+  const action = ready(h.session);
   const outcome = await Promise.race([
     action.then(() => 'DONE',error=>'ERROR:'+error.code),
     new Promise(resolve => setTimeout(() => resolve('BLOCKED'), 100)),
@@ -1326,7 +1364,7 @@ test('task15_rendered_counts_require_each_visible_row_and_portfolio_chart', asyn
   const missingRow = await startHarness({ fake: { observationBodies: bodies, textCounts: { AAPL: 1 } } });
   await missingRow.session.perform('LOGIN_SESSION', {
     ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
-  }, () => {});
+  }, () => {}); await ready(missingRow.session);
   await assert.rejects(missingRow.session.perform('OBSERVE_VIEW', {
     phase: 'OBSERVE_BEFORE_RESTART', view: 'ACTIVITY',
   }), { code: 'OBSERVATION_FAILED' });
@@ -1334,7 +1372,7 @@ test('task15_rendered_counts_require_each_visible_row_and_portfolio_chart', asyn
   const visibleRows = await startHarness({ fake: { observationBodies: bodies, textCounts: { AAPL: 2 } } });
   await visibleRows.session.perform('LOGIN_SESSION', {
     ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
-  }, () => {});
+  }, () => {}); await ready(visibleRows.session);
   const visible = await visibleRows.session.perform('OBSERVE_VIEW', {
     phase: 'OBSERVE_BEFORE_RESTART', view: 'ACTIVITY',
   });
@@ -1347,7 +1385,7 @@ test('task15_rendered_counts_require_each_visible_row_and_portfolio_chart', asyn
   } } });
   await missingChart.session.perform('LOGIN_SESSION', {
     ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
-  }, () => {});
+  }, () => {}); await ready(missingChart.session);
   await assert.rejects(missingChart.session.perform('OBSERVE_VIEW', {
     phase: 'OBSERVE_BEFORE_RESTART', view: 'PORTFOLIO',
   }), { code: 'OBSERVATION_FAILED' });
@@ -1360,7 +1398,7 @@ test('task15_rendered_counts_require_each_visible_row_and_portfolio_chart', asyn
   } } });
   await inconsistentChart.session.perform('LOGIN_SESSION', {
     ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password',
-  },()=>{});
+  },()=>{}); await ready(inconsistentChart.session);
   await assert.rejects(inconsistentChart.session.perform('OBSERVE_VIEW', {
     phase:'OBSERVE_BEFORE_RESTART',view:'PORTFOLIO',
   }),{code:'OBSERVATION_FAILED'});
@@ -1374,7 +1412,7 @@ test('task15_rendered_counts_require_each_visible_row_and_portfolio_chart', asyn
   } } });
   await distortedChart.session.perform('LOGIN_SESSION', {
     ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password',
-  },()=>{});
+  },()=>{}); await ready(distortedChart.session);
   await assert.rejects(distortedChart.session.perform('OBSERVE_VIEW', {
     phase:'OBSERVE_BEFORE_RESTART',view:'PORTFOLIO',
   }),{code:'OBSERVATION_FAILED'});
@@ -1382,7 +1420,7 @@ test('task15_rendered_counts_require_each_visible_row_and_portfolio_chart', asyn
   const hiddenEmptyState = await startHarness({ fake: { hiddenText:'No open positions yet.' } });
   await hiddenEmptyState.session.perform('LOGIN_SESSION', {
     ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password',
-  },()=>{});
+  },()=>{}); await ready(hiddenEmptyState.session);
   await assert.rejects(hiddenEmptyState.session.perform('OBSERVE_VIEW', {
     phase:'OBSERVE_BEFORE_RESTART',view:'PORTFOLIO',
   }),{code:'OBSERVATION_FAILED'});
@@ -1406,7 +1444,7 @@ test('task15_robo_render_proof_matches_frontend_filters_limits_and_order_labels'
     '/api/robotrader/reconciliation-status?environment=paper':{summary:{total:5,pending:0,discrepancies:0,lastReconciledAt:instant},
       orders:reconciliation,latestDiscrepancies:[],historicalDiscrepancies:[]},
   }}});
-  await h.session.perform('LOGIN_SESSION',{ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password'},()=>{});
+  await h.session.perform('LOGIN_SESSION',{ownerId:'owner-id',username:'synthetic-owner',password:'synthetic-password'},()=>{}); await ready(h.session);
   const result=await h.session.perform('OBSERVE_VIEW',{phase:'OBSERVE_BEFORE_RESTART',view:'ROBO'});
   assert.equal(h.session.inspectResult(result).renderedCount,30);
   assert.equal(h.fake.calls.selectors.some(row=>row[0]==='text'&&row[1]==='BUY O1'&&row[2].exact===true),true);
@@ -1421,7 +1459,7 @@ test('task15_malformed_portfolio_history_and_missing_activity_row_identity_fail'
     const h = await startHarness({ fake: { observationBodies } });
     await h.session.perform('LOGIN_SESSION', {
       ownerId: 'owner-id', username: 'synthetic-owner', password: 'synthetic-password',
-    }, () => {});
+    }, () => {}); await ready(h.session);
     const view = Object.hasOwn(observationBodies, '/api/paper-trades/equity') ? 'PORTFOLIO' : 'ACTIVITY';
     await assert.rejects(h.session.perform('OBSERVE_VIEW', {
       phase: 'OBSERVE_BEFORE_RESTART', view,
@@ -1607,7 +1645,8 @@ test('startup_and_perform_bounded_by_run_expiry', async () => {
   const h = await startHarness({ controllerClock: clock.clock, fake: { evaluateHang: () => clock.set([201, 1041]) } });
   await h.session.perform('LOGIN_SESSION', login(), () => {});
   const actions = () => decodedFrames(h.links.logs, 'controller').filter(frame => frame.type === 'ACTION').length;
-  assert.equal(await within(h.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'ROBO' }), 2000), 'REJECTED:EXPIRED');
+  // Task 17: the first fixed GET (readiness) now belongs to SESSION_READINESS; it hangs past expiry.
+  assert.equal(await within(ready(h.session), 2000), 'REJECTED:EXPIRED');
   assert.equal(h.session.failureCode(), 'EXPIRED');
   assert.equal(await settled(() => h.stops() === 1), true);
   const sent = actions();
@@ -2185,15 +2224,27 @@ test('robo_paper_health_connected_required', async () => {
     alpaca: { paper: { connected: false, error: null, tradingBlocked: false, accountStatus: 'ACTIVE', buyingPower: 100 } },
     scheduler: { phase1WorkerEnabled: false } };
   const h = await startHarness({ fake: { observationBodies: { '/api/robotrader/health': health } } });
-  await h.session.perform('LOGIN_SESSION', login(), () => {});
+  await h.session.perform('LOGIN_SESSION', login(), () => {}); await ready(h.session);
   await assert.rejects(h.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'ROBO' }), { code: 'OBSERVATION_FAILED' });
 });
 
 test('alert_role_error_state_fails', async () => {
-  // I-10 M25: a visible role=alert error state fails the view.
+  // I-10 M25: a visible role=alert error state fails the view. Task 17 (T13 I-9): `noError` is now the
+  // worker's measured alert/status DOM check, so the worker reports it and the observation layer
+  // refuses it (observation.test.cjs measured_no_error_refused_by_observation).
   const h = await startHarness({ fake: { alertCount: 1 } });
-  await h.session.perform('LOGIN_SESSION', login(), () => {});
-  await assert.rejects(h.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'PORTFOLIO' }), { code: 'OBSERVATION_FAILED' });
+  await h.session.perform('LOGIN_SESSION', login(), () => {}); await ready(h.session);
+  const result = await h.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'PORTFOLIO' });
+  assert.equal(h.session.inspectResult(result).noError, false);
+  // A role=status element alone is measured as an error state too.
+  const status = await startHarness({ fake: { statusCount: 1 } });
+  await status.session.perform('LOGIN_SESSION', login(), () => {}); await ready(status.session);
+  assert.equal(status.session.inspectResult(await status.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'PORTFOLIO' })).noError, false);
+  // Control: no alert and no status element.
+  const clean = await startHarness();
+  await clean.session.perform('LOGIN_SESSION', login(), () => {}); await ready(clean.session);
+  assert.equal(clean.session.inspectResult(await clean.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'PORTFOLIO' })).noError, true);
+  await closeHarness(clean);
 });
 
 test('popup_route_check_bound_with_policy_allowed_path', async () => {
@@ -2249,4 +2300,243 @@ test('route_backlog_bound_at_16', async () => {
   assert.equal(decodedFrames(h.links.logs, 'worker').filter(frame => frame.type === 'ROUTE').length, 16);
 });
 
-module.exports = { startHarness, closeHarness, scriptedBrowser, scriptedSession, login, settled, within, decodedFrames, FRONTEND, BACKEND };
+// ---- Task 17: readiness and owner gates from worker observations (T13 I-4, I-5, I-9; m-3, m-4, m-9) ----
+
+const sha256 = value => crypto.createHash('sha256').update(value).digest('hex');
+const OWNER_BODY = Object.freeze({ user: Object.freeze({ id: 'owner-id', username: 'synthetic-owner' }) });
+// The route policy's own gate binding shape (route-policy.cjs gate()) for a session and phase.
+function gateBinding(scripted, phase, sessionHandle = scripted.session) {
+  return Object.freeze({ runId: scripted.runId, sequence: 1, phase, configIdentity: '3'.repeat(64), wallMs: 160, monotonicMs: 1000,
+    runDeadline: 1_201_000, policyEpoch: 1, gateEpoch: 1, sessionEpoch: 1, sessionHandle, expiresAt: 200 });
+}
+// A step that must succeed; at RED it fails as a named assertion rather than an unhandled rejection.
+async function settles(promise, message) { let value; await assert.doesNotReject(async () => { value = await promise; }, message); return value; }
+function workerResults(h) { return decodedFrames(h.links.logs, 'worker').filter(frame => frame.type === 'RESULT').map(frame => frame.payload); }
+
+test('worker_readiness_negatives_fail_through_worker', async () => {
+  // T13 I-4 (reviewer M1): the worker's readiness check is exercised through the real worker. Every
+  // case below is READINESS_FAILED from the worker itself (its ERROR frame), and sets no gate.
+  const control = await startHarness();
+  await control.session.perform('LOGIN_SESSION', login(), () => {});
+  assert.equal(await within(ready(control.session), 2000), 'RESOLVED', 'a contract-2 HTTP 200 body passes');
+  await closeHarness(control);
+  const cases = [];
+  for (const name of READINESS_CHECKS) { const body = readinessBody(); body.checks[name] = { status: 'fail' }; cases.push(['check ' + name, { body }]); }
+  for (const key of Object.keys(readinessBody().automation)) { const body = readinessBody(); body.automation[key] = !body.automation[key]; cases.push(['automation ' + key, { body }]); }
+  const missingCheck = readinessBody(); delete missingCheck.checks.persistence;
+  const unknownCheck = readinessBody(); unknownCheck.checks.releaseReady = { status: 'pass' };
+  const missingFlag = readinessBody(); delete missingFlag.automation.activationAuthorized;
+  const stringCheck = readinessBody(); stringCheck.checks.paperMode = 'pass';
+  cases.push(['contractVersion 1', { body: readinessBody({ contractVersion: 1 }) }], ['profile', { body: readinessBody({ profile: 'owner-paper' }) }],
+    ['runtimeReady false', { body: readinessBody({ runtimeReady: false }) }], ['maintenanceReady false', { body: readinessBody({ maintenanceReady: false }) }],
+    ['HTTP 503 with a passing body', { body: readinessBody(), status: 503 }], ['HTTP 503 runtime not ready', { body: readinessBody({ runtimeReady: false }), status: 503 }],
+    ['missing check', { body: missingCheck }], ['unknown check', { body: unknownCheck }], ['missing automation flag', { body: missingFlag }],
+    ['check not an object', { body: stringCheck }], ['body not JSON', { body: readinessBody(), raw: 'not json' }]);
+  assert.equal(cases.length, 12 + 5 + 11);
+  for (const [name, c] of cases) {
+    const h = await startHarness({ fake: { observationBodies: { '/api/readiness': c.body },
+      responseStatus: c.status ? { '/api/readiness': c.status } : undefined, rawBodies: c.raw ? { '/api/readiness': c.raw } : undefined } });
+    await h.session.perform('LOGIN_SESSION', login(), () => {});
+    await assert.rejects(ready(h.session), { code: 'READINESS_FAILED', workerCode: 'READINESS_FAILED' }, name);
+    assert.deepEqual(decodedFrames(h.links.logs, 'worker').find(frame => frame.type === 'ERROR')?.payload, { actionId: 2, code: 'READINESS_FAILED' }, name);
+    // The owner GET never ran: readiness failed first.
+    assert.deepEqual(h.fake.calls.events.filter(event => event.startsWith('evaluate:')), ['evaluate:' + BACKEND + '/api/readiness'], name);
+    assert.equal(h.session.currentGates(), null, name);
+  }
+});
+
+test('worker_readiness_result_is_digest_only_and_bound', async () => {
+  // C9 SESSION_READINESS: GET /api/readiness then GET /api/me; the result carries only SHA-256 digests
+  // of the exact response bytes, bound to the run, phase and sequence. No body content leaves the worker.
+  const h = await startHarness();
+  await h.session.perform('LOGIN_SESSION', login(), () => {});
+  const result = await settles(ready(h.session, B_PHASE, 7), 'SESSION_READINESS resolves (C9)');
+  const frame = workerResults(h).at(-1);
+  assert.deepEqual(Object.keys(frame).sort(), ['actionId', 'checkedAtMonotonicMs', 'ownerDigest', 'phase', 'readinessDigest', 'runId', 'sequence', 'sessionFingerprint', 'status']);
+  assert.deepEqual({ ...frame, sessionFingerprint: undefined }, { actionId: 2, status: 'READINESS_OBSERVED', runId: h.runId, phase: B_PHASE, sequence: 7,
+    sessionFingerprint: undefined, readinessDigest: sha256(JSON.stringify(readinessBody())), ownerDigest: sha256(JSON.stringify(OWNER_BODY)), checkedAtMonotonicMs: 1000 });
+  assert.match(frame.sessionFingerprint, /^[0-9a-f]{64}$/);
+  assert.deepEqual(h.fake.calls.events.filter(event => event.startsWith('evaluate:')), ['evaluate:' + BACKEND + '/api/readiness', 'evaluate:' + BACKEND + '/api/me']);
+  const sent = Buffer.concat(h.links.logs.filter(row => row.from === 'worker').map(row => row.bytes)).toString();
+  for (const content of ['owner-paper-maintenance', 'ownerConfiguration', 'synthetic-owner', 'owner-id', 'private-cookie']) assert.equal(sent.includes(content), false, content);
+  // The controller minted the two gates for this phase and sequence; the result itself is private.
+  const gates = h.session.currentGates();
+  assert.deepEqual([gates.phase, gates.sequence], [B_PHASE, 7]);
+  assert.throws(() => JSON.stringify(result), { code: 'PRIVATE_HANDLE' });
+  assert.throws(() => JSON.stringify(gates.readiness), { code: 'PRIVACY_FAILED' });
+  const value = h.session.claimResult(result, B_PHASE, 7);
+  assert.deepEqual([value.kind, value.readinessDigest, value.ownerDigest, value.readiness, value.owner],
+    ['READINESS_OBSERVED', frame.readinessDigest, frame.ownerDigest, gates.readiness, gates.owner]);
+  await closeHarness(h);
+});
+
+test('readiness_owner_and_cookie_checked_through_worker', async () => {
+  // T13 m-4: readiness re-reads /api/me through the worker; a changed owner or cookie sets no gate.
+  let owner = 'owner-id';
+  const changed = await startHarness({ fake: { ownerId: () => owner } });
+  await changed.session.perform('LOGIN_SESSION', login(), () => {});
+  owner = 'different-owner';
+  await assert.rejects(ready(changed.session), { code: 'IDENTITY_MISMATCH', workerCode: 'OWNER_MISMATCH' });
+  assert.equal(changed.session.currentGates(), null);
+  let username = 'synthetic-owner';
+  const renamed = await startHarness({ fake: { ownerUsername: () => username } });
+  await renamed.session.perform('LOGIN_SESSION', login(), () => {});
+  username = 'different-username';
+  await assert.rejects(ready(renamed.session), { code: 'IDENTITY_MISMATCH', workerCode: 'OWNER_MISMATCH' });
+  // Readiness needs a bound session: before LOGIN_SESSION it is refused by the controller, with no ACTION.
+  const early = await startHarness();
+  await assert.rejects(ready(early.session), { code: 'ACTION_DENIED' });
+  assert.equal(decodedFrames(early.links.logs, 'controller').some(frame => frame.type === 'ACTION'), false);
+  await closeHarness(early);
+});
+
+test('readiness_proof_cannot_be_minted_from_literal_or_clone', async () => {
+  // T13 I-4 (review D5): the literal-minted ReadinessProof is gone. The only readiness evidence is a
+  // nominal WorkerGateHandle that browser.cjs mints from a worker SESSION_READINESS result.
+  const observation = require(path.join(ROOT, 'guest/observation.cjs'));
+  assert.equal(Object.hasOwn(observation, 'validateReadiness'), false, 'literal-minted readiness proof removed');
+  assert.equal(typeof observation.readinessPredicate, 'function');
+  assert.equal(observation.readinessPredicate(readinessBody()), true);
+  assert.equal(observation.readinessPredicate(structuredClone(readinessBody())), true, 'the predicate is a boolean, never a proof');
+  const s = await scriptedSession();
+  await s.session.perform('LOGIN_SESSION', login(), () => {});
+  await ready(s.session);
+  const gates = s.session.currentGates(), binding = gateBinding(s, B_PHASE);
+  const adapters = receipts.createReceiptAdapters(s.routeFixture.trust, s.api.isBrowserSession);
+  assert.equal(adapters.verifyGate('readiness', gates.readiness, binding), true, 'control');
+  assert.equal(adapters.verifyGate('owner', gates.owner, binding), true, 'control');
+  for (const kind of ['readiness', 'owner']) {
+    for (const [name, forged] of [['literal', Object.freeze({ kind: kind.toUpperCase() + '_GATE' })], ['spread', { ...gates[kind] }],
+      ['structuredClone', structuredClone(gates[kind])], ['prototype copy', Object.assign(Object.create(Object.getPrototypeOf(gates[kind])), gates[kind])],
+      ['receipt literal', Object.freeze({ kind: 'MAINTENANCE_RECEIPT' })]]) {
+      assert.equal(adapters.verifyGate(kind, forged, binding), false, kind + ' ' + name);
+    }
+  }
+  // The minting authority is claimed once, by browser.cjs; no caller can mint from a literal.
+  assert.throws(() => receipts.claimWorkerGateAuthority(), { code: 'REPLAY' });
+  // One readiness per phase: a second SESSION_READINESS (even a replayed one) mints no second pair.
+  await assert.rejects(ready(s.session, B_PHASE, 2), { code: 'REPLAY' });
+  assert.equal(s.session.currentGates().readiness, gates.readiness);
+  // Without the injected BrowserSession brand (P20), the worker-gate kinds verify nothing.
+  assert.equal(receipts.createReceiptAdapters(s.routeFixture.trust).verifyGate('readiness', gates.readiness, binding), false);
+  assert.throws(() => receipts.createReceiptAdapters(s.routeFixture.trust, {}), { code: 'IDENTITY_MISMATCH' });
+  // Adapters of an unrelated run's trust do not accept this session's gates.
+  const other = budgetFixture({ runId: s.runId, configIdentity: '3'.repeat(64) });
+  assert.equal(receipts.createReceiptAdapters(other.trust, s.api.isBrowserSession).verifyGate('readiness', gates.readiness, binding), false);
+  await s.session.close();
+});
+
+test('deeper_routes_admitted_only_after_worker_gate_handles', async () => {
+  // T13 I-5: the route policy's owner and readiness gates now have an honest input. The real
+  // adapter's verifyGate (P20: three arguments, BrowserSession brand injected) accepts only the
+  // WorkerGateHandles minted for this BrowserSession and phase, and only while they are current.
+  const s = await scriptedSession(), other = await scriptedSession({ runId: s.runId });
+  const f = s.routeFixture, adapters = receipts.createReceiptAdapters(f.trust, s.api.isBrowserSession), original = f.context.verifyGate;
+  f.context.verifyGate = (kind, handle, binding) => ['readiness', 'owner'].includes(kind) ? adapters.verifyGate(kind, handle, binding) : original(kind, handle, binding);
+  f.state.sessionHandle = s.session;
+  // A route denial latches its policy (ROUTE_DENIED afterwards), so each admission uses a fresh
+  // policy over the same release, assets, context and snapshot state.
+  const admit = (path, queryPairs = []) => {
+    const policy = policyAPI.createPolicy(f.release, f.assets, f.context);
+    return policyAPI.admitRequest(f.request(path, { queryPairs }), policy);
+  };
+  const performance = () => admit('/api/robotrader/performance', [['environment', 'paper']]);
+  // Denied before: no gate, then the fixture's stand-in objects (no longer accepted).
+  f.state.readiness = null; f.state.owner = null;
+  assert.deepEqual(performance(), { kind: 'FAIL', code: 'READINESS_FAILED' });
+  f.state.readiness = f.brand('readiness'); f.state.owner = f.brand('owner');
+  assert.deepEqual(performance(), { kind: 'FAIL', code: 'READINESS_FAILED' });
+  // Readiness and /api/me themselves are zero-cost gate inputs, admitted without the gates.
+  assert.equal(admit('/api/readiness').kind, 'ELIGIBLE');
+  await s.session.perform('LOGIN_SESSION', login(), () => {});
+  await settles(ready(s.session), 'SESSION_READINESS resolves (C9)');
+  const before = s.session.currentGates();
+  f.state.readiness = before.readiness; f.state.owner = before.owner;
+  assert.equal(performance().kind, 'ELIGIBLE', 'admitted after both gates are set');
+  // A foreign BrowserSession (same run id) with this session's gates.
+  await other.session.perform('LOGIN_SESSION', login(), () => {});
+  await ready(other.session);
+  f.state.sessionHandle = other.session;
+  assert.deepEqual(admit('/api/robotrader/settings'), { kind: 'FAIL', code: 'READINESS_FAILED' }, 'foreign session');
+  f.state.readiness = other.session.currentGates().readiness; f.state.owner = other.session.currentGates().owner;
+  f.state.sessionHandle = s.session;
+  assert.deepEqual(admit('/api/robotrader/settings'), { kind: 'FAIL', code: 'READINESS_FAILED' }, 'foreign gates');
+  // Kind confusion: the readiness handle reused as the owner gate.
+  f.state.readiness = before.readiness; f.state.owner = before.readiness;
+  assert.deepEqual(admit('/api/robotrader/settings'), { kind: 'FAIL', code: 'READINESS_FAILED' }, 'readiness handle as owner');
+  // Another phase: the BEFORE gates in phase C.
+  f.state.owner = before.owner; f.state.phase = C_PHASE;
+  assert.deepEqual(performance(), { kind: 'FAIL', code: 'READINESS_FAILED' }, 'other phase');
+  // The AFTER readiness mints a new pair for C and retires the BEFORE pair (once per phase).
+  await ready(s.session, C_PHASE, 2);
+  const after = s.session.currentGates();
+  f.state.readiness = after.readiness; f.state.owner = after.owner;
+  assert.equal(performance().kind, 'ELIGIBLE', 'admitted in C with the C gates');
+  f.state.phase = B_PHASE; f.state.readiness = before.readiness; f.state.owner = before.owner;
+  assert.deepEqual(admit('/api/robotrader/audit', [['limit', '25']]), { kind: 'FAIL', code: 'READINESS_FAILED' }, 'reused BEFORE gates');
+  // A closed session's gates are retired.
+  f.state.phase = C_PHASE; f.state.readiness = after.readiness; f.state.owner = after.owner;
+  await s.session.close();
+  assert.deepEqual(admit('/api/robotrader/audit', [['limit', '25']]), { kind: 'FAIL', code: 'READINESS_FAILED' }, 'closed session');
+  await other.session.close();
+});
+
+test('robo_view_requires_worker_readiness_gates', async () => {
+  // T13 I-4/I-5 (M12, controller and worker layers): a view runs its deeper routes only after the
+  // readiness and owner gates of its own phase are set.
+  const h = await startHarness();
+  await h.session.perform('LOGIN_SESSION', login(), () => {});
+  const actions = () => decodedFrames(h.links.logs, 'controller').filter(frame => frame.type === 'ACTION').length;
+  await assert.rejects(h.session.perform('OBSERVE_VIEW', { phase: B_PHASE, view: 'ROBO' }), { code: 'READINESS_FAILED' });
+  assert.equal(actions(), 1, 'no ACTION frame without gates');
+  await ready(h.session);
+  // Gates of one phase do not open a view of another.
+  await assert.rejects(h.session.perform('OBSERVE_VIEW', { phase: C_PHASE, view: 'ROBO' }), { code: 'READINESS_FAILED' });
+  assert.equal(actions(), 2);
+  const result = await h.session.perform('OBSERVE_VIEW', { phase: B_PHASE, view: 'ROBO' });
+  assert.equal(h.session.inspectResult(result).sequence, 1);
+  await closeHarness(h);
+  // The worker refuses a view whose phase has no worker readiness, before any GET or navigation.
+  const raw = await startHarness();
+  await raw.session.perform('LOGIN_SESSION', login(), () => {});
+  const sequence = decodedFrames(raw.links.logs, 'controller').length + 1;
+  await raw.links.controller.write(inheritedFrame({ version: 1, runId: raw.runId, sequence, type: 'ACTION',
+    payload: { actionId: 2, action: 'OBSERVE_VIEW', payload: { phase: B_PHASE, view: 'ROBO' } } }));
+  assert.equal(await settled(() => decodedFrames(raw.links.logs, 'worker').some(frame => frame.type === 'ERROR')), true);
+  assert.deepEqual(decodedFrames(raw.links.logs, 'worker').find(frame => frame.type === 'ERROR').payload, { actionId: 2, code: 'READINESS_FAILED' });
+  assert.equal(raw.fake.calls.events.some(event => event.startsWith('evaluate:')), false);
+  assert.equal(raw.fake.calls.selectors.some(row => row[0] === 'role' && row[1] === 'link'), false);
+});
+
+test('worker_result_has_no_constant_freshness_claims', async () => {
+  // T13 I-9: the view result drops the constant `fresh`, `source`, `brokerError` and `noError`.
+  const source = fs.readFileSync(WORKER, 'utf8').replace(/\s+/g, '');
+  for (const constant of ['fresh:true', "source:'alpaca-paper'", 'source:"alpaca-paper"', 'brokerError:false', 'noError:true', 'readinessValidation'])
+    assert.equal(source.includes(constant), false, constant);
+  const h = await startHarness();
+  await h.session.perform('LOGIN_SESSION', login(), () => {}); await ready(h.session);
+  // Before ROBO, a view of the phase has no PAPER-health facts to report.
+  await h.session.perform('OBSERVE_VIEW', { phase: B_PHASE, view: 'ACTIVITY' });
+  const early = workerResults(h).at(-1);
+  assert.deepEqual([early.source, early.brokerError, early.noError], [null, null, true]);
+  await h.session.perform('OBSERVE_VIEW', { phase: B_PHASE, view: 'ROBO' });
+  const robo = workerResults(h).at(-1);
+  assert.deepEqual(Object.keys(robo).sort(), ['actionId', 'brokerError', 'fingerprint', 'noError', 'phase', 'renderedCount', 'renderedData',
+    'routeCount', 'schemaValidation', 'sequence', 'source', 'status', 'validEmptyState', 'view']);
+  assert.deepEqual([robo.source, robo.brokerError, robo.noError, robo.sequence], ['alpaca-paper', false, true, 1]);
+  await h.session.perform('OBSERVE_VIEW', { phase: B_PHASE, view: 'PORTFOLIO' });
+  assert.deepEqual([workerResults(h).at(-1).source, workerResults(h).at(-1).brokerError], ['alpaca-paper', false], 'the phase PAPER-health facts');
+  await closeHarness(h);
+  // `source` is derived from the PAPER-health body: a second connected Alpaca adapter in the same
+  // body leaves no single PAPER source, so the worker reports none.
+  const health = { mongo: { connected: true, status: 'connected' },
+    alpaca: { paper: { connected: true, error: null, tradingBlocked: false, accountStatus: 'ACTIVE', buyingPower: 100 }, live: { connected: true } },
+    scheduler: { phase1WorkerEnabled: false } };
+  const two = await startHarness({ fake: { observationBodies: { '/api/robotrader/health': health } } });
+  await two.session.perform('LOGIN_SESSION', login(), () => {}); await ready(two.session);
+  await two.session.perform('OBSERVE_VIEW', { phase: B_PHASE, view: 'ROBO' });
+  assert.equal(workerResults(two).at(-1).source, null);
+  await closeHarness(two);
+});
+
+module.exports = { startHarness, closeHarness, scriptedBrowser, scriptedSession, login, settled, within, decodedFrames, ready, readinessBody, FRONTEND, BACKEND };

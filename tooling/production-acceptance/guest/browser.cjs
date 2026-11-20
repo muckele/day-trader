@@ -1,12 +1,23 @@
 'use strict';
 
 const runtime = require('../package.json').acceptanceRuntime;
-const { inspectBrowserControllerConfig } = require('./receipts.cjs');
+const { inspectBrowserControllerConfig, claimWorkerGateAuthority } = require('./receipts.cjs');
 const { admitBrowserRequest } = require('./budget.cjs');
 const { claimBrowserRequestEvidence, inspectAdoptedRolePort } = require('./role-ports.cjs');
 
 const RUNTIME_PINS = deepFreeze(JSON.parse(JSON.stringify(runtime)));
-const ALLOWED_ACTIONS = new Set(['LOGIN_SESSION', 'SESSION_OBSERVATION', 'OBSERVE_VIEW']);
+const ALLOWED_ACTIONS = new Set(['LOGIN_SESSION', 'SESSION_OBSERVATION', 'SESSION_READINESS', 'OBSERVE_VIEW']);
+// Task 17 (P20): browser.cjs mints the readiness and owner WorkerGateHandles through receipts.cjs's
+// brand registry. It claims the minting authority once, here at load; no other module can mint.
+const gateAuthority = claimWorkerGateAuthority();
+const OBSERVE_PHASES = Object.freeze(['OBSERVE_BEFORE_RESTART', 'OBSERVE_AFTER_RESTART']);
+const HEX64 = /^[0-9a-f]{64}$/;
+const SESSION_RESULT_KEYS = Object.freeze(['actionId', 'status', 'fingerprint']);
+const READINESS_RESULT_KEYS = Object.freeze(['actionId', 'status', 'runId', 'phase', 'sequence', 'sessionFingerprint', 'readinessDigest',
+  'ownerDigest', 'checkedAtMonotonicMs']);
+// T13 I-9: no `fresh` or `readinessValidation`; `sequence` is the view's readiness sequence.
+const VIEW_RESULT_KEYS = Object.freeze(['actionId', 'status', 'view', 'phase', 'sequence', 'schemaValidation', 'renderedData', 'validEmptyState',
+  'noError', 'source', 'brokerError', 'routeCount', 'renderedCount', 'fingerprint']);
 const FIXED_PATHS = Object.freeze({
   profile: '/run/acceptance/browser/profile', support: '/run/acceptance/browser/support',
   cache: '/run/acceptance/browser/cache', shm: '/dev/shm',
@@ -163,6 +174,12 @@ function actionPayload(action, payload) {
     return;
   }
   if (action === 'SESSION_OBSERVATION' && Reflect.ownKeys(payload).length === 0) return;
+  // C9: the fixed SESSION_READINESS action names only its phase and the caller's sequence.
+  if (action === 'SESSION_READINESS') {
+    if (Object.keys(payload).sort().join(',') !== 'phase,sequence' || Reflect.ownKeys(payload).length !== 2 ||
+        !OBSERVE_PHASES.includes(payload.phase) || !safe(payload.sequence)) fail('ACTION_DENIED');
+    return;
+  }
   if (action === 'OBSERVE_VIEW') {
     if (Object.keys(payload).sort().join(',') !== 'phase,view' ||
         !['OBSERVE_BEFORE_RESTART', 'OBSERVE_AFTER_RESTART'].includes(payload.phase) ||
@@ -173,6 +190,7 @@ function actionPayload(action, payload) {
   fail('ACTION_DENIED');
 }
 async function openBrowser(config, ports) {
+  const configHandle = config;
   try { config = inspectBrowserControllerConfig(config); } catch (cause) { fail('CONFIG_INVALID', cause); }
   validateConfig(config);
   // T13 I-8: only a BROWSER role port that role-ports adopted can open a session; a look-alike
@@ -201,11 +219,57 @@ async function openBrowser(config, ports) {
   }
   const pending = new Map(), sessionToken = Object.freeze({});
   let nextId = 0, terminal = false, closeSignal, closeOperation, failure = null;
+  // Task 17 (T13 I-4/I-5, m-4): the login's session fingerprint, the current gate pair (one phase,
+  // one sequence), and the readiness phases and sequence already used.
+  let sessionRef = null, boundFingerprint = null, gates = null, lastReadinessSequence = 0;
+  const readinessPhases = new Set();
+  function currentPhase() { return gates === null ? null : gates.phase; }
+  function currentSequence() { return gates === null ? null : gates.sequence; }
+  function retireGates() {
+    if (gates === null) return;
+    const old = gates; gates = null;
+    try { gateAuthority.retire(old.readiness); gateAuthority.retire(old.owner); } catch {}
+  }
+  function monotonicNow() {
+    let sample; try { sample = clock.sample(); } catch { fail('EXPIRED'); }
+    if (!Array.isArray(sample) || sample.length !== 2 || !safe(sample[1], 0)) fail('EXPIRED');
+    return sample[1];
+  }
+  function sameHex(left, right) { return typeof left === 'string' && typeof right === 'string' && HEX64.test(left) && HEX64.test(right) && left === right; }
+  // C9 SESSION_READINESS: the worker's result echoes this action's run, phase and sequence, was
+  // checked inside this action's monotonic window, and names the login's own session. Only then
+  // are the readiness and owner gates minted for this session, phase and sequence; the previous
+  // pair is retired (once per phase).
+  function readinessRecord(p, slot) {
+    if (p.runId !== facts.runId || p.phase !== slot.payload.phase || p.sequence !== slot.payload.sequence ||
+        ![p.sessionFingerprint, p.readinessDigest, p.ownerDigest].every(value => typeof value === 'string' && HEX64.test(value)) ||
+        !safe(p.checkedAtMonotonicMs, 0) || p.checkedAtMonotonicMs < slot.startedMonotonicMs || p.checkedAtMonotonicMs > monotonicNow()) fail('FRAME_DENIED');
+    if (boundFingerprint === null || !sameHex(p.sessionFingerprint, boundFingerprint)) fail('SESSION_MISMATCH');
+    const gateFacts = { session: sessionRef, runId: facts.runId, configIdentity: config.runBinding.configIdentity, phase: p.phase,
+      sequence: p.sequence, checkedAtMonotonicMs: p.checkedAtMonotonicMs };
+    const readiness = gateAuthority.mint('readiness', { ...gateFacts, digest: p.readinessDigest });
+    const owner = gateAuthority.mint('owner', { ...gateFacts, digest: p.ownerDigest });
+    retireGates();
+    gates = Object.freeze({ phase: p.phase, sequence: p.sequence, readiness, owner });
+    return { sessionToken, kind: 'READINESS_OBSERVED', phase: p.phase, sequence: p.sequence, fingerprint: p.sessionFingerprint,
+      readinessDigest: p.readinessDigest, ownerDigest: p.ownerDigest, checkedAtMonotonicMs: p.checkedAtMonotonicMs,
+      runId: facts.runId, configIdentity: config.runBinding.configIdentity, readiness, owner };
+  }
+  // T13 m-4: what a reader of a result sees. inspectResult keeps the shapes session.cjs checks;
+  // claimResult also carries the phase and sequence.
+  function resultValue(saved, claimed) {
+    if (saved.kind === 'SESSION_BOUND' || saved.kind === 'SESSION_OBSERVED')
+      return Object.freeze(claimed ? { kind: saved.kind, fingerprint: saved.fingerprint, phase: saved.phase, sequence: saved.sequence } :
+        { kind: saved.kind, fingerprint: saved.fingerprint });
+    const { sessionToken: ignored, inspected, claimed: spent, ...value } = saved;
+    return Object.freeze(value);
+  }
   // The first terminal failure latches the session: its closed-enum code is kept,
   // pending actions and an in-flight close reject with it, and the role is stopped.
   function latch(code, cause) {
     if (failure === null) failure = closedCode(code);
     terminal = true;
+    retireGates();
     const error = Object.assign(new Error(failure, cause ? { cause } : undefined), { code: failure });
     for (const slot of pending.values()) slot.reject(error);
     pending.clear(); if (closeSignal) closeSignal.reject(error);
@@ -258,29 +322,38 @@ async function openBrowser(config, ports) {
           if (!slot || slot.action !== 'LOGIN_SESSION' || slot.filled) fail('FRAME_DENIED');
           slot.filled = true; slot.payload.password = ''; slot.payload = null; slot.onFilled();
         } else if (frame.type === 'RESULT') {
-          const sessionResult = ['SESSION_BOUND', 'SESSION_OBSERVED'].includes(frame.payload?.status);
-          exact(frame.payload, sessionResult ? ['actionId', 'status', 'fingerprint'] :
-            ['actionId', 'status', 'view', 'phase', 'schemaValidation', 'renderedData', 'validEmptyState', 'noError', 'fresh', 'source', 'brokerError', 'routeCount', 'renderedCount', 'fingerprint', 'readinessValidation']);
-          if (!safe(frame.payload.actionId) || sessionResult && !/^[0-9a-f]{64}$/.test(frame.payload.fingerprint)) fail('FRAME_DENIED');
-          const slot = pending.get(frame.payload.actionId); if (!slot) fail('FRAME_DENIED');
-          if (slot.action === 'LOGIN_SESSION' && (!slot.filled || frame.payload.status !== 'SESSION_BOUND') ||
-              slot.action === 'SESSION_OBSERVATION' && frame.payload.status !== 'SESSION_OBSERVED' ||
-              slot.action === 'OBSERVE_VIEW' && (frame.payload.status !== 'VIEW_OBSERVED' || frame.payload.view !== slot.payload.view || frame.payload.phase !== slot.payload.phase)) fail('FRAME_DENIED');
-          if (!sessionResult && (typeof frame.payload.schemaValidation !== 'boolean' || typeof frame.payload.renderedData !== 'boolean' ||
-              typeof frame.payload.validEmptyState !== 'boolean' || typeof frame.payload.noError !== 'boolean' || typeof frame.payload.fresh !== 'boolean' ||
-              typeof frame.payload.source !== 'string' || typeof frame.payload.brokerError !== 'boolean' ||
-              !/^[0-9a-f]{64}$/.test(frame.payload.fingerprint) || typeof frame.payload.readinessValidation !== 'boolean' ||
-              !Number.isSafeInteger(frame.payload.routeCount) || frame.payload.routeCount < 0 ||
-              !Number.isSafeInteger(frame.payload.renderedCount) || frame.payload.renderedCount < 0)) fail('FRAME_DENIED');
-          const saved=sessionResult?{sessionToken,kind:frame.payload.status,fingerprint:frame.payload.fingerprint}:
-            {sessionToken,kind:frame.payload.status,view:frame.payload.view,phase:frame.payload.phase,
-              schemaValidation:frame.payload.schemaValidation,renderedData:frame.payload.renderedData,
-              validEmptyState:frame.payload.validEmptyState,noError:frame.payload.noError,fresh:frame.payload.fresh,
-              source:frame.payload.source,brokerError:frame.payload.brokerError,routeCount:frame.payload.routeCount,
-              renderedCount:frame.payload.renderedCount,fingerprint:frame.payload.fingerprint,
-              readinessValidation:frame.payload.readinessValidation,runId:facts.runId,configIdentity:config.runBinding.configIdentity};
+          const status = frame.payload?.status;
+          const sessionResult = ['SESSION_BOUND', 'SESSION_OBSERVED'].includes(status), readinessResult = status === 'READINESS_OBSERVED';
+          exact(frame.payload, sessionResult ? SESSION_RESULT_KEYS : readinessResult ? READINESS_RESULT_KEYS : VIEW_RESULT_KEYS);
+          const p = frame.payload;
+          if (!safe(p.actionId) || sessionResult && (typeof p.fingerprint !== 'string' || !HEX64.test(p.fingerprint))) fail('FRAME_DENIED');
+          const slot = pending.get(p.actionId); if (!slot) fail('FRAME_DENIED');
+          if (slot.action === 'LOGIN_SESSION' && (!slot.filled || status !== 'SESSION_BOUND') ||
+              slot.action === 'SESSION_OBSERVATION' && status !== 'SESSION_OBSERVED' ||
+              slot.action === 'SESSION_READINESS' && !readinessResult ||
+              slot.action === 'OBSERVE_VIEW' && (status !== 'VIEW_OBSERVED' || p.view !== slot.payload.view || p.phase !== slot.payload.phase || p.sequence !== slot.sequence)) fail('FRAME_DENIED');
+          // T13 I-9: noError is the worker's measured DOM check; source and brokerError are its
+          // PAPER-health facts (null when the phase has none). None is assumed here.
+          if (!sessionResult && !readinessResult && (typeof p.schemaValidation !== 'boolean' || typeof p.renderedData !== 'boolean' ||
+              typeof p.validEmptyState !== 'boolean' || typeof p.noError !== 'boolean' ||
+              p.source !== null && (typeof p.source !== 'string' || !/^[a-z][a-z-]{0,62}$/.test(p.source)) ||
+              p.brokerError !== null && typeof p.brokerError !== 'boolean' ||
+              typeof p.fingerprint !== 'string' || !HEX64.test(p.fingerprint) ||
+              !Number.isSafeInteger(p.routeCount) || p.routeCount < 0 ||
+              !Number.isSafeInteger(p.renderedCount) || p.renderedCount < 0)) fail('FRAME_DENIED');
+          // T13 m-4: every result carries the phase and sequence it was observed under.
+          let saved;
+          if (sessionResult) {
+            if (status === 'SESSION_BOUND') boundFingerprint = p.fingerprint;
+            saved = { sessionToken, kind: status, fingerprint: p.fingerprint, phase: slot.phase, sequence: slot.sequence };
+          } else if (readinessResult) saved = readinessRecord(p, slot);
+          else saved = { sessionToken, kind: status, view: p.view, phase: slot.phase, sequence: slot.sequence,
+            schemaValidation: p.schemaValidation, renderedData: p.renderedData, validEmptyState: p.validEmptyState, noError: p.noError,
+            source: p.source, brokerError: p.brokerError, routeCount: p.routeCount, renderedCount: p.renderedCount,
+            fingerprint: p.fingerprint, runId: facts.runId, configIdentity: config.runBinding.configIdentity };
+          saved.inspected = false; saved.claimed = false;
           const result=privateHandle({});browserResults.set(result,saved);
-          pending.delete(frame.payload.actionId); slot.resolve(result);
+          pending.delete(p.actionId); slot.resolve(result);
         } else if (frame.type === 'ERROR') {
           const keys = exactObject(frame.payload) ? Object.keys(frame.payload).sort().join(',') : '';
           if (!['code', 'actionId,code'].includes(keys) || typeof frame.payload.code !== 'string' || frame.payload.code.length < 1 || frame.payload.code.length > 128 ||
@@ -309,24 +382,57 @@ async function openBrowser(config, ports) {
       if (terminal || closeOperation || pending.size !== 0 || !ALLOWED_ACTIONS.has(action)) fail('ACTION_DENIED');
       actionPayload(action, payload);
       if (action === 'LOGIN_SESSION' ? arguments.length !== 3 || typeof onFilled !== 'function' : arguments.length !== 2) fail('ACTION_DENIED');
+      // T13 I-4/I-5 (C9): SESSION_READINESS needs the bound login session; one per phase, phases
+      // only advance and sequences only increase. A view runs only once the readiness and owner
+      // gates of its own phase are set (the controller sets them, then authorises the navigation).
+      let phase = action === 'LOGIN_SESSION' ? null : currentPhase(), sequence = action === 'LOGIN_SESSION' ? null : currentSequence();
+      if (action === 'SESSION_READINESS') {
+        if (boundFingerprint === null) fail('ACTION_DENIED');
+        if (readinessPhases.has(payload.phase) || payload.phase === 'OBSERVE_BEFORE_RESTART' && readinessPhases.has('OBSERVE_AFTER_RESTART') ||
+            payload.sequence <= lastReadinessSequence) fail('REPLAY');
+        phase = payload.phase; sequence = payload.sequence;
+      }
+      if (action === 'OBSERVE_VIEW') {
+        if (gates === null || gates.phase !== payload.phase) fail('READINESS_FAILED');
+        phase = gates.phase; sequence = gates.sequence;
+      }
       // T13 m-6: every action is bounded by the run binding's expiry; expiry is terminal.
       const expiry = runExpiry(clock, expiresAt);
       if (expiry.expired) throw latch('EXPIRED');
       expiry.promise.catch(cause => { latch('EXPIRED', cause); });
+      let startedMonotonicMs = null;
+      if (action === 'SESSION_READINESS') {
+        try { startedMonotonicMs = monotonicNow(); } catch (cause) { expiry.clear(); throw latch('EXPIRED', cause); }
+        readinessPhases.add(payload.phase); lastReadinessSequence = payload.sequence;
+      }
       const actionId = ++nextId;
-      const result = new Promise((resolve, reject) => pending.set(actionId, { action, filled:false, onFilled, payload, resolve, reject }));
+      const result = new Promise((resolve, reject) => pending.set(actionId, { action, filled:false, onFilled, payload, phase, sequence, startedMonotonicMs, resolve, reject }));
       result.then(() => expiry.clear(), () => expiry.clear());
       try { await wire.write('ACTION', { actionId, action, payload }); } catch (cause) { pending.delete(actionId); expiry.clear(); throw cause; }
       return result;
     },
+    // T13 m-4: a result is read at most once by each reader, and only while the session's
+    // readiness phase and sequence are the ones it was observed under. A readiness result is
+    // only claimable.
     inspectResult(result) {
       const saved=browserResults.get(result);
-      if(!saved||saved.sessionToken!==sessionToken)fail('SESSION_INVALID');
-      const {sessionToken: ignored, ...value}=saved;
-      return Object.freeze(value);
+      if(!saved||saved.sessionToken!==sessionToken||saved.inspected||saved.kind==='READINESS_OBSERVED'||
+         saved.phase!==currentPhase()||saved.sequence!==currentSequence())fail('SESSION_INVALID');
+      saved.inspected=true;
+      return resultValue(saved,false);
     },
+    claimResult(result, phase, sequence) {
+      const saved=browserResults.get(result);
+      if(!saved||saved.sessionToken!==sessionToken||saved.claimed||saved.phase===null||saved.phase!==phase||saved.sequence!==sequence||
+         phase!==currentPhase()||sequence!==currentSequence())fail('SESSION_INVALID');
+      saved.claimed=true;
+      return resultValue(saved,true);
+    },
+    // The current readiness and owner gates (one phase, one sequence), for the route policy snapshot.
+    currentGates() { return gates; },
     async close() {
       if (closeOperation) return closeOperation;
+      retireGates();
       // A latched session is stopped, not closed over the wire; close then rejects
       // with the latched code (or CLEANUP_UNCERTAIN if the stop itself fails).
       if (failure !== null) { closeOperation = (async () => { await stopRole(); fail(failure); })(); return closeOperation; }
@@ -337,6 +443,11 @@ async function openBrowser(config, ports) {
       return closeOperation;
     },
   });
+  // T13 m-9: the session is bound to its config's private release trust (receipts.cjs) before
+  // anyone can hold it; maintenance receipts are later read only under that trust.
+  try { gateAuthority.bindSession(session, configHandle); }
+  catch (cause) { terminal = true; try { await stopRole(); } catch {} fail('CONFIG_INVALID', cause); }
+  sessionRef = session;
   sessions.set(session, { role, wire }); return session;
 }
 
