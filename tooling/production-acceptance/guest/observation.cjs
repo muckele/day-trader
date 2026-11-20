@@ -2,6 +2,8 @@
 
 const { inspectReceipt } = require('./receipts.cjs');
 const { assertContinuity } = require('./session.cjs');
+// T13 I-8: only a BrowserSession that browser.cjs opened is observed, never a look-alike.
+const { isBrowserSession } = require('./browser.cjs');
 
 const REQUIRED_CHECKS = Object.freeze([
   'ownerConfiguration', 'authenticationConfiguration', 'databaseConnected', 'ownerIdentity',
@@ -142,6 +144,8 @@ function assertPrivateContinuity(privateSession, result) {
 }
 
 async function observeViews(session, phase, evidence) {
+  // Refused before any evidence is checked or spent and before any action.
+  if (!isBrowserSession(session)) fail('OBSERVATION_FAILED');
   if (!object(session) || typeof session.perform !== 'function' || typeof session.inspectResult !== 'function' || typeof session.assertBinding !== 'function' ||
       !PHASE_INTERVAL[phase] || !object(evidence) || !sameKeys(evidence, ['privateSession', 'readiness', 'maintenance'])) fail('OBSERVATION_FAILED');
   if (!readinessProofs.has(evidence.readiness)) fail('READINESS_FAILED');

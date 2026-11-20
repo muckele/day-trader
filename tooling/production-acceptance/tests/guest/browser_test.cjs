@@ -9,6 +9,8 @@ const fs = require('node:fs');
 const test = require('node:test');
 const { chromium } = require('playwright');
 const pkg = require('../../package.json');
+// Task 16 (T13 I-6, m-1): the worker's own descriptor classification and status reader.
+const { classifyDescriptor, socketInodeFamilies, procStatus: workerStatus } = require('../../guest/browser-worker.cjs');
 
 const EXPECTED = pkg.acceptanceRuntime;
 const FIXTURE_PATH = '/run/acceptance/task13-owned-fixture.json';
@@ -75,13 +77,27 @@ test('actual_chromium_sandbox_children_and_tmpfs', async () => {
     const family = new Set(roots), queue = [...roots];
     while (queue.length) for (const child of childPids(queue.shift())) if (!family.has(child)) { family.add(child); queue.push(child); }
     assert.ok(family.size > 1, 'Chromium descendants are absent');
+    // Sockets are attributed only from /proc/net/{unix,tcp,tcp6,udp,udp6}; vsock has no table.
+    const sockets = socketInodeFamilies(fs);
     for (const pid of family) {
-      const status = procStatus(pid);
+      const status = procStatus(pid), parsed = workerStatus(fs, pid);
       assert.match(status, /^Uid:\s+10002\s+10002\s+10002\s+10002$/m);
+      assert.match(status, /^Gid:\s+10002\s+10002\s+10002\s+10002$/m);
       assert.match(status, /^NoNewPrivs:\s+1$/m);
-      assert.equal(fs.readdirSync(`/proc/${pid}/fd`).some(fd => {
-        try { return fs.readlinkSync(`/proc/${pid}/fd/${fd}`).includes('vsock'); } catch { return false; }
-      }), false);
+      // Seccomp mode 2 (filter) with at least the inherited filter; Chromium adds its own.
+      assert.match(status, /^Seccomp:\s+2$/m);
+      assert.equal(parsed.seccomp, 2);
+      assert.ok(Number.isSafeInteger(parsed.seccompFilters) && parsed.seccompFilters >= 1, `${pid} Seccomp_filters ${parsed.seccompFilters}`);
+      const directory = fs.opendirSync(`/proc/${pid}/fd`), kinds = [];
+      try {
+        for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+          let link = null;
+          try { link = fs.readlinkSync(`/proc/${pid}/fd/${entry.name}`); } catch { link = null; }
+          kinds.push([entry.name, link, classifyDescriptor(link, sockets)]);
+        }
+      } finally { directory.closeSync(); }
+      for (const forbidden of ['CONSOLE', 'UNKNOWN_SOCKET', 'UNREADABLE'])
+        assert.deepEqual(kinds.filter(row => row[2] === forbidden), [], `${pid} ${forbidden}`);
     }
     for (const path of ['/run/acceptance/browser/support', '/run/acceptance/browser/profile', '/run/acceptance/browser/cache', '/dev/shm']) {
       const mount = fs.readFileSync('/proc/self/mountinfo', 'utf8').split('\n').find(line => line.split(' ')[4] === path);

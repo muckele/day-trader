@@ -1,10 +1,9 @@
 'use strict';
 
-const { createHmac, timingSafeEqual } = require('node:crypto');
 const runtime = require('../package.json').acceptanceRuntime;
 const { inspectBrowserControllerConfig } = require('./receipts.cjs');
 const { admitBrowserRequest } = require('./budget.cjs');
-const { claimBrowserRequestEvidence } = require('./role-ports.cjs');
+const { claimBrowserRequestEvidence, inspectAdoptedRolePort } = require('./role-ports.cjs');
 
 const RUNTIME_PINS = deepFreeze(JSON.parse(JSON.stringify(runtime)));
 const ALLOWED_ACTIONS = new Set(['LOGIN_SESSION', 'SESSION_OBSERVATION', 'OBSERVE_VIEW']);
@@ -12,7 +11,9 @@ const FIXED_PATHS = Object.freeze({
   profile: '/run/acceptance/browser/profile', support: '/run/acceptance/browser/support',
   cache: '/run/acceptance/browser/cache', shm: '/dev/shm',
 });
+// T13 I-8: `sessions` is the BrowserSession brand. Only openBrowser writes it.
 const sessions = new WeakMap(), browserResults = new WeakMap();
+function isBrowserSession(value) { return sessions.has(value); }
 // T13 m-8: worker codes are free strings (up to 128 characters). browser.cjs
 // raises only closed failure-enum codes: each closed code maps to itself, the
 // known worker codes below map to their class, and anything else (including
@@ -25,6 +26,7 @@ const WORKER_CODE_MAP = Object.freeze(Object.assign(Object.create(null), Object.
   NATIVE_EFFECT_FENCE_UNAVAILABLE: 'ROLE_INVALID', CONFIG_INVALID: 'IDENTITY_MISMATCH', RUNTIME_IDENTITY_MISMATCH: 'IDENTITY_MISMATCH',
   OWNER_MISMATCH: 'IDENTITY_MISMATCH', COOKIE_INVALID: 'SESSION_MISMATCH', SESSION_CHANGED: 'SESSION_MISMATCH',
   SESSION_INVALID: 'SESSION_MISMATCH', LOGIN_ALREADY_ATTEMPTED: 'REPLAY', CLEANUP_UNCERTAIN: 'CLEANUP_INCOMPLETE',
+  FAMILY_UNREADABLE: 'ROLE_INVALID',
 }));
 function closedCode(code) { return typeof code === 'string' && Object.hasOwn(WORKER_CODE_MAP, code) ? WORKER_CODE_MAP[code] : 'INTERNAL_FAILURE'; }
 function workerError(workerCode) {
@@ -81,27 +83,21 @@ function frameError(payload) {
   if (!exactObject(payload) || Object.keys(payload).sort().join(',') !== 'code' || typeof payload.code !== 'string' || payload.code.length < 1 || payload.code.length > 128) fail('FRAME_DENIED');
   return payload.code;
 }
+// T13 I-8 / P28: the pipe must carry role-ports' adoption brand, and its audit must be the
+// Task 13 application form. The earlier second form, self-reported confinement facts with a
+// per-pipe MAC key, and its MAC'd frame path are removed: the brand replaces them.
 function auditPipe(pipe) {
-  if (!pipe || typeof pipe.audit !== 'function' || typeof pipe.read !== 'function' || typeof pipe.write !== 'function') fail('ROLE_INVALID');
+  if (!inspectAdoptedRolePort(pipe) || typeof pipe.audit !== 'function' || typeof pipe.read !== 'function' || typeof pipe.write !== 'function') fail('ROLE_INVALID');
   const facts = pipe.audit();
-  if (facts?.version===1&&facts.kind==='TASK13_BROWSER_APPLICATION'&&/^[0-9a-f]{32}$/.test(facts.runId)&&facts.maxFrameBytes===16384) return facts;
-  if (!facts || facts.version !== 1 || !/^[0-9a-f]{32}$/.test(facts.runId) || !/^[0-9a-f]{64}$/.test(facts.channelKeyHex) ||
-      facts.uid !== 10002 || facts.noNewPrivs !== true || facts.capabilities !== 'EMPTY' || facts.filterInherited !== true ||
-      facts.procScope !== 'BROWSER_FAMILY_ONLY' || facts.consoleFds !== 0 || facts.vsockFds !== 0 ||
-      facts.unexpectedFds !== 0 || facts.networkDeviceCount !== 0 || facts.maxFrameBytes !== 16384 ||
-      !Array.isArray(facts.tmpfsPaths) || !equal([...facts.tmpfsPaths].sort(), Object.values(FIXED_PATHS).sort())) fail('ROLE_INVALID');
+  if (!facts || facts.version !== 1 || facts.kind !== 'TASK13_BROWSER_APPLICATION' || !/^[0-9a-f]{32}$/.test(facts.runId) || facts.maxFrameBytes !== 16384) fail('ROLE_INVALID');
   return facts;
 }
 function rpc(pipe, facts) {
   let outgoing = 0, incoming = 0, sending=Promise.resolve();
-  const outer = facts.kind === 'TASK13_BROWSER_APPLICATION';
-  const key = outer ? null : Buffer.from(facts.channelKeyHex, 'hex');
-  function mac(frame, direction) { return createHmac('sha256', key).update('acceptance:browser:v1\0' + direction + '\0' + canonical(frame)).digest('hex'); }
   return Object.freeze({
     write(type, payload) {
       const operation=sending.then(async()=>{
-        const bare = { version: 1, runId: facts.runId, sequence: ++outgoing, type, payload };
-        const body = Buffer.from(canonical(outer ? bare : { ...bare, mac: mac(bare, 'CONTROLLER_TO_WORKER') }), 'ascii');
+        const body = Buffer.from(canonical({ version: 1, runId: facts.runId, sequence: ++outgoing, type, payload }), 'ascii');
         if (body.length > facts.maxFrameBytes) fail('FRAME_DENIED');
         const prefix = Buffer.alloc(4); prefix.writeUInt32BE(body.length); await pipe.write(Buffer.concat([prefix, body]));
       });
@@ -113,11 +109,8 @@ function rpc(pipe, facts) {
       const body = bytes.subarray(4); if (body.some(value => value > 127)) fail('FRAME_DENIED');
       const text = body.toString('ascii'); let frame; try { frame = JSON.parse(text); } catch { fail('FRAME_DENIED'); }
       if (canonical(frame) !== text) fail('FRAME_DENIED');
-      exact(frame, outer ? ['version', 'runId', 'sequence', 'type', 'payload'] : ['version', 'runId', 'sequence', 'type', 'payload', 'mac']);
+      exact(frame, ['version', 'runId', 'sequence', 'type', 'payload']);
       if (frame.version !== 1 || frame.runId !== facts.runId || frame.sequence !== incoming + 1 || !safe(frame.sequence) || typeof frame.type !== 'string') fail('FRAME_DENIED');
-      if (!outer) { if(typeof frame.mac !== 'string')fail('FRAME_DENIED');const bare = { ...frame }; delete bare.mac;
-        const expected = mac(bare, 'WORKER_TO_CONTROLLER');
-        if (!/^[0-9a-f]{64}$/.test(frame.mac) || !timingSafeEqual(Buffer.from(frame.mac, 'hex'), Buffer.from(expected, 'hex'))) fail('FRAME_DENIED'); }
       incoming++;
       return { frame, bytes };
     },
@@ -182,7 +175,9 @@ function actionPayload(action, payload) {
 async function openBrowser(config, ports) {
   try { config = inspectBrowserControllerConfig(config); } catch (cause) { fail('CONFIG_INVALID', cause); }
   validateConfig(config);
-  if (!ports || !ports.rolePort || !ports.grant || typeof ports.rolePort.activateOnce !== 'function' || !ports.admissionPort ||
+  // T13 I-8: only a BROWSER role port that role-ports adopted can open a session; a look-alike
+  // (or another role's port) is refused before any activation.
+  if (!ports || !inspectAdoptedRolePort(ports.rolePort) || ports.rolePort.kind !== 'BROWSER' || !ports.grant || typeof ports.rolePort.activateOnce !== 'function' || !ports.admissionPort ||
       !ports.clock || typeof ports.clock.sample !== 'function') fail('BOOTSTRAP_REQUIRED');
   const clock = ports.clock, expiresAt = config.runBinding.expiresAt;
   let role;
@@ -345,4 +340,4 @@ async function openBrowser(config, ports) {
   sessions.set(session, { role, wire }); return session;
 }
 
-module.exports = Object.freeze({ RUNTIME_PINS, WORKER_CODE_MAP, openBrowser });
+module.exports = Object.freeze({ RUNTIME_PINS, WORKER_CODE_MAP, openBrowser, isBrowserSession });

@@ -4,8 +4,10 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const test = require('node:test');
 const vm = require('node:vm');
+// Task 16: session.test.cjs and observation.test.cjs load this file for its harness
+// (exported at the end). Its own tests register only when it is the test entry point.
+const test = require.main === module ? require('node:test') : () => {};
 const receipts = require('../../guest/receipts.cjs');
 const budgetAPI = require('../../guest/budget.cjs');
 const roles = require('../../guest/role-ports.cjs');
@@ -36,7 +38,8 @@ const PATHS = Object.freeze({
 
 function controller() {
   assert.equal(fs.existsSync(CONTROLLER), true, 'browser controller contract is absent');
-  delete require.cache[CONTROLLER];
+  // Task 16: one module instance per process. session.cjs and observation.cjs read
+  // this instance's BrowserSession brand, so the require cache is no longer cleared.
   return require(CONTROLLER);
 }
 
@@ -90,26 +93,29 @@ function compositionBinding(runId, overrides = {}) {
     rolePolicyDigest: '5'.repeat(64), epoch: 1, expiresAtMs: 200, ...overrides };
 }
 
+// Task 16 (T13 I-6, m-1): the worker's status facts are all four Uid and Gid fields,
+// NoNewPrivs, the Seccomp mode and the Seccomp_filters depth; descriptor facts are the
+// console, unattributed-socket, unreadable and control-pipe counts.
+const ROLE_IDS = Object.freeze([10002, 10002, 10002, 10002]);
+function statusFacts(overrides = {}) {
+  return { uids: ROLE_IDS, gids: ROLE_IDS, noNewPrivs: true, seccomp: 2, seccompFilters: 1,
+    consoleFds: 0, unknownSocketFds: 0, unreadableFds: 0, unexpectedFds: 0, ...overrides };
+}
 function topology(overrides = {}) {
   return Object.freeze({
     version: 1, kind: 'TASK13_BROWSER_APPLICATION', runId: RUN, channelKeyHex: KEY, maxFrameBytes: 16384,
-    uid: 10002, noNewPrivs: true, capabilities: 'EMPTY', filterInherited: true,
-    procScope: 'BROWSER_FAMILY_ONLY', consoleFds: 0, vsockFds: 0,
-    unexpectedFds: 0, networkDeviceCount: 0,
+    ...statusFacts(), capabilities: 'EMPTY', procScope: 'BROWSER_FAMILY_ONLY', networkDeviceCount: 0,
     tmpfsPaths: Object.freeze(['/dev/shm', PATHS.cache, PATHS.profile, PATHS.support]),
     ...overrides,
   });
 }
 
+function member(pid, overrides = {}) { return Object.freeze({ pid, ...statusFacts(overrides) }); }
 function family(overrides = {}) {
   return Object.freeze({
     workerPid: 101,
     browserPid: 202,
-    members: Object.freeze([
-      Object.freeze({ pid: 101, uid: 10002, filterInherited: true, consoleFds: 0, vsockFds: 0, unexpectedFds: 0 }),
-      Object.freeze({ pid: 202, uid: 10002, filterInherited: true, consoleFds: 0, vsockFds: 0, unexpectedFds: 0 }),
-      Object.freeze({ pid: 203, uid: 10002, filterInherited: true, consoleFds: 0, vsockFds: 0, unexpectedFds: 0 }),
-    ]),
+    members: Object.freeze([member(101), member(202), member(203)]),
     procScope: 'BROWSER_FAMILY_ONLY',
     ...overrides,
   });
@@ -360,7 +366,9 @@ function fakePlaywright(options = {}) {
       return page;
     },
     async cookies() { const override=typeof options.cookie==='function'?options.cookie():options.cookie;
-      return [Object.assign({ name: 'daytrader_session', value: 'private-cookie', domain: 'backend.example.test', path: '/', secure: true, httpOnly: true, sameSite: 'None' },override||{})]; },
+      const cookie=Object.assign({ name: 'daytrader_session', value: 'private-cookie', domain: 'backend.example.test', path: '/', secure: true, httpOnly: true, sameSite: 'None' },override||{});
+      // I-10 M17: a second, otherwise valid daytrader_session cookie.
+      return options.duplicateCookie ? [cookie, { ...cookie, value: 'second-private-cookie' }] : [cookie]; },
     async close() { calls.contextCloses++; if(options.contextCloseFailure)throw new Error('synthetic context close failure'); },
   };
   const browser = {
@@ -384,6 +392,11 @@ async function startHarness(options = {}) {
   const fake = fakePlaywright({ ...(options.fake || {}), subresources: options.cssAsset ? [CSS_ASSET] : [] });
   const audit=topology({...(options.audit||{}),runId:testRun});
   const links = duplex(audit, options.family || family(), { strictWrites: options.strictWrites === true });
+  // T13 m-7: each family inspection is recorded with the number of Playwright events seen
+  // before it; a function `family` option answers per inspection (1-based).
+  const inspections = [], familySource = options.family || family();
+  links.worker.inspectBrowserFamily = () => { inspections.push(fake.calls.events.length);
+    return typeof familySource === 'function' ? familySource(inspections.length) : familySource; };
   const assetProofs = [];
   const launchEvents = [];
   let activationResolve,activationReject;
@@ -458,13 +471,182 @@ async function startHarness(options = {}) {
   const workerResult = workerAPI.runBrowserWorker(links.worker, workerCfg);
   workerResult.then(result=>{if(result?.status==='FAILED')activationReject(Object.assign(new Error(result.code),{code:result.code}));}).catch(activationReject);
   if (options.observed) Object.assign(options.observed, {
-    fake, links, workerResult, assetProofs, stops: () => stops, waits: () => waits,
+    fake, links, workerResult, assetProofs, stops: () => stops, waits: () => waits, runId: testRun, inspections: () => [...inspections],
   });
   const clock = options.controllerClock || Object.freeze({ sample: () => [160, 1000] });
   const session = await api.openBrowser(cfg, { rolePort, grant, admissionPort, clock });
   return { api, fake, links, cfg, session, workerResult, assetProofs, decisions:routeFixture.intents, launchEvents,runId:testRun,
-    activations: () => activations, stops: () => stops, waits: () => waits, cleanupStarted: () => cleanupStarted };
+    activations: () => activations, stops: () => stops, waits: () => waits, cleanupStarted: () => cleanupStarted,
+    inspections: () => [...inspections] };
 }
+
+// Task 16 (T13 I-8): a real BrowserSession whose worker side the test scripts frame by
+// frame. The controller (browser.cjs), the adopted role port and the application pipe
+// brand are all real; only the worker's frames are synthetic. `hooks` shape the answers.
+const VIEW_ROUTES = Object.freeze({ ROBO: 7, PORTFOLIO: 2, ACTIVITY: 3 });
+function scriptedBrowser(options = {}) {
+  const api = controller();
+  const runId = options.runId || crypto.randomBytes(16).toString('hex');
+  const pipeRunId = options.pipeRunId || runId;
+  const configIdentity = options.configIdentity || '3'.repeat(64);
+  const routeFixture = budgetFixture({ runId, configIdentity, assetPath: '/static/js/main.js', assetBody: Buffer.from('abc'),
+    extraAssets: options.extraAssets || [] });
+  const bundle = receipts.createBrowserAssetBundle(routeFixture.release, routeFixture.assets, routeFixture.trust,
+    routeFixture.releaseBytes, routeFixture.assetBytes);
+  const cfg = receipts.createBrowserControllerConfig(routeFixture.release, routeFixture.assets, routeFixture.trust, bundle,
+    { runtime: JSON.parse(JSON.stringify(api.RUNTIME_PINS)), paths: { ...PATHS } }, compositionBinding(runId, { configIdentity }));
+  const entries = receipts.inspectBrowserControllerConfig(cfg).assetEntries;
+  const links = duplex(topology({ runId: pipeRunId }));
+  if (options.controllerAudit) links.controller.audit = options.controllerAudit;
+  const handoff = Object.freeze({}), child = Object.freeze({}), grant = Object.freeze({});
+  let waiting = true, stops = 0, outgoing = 0;
+  const authority = {
+    inspectHandoff: value => value === handoff ? { kind: 'BROWSER', runId: pipeRunId, uid: 10002, child, privatePipe: links.controller, waiting, confined: true } : null,
+    inspectGrant: value => value === grant ? { kind: 'BROWSER', runId: pipeRunId, child, purpose: 'CONFINEMENT_PROVED', session: null, remainingMs: 60000 } : null,
+    async activate() { waiting = false; },
+    async stopOwned(owned) { assert.equal(owned, child); stops++; return { status: 'STOPPED', runId: pipeRunId, child }; },
+    async waitExit(owned) { assert.equal(owned, child); return { status: 'EXITED', runId: pipeRunId, child }; },
+  };
+  roles.bindRoleBootstrap(authority, pipeRunId).audit(handoff);
+  const rolePort = roles.adoptRole('BROWSER', handoff);
+  const received = [], hooks = options.hooks || {};
+  function send(type, payload) {
+    const bare = { version: 1, runId: pipeRunId, sequence: ++outgoing, type, payload };
+    // Only the legacy-branch test MACs its frames, in the removed acceptance:browser:v1 form.
+    const mac = options.legacyMac ? { mac: crypto.createHmac('sha256', Buffer.from(options.legacyMac, 'hex'))
+      .update('acceptance:browser:v1\0WORKER_TO_CONTROLLER\0' + canonical(bare)).digest('hex') } : {};
+    return links.worker.write(inheritedFrame({ ...bare, ...mac }));
+  }
+  const fingerprint = (action, payload) => typeof hooks.fingerprint === 'function' ? hooks.fingerprint(action, payload) : options.fingerprint || 'b'.repeat(64);
+  async function respond({ actionId, action, payload }) {
+    const code = typeof hooks.error === 'function' ? hooks.error(action, payload) : null;
+    if (code) return send('ERROR', { actionId, code });
+    if (action === 'LOGIN_SESSION') {
+      await send('FILLED', { actionId, status: 'FILLED' });
+      if (typeof hooks.beforeBound === 'function') await hooks.beforeBound();
+      return send('RESULT', { actionId, status: 'SESSION_BOUND', fingerprint: fingerprint(action, payload) });
+    }
+    if (action === 'SESSION_OBSERVATION') return send('RESULT', { actionId, status: 'SESSION_OBSERVED', fingerprint: fingerprint(action, payload) });
+    if (typeof hooks.onView === 'function') hooks.onView(payload.view);
+    return send('RESULT', { actionId, status: 'VIEW_OBSERVED', view: payload.view, phase: payload.phase, schemaValidation: true,
+      renderedData: true, validEmptyState: false, noError: true, fresh: true, source: 'alpaca-paper', brokerError: false,
+      routeCount: VIEW_ROUTES[payload.view], renderedCount: 1, fingerprint: fingerprint(action, payload), readinessValidation: payload.view === 'ROBO',
+      ...(typeof hooks.view === 'function' ? hooks.view(payload.view) : {}) });
+  }
+  const valid = entries.map(entry => ({ entryId: 'frontend-asset:' + entry.path, hash: entry.hash, sizeMatch: true, hashMatch: true, mimeMatch: true }));
+  const proofs = typeof options.proofs === 'function' ? options.proofs(valid) : valid;
+  (async () => {
+    await send('ASSETS', { proofs }); await send('READY', { status: 'READY' });
+    while (true) {
+      const frame = JSON.parse((await links.worker.read()).subarray(4).toString('ascii')); received.push(frame);
+      if (frame.type === 'CLOSE') { await send('EXIT', { status: 'EXITED', runId: pipeRunId }); return; }
+      if (frame.type === 'ACTION') await respond(frame.payload);
+    }
+  })().catch(() => {});
+  const opened = api.openBrowser(cfg, { rolePort, grant, admissionPort: Object.freeze({}), clock: Object.freeze({ sample: () => [160, 1000] }) });
+  opened.catch(() => {});
+  return { api, cfg, links, runId, opened, stops: () => stops,
+    actions: () => received.filter(frame => frame.type === 'ACTION').map(frame => frame.payload),
+    written: () => Buffer.concat(links.logs.filter(row => row.from === 'controller').map(row => row.bytes)).toString('ascii') };
+}
+async function scriptedSession(options = {}) {
+  const scripted = scriptedBrowser(options);
+  scripted.session = await scripted.opened;
+  return scripted;
+}
+
+// Task 16 (T13 I-6, m-1): a fake /proc in the Linux 6.8 formats, for the worker's native readers.
+//  - fs/proc/array.c:189-196 (four Uid and four Gid fields, tab separated), :335-341 (NoNewPrivs,
+//    Seccomp, Seccomp_filters); include/uapi/linux/seccomp.h:12 SECCOMP_MODE_FILTER 2.
+//  - net/socket.c:362 `socket:[%lu]` and fs/pipe.c:881 `pipe:[%lu]` descriptor links.
+//  - net/unix/af_unix.c:3282-3289 (header; inode is the 7th field), net/ipv4/tcp_ipv4.c:2896 and
+//    :2945-2947, net/ipv6/tcp_ipv6.c:2211 and :2270-2275, net/ipv4/udp.c:3082 and :3098-3100,
+//    net/ipv6/datagram.c:1055 with include/net/transp_v6.h:59-64 (inode is the 10th field).
+//    Request and TIME_WAIT rows (tcp_ipv4.c:2835, :2929) carry inode 0.
+const NET_TABLES = Object.freeze({
+  unix: 'Num       RefCount Protocol Flags    Type St Inode Path\n' +
+    '0000000000000000: 00000002 00000000 00000000 0001 03 41001\n' +
+    '0000000000000000: 00000003 00000000 00010000 0001 01 41002 @chromium-sandbox-ipc\n',
+  tcp: '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode' + ' '.repeat(12) + '\n' +
+    '   0: 0100007F:E0A2 0100007F:0C38 01 00000000:00000000 00:00000000 00000000 10002        0 41003 1 0000000000000000 20 4 30 10 -1\n' +
+    '   1: 0100007F:E0A4 0100007F:0C38 06 00000000:00000000 03:00000F9F 00000000     0        0 0 3 0000000000000000\n',
+  tcp6: '  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n' +
+    '   0: 00000000000000000000000001000000:E0A6 00000000000000000000000001000000:0C38 01 00000000:00000000 00:00000000 00000000 10002        0 41004 1 0000000000000000 20 4 30 10 -1\n',
+  udp: '   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops' + ' '.repeat(12) + '\n' +
+    '  101: 0100007F:D431 00000000:0000 07 00000000:00000000 00:00000000 00000000 10002        0 41005 2 0000000000000000 0\n',
+  udp6: '  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n',
+});
+const SOCKET_INODES = Object.freeze({ 41001: 'UNIX', 41002: 'UNIX', 41003: 'TCP', 41004: 'TCP', 41005: 'UDP' });
+function procError(code, target) { return Object.assign(new Error(code + ' ' + target), { code }); }
+function statusText(overrides = {}) {
+  const rows = { Uid: '10002\t10002\t10002\t10002', Gid: '10002\t10002\t10002\t10002', CapEff: '0000000000000000',
+    NoNewPrivs: '1', Seccomp: '2', Seccomp_filters: '1', ...overrides };
+  return ['Name:\tchrome', 'Umask:\t0022', 'State:\tS (sleeping)', 'Tgid:\t202', 'Pid:\t202', 'PPid:\t101', 'TracerPid:\t0',
+    ...['Uid', 'Gid'].filter(name => rows[name] !== null).map(name => name + ':\t' + rows[name]),
+    'FDSize:\t64', 'Groups:\t', 'CapInh:\t0000000000000000', 'CapPrm:\t0000000000000000',
+    ...['CapEff', 'NoNewPrivs', 'Seccomp', 'Seccomp_filters'].filter(name => rows[name] !== null).map(name => name + ':\t' + rows[name]),
+    'Speculation_Store_Bypass:\tthread vulnerable', ''].join('\n');
+}
+// The reader's own listing descriptor resolves only while its /proc/<pid>/fd listing is open.
+const LISTING = open => { if (!open) throw procError('ENOENT', 'closed listing descriptor'); return '/proc/101/fd'; };
+function cleanProcesses() {
+  return {
+    101: { children: [202], status: statusText(), fds: { 0: '/dev/null', 1: '/dev/null', 2: '/dev/null', 3: 'pipe:[11]', 4: 'pipe:[12]',
+      5: 'anon_inode:[eventpoll]', 6: 'pipe:[13]', 7: 'anon_inode:[eventfd]', 9: LISTING } },
+    202: { children: [203, 204], status: statusText(), fds: { 0: '/dev/null', 1: '/dev/null', 2: '/dev/null', 3: 'pipe:[13]',
+      5: 'socket:[41001]', 6: 'socket:[41003]', 7: 'socket:[41004]', 8: 'socket:[41005]', 9: '/dev/shm/.org.chromium.Chromium.Ab12Cd (deleted)',
+      10: 'anon_inode:[eventfd]', 11: '/run/acceptance/browser/profile/Default/Cookies' } },
+    203: { children: [], status: statusText({ Seccomp_filters: '3' }), fds: { 0: '/dev/null', 5: 'socket:[41002]', 6: '/memfd:shared_memory (deleted)' } },
+    204: { children: [], status: statusText({ Seccomp_filters: '2' }), fds: { 0: '/dev/null', 5: 'socket:[41001]', 6: 'anon_inode:[eventpoll]' } },
+  };
+}
+function fakeProc(processes = cleanProcesses(), net = {}) {
+  const tables = { ...NET_TABLES, ...net }, open = new Set();
+  const processFor = (pid, target) => { const value = processes[pid === 'self' ? 'self' : pid]; if (!value) throw procError('ENOENT', target); return value; };
+  return {
+    readFileSync(target) {
+      let match;
+      if ((match = /^\/proc\/net\/(unix|tcp6?|udp6?)$/.exec(target))) { const value = tables[match[1]]; if (value instanceof Error) throw value; return value; }
+      if ((match = /^\/proc\/([0-9]+)\/task\/([0-9]+)\/children$/.exec(target)) && match[1] === match[2]) {
+        const children = processFor(match[1], target).children; if (children instanceof Error) throw children;
+        return children.map(pid => pid + ' ').join(''); }
+      if ((match = /^\/proc\/([0-9]+|self)\/status$/.exec(target))) { const status = processFor(match[1], target).status; if (status instanceof Error) throw status; return status; }
+      if (processes.self && target === '/proc/net/dev') return processes.self.netDev;
+      if (processes.self && target === '/proc/self/mountinfo') return processes.self.mountinfo;
+      throw procError('ENOENT', target);
+    },
+    opendirSync(target) {
+      const match = /^\/proc\/([0-9]+|self)\/fd$/.exec(target); if (!match) throw procError('ENOENT', target);
+      const fds = processFor(match[1], target).fds; if (fds instanceof Error) throw fds;
+      const names = Object.keys(fds); let index = 0; open.add(match[1]);
+      return { readSync() { return index < names.length ? { name: names[index++] } : null; }, closeSync() { open.delete(match[1]); } };
+    },
+    readlinkSync(target) {
+      const match = /^\/proc\/([0-9]+|self)\/fd\/([0-9]+)$/.exec(target); if (!match) throw procError('ENOENT', target);
+      const link = processFor(match[1], target).fds[match[2]];
+      if (typeof link === 'function') return link(open.has(match[1]));
+      if (link === undefined) throw procError('ENOENT', target);
+      if (link instanceof Error) throw link;
+      return link;
+    },
+  };
+}
+const CONTROL_TARGETS = Object.freeze(['pipe:[11]', 'pipe:[12]']);
+function nativeReaders() {
+  const api = worker(fakePlaywright(), receipts, async () => assert.fail('binding must not start'), { process });
+  for (const name of ['classifyDescriptor', 'socketInodeFamilies', 'procStatus', 'forbiddenDescriptorCounts', 'inspectNativeFamily', 'nativeTopology'])
+    assert.equal(typeof api[name], 'function', name + ' native reader is absent');
+  return api;
+}
+function plainCopy(value) { return JSON.parse(JSON.stringify(value)); }
+// The worker's own /proc/self view for nativeTopology.
+function selfProcesses(overrides = {}) {
+  return { self: { children: [], status: statusText(), netDev: 'Inter-|   Receive\n face |bytes\n    lo: 0 0\n',
+    mountinfo: '36 25 0:32 / / rw,nosuid - tmpfs tmpfs rw\n',
+    fds: { 0: '/dev/null', 1: '/dev/null', 2: '/dev/null', 3: 'pipe:[11]', 4: 'pipe:[12]', 5: 'anon_inode:[eventpoll]',
+      9: open => { if (!open) throw procError('ENOENT', 'closed listing descriptor'); return '/proc/101/fd'; } }, ...overrides } };
+}
+const SELF_INIT = Object.freeze({ binding: Object.freeze({ runId: RUN }), channelKeyHex: KEY });
 
 async function closeHarness(h) {
   const result = await h.session.close();
@@ -535,8 +717,9 @@ test('valid_inherited_protocol_transports_config_but_denies_at_unavailable_nativ
       }return length;},
     closeSync(fd){closed.push(fd);},
     readlinkSync(path){const fd=path.split('/').pop();return fd==='3'?'pipe:[3]':fd==='4'?'pipe:[4]':'/dev/null';},
-    readdirSync(){return ['0','1','2','3','4'];},
-    readFileSync(path){if(path==='/proc/self/status')return 'Uid:\t10002\t10002\t10002\t10002\nNoNewPrivs:\t1\nSeccomp:\t2\nCapEff:\t0000000000000000\n';
+    opendirSync(){const names=['0','1','2','3','4'];return {readSync:()=>names.length?{name:names.shift()}:null,closeSync(){}};},
+    readFileSync(path){if(path==='/proc/self/status')return statusText();
+      if(/^\/proc\/net\/(unix|tcp6?|udp6?)$/.test(path))return NET_TABLES[path.slice(10)];
       if(path==='/proc/net/dev')return 'Inter-| Receive | Transmit\n face |bytes\n lo: 0\n';
       if(path==='/proc/self/mountinfo')return '36 25 0:32 / / rw,nosuid - tmpfs tmpfs rw\n';throw new Error('unexpected read '+path);},
   };
@@ -752,9 +935,9 @@ test('inherited_filter_all_children', async () => {
   const h = await startHarness();
   assert.equal(h.fake.calls.launch.length, 1);
   await closeHarness(h);
+  // A child whose seccomp filter is not inherited (mode 0, no filters).
   const observed={};const bad = startHarness({ observed,family: family({ members: Object.freeze([
-    Object.freeze({ pid: 101, uid: 10002, filterInherited: true, consoleFds: 0, vsockFds: 0, unexpectedFds: 0 }),
-    Object.freeze({ pid: 202, uid: 10002, filterInherited: false, consoleFds: 0, vsockFds: 0, unexpectedFds: 0 }),
+    member(101), member(202, { seccomp: 0, seccompFilters: 0 }),
   ]) }) });
   await assert.rejects(bad, { code: 'ROLE_INVALID' });
   assert.equal(observed.fake.calls.contextCloses,1);assert.equal(observed.fake.calls.browserCloses,1);
@@ -763,11 +946,17 @@ test('inherited_filter_all_children', async () => {
 test('browser_pid_uid_proc_console_inventory', async () => {
   const h = await startHarness();
   await closeHarness(h);
+  // Each altered member sits in an otherwise valid two-member family, so only its own fact fails.
   for (const altered of [
     { browserPid: 0 }, { procScope: 'HOST' },
-    { members: Object.freeze([Object.freeze({ pid: 202, uid: 0, filterInherited: true, consoleFds: 0, vsockFds: 0, unexpectedFds: 0 })]) },
-    { members: Object.freeze([Object.freeze({ pid: 202, uid: 10002, filterInherited: true, consoleFds: 1, vsockFds: 0, unexpectedFds: 0 })]) },
-  ]) await assert.rejects(startHarness({ family: family(altered) }), { code: 'ROLE_INVALID' });
+    { members: Object.freeze([member(101), member(202, { uids: Object.freeze([0, 0, 0, 0]) })]) },
+    { members: Object.freeze([member(101), member(202, { uids: Object.freeze([10002, 0, 10002, 10002]) })]) },
+    { members: Object.freeze([member(101), member(202, { gids: Object.freeze([10002, 10002, 10002, 0]) })]) },
+    { members: Object.freeze([member(101), member(202, { consoleFds: 1 })]) },
+    { members: Object.freeze([member(101), member(202, { unknownSocketFds: 1 })]) },
+    { members: Object.freeze([member(101), member(202, { unexpectedFds: 1 })]) },
+    { members: Object.freeze([member(101), member(202, { unreadableFds: 1 })]) },
+  ]) await assert.rejects(startHarness({ family: family(altered) }), { code: 'ROLE_INVALID' }, JSON.stringify(altered));
 });
 
 test('runtime_inventory_package_and_lock_are_exact_and_hold_distribution', () => {
@@ -1441,6 +1630,7 @@ test('worker_codes_map_to_closed_enum', async () => {
     NATIVE_EFFECT_FENCE_UNAVAILABLE: 'ROLE_INVALID', CONFIG_INVALID: 'IDENTITY_MISMATCH', RUNTIME_IDENTITY_MISMATCH: 'IDENTITY_MISMATCH',
     OWNER_MISMATCH: 'IDENTITY_MISMATCH', COOKIE_INVALID: 'SESSION_MISMATCH', SESSION_CHANGED: 'SESSION_MISMATCH',
     SESSION_INVALID: 'SESSION_MISMATCH', LOGIN_ALREADY_ATTEMPTED: 'REPLAY', CLEANUP_UNCERTAIN: 'CLEANUP_INCOMPLETE',
+    FAMILY_UNREADABLE: 'ROLE_INVALID',
   });
   // Through the real session: an action error, the worker's terminal error and a startup error.
   for (const [workerCode, code] of [['OWNER_MISMATCH', 'IDENTITY_MISMATCH'], ['E_PLAYWRIGHT_SELECTOR', 'INTERNAL_FAILURE'],
@@ -1477,8 +1667,9 @@ test('worker_inner_cleanup_budget_starts_only_at_the_terminal_event', async () =
       }return length;},
     closeSync(){},
     readlinkSync(target){const fd=target.split('/').pop();return fd==='3'?'pipe:[3]':fd==='4'?'pipe:[4]':'/dev/null';},
-    readdirSync(){return ['0','1','2','3','4'];},
-    readFileSync(target){if(target==='/proc/self/status')return 'Uid:\t10002\t10002\t10002\t10002\nNoNewPrivs:\t1\nSeccomp:\t2\nCapEff:\t0000000000000000\n';
+    opendirSync(){const names=['0','1','2','3','4'];return {readSync:()=>names.length?{name:names.shift()}:null,closeSync(){}};},
+    readFileSync(target){if(target==='/proc/self/status')return statusText();
+      if(/^\/proc\/net\/(unix|tcp6?|udp6?)$/.test(target))return NET_TABLES[target.slice(10)];
       if(target==='/proc/net/dev')return 'Inter-| Receive | Transmit\n face |bytes\n lo: 0\n';
       if(target==='/proc/self/mountinfo')return '36 25 0:32 / / rw,nosuid - tmpfs tmpfs rw\n';throw new Error('unexpected read '+target);},
   };
@@ -1594,3 +1785,413 @@ test('redirects_latch_route_denied', async () => {
   assert.equal(h.session.inspectResult(await h.session.perform('LOGIN_SESSION', login(), () => {})).kind, 'SESSION_BOUND');
   await closeHarness(h);
 });
+
+// ---- Task 16: browser provenance (T13 I-8), descriptor inventory (I-6, m-1, m-7) and unbound checks (I-10) ----
+
+const CANARY = 'REVIEW-CANARY-PASSWORD';
+function nativeFamily(processes, net) {
+  const readers = nativeReaders();
+  return () => readers.inspectNativeFamily(fakeProc(processes, net), new Set(CONTROL_TARGETS), 101);
+}
+function withProcess(pid, change) { const processes = cleanProcesses(); change(processes[pid], processes); return processes; }
+
+test('forged_role_port_cannot_open_session', async () => {
+  // Review D4: a duck-typed role port with an otherwise valid-looking pipe and grant.
+  const api = controller();
+  const cfg = trustedConfig(api), projected = receipts.inspectBrowserControllerConfig(cfg), runId = projected.runBinding.runId;
+  const proofs = projected.assetEntries.map(entry => ({ entryId: 'frontend-asset:' + entry.path, hash: entry.hash, sizeMatch: true, hashMatch: true, mimeMatch: true }));
+  const inbound = [inheritedFrame({ version: 1, runId, sequence: 1, type: 'ASSETS', payload: { proofs } }),
+    inheritedFrame({ version: 1, runId, sequence: 2, type: 'READY', payload: { status: 'READY' } })];
+  const written = [];
+  const pipe = { audit: () => ({ version: 1, kind: 'TASK13_BROWSER_APPLICATION', runId, maxFrameBytes: 16384 }),
+    async read() { return inbound.length ? inbound.shift() : new Promise(() => {}); }, async write(bytes) { written.push(Buffer.from(bytes)); } };
+  let activations = 0, rejection = null, session = null;
+  const rolePort = { kind: 'BROWSER', async activateOnce() { activations++;
+    return { privatePipe: pipe, cleanupRemaining: () => 1000, async stopOwned() { return { status: 'STOPPED', runId }; } }; } };
+  try { session = await api.openBrowser(cfg, { rolePort, grant: Object.freeze({}), admissionPort: Object.freeze({}), clock: Object.freeze({ sample: () => [160, 1000] }) }); }
+  catch (error) { rejection = error; }
+  if (session) session.perform('LOGIN_SESSION', { ownerId: 'owner-id', username: 'synthetic-owner', password: CANARY }, () => {}).catch(() => {});
+  for (let turn = 0; turn < 5; turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(rejection?.code, 'BOOTSTRAP_REQUIRED');
+  assert.equal(activations, 0);
+  assert.equal(Buffer.concat(written).toString('ascii').includes(CANARY), false);
+  assert.equal(api.isBrowserSession(session), false);
+
+  // A real adopted role port whose pipe was never adopted as an application pipe: the
+  // handoff carried no audit, and one is attached afterwards. The pipe brand refuses it.
+  const unadopted = {};
+  const runId2 = crypto.randomBytes(16).toString('hex');
+  const cfg2 = trustedConfig(api, { runId: runId2 }), entries2 = receipts.inspectBrowserControllerConfig(cfg2).assetEntries;
+  const inbound2 = [inheritedFrame({ version: 1, runId: runId2, sequence: 1, type: 'ASSETS', payload: { proofs: entries2.map(entry => ({
+    entryId: 'frontend-asset:' + entry.path, hash: entry.hash, sizeMatch: true, hashMatch: true, mimeMatch: true })) } }),
+  inheritedFrame({ version: 1, runId: runId2, sequence: 2, type: 'READY', payload: { status: 'READY' } })];
+  const written2 = [];
+  Object.assign(unadopted, { async read() { return inbound2.length ? inbound2.shift() : new Promise(() => {}); }, async write(bytes) { written2.push(Buffer.from(bytes)); } });
+  const handoff = Object.freeze({}), child = Object.freeze({}), grant = Object.freeze({});
+  let waiting = true, stops = 0;
+  const authority = {
+    inspectHandoff: value => value === handoff ? { kind: 'BROWSER', runId: runId2, uid: 10002, child, privatePipe: unadopted, waiting, confined: true } : null,
+    inspectGrant: value => value === grant ? { kind: 'BROWSER', runId: runId2, child, purpose: 'CONFINEMENT_PROVED', session: null, remainingMs: 60000 } : null,
+    async activate() { waiting = false; }, async stopOwned() { stops++; return { status: 'STOPPED', runId: runId2, child }; },
+    async waitExit() { return { status: 'EXITED', runId: runId2, child }; },
+  };
+  roles.bindRoleBootstrap(authority, runId2).audit(handoff);
+  const adopted = roles.adoptRole('BROWSER', handoff);
+  unadopted.audit = () => ({ version: 1, kind: 'TASK13_BROWSER_APPLICATION', runId: runId2, maxFrameBytes: 16384 });
+  let second = null, secondRejection = null;
+  try { second = await api.openBrowser(cfg2, { rolePort: adopted, grant, admissionPort: Object.freeze({}), clock: Object.freeze({ sample: () => [160, 1000] }) }); }
+  catch (error) { secondRejection = error; }
+  if (second) second.perform('LOGIN_SESSION', { ownerId: 'owner-id', username: 'synthetic-owner', password: CANARY }, () => {}).catch(() => {});
+  for (let turn = 0; turn < 5; turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(secondRejection?.code, 'ROLE_INVALID');
+  assert.equal(stops, 1);
+  assert.equal(Buffer.concat(written2).toString('ascii').includes(CANARY), false);
+  // An adopted port of another role (VERIFIER) is refused before it is activated.
+  const verifierRun = crypto.randomBytes(16).toString('hex'), verifierHandoff = Object.freeze({}), verifierChild = Object.freeze({}), verifierPipe = Object.freeze({});
+  let verifierCalls = 0;
+  roles.bindRoleBootstrap({
+    inspectHandoff: value => value === verifierHandoff ? { kind: 'VERIFIER', runId: verifierRun, uid: 10003, child: verifierChild, privatePipe: verifierPipe, waiting: true, confined: true } : null,
+    inspectGrant() { verifierCalls++; return null; }, async activate() { verifierCalls++; },
+    async stopOwned() { verifierCalls++; return { status: 'STOPPED', runId: verifierRun, child: verifierChild }; },
+    async waitExit() { verifierCalls++; return { status: 'EXITED', runId: verifierRun, child: verifierChild }; },
+  }, verifierRun).audit(verifierHandoff);
+  const verifierPort = roles.adoptRole('VERIFIER', verifierHandoff);
+  assert.equal(roles.inspectAdoptedRolePort(verifierPort), true);
+  await assert.rejects(api.openBrowser(trustedConfig(api, { runId: verifierRun }), { rolePort: verifierPort, grant: Object.freeze({}),
+    admissionPort: Object.freeze({}), clock: Object.freeze({ sample: () => [160, 1000] }) }), { code: 'BOOTSTRAP_REQUIRED' });
+  assert.equal(verifierCalls, 0);
+  // Control: the same adoption path with a branded pipe opens a branded session.
+  const control = await scriptedSession();
+  assert.equal(api.isBrowserSession(control.session), true);
+  assert.equal(api.isBrowserSession({ ...control.session }), false);
+  assert.equal(api.isBrowserSession(Object.create(control.session)), false);
+  await control.session.close();
+});
+
+test('legacy_confinement_boolean_branch_removed', async () => {
+  // T13 I-8 / P28: the self-reported confinement booleans and the HMAC frame path are gone from browser.cjs.
+  const source = fs.readFileSync(CONTROLLER, 'utf8');
+  for (const legacy of ['channelKeyHex', 'createHmac', 'timingSafeEqual', 'filterInherited', 'noNewPrivs', 'vsockFds', 'consoleFds', 'acceptance:browser:v1'])
+    assert.equal(source.includes(legacy), false, legacy);
+  // An adopted pipe that later reports the legacy confinement form (and MACs its frames the
+  // legacy way) is refused before any frame is read or written.
+  let audits = 0;
+  const legacyRun = crypto.randomBytes(16).toString('hex');
+  const legacy = { version: 1, runId: legacyRun, channelKeyHex: KEY, uid: 10002, noNewPrivs: true, capabilities: 'EMPTY', filterInherited: true,
+    procScope: 'BROWSER_FAMILY_ONLY', consoleFds: 0, vsockFds: 0, unexpectedFds: 0, networkDeviceCount: 0, maxFrameBytes: 16384,
+    tmpfsPaths: ['/dev/shm', PATHS.cache, PATHS.profile, PATHS.support] };
+  const scripted = scriptedBrowser({ runId: legacyRun, legacyMac: KEY,
+    controllerAudit: () => ++audits === 1 ? { version: 1, kind: 'TASK13_BROWSER_APPLICATION', runId: legacyRun, maxFrameBytes: 16384 } : legacy });
+  const outcome = await within(scripted.opened, 2000);
+  assert.equal(outcome, 'REJECTED:ROLE_INVALID');
+  assert.equal(scripted.stops(), 1);
+  assert.equal(scripted.written(), '');
+});
+
+test('vsock_socket_unattributable_fails_inventory', async () => {
+  // T13 I-6: a socket is attributed only from /proc/net/{unix,tcp,tcp6,udp,udp6}; vsock has no table.
+  const readers = nativeReaders();
+  const families = readers.socketInodeFamilies(fakeProc());
+  assert.deepEqual(Object.fromEntries([...families.entries()]), { ...SOCKET_INODES });
+  const known = new Map(Object.entries(SOCKET_INODES));
+  for (const [link, kind] of [['socket:[41001]', 'UNIX'], ['socket:[41002]', 'UNIX'], ['socket:[41003]', 'TCP'], ['socket:[41004]', 'TCP'],
+    ['socket:[41005]', 'UDP'], ['socket:[99999]', 'UNKNOWN_SOCKET'], ['socket:[0]', 'UNKNOWN_SOCKET'], ['socket:', 'UNKNOWN_SOCKET'],
+    ['socket:[41001] ', 'UNKNOWN_SOCKET'], ['pipe:[41001]', 'PIPE'], ['/dev/null', 'NULL'], ['anon_inode:[eventpoll]', 'OTHER']])
+    assert.equal(readers.classifyDescriptor(link, known), kind, link);
+  assert.equal(readers.classifyDescriptor('socket:[41001]', new Map()), 'UNKNOWN_SOCKET');
+  assert.equal(readers.classifyDescriptor('socket:[41001]', undefined), 'UNKNOWN_SOCKET');
+  // A vsock descriptor (inode 99999 is in no table) fails a Chromium child, the browser and the worker itself.
+  for (const pid of [203, 202]) {
+    const processes = withProcess(pid, row => { row.fds[12] = 'socket:[99999]'; });
+    const counts = readers.forbiddenDescriptorCounts(fakeProc(processes), String(pid), new Set(CONTROL_TARGETS), families);
+    assert.deepEqual(plainCopy(counts), { consoleFds: 0, unknownSocketFds: 1, unreadableFds: 0, unexpectedFds: 0 });
+    await assert.rejects(startHarness({ family: nativeFamily(processes) }), { code: 'ROLE_INVALID' }, String(pid));
+  }
+  const self = selfProcesses(); self.self.fds[6] = 'socket:[99999]';
+  const observed = {};
+  await assert.rejects(startHarness({ observed, audit: readers.nativeTopology(fakeProc(self), SELF_INIT) }), { code: 'ACTIVATION_DENIED' });
+  assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' });
+  // Control: the attributed family and the clean worker view open a session.
+  const h = await startHarness({ family: nativeFamily(), audit: readers.nativeTopology(fakeProc(selfProcesses()), SELF_INIT) });
+  await closeHarness(h);
+});
+
+test('hvc0_vport_console_descriptors_fail', async () => {
+  // T13 I-6: the virtio console (console=hvc0), virtio ports and every tty are consoles.
+  const readers = nativeReaders(), known = new Map(Object.entries(SOCKET_INODES));
+  for (const link of ['/dev/hvc0', '/dev/hvc1', '/dev/vport0p1', '/dev/vport1p2', '/dev/console', '/dev/tty', '/dev/tty1', '/dev/ttyAMA0',
+    '/dev/ttyS0', '/dev/pts/0', '/dev/pts/12', '/dev/pts/3 (deleted)'])
+    assert.equal(readers.classifyDescriptor(link, known), 'CONSOLE', link);
+  for (const [link, kind] of [['/dev/null', 'NULL'], ['/dev/urandom', 'OTHER'], ['/dev/shm/.org.chromium.Chromium.x', 'OTHER'], ['/dev/ptmx', 'OTHER']])
+    assert.equal(readers.classifyDescriptor(link, known), kind, link);
+  for (const link of ['/dev/hvc0', '/dev/vport0p1', '/dev/console', '/dev/pts/0']) {
+    const processes = withProcess(203, row => { row.fds[2] = link; });
+    assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc(processes), '203', new Set(CONTROL_TARGETS))),
+      { consoleFds: 1, unknownSocketFds: 0, unreadableFds: 0, unexpectedFds: 0 }, link);
+    await assert.rejects(startHarness({ family: nativeFamily(processes) }), { code: 'ROLE_INVALID' }, link);
+    const self = selfProcesses(); self.self.fds[2] = link;
+    const observed = {};
+    await assert.rejects(startHarness({ observed, audit: readers.nativeTopology(fakeProc(self), SELF_INIT) }), { code: 'ACTIVATION_DENIED' }, link);
+    assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' }, link);
+  }
+});
+
+test('unreadable_descriptor_fails', async () => {
+  // T13 I-6 / m-7: a readlink error is UNREADABLE; an unreadable Chromium child is FAMILY_UNREADABLE.
+  const readers = nativeReaders();
+  for (const link of [null, undefined, '', procError('EACCES', 'x')]) assert.equal(readers.classifyDescriptor(link, new Map()), 'UNREADABLE', String(link));
+  const unreadableLink = withProcess(203, row => { row.fds[7] = procError('EACCES', '/proc/203/fd/7'); });
+  assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc(unreadableLink), '203', new Set(CONTROL_TARGETS))),
+    { consoleFds: 0, unknownSocketFds: 0, unreadableFds: 1, unexpectedFds: 0 });
+  for (const [name, processes, net] of [
+    ['unreadable descriptor', unreadableLink],
+    ['closed descriptor', withProcess(204, row => { row.fds[8] = procError('ENOENT', '/proc/204/fd/8'); })],
+    ['unreadable status', withProcess(204, row => { row.status = procError('EACCES', '/proc/204/status'); })],
+    ['unreadable descriptor directory', withProcess(204, row => { row.fds = procError('EACCES', '/proc/204/fd'); })],
+    ['unreadable children', withProcess(202, row => { row.children = procError('EACCES', '/proc/202/task/202/children'); })],
+    ['vanished child', withProcess(202, row => { row.children = [203, 204, 205]; })],
+    ['unreadable socket table', cleanProcesses(), { udp6: procError('EACCES', '/proc/net/udp6') }],
+    ['malformed socket table', cleanProcesses(), { unix: 'Num RefCount Inode\n0000000000000000: 00000002 41001\n' }],
+    // Well-formed rows under a header whose columns are not the 6.8 layout.
+    ['reordered table header', cleanProcesses(), { unix: NET_TABLES.unix.replace('St Inode Path', 'Inode St Path') }],
+    // One inode claimed by two families.
+    ['inode in two families', cleanProcesses(), { udp6: NET_TABLES.udp6 +
+      '  102: 00000000000000000000000001000000:D433 00000000000000000000000000000000:0000 07 00000000:00000000 00:00000000 00000000 10002        0 41003 2 0000000000000000 0\n' }],
+  ]) {
+    await assert.rejects(startHarness({ family: nativeFamily(processes, net) }), { code: 'ROLE_INVALID', workerCode: 'FAMILY_UNREADABLE' }, name);
+  }
+  // The worker's own unreadable descriptor fails its own audit.
+  const self = selfProcesses(); self.self.fds[8] = procError('EACCES', '/proc/self/fd/8');
+  const observed = {};
+  await assert.rejects(startHarness({ observed, audit: readers.nativeTopology(fakeProc(self), SELF_INIT) }), { code: 'ACTIVATION_DENIED' });
+  assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' });
+});
+
+test('native_readers_parse_fake_proc', () => {
+  // T13 I-6: inspectNativeFamily and forbiddenDescriptorCounts run against a fake /proc in the 6.8 formats.
+  const readers = nativeReaders();
+  const status = { uids: [10002, 10002, 10002, 10002], gids: [10002, 10002, 10002, 10002], noNewPrivs: true, seccomp: 2, capabilities: 'EMPTY' };
+  const clean = { consoleFds: 0, unknownSocketFds: 0, unreadableFds: 0, unexpectedFds: 0 };
+  assert.deepEqual(plainCopy(readers.inspectNativeFamily(fakeProc(), new Set(CONTROL_TARGETS), 101)), {
+    workerPid: 101, browserPid: 202, procScope: 'BROWSER_FAMILY_ONLY', members: [
+      { pid: 101, ...status, seccompFilters: 1, ...clean },
+      { pid: 202, ...status, seccompFilters: 1, ...clean },
+      { pid: 203, ...status, seccompFilters: 3, ...clean },
+      { pid: 204, ...status, seccompFilters: 2, ...clean },
+    ] });
+  // The worker's control pipes are expected only in the worker; in a child they count.
+  const leaked = withProcess(202, row => { row.fds[12] = 'pipe:[11]'; row.fds[13] = 'pipe:[12]'; row.fds[14] = '/dev/hvc0';
+    row.fds[15] = 'socket:[88888]'; row.fds[16] = procError('EACCES', '/proc/202/fd/16'); });
+  assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc(leaked), '202', new Set(CONTROL_TARGETS))),
+    { consoleFds: 1, unknownSocketFds: 1, unreadableFds: 1, unexpectedFds: 2 });
+  assert.deepEqual(plainCopy(readers.inspectNativeFamily(fakeProc(leaked), new Set(CONTROL_TARGETS), 101).members[1]),
+    { pid: 202, ...status, seccompFilters: 1, consoleFds: 1, unknownSocketFds: 1, unreadableFds: 1, unexpectedFds: 2 });
+  // The listing stays open while each descriptor is read, so the reader's own listing descriptor resolves.
+  assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc(), '101', new Set())), clean);
+  // procStatus reads all four Uid and Gid fields and both seccomp rows.
+  assert.deepEqual(plainCopy(readers.procStatus(fakeProc(withProcess(203, row => { row.status = statusText({ Uid: '10002\t0\t10002\t10002', Seccomp_filters: '4' }); })), '203')),
+    { ...status, uids: [10002, 0, 10002, 10002], seccompFilters: 4 });
+  // The worker's own view.
+  const self = plainCopy(readers.nativeTopology(fakeProc(selfProcesses()), SELF_INIT));
+  assert.deepEqual(self, { version: 1, runId: RUN, channelKeyHex: KEY, maxFrameBytes: 16384, ...status, seccompFilters: 1,
+    procScope: 'BROWSER_FAMILY_ONLY', ...clean, networkDeviceCount: 0, tmpfsPaths: ['/dev/shm', PATHS.cache, PATHS.profile, PATHS.support] });
+});
+
+const STATUS_VARIANTS = Object.freeze([
+  ['Seccomp 0', { Seccomp: '0' }], ['Seccomp 1 (strict)', { Seccomp: '1' }], ['Seccomp 3', { Seccomp: '3' }], ['Seccomp row absent', { Seccomp: null }],
+  ['Seccomp 02', { Seccomp: '02' }], ['Seccomp_filters 0', { Seccomp_filters: '0' }], ['Seccomp_filters row absent', { Seccomp_filters: null }],
+  ['Seccomp_filters -1', { Seccomp_filters: '-1' }], ['NoNewPrivs 0', { NoNewPrivs: '0' }],
+  ...[0, 1, 2, 3].map(index => ['Uid field ' + index, { Uid: ROLE_IDS.map((id, at) => at === index ? 0 : id).join('\t') }]),
+  ...[0, 1, 2, 3].map(index => ['Gid field ' + index, { Gid: ROLE_IDS.map((id, at) => at === index ? 10003 : id).join('\t') }]),
+  ['Uid three fields', { Uid: '10002\t10002\t10002' }], ['Gid five fields', { Gid: '10002\t10002\t10002\t10002\t10002' }],
+  ['Uid row absent', { Uid: null }], ['Gid row absent', { Gid: null }],
+]);
+
+test('seccomp_status_requires_mode_2_filters_and_all_uids', async () => {
+  // T13 m-1 (Option A m3): Seccomp exactly 2, Seccomp_filters >= 1, all four Uid and all four Gid fields 10002.
+  const readers = nativeReaders();
+  for (const [name, change] of STATUS_VARIANTS) {
+    // A Chromium child (its own seccomp depth is above the worker's) and the worker itself.
+    const child = withProcess(204, row => { row.status = statusText({ Seccomp_filters: '2', ...change }); });
+    await assert.rejects(startHarness({ family: nativeFamily(child) }), { code: 'ROLE_INVALID' }, 'child ' + name);
+    const observed = {};
+    await assert.rejects(startHarness({ observed, audit: readers.nativeTopology(fakeProc(selfProcesses({ status: statusText(change) })), SELF_INIT) }),
+      { code: 'ACTIVATION_DENIED' }, 'self ' + name);
+    assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' }, 'self ' + name);
+  }
+  // Control: a deeper filter stack (Chromium adds its own filters) is accepted.
+  const deep = withProcess(203, row => { row.status = statusText({ Seccomp_filters: '7' }); });
+  await closeHarness(await startHarness({ family: nativeFamily(deep), audit: readers.nativeTopology(fakeProc(selfProcesses({ status: statusText({ Seccomp_filters: '2' }) })), SELF_INIT) }));
+});
+
+test('native_status_seccomp_checked', async () => {
+  // I-10 M2: the native status check reads the seccomp mode, not only NoNewPrivs.
+  const readers = nativeReaders();
+  const off = withProcess(202, row => { row.status = statusText({ Seccomp: '0', Seccomp_filters: '0' }); });
+  await assert.rejects(startHarness({ family: nativeFamily(off) }), { code: 'ROLE_INVALID' });
+  const observed = {};
+  await assert.rejects(startHarness({ observed, audit: readers.nativeTopology(fakeProc(selfProcesses({ status: statusText({ Seccomp: '0', Seccomp_filters: '0' }) })), SELF_INIT) }),
+    { code: 'ACTIVATION_DENIED' });
+  assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' });
+  await closeHarness(await startHarness({ family: nativeFamily() }));
+});
+
+test('family_reinspected_after_first_load', async () => {
+  // T13 m-7: the family is inspected after launch and again after the first page load, before READY (so before credentials).
+  const h = await startHarness();
+  const [first, second, ...rest] = h.inspections(), events = h.fake.calls.events;
+  assert.deepEqual(rest, []);
+  assert.ok(first <= events.indexOf('route'), 'first inspection precedes routing: ' + first);
+  assert.ok(second > events.indexOf('load'), 'second inspection follows the first page load: ' + second);
+  await closeHarness(h);
+  // A console, an unattributed socket or a status failure that appears only after the page load stops the run before READY.
+  for (const later of [member(204, { consoleFds: 1 }), member(204, { unknownSocketFds: 1 }), member(204, { seccomp: 0 })]) {
+    const observed = {};
+    await assert.rejects(startHarness({ observed, family: call => call === 1 ? family() : family({ members: Object.freeze([...family().members, later]) }) }),
+      { code: 'ROLE_INVALID' });
+    assert.equal(observed.inspections().length, 2);
+    assert.equal(decodedFrames(observed.links.logs, 'worker').some(frame => ['ASSETS', 'READY'].includes(frame.type)), false);
+    assert.equal(observed.fake.calls.selectors.some(row => row[0] === 'placeholder'), false);
+    assert.equal(observed.fake.calls.browserCloses, 1);
+  }
+  // Unreadable Chromium children after the load: the explicit FAMILY_UNREADABLE code.
+  const unreadable = {};
+  await assert.rejects(startHarness({ observed: unreadable, family: call => { if (call === 2) throw Object.assign(new Error('FAMILY_UNREADABLE'), { code: 'FAMILY_UNREADABLE' }); return family(); } }),
+    { code: 'ROLE_INVALID', workerCode: 'FAMILY_UNREADABLE' });
+  assert.equal(decodedFrames(unreadable.links.logs, 'worker').some(frame => ['ASSETS', 'READY'].includes(frame.type)), false);
+  const unreadableMember = {};
+  await assert.rejects(startHarness({ observed: unreadableMember, family: call => call === 1 ? family() : family({ members: Object.freeze([...family().members, member(204, { unreadableFds: 1 })]) }) }),
+    { code: 'ROLE_INVALID', workerCode: 'FAMILY_UNREADABLE' });
+});
+
+test('controller_asset_proof_validation_bound', async () => {
+  // I-10 M7: the controller checks the worker's asset proofs itself.
+  const good = await scriptedSession({ extraAssets: [INDEX_ASSET] });
+  await good.session.close();
+  const first = (proofs, change) => [{ ...proofs[0], ...change }, ...proofs.slice(1)];
+  for (const [name, change, code] of [
+    ['wrong hash', proofs => first(proofs, { hash: 'f'.repeat(64) }), 'OBSERVATION_FAILED'],
+    ['hash mismatch', proofs => first(proofs, { hashMatch: false }), 'OBSERVATION_FAILED'],
+    ['size mismatch', proofs => first(proofs, { sizeMatch: false }), 'OBSERVATION_FAILED'],
+    ['mime mismatch', proofs => first(proofs, { mimeMatch: false }), 'OBSERVATION_FAILED'],
+    ['unknown entry', proofs => first(proofs, { entryId: 'frontend-asset:/static/js/other.js' }), 'OBSERVATION_FAILED'],
+    ['duplicate entry', proofs => [proofs[0], proofs[0]], 'OBSERVATION_FAILED'],
+    ['missing proof', proofs => proofs.slice(1), 'OBSERVATION_FAILED'],
+    ['no proofs', () => [], 'OBSERVATION_FAILED'],
+    ['extra proof key', proofs => first(proofs, { extra: true }), 'FRAME_DENIED'],
+  ]) {
+    const scripted = scriptedBrowser({ extraAssets: [INDEX_ASSET], proofs: change });
+    assert.equal(await within(scripted.opened, 2000), 'REJECTED:' + code, name);
+    assert.equal(scripted.stops(), 1, name);
+    assert.equal(scripted.actions().length, 0, name);
+  }
+});
+
+test('controller_discards_password_reference_after_filled', async () => {
+  // I-10 M18: at FILLED the controller blanks and drops the caller's password reference, before any result.
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const scripted = await scriptedSession({ hooks: { beforeBound: () => gate } });
+  const payload = login();
+  let filled = 0;
+  const pending = scripted.session.perform('LOGIN_SESSION', payload, () => { filled++; });
+  assert.equal(await settled(() => filled === 1), true);
+  assert.equal(payload.password, '');
+  release();
+  assert.equal(scripted.session.inspectResult(await pending).kind, 'SESSION_BOUND');
+  await scripted.session.close();
+});
+
+test('controller_run_binding_checked', async () => {
+  // I-10 M23: an adopted pipe for a different run than the controller config is refused.
+  const scripted = scriptedBrowser({ pipeRunId: crypto.randomBytes(16).toString('hex') });
+  assert.equal(await within(scripted.opened, 2000), 'REJECTED:ROLE_INVALID');
+  assert.equal(scripted.stops(), 1);
+  assert.equal(scripted.written(), '');
+});
+
+test('duplicate_session_cookie_rejected', async () => {
+  // I-10 M17: exactly one daytrader_session cookie; two, or none, fail.
+  for (const fake of [{ duplicateCookie: true }, { cookie: { name: 'other_session' } }]) {
+    const h = await startHarness({ fake });
+    await assert.rejects(h.session.perform('LOGIN_SESSION', login(), () => {}), { code: 'SESSION_MISMATCH', workerCode: 'COOKIE_INVALID' }, JSON.stringify(fake));
+  }
+});
+
+test('owner_username_checked', async () => {
+  // I-10 M4: /api/me must name the expected owner username as well as the id.
+  const h = await startHarness({ fake: { ownerUsername: 'different-username' } });
+  await assert.rejects(h.session.perform('LOGIN_SESSION', login(), () => {}), { code: 'IDENTITY_MISMATCH', workerCode: 'OWNER_MISMATCH' });
+});
+
+test('robo_paper_health_connected_required', async () => {
+  // I-10 M20: ROBO requires the PAPER health `connected` flag.
+  const health = { mongo: { connected: true, status: 'connected' },
+    alpaca: { paper: { connected: false, error: null, tradingBlocked: false, accountStatus: 'ACTIVE', buyingPower: 100 } },
+    scheduler: { phase1WorkerEnabled: false } };
+  const h = await startHarness({ fake: { observationBodies: { '/api/robotrader/health': health } } });
+  await h.session.perform('LOGIN_SESSION', login(), () => {});
+  await assert.rejects(h.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'ROBO' }), { code: 'OBSERVATION_FAILED' });
+});
+
+test('alert_role_error_state_fails', async () => {
+  // I-10 M25: a visible role=alert error state fails the view.
+  const h = await startHarness({ fake: { alertCount: 1 } });
+  await h.session.perform('LOGIN_SESSION', login(), () => {});
+  await assert.rejects(h.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'PORTFOLIO' }), { code: 'OBSERVATION_FAILED' });
+});
+
+test('popup_route_check_bound_with_policy_allowed_path', async () => {
+  // I-10 M11: a popup's request is aborted in the worker even for a path the policy allows (GET /api/me).
+  const h = await startHarness();
+  const popup = { close: async () => {} };
+  await h.fake.contextHandlers.page(popup);
+  const me = page => ({ method: () => 'GET', url: () => BACKEND + '/api/me', headers: () => ({ accept: 'application/json', origin: FRONTEND }),
+    postDataBuffer: () => null, frame: () => ({ page: () => page }) });
+  const route = async page => { let disposition; await h.fake.calls.routeHandler({ request: () => me(page),
+    continue: async () => { disposition = 'CONTINUE'; }, abort: async () => { disposition = 'ABORT'; } }); return disposition; };
+  assert.equal(await route(popup), 'ABORT');
+  assert.equal(decodedFrames(h.links.logs, 'worker').filter(frame => frame.type === 'ROUTE').length, 0);
+  assert.equal(h.decisions.length, 0);
+  // Control: the same request from the primary page is admitted by the policy.
+  assert.equal(await route(h.fake.page), 'CONTINUE');
+  assert.equal(decodedFrames(h.links.logs, 'worker').filter(frame => frame.type === 'ROUTE').length, 1);
+  assert.equal(h.session.failureCode(), null);
+  await closeHarness(h);
+});
+
+test('worker_ready_gate_bound', async () => {
+  // I-10 M28: an ACTION that reaches the worker before READY is denied without running.
+  let hanging;
+  const reached = new Promise(resolve => { hanging = resolve; });
+  const observed = {};
+  const start = startHarness({ observed, fake: { gotoHang: () => hanging() } }).catch(error => error);
+  await reached;
+  await observed.links.controller.write(inheritedFrame({ version: 1, runId: observed.runId, sequence: 1, type: 'ACTION',
+    payload: { actionId: 1, action: 'LOGIN_SESSION', payload: login() } }));
+  assert.equal(await settled(() => decodedFrames(observed.links.logs, 'worker').some(frame => frame.type === 'ERROR')), true);
+  const error = decodedFrames(observed.links.logs, 'worker').find(frame => frame.type === 'ERROR');
+  assert.deepEqual(error.payload, { actionId: 1, code: 'ACTION_DENIED' });
+  assert.equal(observed.fake.calls.selectors.some(row => row[0] === 'placeholder'), false);
+  assert.equal(decodedFrames(observed.links.logs, 'worker').some(frame => frame.type === 'READY'), false);
+  assert.equal((await start) instanceof Error, true);
+});
+
+test('route_backlog_bound_at_16', async () => {
+  // I-10 M37: while 16 route decisions are pending, a 17th request is aborted locally with no ROUTE frame.
+  const h = await startHarness();
+  const release = h.links.worker.holdNextWrite();
+  const dispositions = new Array(17).fill(null);
+  const request = () => ({ method: () => 'GET', url: () => BACKEND + '/api/me', headers: () => ({ accept: 'application/json', origin: FRONTEND }), postDataBuffer: () => null });
+  for (let index = 0; index < 17; index++) h.fake.calls.routeHandler({ request,
+    continue: async () => { dispositions[index] = 'CONTINUE'; }, abort: async () => { dispositions[index] = 'ABORT'; } });
+  assert.equal(await settled(() => dispositions[16] !== null), true);
+  assert.equal(dispositions[16], 'ABORT');
+  assert.deepEqual(dispositions.slice(0, 16), new Array(16).fill(null));
+  release();
+  assert.equal(await settled(() => decodedFrames(h.links.logs, 'worker').filter(frame => frame.type === 'ROUTE').length === 16), true);
+  for (let turn = 0; turn < 20; turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(decodedFrames(h.links.logs, 'worker').filter(frame => frame.type === 'ROUTE').length, 16);
+});
+
+module.exports = { startHarness, closeHarness, scriptedBrowser, scriptedSession, login, settled, within, decodedFrames, FRONTEND, BACKEND };

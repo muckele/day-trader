@@ -1,6 +1,8 @@
 'use strict';
 
 const { timingSafeEqual } = require('node:crypto');
+// T13 I-8: only a BrowserSession that browser.cjs opened is accepted, never a look-alike.
+const { isBrowserSession } = require('./browser.cjs');
 
 const attemptedBrowsers = new WeakSet();
 const consumedCredentials = new WeakSet();
@@ -23,7 +25,7 @@ function expectedOwner(value) {
   return { id: value.id, username: value.username };
 }
 function sessionResult(browserSession, value, kind) {
-  if (typeof browserSession.inspectResult !== 'function') fail('SESSION_INVALID');
+  if (!isBrowserSession(browserSession) || typeof browserSession.inspectResult !== 'function') fail('SESSION_INVALID');
   let inspected;
   try { inspected = browserSession.inspectResult(value); } catch (cause) { fail('SESSION_INVALID', cause); }
   const allowedKinds = Array.isArray(kind) ? kind : [kind];
@@ -34,6 +36,8 @@ function sessionResult(browserSession, value, kind) {
 }
 
 async function loginOnce(browserSession, credential, owner) {
+  // Refused before the credential is consumed or the browser is marked attempted.
+  if (!isBrowserSession(browserSession)) fail('SESSION_INVALID');
   if (!object(browserSession) || typeof browserSession.perform !== 'function' || attemptedBrowsers.has(browserSession)) fail('LOGIN_ALREADY_ATTEMPTED');
   if (!object(credential) || typeof credential.consumeOnce !== 'function' || typeof credential.destroy !== 'function' || consumedCredentials.has(credential)) fail('CREDENTIAL_INVALID');
   const selectedOwner = expectedOwner(owner);

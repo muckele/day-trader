@@ -331,22 +331,36 @@ function validateConfig(config) {
     paths.add(entry.path);
   }
 }
+// T13 I-6, m-1: a status is accepted only with all four Uid and all four Gid fields 10002,
+// NoNewPrivs 1, Seccomp exactly 2 (SECCOMP_MODE_FILTER) and Seccomp_filters at least 1
+// (Chromium stacks its own filters on the inherited one). Descriptor facts must all be zero:
+// consoles, unattributed sockets, unreadable descriptors and leaked control pipes.
+const ROLE_ID=10002;
+function roleIds(value){return Array.isArray(value)&&value.length===4&&value.every(id=>id===ROLE_ID);}
+function statusAccepted(value){
+  return roleIds(value.uids)&&roleIds(value.gids)&&value.noNewPrivs===true&&value.seccomp===2&&safe(value.seccompFilters,1);
+}
+function descriptorsClean(value){
+  return value.consoleFds===0&&value.unknownSocketFds===0&&value.unreadableFds===0&&value.unexpectedFds===0;
+}
 function audit(pipe) {
   if (!pipe || typeof pipe.audit !== 'function' || typeof pipe.inspectBrowserFamily !== 'function') fail('ROLE_INVALID');
   const value = pipe.audit();
-  if (!value || value.version !== 1 || value.uid !== 10002 || value.noNewPrivs !== true || value.capabilities !== 'EMPTY' ||
-      value.filterInherited !== true || value.procScope !== 'BROWSER_FAMILY_ONLY' || value.consoleFds !== 0 || value.vsockFds !== 0 ||
-      value.unexpectedFds !== 0 || value.networkDeviceCount !== 0 || value.maxFrameBytes !== 16384 ||
+  if (!value || value.version !== 1 || !statusAccepted(value) || value.capabilities !== 'EMPTY' ||
+      value.procScope !== 'BROWSER_FAMILY_ONLY' || !descriptorsClean(value) || value.networkDeviceCount !== 0 || value.maxFrameBytes !== 16384 ||
       !Array.isArray(value.tmpfsPaths) || !equal([...value.tmpfsPaths].sort(), ['/dev/shm', '/run/acceptance/browser/cache', '/run/acceptance/browser/profile', '/run/acceptance/browser/support']) ||
       !/^[0-9a-f]{32}$/.test(value.runId) || !/^[0-9a-f]{64}$/.test(value.channelKeyHex)) fail('ROLE_INVALID');
   return value;
 }
+// T13 m-7: an unreadable family member (or any unreadable descriptor) is the explicit
+// FAMILY_UNREADABLE; every other violation is ROLE_INVALID.
 function inspectFamily(pipe) {
-  const value = pipe.inspectBrowserFamily();
+  let value;
+  try { value = pipe.inspectBrowserFamily(); } catch (cause) { fail(cause?.code === 'FAMILY_UNREADABLE' ? 'FAMILY_UNREADABLE' : 'ROLE_INVALID', cause); }
   if (!value || !Number.isSafeInteger(value.workerPid) || value.workerPid < 1 || !Number.isSafeInteger(value.browserPid) || value.browserPid < 1 ||
       value.procScope !== 'BROWSER_FAMILY_ONLY' || !Array.isArray(value.members) || value.members.length < 2) fail('ROLE_INVALID');
-  for (const member of value.members) if (!member || !Number.isSafeInteger(member.pid) || member.pid < 1 || member.uid !== 10002 ||
-      member.filterInherited !== true || member.consoleFds !== 0 || member.vsockFds !== 0 || member.unexpectedFds !== 0) fail('ROLE_INVALID');
+  for (const member of value.members) if (member && Number.isSafeInteger(member.unreadableFds) && member.unreadableFds > 0) fail('FAMILY_UNREADABLE');
+  for (const member of value.members) if (!member || !Number.isSafeInteger(member.pid) || member.pid < 1 || !statusAccepted(member) || !descriptorsClean(member)) fail('ROLE_INVALID');
   return value;
 }
 function auditApplication(pipe,runId) {
@@ -354,16 +368,13 @@ function auditApplication(pipe,runId) {
   if(!value||value.version!==1||value.kind!=='TASK13_BROWSER_APPLICATION'||value.runId!==runId||value.maxFrameBytes!==16384)fail('ROLE_INVALID');
   return value;
 }
+// The application pipe carries only the Task 13 frame form (auditApplication admits no other).
 function rpc(pipe, facts) {
   let outgoing = 0, incoming = 0, sending=Promise.resolve();
-  const outer=facts.kind==='TASK13_BROWSER_APPLICATION';
-  const key = outer?null:Buffer.from(facts.channelKeyHex, 'hex');
-  function mac(frame, direction) { return createHmac('sha256', key).update('acceptance:browser:v1\0' + direction + '\0' + canonical(frame)).digest('hex'); }
   return Object.freeze({
     write(type, payload) {
       const operation=sending.then(async()=>{
-        const bare = { version: 1, runId: facts.runId, sequence: ++outgoing, type, payload };
-        const body = Buffer.from(canonical(outer?bare:{ ...bare, mac: mac(bare, 'WORKER_TO_CONTROLLER') }), 'ascii');
+        const body = Buffer.from(canonical({ version: 1, runId: facts.runId, sequence: ++outgoing, type, payload }), 'ascii');
         if (body.length > facts.maxFrameBytes) fail('FRAME_DENIED');
         const prefix = Buffer.alloc(4); prefix.writeUInt32BE(body.length); await pipe.write(Buffer.concat([prefix, body]));
       });
@@ -375,10 +386,8 @@ function rpc(pipe, facts) {
       const body = bytes.subarray(4); if (body.some(value => value > 127)) fail('FRAME_DENIED');
       const text = body.toString('ascii'); let frame; try { frame = JSON.parse(text); } catch { fail('FRAME_DENIED'); }
       if (canonical(frame) !== text) fail('FRAME_DENIED');
-      exact(frame, outer?['version','runId','sequence','type','payload']:['version', 'runId', 'sequence', 'type', 'payload', 'mac']);
+      exact(frame, ['version', 'runId', 'sequence', 'type', 'payload']);
       if (frame.version !== 1 || frame.runId !== facts.runId || frame.sequence !== incoming + 1 || !safe(frame.sequence) || typeof frame.type !== 'string') fail('FRAME_DENIED');
-      if(!outer){if(typeof frame.mac!=='string')fail('FRAME_DENIED');const bare = { ...frame }; delete bare.mac; const expected = mac(bare, 'CONTROLLER_TO_WORKER');
-        if (!/^[0-9a-f]{64}$/.test(frame.mac) || !timingSafeEqual(Buffer.from(frame.mac, 'hex'), Buffer.from(expected, 'hex'))) fail('FRAME_DENIED');}
       incoming++;
       return frame;
     },
@@ -458,20 +467,88 @@ function decodeInheritedInit(bytes) {
       !safe(value.binding.epoch)||!safe(value.binding.expiresAtMs))fail('CHANNEL_DENIED');
   return value;
 }
-function procStatus(fs,pid='self') {
-  const text=fs.readFileSync('/proc/'+pid+'/status','utf8'),field=name=>text.match(new RegExp('^'+name+':\\s+(.+)$','m'))?.[1]||'';
-  const uid=Number(field('Uid').split(/\s+/)[0]),noNewPrivs=field('NoNewPrivs')==='1',seccomp=Number(field('Seccomp'));
-  const capabilities=/^0+$/.test(field('CapEff'));
-  return {uid,noNewPrivs,filterInherited:noNewPrivs&&seccomp>0,capabilities:capabilities?'EMPTY':'PRESENT'};
+// T13 I-6: descriptor classification observes the kernel's own tables. Linux 6.8 formats:
+//  - descriptor links: net/socket.c:362 `socket:[%lu]`, fs/pipe.c:881 `pipe:[%lu]`.
+//  - net/unix/af_unix.c:3282-3289: inode is the 7th field; net/ipv4/tcp_ipv4.c:2896 and :2945-2947,
+//    net/ipv6/tcp_ipv6.c:2211 and :2270-2275, net/ipv4/udp.c:3082 and :3098-3100,
+//    net/ipv6/datagram.c:1055 with include/net/transp_v6.h:59-64: inode is the 10th field.
+//    Request and TIME_WAIT rows carry inode 0 (tcp_ipv4.c:2835, :2929) and attribute nothing.
+// A socket is attributed only from these five tables. Any other socket, vsock included (it has
+// no /proc/net table), is UNKNOWN_SOCKET. A readlink error is UNREADABLE. Both are failures.
+const SOCKET_TABLES=Object.freeze([
+  ['unix','UNIX',6,'Num RefCount Protocol Flags Type St Inode Path'],
+  ['tcp','TCP',9,'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode'],
+  ['tcp6','TCP',9,'sl local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode'],
+  ['udp','UDP',9,'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode ref pointer drops'],
+  ['udp6','UDP',9,'sl local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode ref pointer drops'],
+].map(row=>Object.freeze(row)));
+function classifyDescriptor(link,socketInodes) {
+  if(typeof link!=='string'||link.length===0)return 'UNREADABLE';
+  const socket=/^socket:\[([1-9][0-9]*)\]$/.exec(link);
+  if(socket){const family=socketInodes&&typeof socketInodes.get==='function'?socketInodes.get(socket[1]):undefined;
+    return family==='UNIX'||family==='TCP'||family==='UDP'?family:'UNKNOWN_SOCKET';}
+  if(link.startsWith('socket:'))return 'UNKNOWN_SOCKET';
+  if(/^pipe:\[[1-9][0-9]*\]$/.test(link))return 'PIPE';
+  if(link==='/dev/null')return 'NULL';
+  // The virtio console (hvc*, the guest's console=hvc0), virtio ports, /dev/console, every tty and pty.
+  if(/^\/dev\/(?:hvc|vport|console|tty|pts\/)/.test(link))return 'CONSOLE';
+  return 'OTHER';
 }
-function forbiddenDescriptorCounts(fs,pid='self',forbiddenTargets=new Set()) {
-  let consoleFds=0,vsockFds=0,unexpectedFds=0;
-  for(const name of fs.readdirSync('/proc/'+pid+'/fd'))try{const target=fs.readlinkSync('/proc/'+pid+'/fd/'+name);
-    if(/\/dev\/(?:console|tty\d*|pts\/)/.test(target))consoleFds++;
-    if(/vsock/i.test(target))vsockFds++;
-    if(forbiddenTargets.has(target))unexpectedFds++;
-  }catch{}
-  return {consoleFds,vsockFds,unexpectedFds};
+function socketInodeFamilies(fs) {
+  const families=new Map();
+  for(const [table,family,column,header] of SOCKET_TABLES){
+    let text;try{text=fs.readFileSync('/proc/net/'+table,'utf8');}catch(cause){fail('FAMILY_UNREADABLE',cause);}
+    if(typeof text!=='string')fail('FAMILY_UNREADABLE');
+    const rows=text.split('\n');
+    if(rows[0].trim().split(/\s+/).join(' ')!==header)fail('FAMILY_UNREADABLE');
+    for(const row of rows.slice(1)){
+      const fields=row.trim().split(/\s+/);if(fields.length===1&&fields[0]==='')continue;
+      const inode=fields[column];if(typeof inode!=='string'||!/^(?:0|[1-9][0-9]*)$/.test(inode))fail('FAMILY_UNREADABLE');
+      if(inode==='0')continue;
+      const known=families.get(inode);if(known!==undefined&&known!==family)fail('FAMILY_UNREADABLE');
+      families.set(inode,family);
+    }
+  }
+  return families;
+}
+// m-1: fs/proc/array.c:189-196 prints four Uid and four Gid fields; :335-341 prints NoNewPrivs,
+// Seccomp (include/uapi/linux/seccomp.h:12 SECCOMP_MODE_FILTER is 2) and Seccomp_filters.
+// Each row must appear exactly once; a missing or malformed row reads as null.
+function procStatus(fs,pid='self') {
+  const text=fs.readFileSync('/proc/'+pid+'/status','utf8'),lines=String(text).split('\n');
+  const field=name=>{const rows=lines.filter(line=>line.startsWith(name+':'));return rows.length===1?rows[0].slice(name.length+1).trim():null;};
+  const decimal=value=>typeof value==='string'&&/^(?:0|[1-9][0-9]{0,9})$/.test(value)?Number(value):null;
+  const ids=name=>{const value=field(name);if(value===null)return null;const parts=value.split(/\s+/);return parts.length===4?parts.map(decimal):null;};
+  const capEff=field('CapEff');
+  return {uids:ids('Uid'),gids:ids('Gid'),noNewPrivs:field('NoNewPrivs')==='1',seccomp:decimal(field('Seccomp')),
+    seccompFilters:decimal(field('Seccomp_filters')),capabilities:typeof capEff==='string'&&/^0+$/.test(capEff)?'EMPTY':'PRESENT'};
+}
+// The listing stays open while each entry is read, so the reader's own listing descriptor (it
+// appears in its own /proc/<pid>/fd) still resolves instead of reading as unreadable.
+function descriptorLinks(fs,pid) {
+  let directory;try{directory=fs.opendirSync('/proc/'+pid+'/fd');}catch(cause){fail('FAMILY_UNREADABLE',cause);}
+  const links=[];
+  try{
+    for(let entry=directory.readSync();entry!==null;entry=directory.readSync()){
+      if(entry.name==='.'||entry.name==='..')continue;
+      if(!/^(?:0|[1-9][0-9]*)$/.test(entry.name))fail('FAMILY_UNREADABLE');
+      let link=null;try{link=fs.readlinkSync('/proc/'+pid+'/fd/'+entry.name);}catch{link=null;}
+      links.push(link);
+    }
+  }catch(cause){fail('FAMILY_UNREADABLE',cause);}
+  finally{try{directory.closeSync();}catch{}}
+  return links;
+}
+function forbiddenDescriptorCounts(fs,pid='self',forbiddenTargets=new Set(),socketInodes=socketInodeFamilies(fs)) {
+  let consoleFds=0,unknownSocketFds=0,unreadableFds=0,unexpectedFds=0;
+  for(const link of descriptorLinks(fs,pid)){
+    const kind=classifyDescriptor(link,socketInodes);
+    if(kind==='CONSOLE')consoleFds++;
+    if(kind==='UNKNOWN_SOCKET')unknownSocketFds++;
+    if(kind==='UNREADABLE')unreadableFds++;
+    if(typeof link==='string'&&forbiddenTargets.has(link))unexpectedFds++;
+  }
+  return {consoleFds,unknownSocketFds,unreadableFds,unexpectedFds};
 }
 function tmpfsPaths(fs) {
   const required=['/dev/shm','/run/acceptance/browser/cache','/run/acceptance/browser/profile','/run/acceptance/browser/support'],mounts=[];
@@ -481,23 +558,29 @@ function tmpfsPaths(fs) {
     .sort((a,b)=>b.path.length-a.path.length)[0]?.type==='tmpfs').sort();
 }
 function childPids(fs,pid) {
-  const text=fs.readFileSync('/proc/'+pid+'/task/'+pid+'/children','ascii').trim();return text?text.split(/\s+/).map(Number):[];
+  const text=String(fs.readFileSync('/proc/'+pid+'/task/'+pid+'/children','ascii')).trim(),children=text?text.split(/\s+/):[];
+  if(children.some(child=>!/^[1-9][0-9]{0,9}$/.test(child)))fail('FAMILY_UNREADABLE');
+  return children.map(Number);
 }
-function inspectNativeFamily(fs,controlTargets) {
-  const root=process.pid,seen=new Set([root]),queue=[root],members=[];let browserPid=0;
-  while(queue.length){const pid=queue.shift(),children=childPids(fs,pid);if(pid===root&&children.length&&!browserPid)browserPid=children[0];
+// T13 I-6, m-7: every family member is read natively: its children, its status and each of its
+// descriptors. A member that cannot be read (for example a Chromium child that is not dumpable
+// to this UID, or one that exited mid-walk) is FAMILY_UNREADABLE, never skipped.
+function inspectNativeFamily(fs,controlTargets,root=process.pid) {
+  const socketInodes=socketInodeFamilies(fs),seen=new Set([root]),queue=[root],members=[];let browserPid=0;
+  while(queue.length){const pid=queue.shift();let children,status;
+    try{children=childPids(fs,pid);status=procStatus(fs,pid);}catch(cause){fail('FAMILY_UNREADABLE',cause);}
+    if(pid===root&&children.length&&!browserPid)browserPid=children[0];
     for(const child of children)if(!seen.has(child)){seen.add(child);queue.push(child);}
-    const status=procStatus(fs,pid),fds=forbiddenDescriptorCounts(fs,pid,pid===root?new Set():controlTargets);
-    members.push(Object.freeze({pid,uid:status.uid,filterInherited:status.filterInherited,...fds}));
+    const fds=forbiddenDescriptorCounts(fs,pid,pid===root?new Set():controlTargets,socketInodes);
+    members.push(Object.freeze({pid,...status,...fds}));
   }
   return Object.freeze({workerPid:root,browserPid,members:Object.freeze(members),procScope:'BROWSER_FAMILY_ONLY'});
 }
 function nativeTopology(fs,init) {
   const status=procStatus(fs),fds=forbiddenDescriptorCounts(fs),devices=fs.readFileSync('/proc/net/dev','utf8').split('\n').slice(2)
     .map(line=>line.split(':',1)[0].trim()).filter(name=>name&&name!=='lo').length;
-  return Object.freeze({version:1,runId:init.binding.runId,channelKeyHex:init.channelKeyHex,maxFrameBytes:16384,uid:status.uid,
-    noNewPrivs:status.noNewPrivs,capabilities:status.capabilities,filterInherited:status.filterInherited,procScope:'BROWSER_FAMILY_ONLY',
-    ...fds,networkDeviceCount:devices,tmpfsPaths:Object.freeze(tmpfsPaths(fs))});
+  return Object.freeze({version:1,runId:init.binding.runId,channelKeyHex:init.channelKeyHex,maxFrameBytes:16384,...status,
+    procScope:'BROWSER_FAMILY_ONLY',...fds,networkDeviceCount:devices,tmpfsPaths:Object.freeze(tmpfsPaths(fs))});
 }
 function inheritedPipe(fs,reader,init,initBytes,clock) {
   const command=Object.freeze({fd:3}),result=Object.freeze({fd:4}),queue=[initBytes];
@@ -718,6 +801,9 @@ async function runBrowserWorker(pipe, config) {
       await startup.race(Promise.all(assetTasks));
       if(commandFailure)throw commandFailure;
       if(assetFailure||!documentValidated||validatedAssets.size!==config.assetEntries.length)fail('OBSERVATION_FAILED',assetFailure);
+      // T13 m-7: the renderer and utility processes exist only now. The family is inspected
+      // again after the first page load and before READY, so before any credential arrives.
+      inspectFamily(pipe);
       launched.page=primary;launched.assetProofs=config.assetEntries.map(entry=>validatedAssets.get(entry.path));
     } catch(cause){try{await launched.owner.stopOwned();}catch{}throw cause;}
     await startup.race(wire.write('ASSETS', { proofs: state.assetProofs }));
@@ -734,5 +820,7 @@ async function runBrowserWorker(pipe, config) {
   }
 }
 
-module.exports = Object.freeze({ runBrowserWorker, inheritedMain, main });
+// The native readers are exported for the offline fake-/proc tests and the gated guest test.
+module.exports = Object.freeze({ runBrowserWorker, inheritedMain, main,
+  classifyDescriptor, socketInodeFamilies, procStatus, forbiddenDescriptorCounts, inspectNativeFamily, nativeTopology });
 if(require.main===module)main().then(code=>{process.exitCode=code;},()=>{process.exitCode=1;});

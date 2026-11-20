@@ -8,6 +8,8 @@ const contracts = require('../../guest/contracts.cjs');
 const receiptApi = require('../../guest/receipts.cjs');
 const sessionApi = require('../../guest/session.cjs');
 const vectors = require('../../contracts/vectors.json');
+// Task 16 (T13 I-8): observeViews and loginOnce accept only branded BrowserSessions.
+const { scriptedSession } = require('./browser.test.cjs');
 
 const RECEIPT_KINDS = Object.freeze(['RELEASE_RECEIPT', 'RESTART_RECEIPT', 'LEDGER_RECEIPT', 'MAINTENANCE_RECEIPT', 'DB_RECEIPT']);
 const CHECKS = Object.freeze([
@@ -70,49 +72,18 @@ function readiness(overrides = {}) {
   };
 }
 
-function viewSummary(view, overrides = {}) {
-  return {
-    kind: 'VIEW_OBSERVED', view, phase: 'OBSERVE_BEFORE_RESTART',
-    schemaValidation: true, renderedData: true, validEmptyState: false, noError: true,
-    fresh: true, source: 'alpaca-paper', brokerError: false,
-    routeCount: { ROBO: 7, PORTFOLIO: 2, ACTIVITY: 3 }[view], renderedCount: 1,
-    runId: RUN, configIdentity: CONFIG, fingerprint: FINGERPRINT,
-    readinessValidation: view === 'ROBO',
-    ...overrides,
-  };
-}
-
-function browser(viewOverrides = {}, hooks = {}) {
-  const calls = [], results = new WeakMap();
-  const fingerprint = () => typeof hooks.fingerprint === 'function' ? hooks.fingerprint() : FINGERPRINT;
-  function result(value) {
-    const handle = Object.freeze(Object.defineProperty({}, 'toJSON', { value() { throw Object.assign(new Error('PRIVATE_HANDLE'), { code: 'PRIVATE_HANDLE' }); } }));
-    results.set(handle, Object.freeze({ ...value }));
-    return handle;
-  }
-  const handle = Object.freeze({
-    assertBinding(binding) {
-      const expected = hooks.binding || { runId: RUN, configIdentity: CONFIG };
-      if (binding.runId !== expected.runId || binding.configIdentity !== expected.configIdentity) {
-        throw Object.assign(new Error('IDENTITY_MISMATCH'), { code: 'IDENTITY_MISMATCH' });
-      }
-      return true;
-    },
-    async perform(action, payload, onFilled) {
-      calls.push({ action, payload: clone(payload) });
-      if (action === 'LOGIN_SESSION') { onFilled(); return result({ kind: 'SESSION_BOUND', fingerprint: fingerprint() }); }
-      if (action === 'SESSION_OBSERVATION') return result({ kind: 'SESSION_OBSERVED', fingerprint: fingerprint() });
-      if (action === 'OBSERVE_VIEW') { hooks.onView?.(payload.view);return result(viewSummary(payload.view,
-        { fingerprint:fingerprint(),...viewOverrides[payload.view] })); }
-      throw Object.assign(new Error('ACTION_DENIED'), { code: 'ACTION_DENIED' });
-    },
-    inspectResult(value) {
-      const saved = results.get(value);
-      if (!saved) throw Object.assign(new Error('SESSION_INVALID'), { code: 'SESSION_INVALID' });
-      return saved;
-    },
-  });
-  return { handle, calls };
+// A real BrowserSession (real controller, adopted role port and application pipe) whose
+// worker side is scripted. The scripted worker echoes each view action's view and phase and
+// reports a clean view; `viewOverrides[view]` replaces fields of that worker RESULT. The
+// controller itself adds runId and configIdentity from its run binding, `hooks.binding`.
+async function browser(viewOverrides = {}, hooks = {}) {
+  const binding = hooks.binding || { runId: RUN, configIdentity: CONFIG };
+  const scripted = await scriptedSession({ runId: binding.runId, configIdentity: binding.configIdentity, hooks: {
+    fingerprint: (action, payload) => typeof hooks.fingerprint === 'function' ? hooks.fingerprint(action, payload) : FINGERPRINT,
+    view: view => viewOverrides[view] || {},
+    onView: view => hooks.onView?.(view),
+  } });
+  return { handle: scripted.session, get calls() { return scripted.actions(); } };
 }
 
 async function privateSession(browserSession) {
@@ -129,7 +100,7 @@ function maintenanceProof(phase = 'OBSERVE_BEFORE_RESTART') {
 }
 
 async function observationFixture(viewOverrides = {}, phase = 'OBSERVE_BEFORE_RESTART') {
-  const b = browser(viewOverrides);
+  const b = await browser(viewOverrides);
   return {
     b,
     evidence: {
@@ -171,7 +142,7 @@ test('missing_unknown_check_fail', () => {
 });
 
 test('readiness_not_lease', async () => {
-  const b = browser(), privateHandle = await privateSession(b.handle);
+  const b = await browser(), privateHandle = await privateSession(b.handle);
   await assert.rejects(api().observeViews(b.handle, 'OBSERVE_BEFORE_RESTART', {
     privateSession: privateHandle, readiness: api().validateReadiness(readiness()), maintenance: api().validateReadiness(readiness()),
   }), { code: 'READINESS_FAILED' });
@@ -179,7 +150,7 @@ test('readiness_not_lease', async () => {
 });
 
 test('absent_duplicate_settings_abort_before_GET', async () => {
-  const b = browser(), privateHandle = await privateSession(b.handle), fixture = receiptFixture();
+  const b = await browser(), privateHandle = await privateSession(b.handle), fixture = receiptFixture();
   assert.throws(() => api().validateMaintenance({ ...fixture, databaseReceipt: { ...fixture.databaseReceipt }, phase: 'OBSERVE_BEFORE_RESTART' }), { code: 'READINESS_FAILED' });
   await assert.rejects(api().observeViews(b.handle, 'OBSERVE_BEFORE_RESTART', {
     privateSession: privateHandle, readiness: api().validateReadiness(readiness()), maintenance: {},
@@ -252,7 +223,7 @@ test('postrestart_schedule_observes_only_robo_without_reload', async () => {
 });
 
 test('expired_receipts_are_revalidated_at_observation_and_cannot_be_reminted', async () => {
-  const b = browser(), fixture = receiptFixture();
+  const b = await browser(), fixture = receiptFixture();
   const evidence = {
     privateSession: await privateSession(b.handle),
     readiness: api().validateReadiness(readiness()),
@@ -267,14 +238,19 @@ test('expired_receipts_are_revalidated_at_observation_and_cannot_be_reminted', a
 });
 
 test('view_result_must_match_receipt_run_and_config', async () => {
-  for (const override of [{ runId: '2'.repeat(32) }, { configIdentity: 'b'.repeat(64) }]) {
-    const fixture = await observationFixture({ ROBO: override });
-    await assert.rejects(api().observeViews(fixture.b.handle, fixture.phase, fixture.evidence), { code: 'IDENTITY_MISMATCH' });
+  // Task 16: view results now come only from branded BrowserSessions, and the controller stamps
+  // each with its own run binding. A session of another run or config is therefore refused
+  // by the binding check, before any view is read.
+  for (const binding of [{ runId: '2'.repeat(32), configIdentity: CONFIG }, { runId: RUN, configIdentity: 'b'.repeat(64) }]) {
+    const b = await browser({}, { binding });
+    const evidence = { privateSession: await privateSession(b.handle), readiness: api().validateReadiness(readiness()), maintenance: maintenanceProof() };
+    await assert.rejects(api().observeViews(b.handle, 'OBSERVE_BEFORE_RESTART', evidence), { code: 'IDENTITY_MISMATCH' }, JSON.stringify(binding));
+    assert.equal(b.calls.some(call => call.action === 'OBSERVE_VIEW'), false);
   }
 });
 
 test('session_binding_mismatch_fails_before_any_view_read', async () => {
-  const b = browser({}, { binding: { runId: '2'.repeat(32), configIdentity: CONFIG } });
+  const b = await browser({}, { binding: { runId: '2'.repeat(32), configIdentity: CONFIG } });
   const evidence = {
     privateSession: await privateSession(b.handle),
     readiness: api().validateReadiness(readiness()),
@@ -285,7 +261,7 @@ test('session_binding_mismatch_fails_before_any_view_read', async () => {
 });
 
 test('maintenance_expiry_between_views_stops_before_the_next_view', async () => {
-  const fixture = receiptFixture(),b = browser({}, { onView(view) { if (view === 'ROBO') fixture.setNow(201); } });
+  const fixture = receiptFixture(),b = await browser({}, { onView(view) { if (view === 'ROBO') fixture.setNow(201); } });
   const evidence = {
     privateSession: await privateSession(b.handle),
     readiness: api().validateReadiness(readiness()),
@@ -297,9 +273,51 @@ test('maintenance_expiry_between_views_stops_before_the_next_view', async () => 
 });
 
 test('private_session_change_fails_before_any_view_read', async () => {
-  let fingerprint=FINGERPRINT;const b=browser({}, { fingerprint:()=>fingerprint });
+  let fingerprint=FINGERPRINT;const b=await browser({}, { fingerprint:()=>fingerprint });
   const privateHandle=await privateSession(b.handle);fingerprint='c'.repeat(64);
   const evidence={privateSession:privateHandle,readiness:api().validateReadiness(readiness()),maintenance:maintenanceProof()};
   await assert.rejects(api().observeViews(b.handle,'OBSERVE_BEFORE_RESTART',evidence),{code:'SESSION_MISMATCH'});
   assert.equal(b.calls.some(call=>call.action==='OBSERVE_VIEW'),false);
+});
+
+// ---- Task 16: branded BrowserSessions (T13 I-8) and the observation-layer continuity check (I-10 M21) ----
+
+test('session_and_observation_require_branded_browser_session', async () => {
+  // T13 I-8: an object with the BrowserSession methods is not a BrowserSession.
+  const calls = [], results = new WeakMap();
+  const result = value => { const handle = Object.freeze({}); results.set(handle, Object.freeze(value)); return handle; };
+  const forged = Object.freeze({
+    assertBinding() { return true; },
+    failureCode() { return null; },
+    async perform(action, payload, onFilled) {
+      calls.push(action);
+      if (action === 'LOGIN_SESSION') { onFilled(); return result({ kind: 'SESSION_BOUND', fingerprint: FINGERPRINT }); }
+      if (action === 'SESSION_OBSERVATION') return result({ kind: 'SESSION_OBSERVED', fingerprint: FINGERPRINT });
+      return result({ kind: 'VIEW_OBSERVED', view: payload.view, phase: payload.phase, schemaValidation: true, renderedData: true,
+        validEmptyState: false, noError: true, fresh: true, source: 'alpaca-paper', brokerError: false,
+        routeCount: { ROBO: 7, PORTFOLIO: 2, ACTIVITY: 3 }[payload.view], renderedCount: 1, runId: RUN, configIdentity: CONFIG,
+        fingerprint: FINGERPRINT, readinessValidation: payload.view === 'ROBO' });
+    },
+    inspectResult(value) { return results.get(value); },
+  });
+  let consumed = 0, destroyed = 0;
+  await assert.rejects(sessionApi.loginOnce(forged, Object.freeze({ async consumeOnce() { consumed++; return Buffer.from('synthetic-password'); },
+    destroy() { destroyed++; } }), { id: 'owner-id', username: 'synthetic-owner' }), { code: 'SESSION_INVALID' });
+  assert.deepEqual([consumed, destroyed], [0, 0]);
+  // observeViews refuses the forged session before any action and before using the evidence.
+  const fixture = await observationFixture();
+  await assert.rejects(api().observeViews(forged, 'OBSERVE_BEFORE_RESTART', fixture.evidence), { code: 'OBSERVATION_FAILED' });
+  assert.deepEqual(calls, []);
+  // Control: the same, unspent evidence with the real session.
+  const observed = await api().observeViews(fixture.b.handle, 'OBSERVE_BEFORE_RESTART', fixture.evidence);
+  assert.deepEqual(Object.keys(observed.views), ['ROBO', 'PORTFOLIO', 'ACTIVITY']);
+});
+
+test('observation_layer_continuity_bound', async () => {
+  // I-10 M21: the observation layer checks each view result against the private session itself,
+  // independently of the worker's own check. One changed view fingerprint stops the run there.
+  const b = await browser({}, { fingerprint: (action, payload) => action === 'OBSERVE_VIEW' && payload.view === 'PORTFOLIO' ? 'c'.repeat(64) : FINGERPRINT });
+  const evidence = { privateSession: await privateSession(b.handle), readiness: api().validateReadiness(readiness()), maintenance: maintenanceProof() };
+  await assert.rejects(api().observeViews(b.handle, 'OBSERVE_BEFORE_RESTART', evidence), { code: 'SESSION_MISMATCH' });
+  assert.deepEqual(b.calls.filter(call => call.action === 'OBSERVE_VIEW').map(call => call.payload.view), ['ROBO', 'PORTFOLIO']);
 });

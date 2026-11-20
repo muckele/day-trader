@@ -9,6 +9,11 @@ const handoffs = new WeakMap(), usedGrants = new WeakSet(), ownedChildren = new 
 const projectedGrants = new WeakMap();
 const GRANT_FACTS = Object.freeze(['kind','runId','child','purpose','session','remainingMs']);
 const browserApplicationPipes = new WeakMap(), browserRequestEvidence = new WeakMap();
+// T13 I-8: the provenance brand. It holds the activateOnce handles adoptRole returns and
+// the application pipes this module adopted (from a trusted authority's BROWSER handoff, or
+// built by browserApplicationPipe). Nothing outside this module can add to it.
+const adoptedRolePorts = new WeakSet();
+function inspectAdoptedRolePort(value) { return adoptedRolePorts.has(value); }
 const kinds = Object.freeze({ BROWSER: 10002, VERIFIER: 10003 });
 function fail(code) { const e = new Error(code); e.code = code; throw e; }
 function object(v) { return v !== null && (typeof v === 'object' || typeof v === 'function'); }
@@ -42,6 +47,7 @@ function bindRoleBootstrap(authority, runId) {
       const app=f.privatePipe.audit();
       if(!app||app.kind!=='TASK13_BROWSER_APPLICATION'||app.version!==1||app.runId!==runId||app.maxFrameBytes!==16384)fail('HANDOFF_DENIED');
       if(!browserApplicationPipes.has(f.privatePipe))browserApplicationPipes.set(f.privatePipe,{runId});
+      adoptedRolePorts.add(f.privatePipe);
     }
     ownedChildren.add(f.child); ownedPipes.add(f.privatePipe);
     handoffs.set(handoff,{authority,expected,adopted:false});
@@ -77,7 +83,7 @@ function adoptRole(kind, handoff) {
     async waitExit(deadline) { return exit('waitExit',deadline,arguments.length); },
     async stopOwned(deadline) { return exit('stopOwned',deadline,arguments.length); }});
   let consumed=false;
-  return privateHandle({kind, async activateOnce(grant) {
+  const port=privateHandle({kind, async activateOnce(grant) {
     if (consumed) fail('ACTIVATION_DENIED');
     consumed=true; // Consume synchronously before any callback or await.
     try {
@@ -115,6 +121,8 @@ function adoptRole(kind, handoff) {
       cleanupRemaining(){const budget=r.authority.cleanupBudget;return budget?terminalRemaining(budget):120000;},
       waitExit:cleanup.waitExit, stopOwned:cleanup.stopOwned});
   }});
+  adoptedRolePorts.add(port);
+  return port;
 }
 // Composition v1 is a finite original-pipe protocol. These constructors are
 // trusted embedding boundaries; no wire record can install an authority, pipe,
@@ -270,7 +278,7 @@ function browserApplicationPipe(runId,sendChunk,receiveChunk,isCurrent) {
         incomingStream++;index++;parts.push(bytes);if(value.final){incomingMessage++;return Buffer.concat(parts,size);}
       }}finally{reading=false;}
     }};
-  const handle=privateHandle(pipe);browserApplicationPipes.set(handle,{runId});return handle;
+  const handle=privateHandle(pipe);browserApplicationPipes.set(handle,{runId});adoptedRolePorts.add(handle);return handle;
 }
 function claimBrowserRequestEvidence(pipe,bytes,payload) {
   const state=browserApplicationPipes.get(pipe);
@@ -475,4 +483,4 @@ async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
     }catch(e){return failed(e,requestSequence);}
   },async cancel(record){try{cancel(wire.read(record));await cleanup.call(wire,acknowledgeCancel);return await stop(cleanup.remaining());}catch(e){return failed(e);}},stopOwned:stop});
 }
-module.exports = Object.freeze({bindRoleBootstrap,adoptRole,bindBootstrapComposition,bindBrowserWorkerChannel,claimBrowserRequestEvidence,inspectBrowserRequestEvidence,cleanupBoundary});
+module.exports = Object.freeze({bindRoleBootstrap,adoptRole,inspectAdoptedRolePort,bindBootstrapComposition,bindBrowserWorkerChannel,claimBrowserRequestEvidence,inspectBrowserRequestEvidence,cleanupBoundary});
