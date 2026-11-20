@@ -38,7 +38,7 @@ Do not confuse this with the broader **agentic paper MVP** (roadmap Phases 0–3
 | `main` | `8e557f6` (2026-05-28) | Old baseline. Not the release-candidate line. |
 | `codex/owner-paper-mvp` | `852fb22` + docs commits | Release-candidate line: PF-001 fix (`44bc06f`) plus startup-readiness contract v2 (`852fb22`, STARTUP_READINESS_CLOSEOUT_VERIFIED; hosted run 35755989443). |
 | `codex/production-acceptance-m1` | `31a513e` (2026-10-04) | Production acceptance controller, 84 commits on top of `852fb22` (17 of them are the hosted-tooling pilot, `916d2ad` being an ancestor; corrected 2026-11-16 from "88"). Pushed to GitHub 2026-11-14. Design and plan: `docs/PRODUCTION_ACCEPTANCE_CONTROLLER_DESIGN.md`, `docs/superpowers/plans/2026-09-30-production-acceptance-controller.md` on that branch. |
-| `claude/production-acceptance-stage1` | `132b67e` (2026-11-17) | Stage 1 work on top of `31a513e`. Pushed to GitHub up to `6c33545` (2026-11-16); everything after that is local: the M4 disposition record `ee687f9`, the Option A plan `36898e9`, and Option A work through `132b67e`. Worktree: `~/day-trader-worktrees/production-acceptance-stage1-fixes`. `54e5b6e` is the 2-line test-only fix for the bootstrap v1 handoff test (Swift 181/181 at that commit). `6c33545` records its independent review (ACCEPT_WITH_NOTES, follow-ups only). |
+| `claude/production-acceptance-stage1` | `0007b53` (2026-11-20) | Stage 1 work on top of `31a513e`. Pushed to GitHub up to `6c33545` (2026-11-16); everything after that is local: the M4 disposition record `ee687f9`, Option A (`36898e9..132b67e`), the independent reviews `e6ad547`, the remediation decisions and plan, and the remediation itself (`8f979c8..0007b53`). Worktree: `~/day-trader-worktrees/production-acceptance-stage1-fixes`. `54e5b6e` is the 2-line test-only fix for the bootstrap v1 handoff test (Swift 181/181 at that commit). `6c33545` records its independent review (ACCEPT_WITH_NOTES, follow-ups only). |
 | `codex/hosted-acceptance-tooling` | `916d2ad` (2026-09-30) | Hosted acceptance tooling pilot. |
 | `codex/sprint1-policy-approval` | `15a2de3` (2026-08-14) | Pushed to GitHub 2026-11-14 (was 6 commits ahead). Worktree: `~/Documents/Codex Agentic Trading/day-trader-sprint1`. That folder is iCloud-synced and macOS can evict its files; its uncommitted changes are preserved on `codex/sprint1-uncommitted-2026-07`. |
 | `codex/sprint1-uncommitted-2026-07` | `ba322b9` (2026-11-15) | Snapshot of 35 files of uncommitted Jul 19–Aug 14 work (controlled-live readiness services, tests, design docs) recovered from the sprint1 worktree, where 31 existed only in iCloud. Saved exactly as found, built on `15a2de3`. Unreviewed, untested, not a release candidate. Pushed 2026-11-15. |
@@ -132,13 +132,40 @@ From the status handoff, plus local evidence checked on 2026-11-14:
     - Re-estimate: 2–4+ weeks of remediation before Stage 2, for a Path A total of roughly 6–10+ weeks.
   - **Owner decision, 2026-11-17: continue Path A** ("Continue Path A"), after being shown the 6–10+ week re-estimate and a recommendation to switch to Path B.
   - **Proposed design decisions E1–E7:** `docs/STAGE1_REMEDIATION_DECISIONS.md` on the Stage 1 branch (`2495ffa`). Status PROPOSED. **Approved 2026-11-17** ("Approve all"). Remediation plan: `docs/superpowers/plans/2026-11-17-stage1-remediation.md` on the Stage 1 branch: 18 tasks, rough estimate ≈ 40 working days, above the earlier 2–4+ weeks.
-  - **Remediation in progress** (owner: "Start, subagent-driven", 2026-11-18). Ledger: `$RM_EVIDENCE/progress.md`, under `~/day-trader-evidence/production-acceptance-tooling/20261117T002012Z-stage1/remediation-shhzhEl6/`. A pre-flight scan found 33 plan conflicts; rulings P1–P72 are in the ledger.
-    - **Status 2026-11-19:** Tasks 1–17, plus owner-added Task 8b and controller-added Task 16b, are done locally, each independently reviewed clean (`8f979c8..bf2a1a0`, 53 commits, not pushed). The M2 broker diff `d5c1a4b..35daf35` was accepted by the owner ("Accept, start Task 7"). Task 18 (whole-M4 review, full verification, record) has not started.
-    - **Stopped before Task 18 for three owner decisions**, each a real-run blocker that the reviews found and that offline tests could not show:
-      - the frontend loads Google Fonts from outside the run origins (Task 15 review);
-      - Chromium's sandboxed children are non-dumpable, so the browser worker cannot read their `/proc/<pid>/fd` (Task 16 review);
-      - the BROWSER seccomp filter admits only socket protocol 0, while Chromium opens TCP sockets with `IPPROTO_TCP` (Task 16 review).
-    - Many other real-run blockers found by the reviews were fixed in their tasks (pivot_root views, audit framing and ordering, family pid numbering, cleanup budget, accept headers, zero-length bodies). Stage 2 obligations are collected in the ledger as "CARRY to Task 18 C10".
+  - **Remediation done offline, 2026-11-20** (owner: "Start, subagent-driven", 2026-11-18).
+    - **Where the record is:**
+      - Record: `.superpowers/sdd/2026-09-30-production-acceptance-controller/stage1-remediation/report.md`, in `0007b53` on the Stage 1 branch.
+      - Stage 2 obligations: contract C10 in `docs/STAGE1_REMEDIATION_CONTRACT.md`.
+      - Ledger: `$RM_EVIDENCE/progress.md`, under `~/day-trader-evidence/production-acceptance-tooling/20261117T002012Z-stage1/remediation-shhzhEl6/`. The plan workspace is saved there as `workspace-final-0007b53/`.
+    - **What was done:** `8f979c8..0007b53`, local and not pushed.
+      - Tasks 1–17, plus owner-added 8b and 8c and controller-added 16b and 16c. Each was independently reviewed clean.
+      - Task 18:
+        - full verification (696 mutants replayed);
+        - two final reviews;
+        - one fix wave (F1–F6), whose re-review found every item addressed.
+      - Controller rulings P1–P94, about 120 in all, are tabulated with their cost if wrong in report.md §10.
+    - **Owner decisions in this stretch:**
+      - "Redesign lanes now".
+      - "Accept, start Task 7": the M2 broker diff `d5c1a4b..35daf35`.
+      - "Add the task now": Task 8b, so the Chromium sandbox can start.
+      - On 2026-11-20:
+        - "Self-host the font (Recommended)": separate work, not done here;
+        - "Move check to the bootstrap (Recommended)": Task 16c;
+        - "Allow IPPROTO_TCP (Recommended)": Task 8c.
+    - **Final reviews:**
+      - Whole-M4: REJECT (narrow). Its findings: the AUDIT_GET reply mask, and the kernel's standalone audit records.
+      - M5–M7: ACCEPT_WITH_NOTES. Its findings: non-ASCII credentials, and an untested REPLAY_PRIVATE exemption.
+      - All four were fixed in the fix wave and confirmed by its re-review. The real/native paths fail closed, so nothing can falsely qualify.
+    - **Final offline run at `0007b53`** (2026-11-20): all 38 runs exit 0.
+      - Python 615 OK, 1 skip.
+      - Node 494 pass, 2 skips.
+      - Swift 224 tests, with 2 known issues.
+      - Consumers 41/41, 150/150, intake 15.
+    - **M4 status: still OPEN.** The real gate is Stage 2. Real-run blockers carried to C10 include:
+      - no native event source, native storage port or real Node FD inventory;
+      - the composed admission captures before the audit install drain closes (P92, parked);
+      - the appliance must mount the crash tmpfs and ship every guest module;
+      - every frontend asset must load deterministically during the `/login` load (this is why fonts are self-hosted).
     - **Earlier (Tasks 1–6):**
       - contract;
       - cleanup budget (E7);
