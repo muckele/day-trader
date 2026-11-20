@@ -1833,3 +1833,102 @@ extension BrokerTests {
         catch { #expect(error as? BrokerFailure == .terminal) }
     }
 }
+
+// Task 18 F6 (verification finding F-2): the two P40 "launcher END first" clauses of EgressBroker.swift,
+// unbound since the lane redesign (61c29bd). Each is the broker owing a guest its logical EOF after the
+// launcher's END for that guest connection has already been read: RelayStream.endWrite then reports
+// GuestStreamClosed (LaneWriter.logicalEOF with launcherEnded set). Through a real lane neither order can
+// be forced: a pending slot's lane has no reader, so its END is never read before the slot's EOF, and in
+// a running tunnel the pump that reads the END marks the slot guest-closed first, while a host-first end
+// also starts hostEnd, which marks the stream ended. So this guest stream reports the END itself, exactly
+// as RelayStream does once its END has been read.
+private final class LauncherEndedGuest: ByteStream, @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiter: CheckedContinuation<Data, any Error>?
+    private var isClosed = false, ended = false, log = [String]()
+    let readEntered = MemoryEvent(), endWriteCalled = MemoryEvent()
+    var events: [String] { lock.withLock { log } }
+    func read(maxBytes: Int) async throws -> Data {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, any Error>) in
+            let failure = lock.withLock { () -> (any Error)? in
+                if isClosed { return BrokerFailure.terminal }
+                if ended { return GuestStreamClosed() }
+                waiter = continuation
+                return nil
+            }
+            if let failure { continuation.resume(throwing: failure) } else { readEntered.signal() }
+        }
+    }
+    // The launcher's END reaches the broker's pending read of this guest connection.
+    func launcherEnd() {
+        let pending = lock.withLock { () -> CheckedContinuation<Data, any Error>? in ended = true; defer { waiter = nil }; return waiter }
+        pending?.resume(throwing: GuestStreamClosed())
+    }
+    func write(_ data: Data) async throws -> Int { lock.withLock { log.append("write") }; throw GuestStreamClosed() }
+    func endWrite() async throws {
+        lock.withLock { log.append("endWrite") }
+        endWriteCalled.signal()
+        throw GuestStreamClosed()
+    }
+    func close() {
+        let pending = lock.withLock { () -> CheckedContinuation<Data, any Error>? in
+            log.append("close"); isClosed = true
+            defer { waiter = nil }
+            return waiter
+        }
+        pending?.resume(throwing: BrokerFailure.terminal)
+    }
+}
+
+extension BrokerTests {
+    @Test(.timeLimit(.minutes(1))) func launcher_end_first_at_the_pump_eof_ends_only_its_slot() async throws {
+        // Task 18 F6, Tunnel.pump (P38(b), P40): a host-first idle end closes the origin, and the pump
+        // toward the guest owes the guest its logical EOF. The launcher's END for that guest came first,
+        // so the EOF write reports GuestStreamClosed. That is the same per-slot end (the slot is marked
+        // guest-closed), never a run failure: the slot ends alone and the run admits the next stream.
+        let guestA = LauncherEndedGuest(), originA = StallingStream()
+        let guestB = MemoryStream([Data([1, 2])]), originB = MemoryStream([Data([9])])
+        let h = try Harness(connector: FakeConnector(queued: [originA, originB]))
+        let a = try await h.broker.accept(control: control(), stream: guestA)        // last progress: monotonic 10
+        let runA = Task { try await a.run() }
+        await guestA.readEntered.wait(); await originA.readEntered.wait()
+        await h.clock.waitForWaiters(2)
+        h.clock.set(160, 30); h.clock.tick()                                        // host-first idle end: 30 - 10 >= 20
+        await originA.closed.wait()
+        await guestA.endWriteCalled.wait()                                           // the owed EOF meets the launcher's END
+        guestA.launcherEnd()                                                         // the END reaches the other pump's read
+        try await runA.value                                                         // a per-slot end, not a run failure
+        #expect(guestA.events == ["endWrite", "close"])
+        #expect(originA.written.isEmpty)
+        #expect(await h.broker.activeCount == 0)
+        let b = try await h.broker.accept(control: control("BACKEND", sequence: 2), stream: guestB)
+        try await b.run()
+        #expect(originB.written == Data([1, 2])); #expect(guestB.written == Data([9]))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func launcher_end_first_at_a_pending_slot_eof_ends_only_that_slot() async throws {
+        // Task 18 F6, the pending path (P38(b), P40): a slot that goes idle while still resolving or
+        // connecting owes its guest the logical EOF. The launcher's END for that guest came first (here,
+        // as after the slot already ended, the EOF write reports GuestStreamClosed). The admission ends
+        // that slot only (SlotEnded, per slot), never the run, and the run admits the next stream.
+        for stage in ["resolving", "connecting"] {
+            let resolving = Deferred<[NumericAddress]>(), connecting = Deferred<any ByteStream>()
+            let resolver = try FakeResolver([NumericAddress("8.8.8.8")], deferred: stage == "resolving" ? resolving : nil)
+            let connector = FakeConnector(deferred: stage == "connecting" ? connecting : nil)
+            let h = try Harness(resolver: resolver, connector: connector)
+            let guest = LauncherEndedGuest()
+            let admission = Task { try await h.broker.accept(control: control(), stream: guest) }
+            if stage == "resolving" { await resolving.waitEntered() } else { await connecting.waitEntered() }
+            await h.clock.waitForWaiters(2)
+            h.clock.set(160, 30); h.clock.tick()                                    // idle while pending
+            do { _ = try await admission.value; Issue.record("\(stage): an idle pending slot returned a tunnel") }
+            catch { #expect(error is SlotEnded, "\(stage): \(error)") }
+            #expect(guest.endWriteCalled.isSignalled, "\(stage): the owed logical EOF was attempted")
+            #expect(guest.events == ["endWrite", "close"], "\(stage)")
+            if stage == "resolving" { await resolving.finish(resolver.addresses) } else { await connecting.finish(MemoryStream()) }
+            #expect(await h.broker.activeCount == 0, "\(stage)")
+            let next = try await h.broker.accept(control: control(sequence: 2), stream: MemoryStream())
+            next.close()
+        }
+    }
+}
