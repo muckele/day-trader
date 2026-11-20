@@ -468,10 +468,14 @@ SITE_ARGS = {
     ('confinement.py', 'NativeChildPort.establish_views', 2): ('__NR_mount', {3: _s('MS_BIND')}),
     ('confinement.py', 'NativeChildPort.establish_views', 3): ('__NR_mount', {3: _s('MS_BIND', 'MS_REMOUNT', 'MS_RDONLY')}),
     ('confinement.py', 'NativeChildPort.establish_views', 4): ('__NR_mount', {3: _s('MS_BIND')}),
-    ('confinement.py', 'NativeChildPort.establish_views', 5): ('__NR_mount', {3: _s('MS_BIND')}),
-    ('confinement.py', 'NativeChildPort.establish_views', 6): ('__NR_pivot_root', {}),
-    ('confinement.py', 'NativeChildPort.establish_views', 7): ('__NR_umount2', {1: _s('MNT_DETACH')}),
-    ('confinement.py', 'NativeChildPort.establish_views', 8): ('__NR_mount', {3: _s('MS_NOSUID', 'MS_NODEV', 'MS_NOEXEC')}),
+    # Task 14 (C7, P50, P14): the role's own /dev/shm tmpfs, then the bind of its crash directory; the rows after
+    # them are renumbered by two (the /dev/null bind was 5, pivot_root 6, umount2 7, the proc mount 8).
+    ('confinement.py', 'NativeChildPort.establish_views', 5): ('__NR_mount', {3: _s('MS_NOSUID', 'MS_NODEV', 'MS_NOEXEC')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 6): ('__NR_mount', {3: _s('MS_BIND')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 7): ('__NR_mount', {3: _s('MS_BIND')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 8): ('__NR_pivot_root', {}),
+    ('confinement.py', 'NativeChildPort.establish_views', 9): ('__NR_umount2', {1: _s('MNT_DETACH')}),
+    ('confinement.py', 'NativeChildPort.establish_views', 10): ('__NR_mount', {3: _s('MS_NOSUID', 'MS_NODEV', 'MS_NOEXEC')}),
     ('confinement.py', 'NativeChildPort.close_unaudited_fds', 0): ('__NR_close_range', {2: 'CLOSE_RANGE_NO_FLAGS'},
                                                                    {1: ('CLOSE_RANGE_INCLUSIVE_END',)}),
     ('confinement.py', 'NativeChildPort.close_unaudited_fds', 1): ('__NR_close_range', {1: 'CLOSE_RANGE_MAX', 2: 'CLOSE_RANGE_NO_FLAGS'}),
@@ -1381,7 +1385,29 @@ class CodeBindingTests(unittest.TestCase):
                     self.assertEqual(literal[idx], acc, where)
                     self.assertLessEqual(want, ARG_SYMBOLS.get(sym, {}).get(idx, frozenset()), where)
                 checked += 1
-        self.assertEqual(checked, 91)  # every int-literal argument at every site (Task 10: 58 at probe sites)
+        # every int-literal argument at every site (Task 10: 58 at probe sites; Task 14: +2, the role tmpfs and the
+        # crash bind flags)
+        self.assertEqual(checked, 93)
+
+    def test_role_shm_tmpfs_mount_site_decomposes_into_existing_symbols(self):
+        """Task 14 (C7, P14): the role's /dev/shm tmpfs mount is one exact establish_views site whose flags are the
+        existing MS_NOSUID|MS_NODEV|MS_NOEXEC inventory symbols and whose source, target, type and data carry no
+        int constant; the crash bind after it is a plain MS_BIND. No inventory id is added."""
+        found = self.site_table()
+        tmpfs = sorted(key for key, (call, _) in found.items()
+                       if key[:2] == ('confinement.py', 'NativeChildPort.establish_views')
+                       and isinstance(call.args[1], ast.Constant) and call.args[1].value == b'tmpfs')
+        self.assertEqual(tmpfs, [('confinement.py', 'NativeChildPort.establish_views', 5)])
+        call = found[tmpfs[0]][0]
+        self.assertEqual(SITE_ARGS[tmpfs[0]], ('__NR_mount', {3: _s('MS_NOSUID', 'MS_NODEV', 'MS_NOEXEC')}))
+        self.assertEqual(len(call.args), 6)
+        self.assertEqual(_eval_int(call.args[4]), self.covered('MS_NOSUID') | self.covered('MS_NODEV')
+                         | self.covered('MS_NOEXEC'))
+        self.assertEqual([_int_constants(arg) for arg in call.args[1:4] + call.args[5:]], [[], [], [], []])
+        self.assertEqual(SITE_ARGS[('confinement.py', 'NativeChildPort.establish_views', 6)],
+                         ('__NR_mount', {3: _s('MS_BIND')}))
+        inventory = {entry['id'] for entry in json.loads(INVENTORY.read_bytes())['entries']}
+        self.assertLessEqual({'MS_NOSUID', 'MS_NODEV', 'MS_NOEXEC', 'MS_BIND'}, inventory)
 
     def test_capability_literals_are_covered(self):
         tree = self.trees['confinement.py']

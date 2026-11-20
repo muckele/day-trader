@@ -18,14 +18,37 @@ trusted contracts. Additional native compatibility and qualification are gated.
 from dataclasses import dataclass, field
 import hashlib
 import hmac
+import importlib.util
 import json
+import pathlib
 import re
 import secrets
 import struct
+import sys
 import threading
 import time
 from types import MappingProxyType
 from typing import NoReturn, Protocol
+
+
+def _storage_module():
+    """C7: the per-role storage module beside this file, one instance per process. It never imports this (P17)."""
+    name, target = '_acceptance_confinement_storage', pathlib.Path(__file__).resolve().with_name('storage.py')
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(name, target)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try: spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(name, None)
+            raise
+    elif pathlib.Path(getattr(module, '__file__', '')).resolve() != target:
+        raise ImportError('storage module identity mismatch')
+    return module
+
+
+storage = _storage_module()
 
 
 class ConfinementError(ValueError):
@@ -201,6 +224,10 @@ class KernelPort(Protocol):
     separate one-use confinement grant; no --no-sandbox/second spawn RPC.
     inspect independently observes credentials, caps, no_new_privs, filter,
     descriptor endpoints and views. A caller-supplied bool is not observation.
+    C7 (E5, R8): each role view holds its own 64 MiB /dev/shm tmpfs and a bind
+    of its own crash directory. Before exec the child port admits the role's own
+    storage (storage_ports, uid, observe) as the role UID inside its view, and the
+    ready frame carries the proof's fixed 32-byte digest (P17).
     wait/stop reap or stop only the exact owned process, never a recycled PID.
     Trusted intake/export is separately isolated controller-UID authority;
     none of these automation worker ports receives its serial capability.
@@ -395,10 +422,25 @@ def exec_role(launch, *, kernel) -> NoReturn:
         if type(result) is not int or result != 0: _fail('TSYNC_FAILED')
         if _programs(kernel.inspect_programs()) != launch.programs: _fail('PROGRAM_DENIED')
         _check(_attestation(kernel.inspect()), launch, waiting=False)
-        kernel.exec_pinned(launch.argv, launch.programs)
+        # C7 (E5, R8): the pre-exec helper admits this role's own private storage as the role UID, inside its
+        # view, after the filter and before exec. Only the proof's fixed 32-byte digest reaches exec (P17).
+        policy, filesystem = kernel.storage_ports()
+        kernel.exec_pinned(launch.argv, launch.programs, _admitted_digest(launch.role, policy, filesystem, kernel))
     except ConfinementError: raise
     except Exception: _fail('ROLE_START_FAILED')
     _fail('EXEC_RETURNED')
+
+
+def _admitted_digest(role, policy, filesystem, kernel):
+    """Admit ROLE's storage through the child port KERNEL (uid, observe), release every descriptor admission
+    opened, and keep only the digest. STORAGE_INVALID on any refusal."""
+    digest = None
+    try:
+        proof = storage.admit_role_storage(role, policy, filesystem, kernel)
+        if storage.release_role_storage(proof) is True: digest = proof.digest
+    except storage.StorageFailure: pass
+    if digest is None: _fail('STORAGE_INVALID')
+    return digest
 
 
 def inspect_role(pid, *, kernel):
@@ -1040,9 +1082,13 @@ class LinuxBindings:
         top={a[4]:(a,b) for a,b in parsed}
         if ('/' not in top or 'ro' not in top['/'][0][5].split(',') or
             '/run' not in top or top['/run'][1][0]!='tmpfs' or
+            '/run/acceptance/crash' not in top or top['/run/acceptance/crash'][1][0]!='tmpfs' or
             len(self.read_file('/proc/swaps').splitlines()) != 1 or
             set(self.os.listdir('/sys/class/net')) != {'lo'}): _fail('APPLIANCE_DENIED')
         self.run_device=self.os.stat('/run').st_dev
+        # C7 (E5): the bootstrap's 1 MiB crash tmpfs, on which establish_views makes each role's crash directory;
+        # every role's crash bind must be on this device (_native_observe).
+        self.crash_device=self.os.stat('/run/acceptance/crash').st_dev
         self.initial_namespaces={name:self.os.readlink('/proc/self/ns/'+name) for name in ('pid','mnt','user')}
 
     def pin_programs(self,pins):
@@ -1096,9 +1142,11 @@ class NativeChildPort:
         self.b,self.launch,self.pins,self.ready_fd=bindings,launch,pins,ready_fd
         self.digest=None
 
-    def establish_views(self,views):
-        if views != self.launch.views: _fail('VIEW_DENIED')
-        b=self.b; root=views.root+'/.root'
+    def establish_views(self,views,*,reuse_state=False):
+        # reuse_state is the storage cleanup child's only (C7): it re-binds the state a stopped child of this role
+        # left (its .state and crash directories) instead of requiring them fresh. The view root is always fresh.
+        if views != self.launch.views or type(reuse_state) is not bool: _fail('VIEW_DENIED')
+        b=self.b; root=views.root+'/.root'; uid=self.launch.uid
         b.os.setsid() # detach inherited controlling terminal before any worker
         b.syscall(40,None,b'/',None,262144|16384,None) # recursive private propagation
         b.os.makedirs(root,mode=0o755,exist_ok=False)
@@ -1113,12 +1161,23 @@ class NativeChildPort:
             b.syscall(40,('/'+directory).encode(),target.encode(),None,4096,None)
             b.syscall(40,None,target.encode(),None,4096|32|1,None)
         state=views.root+'/.state'
-        b.os.makedirs(state,mode=0o700,exist_ok=False); b.os.chown(state,self.launch.uid,self.launch.uid)
-        for directory in ('tmp','var','run/acceptance/'+views.role.lower(),'dev/shm'):
+        b.os.makedirs(state,mode=0o700,exist_ok=reuse_state); b.os.chown(state,uid,uid)
+        for directory in ('tmp','var','run/acceptance/'+views.role.lower()):
             source=state+'/'+directory; target=root+'/'+directory
-            b.os.makedirs(source,mode=0o700,exist_ok=False); b.os.chown(source,self.launch.uid,self.launch.uid)
+            b.os.makedirs(source,mode=0o700,exist_ok=reuse_state); b.os.chown(source,uid,uid)
             b.os.makedirs(target,mode=0o755,exist_ok=True)
             b.syscall(40,source.encode(),target.encode(),None,4096,None)
+        # C7 (E5, P50): /dev/shm is the role's own 64 MiB tmpfs, mounted in place of a state bind (never stacked
+        # on one). No parent ever unmounts it: the role's mount namespace teardown reclaims it (P16).
+        shm=root+'/dev/shm'; b.os.makedirs(shm,mode=0o755,exist_ok=False)
+        b.syscall(40,b'tmpfs',shm.encode(),b'tmpfs',2|4|8,
+                  ('size=%d,mode=0700,uid=%d,gid=%d'%(storage.SHM_BYTES,uid,uid)).encode('ascii'))
+        # The role's own 0700 crash directory on the bootstrap-mounted 1 MiB crash tmpfs, bound here, before the
+        # detach: after it the pre-pivot tree, the crash source included, is unreachable (K6).
+        crash='/run/acceptance/crash/'+views.role.lower()
+        b.os.makedirs(crash,mode=0o700,exist_ok=reuse_state); b.os.chown(crash,uid,uid)
+        target=root+'/run/acceptance/crash'; b.os.makedirs(target,mode=0o755,exist_ok=False)
+        b.syscall(40,crash.encode(),target.encode(),None,4096,None)
         b.os.makedirs(root+'/proc',mode=0o755,exist_ok=False)
         null=b.os.open(root+'/dev/null',64|128|524288|32768,0o600); b.os.close(null)
         b.syscall(40,b'/dev/null',(root+'/dev/null').encode(),None,4096,None)
@@ -1184,11 +1243,45 @@ class NativeChildPort:
     def inspect(self):
         return _native_observe(self.b,self.b.os.getpid(),self.launch,self.digest,self.pins,False,local=True)
 
-    def exec_pinned(self,argv,programs):
+    def uid(self):
+        """P17: the UID this child runs as, as Linux reports it (/proc/self/status Uid: real, effective, saved and
+        filesystem all equal), never the launch's own value."""
+        try:
+            line=next(row for row in self.b.read_file('/proc/self/status').decode('ascii').splitlines()
+                      if row.startswith('Uid:'))
+            uids=line[len('Uid:'):].split()
+        except Exception: uids=()
+        if len(uids)!=4 or len(set(uids))!=1 or re.fullmatch('0|[1-9][0-9]{0,9}',uids[0]) is None: _fail('UID_DENIED')
+        return int(uids[0])
+
+    def storage_ports(self):
+        # C7: no native descriptor-relative storage port or in-view kernel storage observer is qualified yet
+        # (tests/guest/storage_test.py stays gated). Until Stage 2 supplies one, pre-exec admission fails closed.
+        _fail('NATIVE_STORAGE_PORT_UNAVAILABLE')
+
+    def observe(self): _fail('NATIVE_STORAGE_PORT_UNAVAILABLE')
+
+    def scope_digest(self):
+        """P17 for a probe family, which runs no role program and admits nothing: the same fixed 32-byte binding of
+        its own five scope roots, from its own stats inside the view, that the bootstrap recomputes."""
+        role=self.launch.role
+        return storage.scope_digest(role,self.launch.uid,tuple(
+            (path,)+_stat_identity(self.b.os.stat(path)) for path in storage.ROLE_SCOPES[role]))
+
+    def write_ready(self,storage_digest):
+        """P17: the one helper-to-bootstrap record after admission, one write of _READY_FRAME_BYTES: the 64 hex
+        filter digest, then the fixed 32-byte storage digest."""
+        if type(storage_digest) is not bytes or len(storage_digest)!=32: _fail('STORAGE_INVALID')
+        if self.ready_fd is None or type(self.digest) is not str or re.fullmatch('[0-9a-f]{64}',self.digest) is None:
+            _fail('ROLE_START_FAILED')
+        frame=self.digest.encode('ascii')+storage_digest
+        if len(frame)!=_READY_FRAME_BYTES or self.b.os.write(self.ready_fd,frame)!=_READY_FRAME_BYTES:
+            _fail('ROLE_START_FAILED')
+
+    def exec_pinned(self,argv,programs,storage_digest):
         if argv!=self.launch.argv or programs!=self.launch.programs or argv[0] not in self.pins: _fail('PROGRAM_DENIED')
-        if self.ready_fd is not None:
-            frame=self.digest.encode('ascii')
-            if self.b.os.write(self.ready_fd,frame)!=64: _fail('ROLE_START_FAILED')
+        if type(storage_digest) is not bytes or len(storage_digest)!=32: _fail('STORAGE_INVALID')
+        if self.ready_fd is not None: self.write_ready(storage_digest)
         # Executable is the same held verified FD; script path is on the pinned
         # read-only base, rechecked immediately before exec. No shell/environment.
         self.b.os.execve(self.pins[argv[0]],argv,{})
@@ -1200,10 +1293,68 @@ def _view_mount_points(role):
 
     Mount points are relative to the role's own root (Linux 6.8
     fs/proc_namespace.c show_mountinfo, root taken at open). Task 14 adds
-    /run/acceptance/crash (P50).
+    /run/acceptance/crash (P50); /dev/shm is now the role's own tmpfs.
     """
     return ('/','/opt','/usr','/lib','/lib64','/etc','/tmp','/var',
-            '/run/acceptance/'+role.lower(),'/dev/shm','/dev/null','/proc')
+            '/run/acceptance/'+role.lower(),'/dev/shm','/run/acceptance/crash','/dev/null','/proc')
+
+
+# P17: the ready frame, the one fixed helper-to-bootstrap record written after admission: the 64 hex filter
+# digest, then the fixed 32-byte storage digest.
+_READY_FRAME_BYTES=64+32
+
+
+def _stat_identity(value):
+    return (value.st_dev,value.st_ino)
+
+
+def _view_skeleton(views):
+    """The root-owned view skeleton establish_views leaves on the /run tmpfs, children before parents; it holds no
+    role data, and its dev/null node is unlinked first. Removed only after that view's mount namespace is gone."""
+    root,name=views.root+'/.root',views.role.lower()
+    return tuple(root+suffix for suffix in (
+        '/run/acceptance/'+name,'/run/acceptance/crash','/run/acceptance','/run','/dev/shm','/dev','/proc',
+        '/tmp','/var','/etc','/lib64','/lib','/usr','/opt',''))
+
+
+def _view_backing(views):
+    """The role-owned directories behind a view's state binds and its crash bind, children before parents."""
+    state,name=views.root+'/.state',views.role.lower()
+    return tuple(state+suffix for suffix in ('/run/acceptance/'+name,'/run/acceptance','/run','/var','/tmp',''))+(
+        '/run/acceptance/crash/'+name,)
+
+
+def _storage_cleanup_child(launch,port):
+    """C7 (R8): the storage cleanup child's one fixed operation; never an exec, a caller entry or a caller path.
+
+    The role's own view (re-binding the state its stopped children left; a fresh /dev/shm, since the old one went
+    with its namespace, P16), descriptors, UID and filter; its own admission; a metadata-only crash aggregate; the
+    ready frame; removal; one fixed result frame; then it waits for the parent's EXIT and exits.
+    """
+    code=78
+    try:
+        port.establish_views(launch.views,reuse_state=True)
+        port.close_unaudited_fds(launch.fds)
+        port.drop_credentials(launch.uid,launch.uid); port.clear_capabilities(); port.no_new_privs()
+        result=port.install_seccomp(launch.filter,1)
+        if type(result) is not int or result!=0: _fail('TSYNC_FAILED')
+        _check(_attestation(port.inspect()),launch,waiting=False)
+        policy,filesystem=port.storage_ports()
+        proof=storage.admit_role_storage(launch.role,policy,filesystem,port)
+        aggregate=storage.crash_aggregate(proof.crash_root_fd,proof=proof)
+        port.write_ready(proof.digest)
+        if port.b.os.write(4,b'WAITING\n')!=8: _fail('ROLE_START_FAILED')
+        cleanup=storage.remove_role_state(proof)
+        frame=_v1_encode(dict(version=1,kind='STORAGE_CLEANUP',role=launch.role,
+                              removed=cleanup.guest_private_state_removed,code=cleanup.code,
+                              policyDigest=aggregate.policy_digest,fileCount=aggregate.file_count,
+                              directoryCount=aggregate.directory_count,logicalBytes=aggregate.logical_bytes,
+                              allocatedBytes=aggregate.allocated_bytes))
+        if port.b.os.write(4,frame)!=len(frame): _fail('ROLE_START_FAILED')
+        if port.b.os.read(3,4)!=b'EXIT': _fail('CHANNEL_DENIED')
+        code=0
+    except BaseException: code=78
+    port.b.os._exit(code)
 
 
 def _proc_decimal(value):
@@ -1276,17 +1427,32 @@ def _native_observe(b,pid,launch,digest,pins,waiting,local=False,current_fds=Non
     mounts={};points=[]
     for line in b.read_file(base+'/mountinfo').decode('ascii').splitlines():
         left,right=line.split(' - ',1); mount_fields=left.split(); points.append(mount_fields[4])
-        mounts[mount_fields[4]]=(set(mount_fields[5].split(',')),right.split()[0])
+        super_fields=right.split()
+        mounts[mount_fields[4]]=(set(mount_fields[5].split(',')),super_fields[0],
+                                 set(super_fields[2].split(',')) if len(super_fields)>2 else set())
     # P47: a missing, stacked (duplicate) or extra row, such as an old-root
     # /run, /dev or /sys left attached, is a view other than the pivoted one.
     if sorted(points)!=sorted(_view_mount_points(launch.role)): _fail('VIEW_DENIED')
     if any('ro' not in mounts.get('/'+directory,(set(),None))[0] for directory in ('opt','usr','lib','lib64','etc')): _fail('VIEW_DENIED')
-    for path in ('/tmp','/var','/run/acceptance/'+launch.role.lower(),'/dev/shm'):
+    for path in ('/tmp','/var','/run/acceptance/'+launch.role.lower()):
         if mounts.get(path,(None,None))[1]!='tmpfs': _fail('VIEW_DENIED')
         metadata=b.os.stat(prefix+path)
         if (metadata.st_mode&0o777!=0o700 or metadata.st_uid!=launch.uid or metadata.st_gid!=launch.uid or
             metadata.st_dev!=getattr(b,'run_device',None)): _fail('VIEW_DENIED')
-    if set(b.os.listdir(prefix+'/run/acceptance'))!={launch.role.lower()}: _fail('VIEW_DENIED')
+    # C7 (E5, P50): /dev/shm is the role's own 64 MiB tmpfs (Linux 6.8 mm/shmem.c:4223-4224 shows its size as
+    # K(max_blocks), size=65536k), rw, nosuid, nodev and noexec, on neither the run nor the crash device;
+    # /run/acceptance/crash is the role's 0700 directory of the bootstrap's 1 MiB crash tmpfs (size=1024k), whose
+    # device check_appliance records. Both roots are the role's own 0700 directories.
+    run_device,crash_device=getattr(b,'run_device',None),getattr(b,'crash_device',None)
+    shm_options,shm_type,shm_super=mounts.get('/dev/shm',(set(),None,set()))
+    _,crash_type,crash_super=mounts.get('/run/acceptance/crash',(set(),None,set()))
+    shm,crash=b.os.stat(prefix+'/dev/shm'),b.os.stat(prefix+'/run/acceptance/crash')
+    if (shm_type!='tmpfs' or not {'rw','nosuid','nodev','noexec'}<=shm_options or 'size=65536k' not in shm_super or
+        crash_type!='tmpfs' or 'size=1024k' not in crash_super or crash_device is None or
+        crash.st_dev!=crash_device or shm.st_dev in (run_device,crash_device) or
+        any(m.st_mode&0o777!=0o700 or m.st_uid!=launch.uid or m.st_gid!=launch.uid for m in (shm,crash))):
+        _fail('VIEW_DENIED')
+    if set(b.os.listdir(prefix+'/run/acceptance'))!={launch.role.lower(),'crash'}: _fail('VIEW_DENIED')
     if local:
         initial=getattr(b,'initial_namespaces',{})
         if (any(b.os.readlink('/proc/self/ns/'+name)==initial.get(name) for name in ('pid','mnt')) or
@@ -1442,7 +1608,10 @@ class _KernelPortCore:
     waits only its original unreaped helper; terminal receipts are cached. Lost
     helper/control channel is cleanup uncertainty, never arbitrary kill fallback.
     """
-    def __init__(self,bindings): self.b,self._owned,self._runtime_owners=bindings,{},{}
+    def __init__(self,bindings):
+        self.b,self._owned,self._runtime_owners=bindings,{},{}
+        # C7: roles whose storage cleanup ran (one use each) and their metadata-only crash aggregates.
+        self._storage_cleaned,self._crash_aggregates=set(),{}
 
     def bind_runtime_owner(self,handoff,lifecycle,runtime_owner,child_id,pipe_id,generation):
         """Trusted acquisition handoff; never populated from a runtime report.
@@ -1726,12 +1895,19 @@ class _KernelPortCore:
             for fd in pins.values(): b.os.close(fd)
             for fd in (command[0],result[1],stop[0],ready[1]): b.os.close(fd)
             b.os.set_blocking(stop[1],False)
-            digest=self._read_exact(ready[0],64,2000).decode('ascii')
+            frame=self._read_exact(ready[0],_READY_FRAME_BYTES,2000)
+            digest=frame[:64].decode('ascii')
             if not re.fullmatch('[0-9a-f]{64}',digest): _fail('ROLE_START_FAILED')
             # A worker-owned fixed waiting frame is necessary, never infer
             # readiness from a successful fork or an empty pipe.
             if self._read_exact(result[0],8,2000)!=b'WAITING\n': _fail('ROLE_START_FAILED')
             child=self._child_pid(outer)
+            # P17 (C7): the frame's last 32 bytes must bind this child's own five scope roots exactly as this
+            # bootstrap observes them through /proc/<child>/root. A role launch sends its admission proof's digest.
+            identities=tuple((path,)+_stat_identity(b.os.stat('/proc/'+str(child)+'/root'+path))
+                             for path in storage.ROLE_SCOPES[launch.role])
+            if not hmac.compare_digest(frame[64:],storage.scope_digest(launch.role,launch.uid,identities)):
+                _fail('STORAGE_PROOF_DENIED')
             state.update(child=child,digest=digest)
             state['links']=tuple(b.os.readlink('/proc/'+str(child)+'/fd/'+str(fd)) for fd in (3,4))
             # Public PID is the inner process identity; parent reaps the stable
@@ -1832,7 +2008,85 @@ class _KernelPortCore:
     def wait_owned(self,owned,deadline): return self._exit(owned,deadline,False)
     def stop_owned(self,owned,deadline): return self._exit(owned,deadline,True)
 
+    def _remove_view(self,views,backing):
+        """Bootstrap side, only after every child of that view has its terminal receipt: unlink the view's dev/null
+        node and rmdir its root-owned skeleton, then BACKING. A missing node is already gone; any other refusal
+        (a non-empty directory, say) is incomplete. Never an unmount: namespace teardown took the mounts (P16)."""
+        complete=True
+        steps=((self.b.os.unlink,views.root+'/.root/dev/null'),)+tuple(
+            (self.b.os.rmdir,path) for path in _view_skeleton(views)+tuple(backing))
+        for remove,path in steps:
+            try: remove(path)
+            except FileNotFoundError: pass
+            except Exception: complete=False
+        return complete
 
+    def run_storage_cleanup(self,role,launch):
+        """C7 (E5, R8, P11): clean one role's private storage as that role, inside its own view; one use per role.
+
+        A fixed operation in a fresh confined child (_storage_cleanup_child) with the role's views, UID and filter:
+        its own admission, a metadata-only crash aggregate, removal, one fixed result frame. Never an exec, a
+        caller entry, path or operation. It runs only once every child this port spawned in that role's view has
+        its terminal receipt, so each such view's mount namespace, its /dev/shm tmpfs included, is gone (P16).
+        The bootstrap removes only its own root-owned skeleton and, after the child, the emptied backing
+        directories; it records the role's crash aggregate for crash_summary. Uses only core state (P11).
+        """
+        incomplete=storage.CleanupResult(False,False,'CLEANUP_INCOMPLETE')
+        try:
+            if (role not in UIDS or type(launch) is not RoleLaunch or launch._seal is not _SEAL or launch.role!=role
+                    or launch!=prepare_role(role,RoleConfig(BootstrapConfig(self,launch.run_id,launch.programs),launch.fds))):
+                return incomplete
+        except Exception: return incomplete
+        if (role in self._storage_cleaned or
+                any(state.get('terminal') is None for state in self._owned.values()
+                    if getattr(state.get('launch'),'role',None)==role)):
+            return incomplete
+        self._storage_cleaned.add(role)
+        if not self._remove_view(launch.views,()): return incomplete
+        owned=None
+        try:
+            try: owned=self.spawn_waiting(launch,lambda port,launch=launch: _storage_cleanup_child(launch,port))
+            except RoleStartFailure as error:
+                owned=error.owned
+                raise
+            header=self._read_exact(owned.result,4,_STORAGE_CLEANUP_MS)
+            count=struct.unpack('>I',header)[0]
+            if not 0<count<=16384: _fail('FRAME_DENIED')
+            value=_v1_decode(header+self._read_exact(owned.result,count,_STORAGE_CLEANUP_MS))
+            _v1_exact(value,('version','kind','role','removed','code','policyDigest','fileCount','directoryCount',
+                             'logicalBytes','allocatedBytes'))
+            if (type(value['version']) is not int or value['version']!=1 or value['kind']!='STORAGE_CLEANUP'
+                    or value['role']!=role or type(value['removed']) is not bool
+                    or value['code']!=('COMPLETE' if value['removed'] else 'CLEANUP_INCOMPLETE')
+                    or type(value['policyDigest']) is not str
+                    or re.fullmatch('[0-9a-f]{64}',value['policyDigest']) is None): _fail('FRAME_DENIED')
+            aggregate=storage.CrashAggregate(value['policyDigest'],*(_v1_int(value[name],0) for name in (
+                'fileCount','directoryCount','logicalBytes','allocatedBytes')),False)
+            if self.b.os.write(owned.command,b'EXIT')!=4: _fail('CHANNEL_DENIED')
+            receipt=self.wait_owned(owned,2000)
+            if type(receipt) is not dict or receipt.get('status')!='EXITED' or receipt.get('pid')!=owned.pid:
+                _fail('CLEANUP_UNCERTAIN')
+        except Exception:
+            if owned is not None:
+                try: self.stop_owned(owned,2000)
+                except Exception: pass
+            return incomplete
+        self._crash_aggregates[role]=aggregate
+        complete=self._remove_view(launch.views,_view_backing(launch.views)) and value['removed']
+        return storage.CleanupResult(complete,False,'COMPLETE' if complete else 'CLEANUP_INCOMPLETE')
+
+    def crash_summary(self):
+        """The bootstrap's only view of crash state (C7): the four roles' metadata aggregates, summed."""
+        if set(self._crash_aggregates)!=set(UIDS): _fail('CLEANUP_INCOMPLETE')
+        summary=None
+        try: summary=storage.combine_crash_aggregates(tuple(self._crash_aggregates[role] for role in UIDS))
+        except storage.StorageFailure: pass
+        if summary is None: _fail('CLEANUP_INCOMPLETE')
+        return summary
+
+
+# A storage cleanup child's result frame wait: bounded, and inside the shared 60 s cleanup window (C1).
+_STORAGE_CLEANUP_MS=30000
 _NATIVE_KERNEL_SEAL=object()
 
 

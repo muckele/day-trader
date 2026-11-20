@@ -138,6 +138,7 @@ class InertFamily:
             syscall=syscall, select=lambda *args: ([31], [], []),
             pin_sample=pin_sample, signal=types.SimpleNamespace(SIGKILL=9),
             read_file=read_file, run_device=confinement_fixture.LiteralProc.RUN_DEV,
+            crash_device=confinement_fixture.LiteralProc.CRASH_DEV,
             os=types.SimpleNamespace(path=types.SimpleNamespace(lexists=lambda path: False),
                 write=write, read=lambda fd, size: b'EXIT' if fd == 3 else b'ATTEMPTED\n'[:size],
                 close=lambda fd: None, unlink=lambda path: None, rmdir=rmdir,
@@ -168,7 +169,7 @@ class InertFamily:
                 establish_views=lambda value: None, close_unaudited_fds=lambda value: None,
                 drop_credentials=lambda *args: None, clear_capabilities=lambda: None,
                 no_new_privs=lambda: None, install_seccomp=lambda *args: 0,
-                inspect=lambda: facts)
+                inspect=lambda: facts, scope_digest=lambda: bytes(32))  # Task 14 (P17): the ready frame's 32 bytes
             try: entry(port)
             except Exit: pass
             return owned
@@ -715,7 +716,7 @@ class LiteralRoleProc:
     PID. The bootstrap's own descriptor table (fstat) holds unrelated identities.
     """
     def __init__(self,harness):
-        self.h,self.children,self.run_device=harness,{},2
+        self.h,self.children,self.run_device,self.crash_device=harness,{},2,4
         self.os=types.SimpleNamespace(listdir=self.listdir,readlink=self.readlink,stat=self.stat,
             fstat=lambda fd:types.SimpleNamespace(st_dev=9,st_ino=90000+fd),
             read=self.read,write=self.write)
@@ -757,11 +758,14 @@ class LiteralRoleProc:
             return ('%s (node) S 1 %s %s 0 -1 4194560\n'%(pid,pid,pid)).encode()
         if rest=='/cmdline':return b'\0'.join(arg.encode() for arg in launch.argv)+b'\0'
         if rest=='/mountinfo':
-            # The Task 8b view (P47): self-bound root, read-only base, role state, /dev/null and /proc.
+            # The Task 8b view (P47) with Task 14's role tmpfs (0:3) and crash bind (0:4, P50): self-bound root,
+            # read-only base, role state, /dev/shm, /run/acceptance/crash, /dev/null and /proc.
             mounts='1 0 0:2 /acceptance/'+role.lower()+'/.root / rw - tmpfs base rw\n'
             mounts+=''.join('1 0 0:1 / /'+d+' ro - ext4 base ro\n' for d in ('opt','usr','lib','lib64','etc'))
             mounts+=''.join('1 0 0:2 / /'+d+' rw - tmpfs base rw\n' for d in
-                            ('tmp','var','run/acceptance/'+role.lower(),'dev/shm'))
+                            ('tmp','var','run/acceptance/'+role.lower()))
+            mounts+='1 0 0:3 / /dev/shm rw,nosuid,nodev,noexec - tmpfs shm rw,size=65536k,mode=700,uid=%d,gid=%d\n'%(uid,uid)
+            mounts+='1 0 0:4 /'+role.lower()+' /run/acceptance/crash rw,nosuid,nodev,noexec - tmpfs crash rw,size=1024k\n'
             return (mounts+'1 0 0:5 /null /dev/null rw - devtmpfs udev rw\n1 0 0:30 / /proc rw - proc proc rw\n').encode()
         if rest.startswith('/fdinfo/'):
             dev,inode,flags,targets,link=self.facts(path)
@@ -774,7 +778,7 @@ class LiteralRoleProc:
         role,launch,rest=self.child(path)
         if rest=='/fd':return [str(fd) for fd in sorted(self.table(role,list(c.UIDS).index(role)))]
         if rest=='/root/dev':return ['null','shm']
-        if rest=='/root/run/acceptance':return [role.lower()]
+        if rest=='/root/run/acceptance':return [role.lower(),'crash']
         raise FileNotFoundError(path)
     def readlink(self,path):
         if path.startswith('/proc/self/ns/'):
@@ -790,7 +794,8 @@ class LiteralRoleProc:
             return types.SimpleNamespace(st_dev=dev,st_ino=inode)
         if role is not None and rest=='/exe':return types.SimpleNamespace(st_dev=1,st_ino=999)
         uid=launch.uid if role is not None else 0
-        return types.SimpleNamespace(st_dev=1 if path.endswith('/root') or path.endswith('/.root') else 2,
+        return types.SimpleNamespace(st_dev=1 if path.endswith('/root') or path.endswith('/.root') else
+                                     3 if path.endswith('/dev/shm') else 4 if path.endswith('/run/acceptance/crash') else 2,
                                      st_ino=555,st_mode=0o700,st_uid=uid,st_gid=uid)
     # The original PROXY pipe ends: FD3's writer and FD4's reader.
     def select(self,reads,writes,errors,timeout):

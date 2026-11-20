@@ -147,7 +147,7 @@ class V1RoleTests(unittest.TestCase):
             if path.endswith('/cmdline'):return b'\0'.join(x.encode() for x in launch.argv)+b'\0'
             return old_read(path,*args).replace(b'10002',b'10004').replace(b'browser',b'proxy')
         b.read_file=read
-        b.os.listdir=lambda p:['0','1','2','3','4']+(['5'] if extra else []) if p.endswith('/fd') else ['proxy'] if p.endswith('/run/acceptance') else old_list(p)
+        b.os.listdir=lambda p:['0','1','2','3','4']+(['5'] if extra else []) if p.endswith('/fd') else ['proxy','crash'] if p.endswith('/run/acceptance') else old_list(p)
         b.os.readlink=lambda p:'socket:[50]' if p.endswith('/fd/5') else old_link(p)
         def stat(p):
             if '/fd/' in p:return types.SimpleNamespace(st_dev=2,st_ino=50 if p.endswith('/5') else 30 if p.endswith('/3') else 40 if p.endswith('/4') else 10)
@@ -715,10 +715,105 @@ class Kernel:
         return {'status': 'EXITED', 'pid': owned.pid, 'run_id': RUN}
 
 
+class StorageView:
+    """One role's five scopes as that role sees them inside its own view (C7): fresh and empty, as at launch, the
+    role-owned 0700 roots on the run (7), role tmpfs (9) and crash (8) devices. A descriptor-relative storage port
+    double over confinement's own storage module, never a host filesystem: it records each root open and close in
+    EVENTS, and the policy and kernel facts are the role's own (P17). Any content operation is a test failure."""
+    DEVICES = {'/dev/shm': 9, '/run/acceptance/crash': 8}
+
+    def __init__(self, role, events):
+        self.role, self.uid, self.events = role, c.UIDS[role], events
+        self.scopes = c.storage.ROLE_SCOPES[role]
+        self.fds, self.next_fd, self.mounts = {}, 40, None
+
+    def policy(self):
+        return c.storage.StoragePolicy('a' * 64, True, 0, 'TMPFS', False, False, False, False, False, False,
+                                       256 * 1024 * 1024, 1024 * 1024, 64 * 1024 * 1024, 4096)
+
+    def identity(self, path):
+        return (path, self.DEVICES.get(path, 7), 500 + self.scopes.index(path))
+
+    def digest(self):
+        return c.storage.scope_digest(self.role, self.uid, tuple(self.identity(path) for path in self.scopes))
+
+    def kernel_state(self):
+        capacity = {'/dev/shm': 64 * 1024 * 1024, '/run/acceptance/crash': 1024 * 1024}
+        rows = self.mounts or tuple((path, 'tmpfs', self.identity(path)[1], True,
+                                     capacity.get(path, 256 * 1024 * 1024), 4096) for path in self.scopes)
+        return c.storage.KernelStorageState(True, 0, (), (), False, False, False, (),
+                                            tuple(c.storage.MountObservation(*row) for row in rows))
+
+    def metadata(self, path):
+        _, device, inode = self.identity(path)
+        return c.storage.NodeMetadata('DIRECTORY', 0o700, self.uid, self.uid, device, inode, 1, 0, 0)
+
+    def open_root(self, path):
+        self.events.append(('open_root', path))
+        parent, root = self.next_fd, self.next_fd + 1
+        self.next_fd += 2
+        self.fds[parent], self.fds[root] = ('parent', path), ('root', path)
+        return parent, root, path.rsplit('/', 1)[1]
+
+    def stat(self, fd): return self.metadata(self.fds[fd][1])
+    def stat_child(self, fd, name): return self.metadata(self.fds[fd][1])
+    def list_names(self, fd): return ()
+
+    def close(self, fd):
+        self.events.append(('close', fd))
+        del self.fds[fd]
+
+    def content(self, *args): raise AssertionError('empty scopes need no content operation')
+    open_file = open_directory = readable = unlink = remove_directory = content
+
+
+class CleanupChild:
+    """The child port a storage cleanup child runs over (C7, R8): it records each call, in order, in LOG; its storage
+    side is a StorageView sharing LOG; FD4 writes go to OUT (the result pipe); FD3 yields the parent's EXIT; _exit
+    ends the child. fail='uid' makes the port report UID 0, so admission must fail."""
+    def __init__(self, launch, log, out, *, fail=None):
+        self.launch, self.log, self.out, self.fail = launch, log, out, fail
+        self.storage, self.ready = StorageView(launch.role, log), None
+        uid = launch.uid
+        self.facts = dict(pid=401, run_id=RUN, role=launch.role, uids=(uid,) * 3, gids=(uid,) * 3, groups=(),
+                          capabilities=(0,) * 5, no_new_privs=1, seccomp=2,
+                          filter_digest=hashlib.sha256(c.filter_bytes(launch.filter)).hexdigest(), fds=launch.fds,
+                          views=launch.views, waiting=False, programs=launch.programs, seccomp_filters=1, tty_nr=0)
+        def write(fd, data):
+            log.append(('write', fd, data))
+            if fd == 4: out.extend(data)
+            return len(data)
+        def read(fd, size):
+            log.append(('read', fd, size)); return b'EXIT'
+        def leave(code):
+            log.append(('_exit', code)); raise ExecBoundary()
+        self.b = types.SimpleNamespace(os=types.SimpleNamespace(write=write, read=read, _exit=leave))
+    def establish_views(self, views, *, reuse_state=False): self.log.append(('establish_views', views, reuse_state))
+    def close_unaudited_fds(self, fds): self.log.append(('close_unaudited_fds', fds))
+    def drop_credentials(self, uid, gid): self.log.append(('drop_credentials', uid, gid))
+    def clear_capabilities(self): self.log.append(('clear_capabilities',))
+    def no_new_privs(self): self.log.append(('no_new_privs',))
+    def install_seccomp(self, program, flags):
+        self.log.append(('install_seccomp', flags)); return 0
+    def inspect(self):
+        self.log.append(('inspect',)); return dict(self.facts)
+    def storage_ports(self):
+        self.log.append(('storage_ports',)); return self.storage.policy(), self.storage
+    def uid(self):
+        self.log.append(('uid',)); return 0 if self.fail == 'uid' else self.launch.uid
+    def observe(self):
+        self.log.append(('observe',)); return self.storage.kernel_state()
+    def write_ready(self, storage_digest):
+        self.log.append(('write_ready', storage_digest)); self.ready = storage_digest
+    def exec_pinned(self, *args):
+        self.log.append(('exec',)); raise AssertionError('a storage cleanup child never execs')
+
+
 class ChildKernel:
     def __init__(self, parent, pid, launch):
         self.parent, self.pid, self.launch = parent, pid, launch
         self.events = []
+        self._storage, self.uid_override = None, None
         self.owned = types.SimpleNamespace(pid=pid, run_id=RUN, role=launch.role,
                                            command=object(), result=object())
         self.facts = {'pid': pid, 'run_id': RUN, 'role': launch.role,
@@ -752,8 +847,23 @@ class ChildKernel:
         self.facts.update(seccomp=2, seccomp_filters=1, filter_digest=hashlib.sha256(b''.join(struct.pack('<HBBI', *i) for i in program)).hexdigest())
         return self.parent.tsync
     def inspect(self): return dict(self.facts, **self.parent.drift)
-    def exec_pinned(self, argv, programs):
-        self.events.append(('exec', argv, programs)); self.facts['waiting'] = True
+    # C7 (R8, P17): the child port's storage side, answered from the facts this child has reached so far.
+    @property
+    def storage(self):
+        if self._storage is None: self._storage = StorageView(self.launch.role, self.events)
+        return self._storage
+    def storage_ports(self):
+        self.events.append('storage'); return self.storage.policy(), self.storage
+    def uid(self):
+        self.events.append('uid')
+        return self.facts['uids'][0] if self.uid_override is None else self.uid_override
+    def observe(self):
+        self.events.append('observe'); return self.storage.kernel_state()
+    def exec_pinned(self, argv, programs, storage_digest=None):
+        # The descriptors still open at exec are recorded with it: admission must have released every one.
+        self.events.append(('exec', argv, programs, storage_digest,
+                            tuple(self._storage.fds) if self._storage is not None else ()))
+        self.facts['waiting'] = True
         raise ExecBoundary()
 
 
@@ -794,19 +904,23 @@ class ConfinementTests(unittest.TestCase):
                base+'/stat':b'300 (node) S 1 300 300 0 -1 4194560\n',
                base+'/fdinfo/3':b'flags:\t00\n',base+'/fdinfo/4':b'flags:\t01\n',
                base+'/cmdline':b'/opt/acceptance/runtime/node/bin/node\0/opt/acceptance/guest/browser-worker.cjs\0--inherited\0'}
-        # The Task 8b view (P47): the self-bound root, the read-only base, role state, /dev/null and /proc.
+        # The Task 8b view (P47) with Task 14's role tmpfs and crash bind (P50): the self-bound root, the read-only
+        # base, role state on the /run tmpfs (0:2), /dev/shm (0:3), /run/acceptance/crash (0:4), /dev/null, /proc.
         mounts='1 0 0:2 /acceptance/browser/.root / rw - tmpfs base rw\n'
         mounts+=''.join('1 0 0:1 / /'+d+' '+('rw' if drift=='readonly' and d=='opt' else 'ro')+' - ext4 base ro\n' for d in readonly)
-        mounts+=''.join('1 0 0:2 / /'+d+' rw - '+('ext4' if drift=='tmpfs' else 'tmpfs')+' base rw\n' for d in ('tmp','var','run/acceptance/browser','dev/shm'))
+        mounts+=''.join('1 0 0:2 / /'+d+' rw - '+('ext4' if drift=='tmpfs' else 'tmpfs')+' base rw\n' for d in ('tmp','var','run/acceptance/browser'))
+        mounts+='1 0 0:3 / /dev/shm rw,nosuid,nodev,noexec - tmpfs tmpfs rw,size=65536k,mode=700,uid=10002,gid=10002\n'
+        mounts+='1 0 0:4 /browser /run/acceptance/crash rw,nosuid,nodev,noexec - tmpfs tmpfs rw,size=1024k\n'
         mounts+='1 0 0:5 /null /dev/null rw - devtmpfs udev rw\n1 0 0:30 / /proc rw - proc proc rw\n'
         files[base+'/mountinfo']=mounts.encode()
-        b.read_file=lambda path,*a:files[path]; b.run_device=2
-        b.os.listdir=lambda path:['0','1','2','3','4'] if path==base+'/fd' else ['null','shm'] if path==base+'/root/dev' else ['browser']
+        b.read_file=lambda path,*a:files[path]; b.run_device=2; b.crash_device=4
+        b.os.listdir=lambda path:['0','1','2','3','4'] if path==base+'/fd' else ['null','shm'] if path==base+'/root/dev' else ['browser','crash']
         def link(path):
             if '/fd/' in path: return '/dev/null' if path[-1] in '012' else 'pipe:[30]' if path[-1]=='3' else 'pipe:[40]'
             return ('user:[1]' if path.endswith('/user') else ('pid:[1]' if path.startswith('/proc/self') else 'pid:[20]') if path.endswith('/pid') else ('mnt:[1]' if path.startswith('/proc/self') else 'mnt:[20]'))
         b.os.readlink=link
-        b.os.stat=lambda path:types.SimpleNamespace(st_dev=1 if path.endswith('/exe') or path.endswith('/root') or path.endswith('/.root') else 2,
+        b.os.stat=lambda path:types.SimpleNamespace(st_dev=1 if path.endswith('/exe') or path.endswith('/root') or path.endswith('/.root') else
+                                                    3 if path.endswith('/dev/shm') else 4 if path.endswith('/run/acceptance/crash') else 2,
             st_ino=999 if path.endswith('/exe') else 555,st_mode=0o700,st_uid=10002,st_gid=10002)
         k=c.OfflineKernelPort(b); owned=c.NativeOwned(300,RUN,'BROWSER',object(),object())
         k._owned[owned]={'outer':200,'child':300,'terminal':None,'launch':launch,'digest':'e'*64,
@@ -1250,9 +1364,9 @@ class ConfinementTests(unittest.TestCase):
         b=InertBindings(); launch=c.prepare_role('VERIFIER',c.RoleConfig(self.config(),c.role_fds('VERIFIER',RUN)))
         p=c.NativeChildPort(b,launch,{c.NODE:19})
         b.os.execve=lambda fd,argv,env: (b.calls.append(('execve',(fd,argv,env))), (_ for _ in ()).throw(ExecBoundary()))[-1]
-        with self.assertRaises(ExecBoundary): p.exec_pinned(launch.argv,launch.programs)
+        with self.assertRaises(ExecBoundary): p.exec_pinned(launch.argv,launch.programs,bytes(32))
         self.assertEqual(b.calls[-1],('execve',(19,('/opt/acceptance/runtime/node/bin/node','/opt/acceptance/guest/verifier.cjs','--inherited'),{})))
-        with self.assertRaisesRegex(c.ConfinementError,'PROGRAM_DENIED'): p.exec_pinned(('/bin/sh',),launch.programs)
+        with self.assertRaisesRegex(c.ConfinementError,'PROGRAM_DENIED'): p.exec_pinned(('/bin/sh',),launch.programs,bytes(32))
     def test_R1_native_mount_view_is_private_readonly_base_and_role_only_tmpfs(self):
         self.assertTrue(hasattr(c,'NativeChildPort'),'native namespace/view source absent')
         b=InertBindings(); launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
@@ -1266,9 +1380,12 @@ class ConfinementTests(unittest.TestCase):
         self.assertIn(('setsid',()),b.calls)
         raw=[x for x in b.calls if type(x[0]) is int]
         self.assertEqual(raw[0],(40,(None,b'/',None,278528,None)))
-        # Approved storage contract: all writable paths stay on the existing
-        # bounded /run tmpfs; allocating additional root tmpfs budgets is denied.
-        self.assertFalse(any(args[0]==b'tmpfs' for nr,args in raw if nr==40))
+        # Approved storage contract (C7, E5): the only tmpfs a view mounts is the role's own 64 MiB /dev/shm with
+        # the fixed data; every other writable path stays on the existing bounded /run tmpfs, and no other tmpfs
+        # budget (a root or a second one) is ever allocated.
+        self.assertEqual([args for nr,args in raw if nr==40 and b'tmpfs' in (args[0],args[2])],
+                         [(b'tmpfs',b'/run/acceptance/browser/.root/dev/shm',b'tmpfs',14,
+                           b'size=67108864,mode=0700,uid=10002,gid=10002')])
         # Every read-only base directory is bound once and remounted read-only right after its bind (Task 9:
         # reviewer M18 left /etc writable and survived the opt-only assertions).
         for directory in ('opt','usr','lib','lib64','etc'):
@@ -1419,6 +1536,313 @@ class ConfinementTests(unittest.TestCase):
         # Every shadow is gone: the module globals are exactly the objects they were before the run.
         self.assertEqual(set(namespace),set(snapshot))
         self.assertEqual([name for name in snapshot if namespace[name] is not snapshot[name]],[])
+    # --- Task 14 (C7, E5, R8; P16, P17, P50) ------------------------------------------------------------------------
+    def test_establish_views_mounts_role_shm_tmpfs_and_crash_bind(self):
+        # C7 (P50): the role's /dev/shm is its own 64 MiB tmpfs mounted in place of (never stacked on) a state bind,
+        # and /run/acceptance/crash is a bind of its own 0700 role-owned crash directory. Both are mounted after the
+        # root self-bind and before chdir/pivot_root, targets under the view root: after the detach the crash
+        # source would be unreachable (K6). reuse_state (the storage cleanup child only) re-binds existing state.
+        for role,uid in c.UIDS.items():
+            for reuse in (False,True):
+                with self.subTest(role=role,reuse_state=reuse):
+                    b,launch,p=self.view_port(role)
+                    if reuse: p.establish_views(launch.views,reuse_state=True)
+                    else: p.establish_views(launch.views)
+                    name=role.lower(); R='/run/acceptance/'+name+'/.root'; RB=R.encode()
+                    S='/run/acceptance/'+name+'/.state'; crash='/run/acceptance/crash/'+name
+                    tmpfs=(40,(b'tmpfs',RB+b'/dev/shm',b'tmpfs',14,b'size=67108864,mode=0700,uid=%d,gid=%d'%(uid,uid)))
+                    bind=(40,(crash.encode(),RB+b'/run/acceptance/crash',None,4096,None))
+                    mounts=[e for e in b.calls if e[0]==40]
+                    self.assertEqual([e for e in mounts if b'tmpfs' in (e[1][0],e[1][2])],[tmpfs])
+                    # Nothing else is mounted on either target: the tmpfs replaces the old dev/shm state bind.
+                    self.assertEqual([e for e in mounts if e[1][1]==RB+b'/dev/shm'],[tmpfs])
+                    self.assertEqual([e for e in mounts if e[1][1]==RB+b'/run/acceptance/crash'],[bind])
+                    self.assertEqual([e for e in mounts if e[1][0] is not None and e[1][0].startswith(S.encode())],
+                                     [(40,((S+'/'+d).encode(),(R+'/'+d).encode(),None,4096,None))
+                                      for d in ('tmp','var','run/acceptance/'+name)])
+                    self_bind=b.calls.index((40,(RB,RB,None,4096,None))); enter=b.calls.index(('chdir',(R,)))
+                    pivot=b.calls.index((41,(b'.',b'.'))); detach=b.calls.index((39,(b'.',2)))
+                    for mount in (tmpfs,bind):
+                        self.assertTrue(self_bind<b.calls.index(mount)<enter<pivot<detach,mount)
+                    # The crash source: created 0700 and owned by the role before its bind; both targets fresh.
+                    made=('mkdir',(crash,0o700,reuse)); owned=('chown',(crash,uid,uid))
+                    self.assertEqual((b.calls.count(made),b.calls.count(owned)),(1,1))
+                    self.assertLess(b.calls.index(made),b.calls.index(owned))
+                    self.assertLess(b.calls.index(owned),b.calls.index(bind))
+                    for target,mount in ((R+'/dev/shm',tmpfs),(R+'/run/acceptance/crash',bind)):
+                        self.assertLess(b.calls.index(('mkdir',(target,0o755,False))),b.calls.index(mount))
+                    # State: exactly tmp, var and the role's run directory (P50), each 0700 and role-owned.
+                    state=[e for e in b.calls if e[0]=='mkdir' and (e[1][0]==S or e[1][0].startswith(S+'/'))]
+                    self.assertEqual(state,[('mkdir',(path,0o700,reuse)) for path in
+                                            (S,S+'/tmp',S+'/var',S+'/run/acceptance/'+name)])
+                    # The view root and its skeleton are always fresh, reused state or not.
+                    fresh=[e[1] for e in b.calls if e[0]=='mkdir' and (e[1][0]==R or e[1][0].startswith(R+'/'))]
+                    self.assertEqual([(path,exist) for path,mode,exist in fresh if exist],
+                                     [(R+'/'+d,True) for d in ('tmp','var','run/acceptance/'+name)])
+    def test_pre_exec_storage_admission_runs_after_seccomp_before_exec(self):
+        # C7 (E5, R8): the pre-exec helper admits the role's own storage as the role UID, inside its view, after
+        # the filter and the attestation and before exec. Every descriptor admission opened is released, and only
+        # the proof's fixed 32-byte digest reaches exec (P17).
+        self.assertTrue(hasattr(c,'storage'),'confinement admits no per-role storage before exec')
+        for role in c.UIDS:
+            with self.subTest(role=role):
+                launch=c.prepare_role(role,c.RoleConfig(self.config(),c.role_fds(role,RUN)))
+                child=ChildKernel(Kernel(),201,launch)
+                with self.assertRaises(ExecBoundary): c.exec_role(launch,kernel=child)
+                steps=[e if type(e) is str else e[0] for e in child.events]
+                self.assertEqual(steps[:9],['views','fds','credentials','caps','nnp','filter','storage','uid','observe'])
+                self.assertEqual([e[1] for e in child.events if type(e) is tuple and e[0]=='open_root'],
+                                 list(c.storage.ROLE_SCOPES[role]))
+                self.assertEqual(steps[9:],['open_root']*5+['close']*10+['exec'])
+                self.assertEqual(child.events[-1][3:],(child.storage.digest(),()))
+        launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
+        def shm_on_run_device(child):
+            child.storage.mounts=tuple((m.path,'tmpfs',7 if m.path=='/dev/shm' else m.device,True,m.capacity_bytes,4096)
+                                       for m in child.storage.kernel_state().mounts)
+        def unavailable(child):
+            child.storage_ports=lambda: c._fail('NATIVE_STORAGE_PORT_UNAVAILABLE')
+        for name,setup,code in (('uid is not the role',lambda child:setattr(child,'uid_override',0),'STORAGE_INVALID'),
+                                ('/dev/shm on the run device',shm_on_run_device,'STORAGE_INVALID'),
+                                ('native storage port unavailable',unavailable,'NATIVE_STORAGE_PORT_UNAVAILABLE')):
+            with self.subTest(refused=name):
+                child=ChildKernel(Kernel(),201,launch); setup(child)
+                with self.assertRaisesRegex(c.ConfinementError,'^'+code+'$'): c.exec_role(launch,kernel=child)
+                self.assertFalse(any(type(e) is tuple and e[0]=='exec' for e in child.events))
+        child=ChildKernel(Kernel(tsync=901),201,launch)
+        with self.assertRaisesRegex(c.ConfinementError,'^TSYNC_FAILED$'): c.exec_role(launch,kernel=child)
+        self.assertNotIn('storage',child.events)
+    def test_ready_frame_appends_and_bootstrap_validates_storage_digest(self):
+        # P17: the storage-admission proof is a fixed 32-byte digest appended to the ready frame (64 hex filter
+        # digest + 32 bytes = 96), which the bootstrap checks against the child's five scope roots as it observes
+        # them itself through /proc/<child>/root.
+        self.assertTrue(callable(getattr(c.NativeChildPort,'write_ready',None)),'no fixed ready frame writer')
+        b=InertBindings(); launch=c.prepare_role('VERIFIER',c.RoleConfig(self.config(),c.role_fds('VERIFIER',RUN)))
+        p=c.NativeChildPort(b,launch,{c.NODE:19},ready_fd=15); p.digest='d'*64
+        writes=[]; b.os.write=lambda fd,data: writes.append((fd,data)) or len(data)
+        b.os.execve=lambda fd,argv,env: (b.calls.append(('execve',fd)), (_ for _ in ()).throw(ExecBoundary()))[-1]
+        digest=bytes(range(32))
+        with self.assertRaises(ExecBoundary): p.exec_pinned(launch.argv,launch.programs,digest)
+        self.assertEqual(writes,[(15,b'd'*64+digest)])
+        for bad in (b'',bytes(31),bytes(33),'x'*32,bytearray(32),None):
+            with self.subTest(storage_digest=bad):
+                writes.clear(); b.calls.clear()
+                with self.assertRaisesRegex(c.ConfinementError,'^STORAGE_INVALID$'):
+                    p.exec_pinned(launch.argv,launch.programs,bad)
+                self.assertEqual((writes,b.calls),([],[]))
+        b.os.write=lambda fd,data: writes.append((fd,data)) or 64
+        b.calls.clear()
+        with self.assertRaisesRegex(c.ConfinementError,'^ROLE_START_FAILED$'): p.exec_pinned(launch.argv,launch.programs,digest)
+        self.assertEqual(b.calls,[])
+        # The bootstrap side: spawn_waiting accepts only the 96-byte frame whose last 32 bytes bind this child's view.
+        view=StorageView('BROWSER',[])
+        good=b'd'*64+view.digest()
+        k,launch,seen=self.spawn_parent(good,view)
+        owned=k.spawn_waiting(launch,lambda port:None)
+        self.assertEqual((owned.pid,k._owned[owned]['digest']),(701,'d'*64))
+        self.assertEqual(seen,['/proc/701/root'+path for path in c.storage.ROLE_SCOPES['BROWSER']])
+        other=StorageView('VERIFIER',[])
+        for name,frame in (('filter digest only (64 bytes)',b'd'*64),('zero storage digest',b'd'*64+bytes(32)),
+                           ('another role view',b'd'*64+other.digest()),('truncated',good[:95])):
+            with self.subTest(frame=name):
+                k,launch,seen=self.spawn_parent(frame,view)
+                with self.assertRaises(c.RoleStartFailure): k.spawn_waiting(launch,lambda port:None)
+        moved=StorageView('BROWSER',[]); moved.DEVICES=dict(moved.DEVICES,**{'/dev/shm':7})
+        with self.subTest(frame='a scope root the bootstrap sees elsewhere'):
+            k,launch,seen=self.spawn_parent(good,moved)
+            with self.assertRaises(c.RoleStartFailure): k.spawn_waiting(launch,lambda port:None)
+    def spawn_parent(self,frame,view):
+        """spawn_waiting's parent side over inert pipes: the helper forked as pid 501, its one child is pid 701, the
+        ready pipe holds FRAME and the result pipe the worker's WAITING line. /proc/701/root/<scope> stats answer
+        VIEW's identities; every stat path is recorded."""
+        b=InertBindings(); b.check_appliance=lambda:None; b.pin_programs=lambda pins:{c.NODE:19}
+        pairs=iter(((20,21),(22,23),(24,25),(26,27))); b.os.pipe2=lambda flags:next(pairs); b.os.fork=lambda:501
+        b.os.close=lambda fd:None; b.os.set_blocking=lambda fd,flag:None
+        b.os.fstat=lambda fd:types.SimpleNamespace(st_dev=254,st_ino=999)
+        streams={26:bytearray(frame),22:bytearray(b'WAITING\n')}
+        def select(reads,writes,errors,timeout):
+            ready=[fd for fd in reads if streams.get(fd)]
+            if not ready: b.advance(0.01)
+            return ready,[],[]
+        def read(fd,size):
+            data=bytes(streams[fd][:size]); del streams[fd][:size]; return data
+        b.select,b.os.read=select,read
+        b.read_file=lambda path,limit=65536:{'/proc/501/task/501/children':b'701\n'}[path]
+        b.os.readlink=lambda path:{'/proc/701/fd/3':'pipe:[30]','/proc/701/fd/4':'pipe:[40]'}[path]
+        seen=[]
+        def stat(path):
+            seen.append(path)
+            _,dev,ino=view.identity(path[len('/proc/701/root'):])
+            return types.SimpleNamespace(st_dev=dev,st_ino=ino)
+        b.os.stat=stat
+        return c.OfflineKernelPort(b),c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN))),seen
+    def test_child_port_uid_is_observed_and_native_storage_port_is_gated(self):
+        # P17: storage keeps its own copy of the role list and never imports confinement; the child port reports
+        # the UID Linux shows for it; the native storage port stays unavailable until Stage 2 qualifies one.
+        self.assertTrue(hasattr(c,'storage'),'confinement has no storage module')
+        self.assertEqual(dict(c.storage.UIDS),dict(c.UIDS))
+        self.assertEqual(dict(c.storage.ROLE_SCOPES),{role:('/run/acceptance/'+role.lower(),'/tmp','/var','/dev/shm',
+                                                           '/run/acceptance/crash') for role in c.UIDS})
+        tree=ast.parse((ROOT/'guest/storage.py').read_text())
+        imported=[ast.unparse(n) for n in ast.walk(tree) if isinstance(n,(ast.Import,ast.ImportFrom))]
+        self.assertFalse([line for line in imported if 'confinement' in line or 'importlib' in line],imported)
+        self.assertNotIn('spec_from_file_location',(ROOT/'guest/storage.py').read_text())
+        b=InertBindings(); launch=c.prepare_role('VERIFIER',c.RoleConfig(self.config(),c.role_fds('VERIFIER',RUN)))
+        p=c.NativeChildPort(b,launch,{})
+        def status(uids):
+            text='Name:\tpython3\nUid:\t'+uids+'\nGid:\t10003\t10003\t10003\t10003\n'
+            b.read_file=lambda path,limit=65536:{'/proc/self/status':text.encode('ascii')}[path]
+        status('10003\t10003\t10003\t10003')
+        self.assertEqual(p.uid(),10003)
+        for uids in ('0\t10003\t10003\t10003','10003\t0\t10003\t10003','10003\t10003\t0\t10003',
+                     '10003\t10003\t10003\t0','10003\t10003\t10003','x\tx\tx\tx','010003\t010003\t010003\t010003'):
+            with self.subTest(uid_line=uids):
+                status(uids)
+                with self.assertRaisesRegex(c.ConfinementError,'^UID_DENIED$'): p.uid()
+        for name in ('storage_ports','observe'):
+            with self.subTest(native=name), self.assertRaisesRegex(c.ConfinementError,'^NATIVE_STORAGE_PORT_UNAVAILABLE$'):
+                getattr(p,name)()
+        # A probe family admits nothing: its ready frame binds its own view from its own stats inside the view.
+        view=StorageView('VERIFIER',[]); seen=[]
+        def stat(path):
+            seen.append(path); _,dev,ino=view.identity(path); return types.SimpleNamespace(st_dev=dev,st_ino=ino)
+        b.os.stat=stat
+        self.assertEqual(p.scope_digest(),view.digest())
+        self.assertEqual(seen,list(c.storage.ROLE_SCOPES['VERIFIER']))
+    def cleanup_port(self,*,live=None,fail=None,rmdir_fail=None):
+        """An OfflineKernelPort whose four original role children are reaped (LIVE names one still running) and
+        whose spawn_waiting runs the given entry, in process, over a CleanupChild double (pid 401). The parent's own
+        effects and the child's calls share LOG; the child's FD4 writes are the result pipe."""
+        b=InertBindings(); log=[]; out=bytearray(); children={}
+        def rmdir(path):
+            log.append(('rmdir',path))
+            if rmdir_fail is not None and rmdir_fail(path): raise OSError(39,'inert directory not empty')
+        b.os.rmdir=rmdir; b.os.unlink=lambda path: log.append(('unlink',path))
+        b.os.write=lambda fd,data: log.append(('parent-write',fd,data)) or len(data)
+        k=c.OfflineKernelPort(b)
+        launches={role:c.prepare_role(role,c.RoleConfig(self.config(k),c.role_fds(role,RUN))) for role in c.UIDS}
+        for index,role in enumerate(c.UIDS):
+            original=c.NativeOwned(301+index,RUN,role,'command','result')
+            k._owned[original]={'outer':300+index,'child':301+index,'launch':launches[role],'terminal':
+                                None if role==live else {'status':'STOPPED','pid':301+index,'run_id':RUN}}
+        def spawn(launch,entry):
+            log.append(('spawn',launch))
+            child=children[launch.role]=CleanupChild(launch,log,out,fail=fail)
+            try: entry(child)
+            except ExecBoundary: pass
+            owned=c.NativeOwned(401,RUN,launch.role,'command2','result2')
+            k._owned[owned]={'outer':400,'child':401,'launch':launch,'terminal':None}
+            # As the real parent: the 96-byte ready frame, then the WAITING line, else the start failed.
+            if child.ready is None or bytes(out[:8])!=b'WAITING\n': raise c.RoleStartFailure(owned)
+            del out[:8]
+            return owned
+        def read_exact(fd,count,deadline,**kwargs):
+            data=bytes(out[:count]); del out[:count]
+            if fd!='result2' or len(data)!=count: c._fail('ROLE_START_FAILED')
+            return data
+        k.spawn_waiting,k._read_exact=spawn,read_exact
+        k.wait_owned=lambda owned,ms: log.append(('wait',owned.pid)) or {'status':'EXITED','pid':owned.pid,'run_id':RUN}
+        k.stop_owned=lambda owned,ms: log.append(('stop',owned.pid)) or {'status':'STOPPED','pid':owned.pid,'run_id':RUN}
+        return k,b,log,launches,children
+    @staticmethod
+    def view_paths(role):
+        name=role.lower(); R='/run/acceptance/'+name+'/.root'; S='/run/acceptance/'+name+'/.state'
+        skeleton=[('unlink',R+'/dev/null')]+[('rmdir',R+suffix) for suffix in (
+            '/run/acceptance/'+name,'/run/acceptance/crash','/run/acceptance','/run','/dev/shm','/dev','/proc',
+            '/tmp','/var','/etc','/lib64','/lib','/usr','/opt','')]
+        backing=[('rmdir',S+suffix) for suffix in ('/run/acceptance/'+name,'/run/acceptance','/run','/var','/tmp','')]
+        return skeleton,backing+[('rmdir','/run/acceptance/crash/'+name)]
+    def test_storage_cleanup_child_is_fixed_operation(self):
+        # C7 (R8, P11): cleanup is one fixed operation in a fresh confined child with the role's views, UID and
+        # filter: its own admission, a metadata-only crash aggregate, removal, one fixed result frame. No exec, no
+        # caller entry, path or operation. Only after every child of that role's view has its terminal receipt
+        # (its /dev/shm went with its mount namespace, P16) does the bootstrap remove its own root-owned skeleton.
+        self.assertTrue(callable(getattr(c._KernelPortCore,'run_storage_cleanup',None)),'no per-role storage cleanup')
+        self.assertEqual(list(inspect.signature(c._KernelPortCore.run_storage_cleanup).parameters),['self','role','launch'])
+        k,b,log,launches,children=self.cleanup_port()
+        for role in c.UIDS:
+            with self.subTest(role=role):
+                del log[:]
+                launch=launches[role]; child_uid=launch.uid
+                result=k.run_storage_cleanup(role,launch)
+                self.assertEqual(result,c.storage.CleanupResult(True,False,'COMPLETE'))
+                skeleton,backing=self.view_paths(role)
+                spawn=log.index(('spawn',launch))
+                self.assertEqual(log[:spawn],skeleton)
+                child=children[role]
+                calls=[e for e in log[spawn+1:] if e[0] not in ('open_root','close')]
+                frame=dict(version=1,kind='STORAGE_CLEANUP',role=role,removed=True,code='COMPLETE',
+                           policyDigest='a'*64,fileCount=0,directoryCount=0,logicalBytes=0,allocatedBytes=0)
+                self.assertEqual(calls[:13],[
+                    ('establish_views',launch.views,True),('close_unaudited_fds',launch.fds),
+                    ('drop_credentials',child_uid,child_uid),('clear_capabilities',),('no_new_privs',),
+                    ('install_seccomp',1),('inspect',),('storage_ports',),('uid',),('observe',),
+                    ('write_ready',child.storage.digest()),('write',4,b'WAITING\n'),('write',4,v1_bytes(frame))])
+                self.assertEqual(calls[13:],[('read',3,4),('_exit',0),('parent-write','command2',b'EXIT'),
+                                             ('wait',401)]+skeleton+backing)
+                opened=[e[1] for e in log if e[0]=='open_root']
+                self.assertEqual(opened,list(c.storage.ROLE_SCOPES[role]))
+                self.assertEqual(sum(e[0]=='close' for e in log),10)
+                self.assertNotIn('exec',[e[0] for e in log])
+                # P16: the bootstrap never unmounts (nor makes any raw syscall); teardown reclaimed /dev/shm.
+                self.assertEqual([e for e in b.calls if type(e[0]) is int],[])
+        self.assertEqual(k.crash_summary(),c.storage.CrashAggregate('a'*64,0,0,0,0,False))
+    def test_storage_cleanup_preconditions_and_failures_stay_incomplete(self):
+        self.assertTrue(callable(getattr(c._KernelPortCore,'run_storage_cleanup',None)),'no per-role storage cleanup')
+        incomplete=c.storage.CleanupResult(False,False,'CLEANUP_INCOMPLETE')
+        # A role child still running holds its view and /dev/shm: nothing is touched (P16).
+        k,b,log,launches,children=self.cleanup_port(live='BROWSER')
+        self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER']),incomplete)
+        self.assertEqual(log,[])
+        # Launch records not recomputed from the role's own contract, and another role's launch.
+        k,b,log,launches,children=self.cleanup_port()
+        for name,role,launch in (('forged uid','BROWSER',dataclasses.replace(launches['BROWSER'],uid=0)),
+                                 ('unsealed','BROWSER',dataclasses.replace(launches['BROWSER'],_seal=None)),
+                                 ('another role','PROXY',launches['BROWSER']),('unknown role','ROOT',launches['BROWSER'])):
+            with self.subTest(launch=name):
+                self.assertEqual(k.run_storage_cleanup(role,launch),incomplete)
+                self.assertEqual(log,[])
+        # One-use per role.
+        self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER']).code,'COMPLETE')
+        del log[:]
+        self.assertEqual(k.run_storage_cleanup('BROWSER',launches['BROWSER']),incomplete)
+        self.assertEqual(log,[])
+        # A child that cannot admit never writes its ready frame: it is stopped, nothing is recorded.
+        k,b,log,launches,children=self.cleanup_port(fail='uid')
+        self.assertEqual(k.run_storage_cleanup('VERIFIER',launches['VERIFIER']),incomplete)
+        self.assertIn(('stop',401),log); self.assertIn(('_exit',78),log)
+        self.assertNotIn(('wait',401),log)
+        with self.assertRaisesRegex(c.ConfinementError,'^CLEANUP_INCOMPLETE$'): k.crash_summary()
+        # The bootstrap cannot clear the old skeleton: no child is spawned.
+        k,b,log,launches,children=self.cleanup_port(rmdir_fail=lambda path: path.endswith('/.root/dev/shm'))
+        self.assertEqual(k.run_storage_cleanup('PROXY',launches['PROXY']),incomplete)
+        self.assertFalse(any(e[0]=='spawn' for e in log))
+        # Backing state the child left behind keeps the result incomplete (sticky), after the child has exited.
+        k,b,log,launches,children=self.cleanup_port(rmdir_fail=lambda path: path.endswith('/.state/tmp'))
+        self.assertEqual(k.run_storage_cleanup('CONTROLLER',launches['CONTROLLER']),incomplete)
+        self.assertIn(('wait',401),log)
+        # Only the four role summaries combine.
+        k,b,log,launches,children=self.cleanup_port()
+        for role in ('CONTROLLER','BROWSER','VERIFIER'): k.run_storage_cleanup(role,launches[role])
+        with self.assertRaisesRegex(c.ConfinementError,'^CLEANUP_INCOMPLETE$'): k.crash_summary()
+    def test_role_shm_is_reclaimed_by_namespace_teardown_never_unmounted(self):
+        # P16 (C7): a parent cannot unmount a mount of a child's private mount namespace; the role's /dev/shm
+        # tmpfs is reclaimed when that namespace is torn down. The probe family owner stops (and so tears down)
+        # its family first, then removes only directories, crash directory included, with no unmount at all.
+        probe=probe_module('task14_p16_probe')
+        b=InertBindings(); log=[]
+        b.os.rmdir=lambda path: log.append(('rmdir',path)); b.os.unlink=lambda path: log.append(('unlink',path))
+        b.os.path=types.SimpleNamespace(lexists=lambda path: log.append(('lexists',path)) and False)
+        b.syscall=lambda nr,*args: log.append(('syscall',nr,args))
+        stop=lambda owned,ms: log.append(('stop',owned.pid)) or {'status':'STOPPED','pid':owned.pid,'run_id':RUN}
+        fixtures=types.SimpleNamespace(kernel=types.SimpleNamespace(b=b,stop_owned=stop))
+        R,S='/run/acceptance/browser/.root','/run/acceptance/browser/.state'
+        family=probe._ProbeFamilyOwner(fixtures,'BROWSER.case','BROWSER',R,S,None)
+        family.owned=c.NativeOwned(301,RUN,'BROWSER','command','result')
+        family.stop_owned(probe.PROBE_FAMILY_STOP_MS)
+        skeleton,backing=self.view_paths('BROWSER')
+        self.assertEqual(log,[('stop',301)]+skeleton+backing+[('lexists',R),('lexists',S),
+                                                                 ('lexists','/run/acceptance/crash/browser')])
+        self.assertEqual([e for e in log if e[0]=='syscall'],[])
     def test_R1_descriptor_close_ranges_keep_only_audited_and_CLOEXEC_pins(self):
         self.assertTrue(hasattr(c,'NativeChildPort'),'native close-range source absent')
         b=InertBindings(); launch=c.prepare_role('BROWSER',c.RoleConfig(self.config(),c.role_fds('BROWSER',RUN)))
@@ -1602,7 +2026,8 @@ class LiteralProc:
     """
     INITIAL = {'pid': 'pid:[4026531836]', 'mnt': 'mnt:[4026531841]', 'user': 'user:[4026531837]'}
     ROLE = {'pid': 'pid:[4026532301]', 'mnt': 'mnt:[4026532300]', 'user': 'user:[4026531837]'}
-    RUN_DEV = 25
+    # The /run tmpfs, the bootstrap's 1 MiB crash tmpfs, and the role's own 64 MiB /dev/shm tmpfs (Task 14, C7).
+    RUN_DEV, CRASH_DEV, SHM_DEV = 25, 26, 41
     SOURCES = {'tmpfs': 'tmpfs', 'ext4': '/dev/vda', 'devtmpfs': 'devtmpfs', 'proc': 'proc', 'sysfs': 'sysfs'}
 
     def __init__(self, role='BROWSER', *, local=False):
@@ -1626,21 +2051,30 @@ class LiteralProc:
         self.self_namespaces = dict(self.ROLE if local else self.INITIAL)  # /proc/self/ns of the reader
         self.initial = dict(self.INITIAL)                                  # bindings.initial_namespaces
         self.root = self.view_root = (self.RUN_DEV, 555)
-        self.dev, self.run = ['null', 'shm'], [self.name]
-        state = ('/tmp', '/var', '/run/acceptance/' + self.name, '/dev/shm')
+        self.dev, self.run = ['null', 'shm'], [self.name, 'crash']
+        self.crash_device = self.CRASH_DEV                                  # bindings.crash_device (check_appliance)
+        state = ('/tmp', '/var', '/run/acceptance/' + self.name)
         self.tmpfs = {path: dict(mode=0o40700, uid=self.uid, gid=self.uid, dev=self.RUN_DEV) for path in state}
-        # (mount point, root within its filesystem, mount options, fstype, st_dev text): the Task 8b view.
+        self.tmpfs['/dev/shm'] = dict(mode=0o40700, uid=self.uid, gid=self.uid, dev=self.SHM_DEV)
+        self.tmpfs['/run/acceptance/crash'] = dict(mode=0o40700, uid=self.uid, gid=self.uid, dev=self.CRASH_DEV)
+        # (mount point, root within its filesystem, mount options, fstype, st_dev text[, super options]): the Task 8b
+        # view with Task 14's role tmpfs and crash bind (P50). Super options follow mm/shmem.c shmem_show_options
+        # (size in KiB, then mode, uid, gid, inode64); a row without them shows only ro/rw.
+        role_tmpfs = 'rw,size=65536k,mode=700,uid=%d,gid=%d,inode64' % (self.uid, self.uid)
         self.mounts = ([('/', '/acceptance/' + self.name + '/.root', 'rw,relatime', 'tmpfs', '0:25')] +
                        [('/' + d, '/' + d, 'ro,relatime', 'ext4', '254:0') for d in ('opt', 'usr', 'lib', 'lib64', 'etc')] +
                        [(p, '/acceptance/' + self.name + '/.state' + p, 'rw,relatime', 'tmpfs', '0:25') for p in state] +
-                       [('/dev/null', '/null', 'rw,nosuid', 'devtmpfs', '0:5'),
+                       [('/dev/shm', '/', 'rw,nosuid,nodev,noexec,relatime', 'tmpfs', '0:41', role_tmpfs),
+                        ('/run/acceptance/crash', '/' + self.name, 'rw,nosuid,nodev,noexec,relatime', 'tmpfs', '0:26',
+                         'rw,size=1024k,inode64'),
+                        ('/dev/null', '/null', 'rw,nosuid', 'devtmpfs', '0:5'),
                         ('/proc', '/', 'rw,nosuid,nodev,noexec,relatime', 'proc', '0:30')])
 
     def mountinfo(self):
         return ''.join('%d %d %s %s %s %s - %s %s %s\n' % (
-            200 + index, 199 if index == 0 else 200, devno, root, point, options, fstype, self.SOURCES[fstype],
-            'ro' if options.startswith('ro') else 'rw')
-            for index, (point, root, options, fstype, devno) in enumerate(self.mounts)).encode('ascii')
+            200 + index, 199 if index == 0 else 200, row[4], row[1], row[0], row[2], row[3], self.SOURCES[row[3]],
+            row[5] if len(row) > 5 else 'ro' if row[2].startswith('ro') else 'rw')
+            for index, row in enumerate(self.mounts)).encode('ascii')
 
     def files(self):
         tail = ['S', '1', str(self.pid), str(self.pid), str(self.tty_nr), '-1', '4194560'] + ['0'] * 43
@@ -1691,7 +2125,7 @@ class LiteralProc:
         raise FileNotFoundError(path)
 
     def bind(self, b):
-        b.read_file, b.run_device = self.read_file, self.RUN_DEV
+        b.read_file, b.run_device, b.crash_device = self.read_file, self.RUN_DEV, self.crash_device
         b.os.listdir, b.os.readlink, b.os.stat = self.listdir, self.readlink, self.stat
         if self.local: b.initial_namespaces = dict(self.initial)
         return b
@@ -1739,7 +2173,7 @@ class NativeAttestationTests(unittest.TestCase):
     @staticmethod
     def remount(point, options):
         def change(proc):
-            proc.mounts = [(m[0], m[1], options if m[0] == point else m[2], m[3], m[4]) for m in proc.mounts]
+            proc.mounts = [(m[0], m[1], options if m[0] == point else m[2], *m[3:]) for m in proc.mounts]
         return change
 
     def test_native_observe_rejects_each_attestation_drift(self):
@@ -1751,6 +2185,11 @@ class NativeAttestationTests(unittest.TestCase):
             return lambda proc: proc.mounts.append(row)
         def status(**values):
             return lambda proc: proc.status.update(values)
+        def supers(point, options):
+            return lambda proc: setattr(proc, 'mounts', [m[:5] + (options,) if m[0] == point else m for m in proc.mounts])
+        def retype(point, fstype):
+            return lambda proc: setattr(proc, 'mounts', [m[:3] + (fstype,) + m[4:] if m[0] == point else m
+                                                         for m in proc.mounts])
         uid = str(c.UIDS['BROWSER'])
         parent_cases = (
             ('M1 extra /dev entry', lambda p: p.dev.append('console'), 'VIEW_DENIED'),
@@ -1785,6 +2224,34 @@ class NativeAttestationTests(unittest.TestCase):
              'VIEW_DENIED'),
             ('M19 /sys left attached', attach(('/sys', '/', 'rw,nosuid,nodev,noexec,relatime', 'sysfs', '0:20')),
              'VIEW_DENIED'),
+            # Task 14 (C7, P50): /dev/shm is the role's own 64 MiB tmpfs (size=65536k: mm/shmem.c:4223-4224 prints
+            # K(max_blocks)), nosuid, nodev, noexec, rw, never a bind of the run tmpfs; /run/acceptance/crash is
+            # the role's 0700 directory of the bootstrap's 1 MiB crash tmpfs.
+            ('T14 /dev/shm a bind on the run device', lambda p: p.tmpfs['/dev/shm'].update(dev=p.RUN_DEV), 'VIEW_DENIED'),
+            ('T14 /dev/shm on the crash device', lambda p: p.tmpfs['/dev/shm'].update(dev=p.CRASH_DEV), 'VIEW_DENIED'),
+            ('T14 /dev/shm stacked on a state bind', stack('/dev/shm'), 'VIEW_DENIED'),
+            ('T14 /dev/shm not 64 MiB', supers('/dev/shm', 'rw,size=65537k,mode=700,uid=%s,gid=%s,inode64' % (uid, uid)),
+             'VIEW_DENIED'),
+            ('T14 /dev/shm default size', supers('/dev/shm', 'rw,mode=700,uid=%s,gid=%s,inode64' % (uid, uid)),
+             'VIEW_DENIED'),
+            *(('T14 /dev/shm without ' + flag, self.remount('/dev/shm', ','.join(
+                f for f in ('rw', 'nosuid', 'nodev', 'noexec', 'relatime') if f != flag)), 'VIEW_DENIED')
+              for flag in ('rw', 'nosuid', 'nodev', 'noexec')),
+            ('T14 /dev/shm not tmpfs', retype('/dev/shm', 'ext4'), 'VIEW_DENIED'),
+            ('T14 /dev/shm mode 0755', lambda p: p.tmpfs['/dev/shm'].update(mode=0o40755), 'VIEW_DENIED'),
+            ('T14 /dev/shm uid', lambda p: p.tmpfs['/dev/shm'].update(uid=0), 'VIEW_DENIED'),
+            ('T14 /dev/shm gid', lambda p: p.tmpfs['/dev/shm'].update(gid=0), 'VIEW_DENIED'),
+            ('T14 crash on the run device', lambda p: p.tmpfs['/run/acceptance/crash'].update(dev=p.RUN_DEV),
+             'VIEW_DENIED'),
+            ('T14 crash not the bootstrap crash tmpfs', lambda p: setattr(p, 'crash_device', 27), 'VIEW_DENIED'),
+            ('T14 no bootstrap crash device', lambda p: setattr(p, 'crash_device', None), 'VIEW_DENIED'),
+            ('T14 crash not 1 MiB', supers('/run/acceptance/crash', 'rw,size=2048k,inode64'), 'VIEW_DENIED'),
+            ('T14 crash not tmpfs', retype('/run/acceptance/crash', 'ext4'), 'VIEW_DENIED'),
+            ('T14 crash mode 0755', lambda p: p.tmpfs['/run/acceptance/crash'].update(mode=0o40755), 'VIEW_DENIED'),
+            ('T14 crash uid', lambda p: p.tmpfs['/run/acceptance/crash'].update(uid=0), 'VIEW_DENIED'),
+            ('T14 crash gid', lambda p: p.tmpfs['/run/acceptance/crash'].update(gid=0), 'VIEW_DENIED'),
+            ('T14 missing crash row', drop('/run/acceptance/crash'), 'VIEW_DENIED'),
+            ('T14 crash missing from /run/acceptance', lambda p: p.run.remove('crash'), 'VIEW_DENIED'),
         )
         with self.subTest(case='control parent view'): self.parent()
         with self.subTest(case='control local view'): self.local()
@@ -2084,7 +2551,8 @@ class ProbeFamily:
         port = types.SimpleNamespace(b=b, launch=launch, pins={}, ready_fd=30, digest=proc.digest,
                                      establish_views=lambda value: None, close_unaudited_fds=lambda value: None,
                                      drop_credentials=lambda *args: None, clear_capabilities=lambda: None,
-                                     no_new_privs=lambda: None, install_seccomp=lambda *args: 0, inspect=lambda: facts)
+                                     no_new_privs=lambda: None, install_seccomp=lambda *args: 0, inspect=lambda: facts,
+                                     scope_digest=lambda: bytes(32))
         try: entry(port)
         except ExecBoundary: pass
         return owned
@@ -2510,20 +2978,27 @@ class ProbeHonestyTests(unittest.TestCase):
         root_rw = '31 20 0:40 / / rw,relatime - tmpfs tmpfs rw\n'
         run_tmpfs = '22 20 0:25 / /run rw,nosuid,nodev - tmpfs tmpfs rw\n'
         run_ext4 = '32 22 254:0 / /run rw,relatime - ext4 /dev/vda rw\n'
+        # Task 14 (C7): the bootstrap's 1 MiB crash tmpfs, on which each role's crash directory is made.
+        crash_tmpfs = '23 22 0:26 / /run/acceptance/crash rw,nosuid,nodev,noexec - tmpfs tmpfs rw,size=1024k\n'
+        crash_ext4 = '33 23 254:0 / /run/acceptance/crash rw,relatime - ext4 /dev/vda rw\n'
+        devices = {'/run': 25, '/run/acceptance/crash': 26}
         def appliance(rows):
             files = {'/proc/self/mountinfo': ''.join(rows).encode('ascii'),
                      '/proc/swaps': b'Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n'}
             b = types.SimpleNamespace(read_file=lambda path, *limit: files[path], os=types.SimpleNamespace(
-                listdir=lambda path: ['lo'], stat=lambda path: types.SimpleNamespace(st_dev=25),
+                listdir=lambda path: ['lo'], stat=lambda path: types.SimpleNamespace(st_dev=devices[path]),
                 readlink=lambda path: 'ns:[1]'))
             try: c.LinuxBindings.check_appliance(b)
             except c.ConfinementError as error: return str(error)
+            self.assertEqual((b.run_device, getattr(b, 'crash_device', None)), (25, 26))
             return 'ADMITTED'
-        for name, rows, verdict in (('control', (root_ro, run_tmpfs), 'ADMITTED'),
-                                    ('rw root stacked on the ro root', (root_ro, root_rw, run_tmpfs), 'APPLIANCE_DENIED'),
-                                    ('ro root stacked last', (root_rw, root_ro, run_tmpfs), 'ADMITTED'),
-                                    ('ext4 stacked on the /run tmpfs', (root_ro, run_tmpfs, run_ext4), 'APPLIANCE_DENIED'),
-                                    ('no /run', (root_ro,), 'APPLIANCE_DENIED')):
+        for name, rows, verdict in (('control', (root_ro, run_tmpfs, crash_tmpfs), 'ADMITTED'),
+                                    ('rw root stacked on the ro root', (root_ro, root_rw, run_tmpfs, crash_tmpfs), 'APPLIANCE_DENIED'),
+                                    ('ro root stacked last', (root_rw, root_ro, run_tmpfs, crash_tmpfs), 'ADMITTED'),
+                                    ('ext4 stacked on the /run tmpfs', (root_ro, run_tmpfs, run_ext4, crash_tmpfs), 'APPLIANCE_DENIED'),
+                                    ('no /run', (root_ro, crash_tmpfs), 'APPLIANCE_DENIED'),
+                                    ('no crash tmpfs', (root_ro, run_tmpfs), 'APPLIANCE_DENIED'),
+                                    ('ext4 stacked on the crash tmpfs', (root_ro, run_tmpfs, crash_tmpfs, crash_ext4), 'APPLIANCE_DENIED')):
             with self.subTest(mounts=name):
                 self.assertEqual(appliance(rows), verdict)
 

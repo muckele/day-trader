@@ -1056,10 +1056,15 @@ class _ProbeFamilyOwner:
         # family, or None when the operation is not the parent-observed one.
         self.facts_digest=None
         self._lock=threading.Lock()
-        self.scopes = (root+'/run/acceptance/'+role.lower(),root+'/run/acceptance',root+'/run',
-            root+'/dev/shm',root+'/dev',*(root+'/'+d for d in ('proc','tmp','var','etc','lib64','lib','usr','opt')),root,
+        # Task 14 (C7, P50, P16): the view also holds the crash bind's mount point, whose source is the role's
+        # directory of the crash tmpfs; /dev/shm is the family's own tmpfs, no longer a state bind. The parent
+        # never unmounts: the family's mount namespace teardown (after its stop receipt) reclaims every mount,
+        # so only empty directories are removed here.
+        self.crash='/run/acceptance/crash/'+role.lower()
+        self.scopes = (root+'/run/acceptance/'+role.lower(),root+'/run/acceptance/crash',root+'/run/acceptance',
+            root+'/run',root+'/dev/shm',root+'/dev',*(root+'/'+d for d in ('proc','tmp','var','etc','lib64','lib','usr','opt')),root,
             state+'/run/acceptance/'+role.lower(),state+'/run/acceptance',state+'/run',
-            state+'/dev/shm',state+'/dev',state+'/var',state+'/tmp',state)
+            state+'/var',state+'/tmp',state,self.crash)
 
     def receipt(self, value, statuses):
         if (type(value) is not dict or set(value) != {'status','pid','run_id'}
@@ -1087,7 +1092,8 @@ class _ProbeFamilyOwner:
                                         and not budget.remaining()): raise ProbeCleanupFailure(self)
             try: b.os.rmdir(path)
             except FileNotFoundError: pass
-        if b.os.path.lexists(self.root) or b.os.path.lexists(self.state): raise ProbeCleanupFailure(self)
+        if b.os.path.lexists(self.root) or b.os.path.lexists(self.state) or b.os.path.lexists(self.crash):
+            raise ProbeCleanupFailure(self)
         self.proven = self.exited
         return dict(status='STOPPED',pid=self.owned.pid,run_id=self.owned.run_id)
 
@@ -1187,8 +1193,10 @@ class _ProbeFixturesCore:
                 if port.install_seccomp(launch.filter,1)!=0: raise ProbeFailure('TSYNC_FAILED')
                 c._check(c._attestation(port.inspect()),launch,waiting=False)
                 # No inherited bootstrap-ready/pinned exec FD reaches the
-                # adversarial attempt. A fixed frame authenticates this pipe.
-                port.b.os.write(port.ready_fd,port.digest.encode('ascii'))
+                # adversarial attempt. A fixed frame authenticates this pipe:
+                # the filter digest, then (P17) the binding of the family's
+                # own five scope roots; a probe family admits no storage.
+                port.b.os.write(port.ready_fd,port.digest.encode('ascii')+port.scope_digest())
                 for fd in set(port.pins.values())|{port.ready_fd}: port.b.os.close(fd)
                 port.pins={}; port.ready_fd=None
                 port.b.os.write(4,b'WAITING\n')

@@ -716,7 +716,7 @@ def literal_runtime_role(confinement_fixture, role, lifecycle, runtime_owner,
 
     def listed(path):
         if path.endswith('/fd'): return [str(fd) for fd in active['fds']]
-        if path.endswith('/run/acceptance'): return [role.lower()]
+        if path.endswith('/run/acceptance'): return [role.lower(), 'crash']  # Task 14 (C7): the crash bind
         return old_list(path)
 
     def linked(path):
