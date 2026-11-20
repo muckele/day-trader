@@ -715,12 +715,42 @@ class LiteralRoleProc:
     selector's registered tfd: targets), served at the stand-in's distinct attested
     PID. The bootstrap's own descriptor table (fstat) holds unrelated identities.
     """
+    # Task 16c (P14): mode and device facts for the bootstrap's family inspection. Device numbers are test values;
+    # only equality with /dev/null's matters.
+    CHR,FIFO,SOCK,REG,ANON,NULL_RDEV,HVC0_RDEV=0o20666,0o10600,0o140777,0o100600,0o600,259,58624
+    TABLES=('unix','tcp','tcp6','udp','udp6')
     def __init__(self,harness):
         self.h,self.children,self.run_device,self.crash_device=harness,{},2,4
+        # Task 16c (P14): the Chromium family that exists from the worker's STARTED on (add_family), its forbidden
+        # descriptor when family_fault is set, and every /proc path the port reads (reads).
+        self.family,self.family_fault,self.reads={},None,[]
         self.os=types.SimpleNamespace(listdir=self.listdir,readlink=self.readlink,stat=self.stat,
             fstat=lambda fd:types.SimpleNamespace(st_dev=9,st_ino=90000+fd),
             read=self.read,write=self.write)
-        self.monotonic=time.monotonic
+        self.monotonic,self.sleep=time.monotonic,time.sleep
+    def add_family(self,root):
+        """Chromium (root+100), its zygote (root+101) and a renderer (root+102), in the role's netns view."""
+        null=('/dev/null',self.CHR,self.NULL_RDEV)
+        renderer={0:null,3:('socket:[61004]',self.SOCK,0),4:('/memfd:shared_memory (deleted)',self.REG,0)}
+        if self.family_fault=='console':renderer[5]=('/dev/hvc0',self.CHR,self.HVC0_RDEV)
+        self.family={root+100:(root,{0:null,1:null,2:null,3:('socket:[61001]',self.SOCK,0),
+                                    4:('pipe:[61002]',self.FIFO,0),5:('anon_inode:[eventfd]',self.ANON,0)}),
+                     root+101:(root+100,{0:null,3:('socket:[61003]',self.SOCK,0)}),
+                     root+102:(root+101,renderer)}
+    def member(self,path):
+        """(pid, ppid, fds, rest) for a Chromium family member's /proc path, else None."""
+        parts=path.split('/')
+        if len(parts)<3 or parts[1]!='proc' or not parts[2].isdigit() or int(parts[2]) not in self.family:return None
+        ppid,fds=self.family[int(parts[2])]
+        return int(parts[2]),ppid,fds,'/'+'/'.join(parts[3:])
+    def table_text(self,table):
+        rows=''.join('0000000000000000: 00000002 00000000 00000000 0001 03 %5d\n'%inode
+                     for inode in (61001,61003,61004)) if table=='unix' else ''
+        return (confinement_fixture.FamilyProc.HEADERS[table]+'\n'+rows).encode('ascii')
+    def status_text(self,uid,ppid):
+        ids='\t'.join([str(uid)]*4)
+        return ('State:\tS (sleeping)\nPPid:\t%d\nUid:\t%s\nGid:\t%s\nGroups:\nCapEff:\t0\nCapPrm:\t0\nCapInh:\t0\n'
+                'CapAmb:\t0\nCapBnd:\t0\nNoNewPrivs:\t1\nSeccomp:\t2\nSeccomp_filters:\t1\n'%(ppid,ids,ids)).encode()
     def child(self,path):
         parts=path.split('/')
         if len(parts)<3 or parts[1]!='proc' or not parts[2].isdigit() or int(parts[2]) not in self.children:
@@ -747,12 +777,20 @@ class LiteralRoleProc:
         if fd not in table:raise FileNotFoundError(path)
         return table[fd]
     def read_file(self,path,limit=65536):
+        self.reads.append(path)
+        member=self.member(path)
+        if member is not None:
+            pid,ppid,fds,rest=member
+            if rest=='/status':return self.status_text(10002,ppid)
+            if rest.startswith('/net/') and rest[5:] in self.TABLES:return self.table_text(rest[5:])
+            raise FileNotFoundError(path)
         role,launch,rest=self.child(path)
         if role is None:raise FileNotFoundError(path)
         uid=launch.uid
         if rest=='/status':
-            return ('Uid:\t%d %d %d %d\nGid:\t%d %d %d %d\nGroups:\nCapEff:\t0\nCapPrm:\t0\nCapInh:\t0\n'
-                    'CapAmb:\t0\nCapBnd:\t0\nNoNewPrivs:\t1\nSeccomp:\t2\nSeccomp_filters:\t1\n'%((uid,)*8)).encode()
+            # Task 16c (P14): the 6.8 rows, tab separated, with each child's real parent (its outer helper).
+            return self.status_text(uid,int(path.split('/')[2])+1000)
+        if rest.startswith('/net/') and rest[5:] in self.TABLES:return self.table_text(rest[5:])
         if rest=='/stat':
             pid=path.split('/')[2]
             return ('%s (node) S 1 %s %s 0 -1 4194560\n'%(pid,pid,pid)).encode()
@@ -775,6 +813,12 @@ class LiteralRoleProc:
             return text.encode()
         raise FileNotFoundError(path)
     def listdir(self,path):
+        self.reads.append(path)
+        if path=='/proc':return [str(pid) for pid in (*self.children,*self.family)]+['self','net']
+        member=self.member(path)
+        if member is not None:
+            if member[3]=='/fd':return [str(fd) for fd in member[2]]
+            raise FileNotFoundError(path)
         role,launch,rest=self.child(path)
         if rest=='/fd':return [str(fd) for fd in sorted(self.table(role,list(c.UIDS).index(role)))]
         if rest=='/root/dev':return ['null','shm']
@@ -783,15 +827,31 @@ class LiteralRoleProc:
     def readlink(self,path):
         if path.startswith('/proc/self/ns/'):
             return {'pid':'pid:[1]','mnt':'mnt:[1]','user':'user:[1]'}[path.rsplit('/',1)[1]]
+        member=self.member(path)
+        if member is not None:
+            pid,ppid,fds,rest=member
+            if rest.startswith('/fd/') and int(rest[4:]) in fds:return fds[int(rest[4:])][0]
+            raise FileNotFoundError(path)
         role,launch,rest=self.child(path)
         if rest.startswith('/ns/'):return {'pid':'pid:[20]','mnt':'mnt:[20]','user':'user:[1]'}[rest[4:]]
         if rest.startswith('/fd/'):return self.facts(path)[4]
         raise FileNotFoundError(path)
     def stat(self,path):
+        if path=='/dev/null':return types.SimpleNamespace(st_dev=5,st_ino=6,st_mode=self.CHR,st_rdev=self.NULL_RDEV)
+        member=self.member(path)
+        if member is not None:
+            pid,ppid,fds,rest=member
+            if rest.startswith('/fd/') and int(rest[4:]) in fds:
+                link,mode,rdev=fds[int(rest[4:])]
+                return types.SimpleNamespace(st_dev=7,st_ino=int(rest[4:]),st_mode=mode,st_rdev=rdev)
+            raise FileNotFoundError(path)
         role,launch,rest=self.child(path)
         if role is not None and rest.startswith('/fd/'):
-            dev,inode,_,_,_=self.facts(path)
-            return types.SimpleNamespace(st_dev=dev,st_ino=inode)
+            dev,inode,_,_,link=self.facts(path)
+            # Task 16c (P14): the mode and device the family inspection classifies.
+            mode,rdev=((self.CHR,self.NULL_RDEV) if link=='/dev/null' else (self.FIFO,0) if link.startswith('pipe:')
+                       else (self.SOCK,0) if link.startswith('socket:') else (self.ANON,0))
+            return types.SimpleNamespace(st_dev=dev,st_ino=inode,st_mode=mode,st_rdev=rdev)
         if role is not None and rest=='/exe':return types.SimpleNamespace(st_dev=1,st_ino=999)
         uid=launch.uid if role is not None else 0
         return types.SimpleNamespace(st_dev=1 if path.endswith('/root') or path.endswith('/.root') else
@@ -880,6 +940,8 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     if self.refresh_fault is not None:
                         result_action,result_payload=self.refresh_fault(result_action,result_payload)
                 elif action=='CURRENT':
+                    # Task 16c (P14): the launched Chromium family is in /proc when the worker answers STARTED.
+                    self.role_proc.add_family(self.roles._handoffs['BROWSER'].attestation.pid)
                     if self.launch:
                         root=self.roles._handoffs['BROWSER'].attestation.pid
                         native=self.event_native
@@ -1117,6 +1179,32 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             self.assertTrue(composition._terminal);self.assertEqual(composition._state,'FAILED')
             self.assertEqual(composition._generation,2)
             self.assertIsNone(composition._proof);self.assertIsNone(composition._handoff)
+
+    def test_v1_composition_launch_family_inspection_blocks_commit(self):
+        # Task 16c (P76, owner decision 2026-11-20): inside COMMIT_BROWSER, after the worker's STARTED, the bootstrap
+        # inspects the BROWSER family through the actual offline kernel port over literal /proc (LAUNCH).
+        h=self.Harness(self);composition,stack=h.build()
+        with stack:
+            composition.begin(TEST_HOST_CHALLENGE);preparation=composition.prepare_browser()
+            h.role_proc.reads.clear()
+            self.assertEqual(composition.commit_browser(preparation),{'status':'ACTIVE','generation':1})
+            self.assertEqual(getattr(h.roles,'_family_ordinal',None),1)
+            root=h.roles._handoffs['BROWSER'].attestation.pid
+            for pid in (root,root+100,root+101,root+102):
+                self.assertIn('/proc/%d/fd'%pid,h.role_proc.reads)
+                self.assertIn('/proc/%d/net/unix'%pid,h.role_proc.reads)
+            self.assertEqual(h.role_proc.reads.count('/proc'),2)
+        # A forbidden descriptor in a Chromium member: no ACTIVE, the composition terminal, cleanup run.
+        h=self.Harness(self);h.role_proc.family_fault='console';composition,stack=h.build()
+        with stack:
+            composition.begin(TEST_HOST_CHALLENGE);preparation=composition.prepare_browser()
+            with self.assertRaisesRegex(c.ConfinementError,'^FAMILY_DENIED$'):composition.commit_browser(preparation)
+            self.assertFalse(preparation._committed);self.assertEqual(h.roles._family_ordinal,0)
+            self.assertTrue(composition._terminal);self.assertEqual(composition._state,'FAILED')
+            self.assertTrue(h.roles._terminal)
+            self.assertEqual(set(h.role_finite.stopped),
+                             {handoff.attestation.pid for handoff in h.roles._handoffs.values()})
+            with self.assertRaises(Exception):composition.commit_browser(preparation)
 
     @staticmethod
     def deliver_launch(h):
@@ -2320,6 +2408,12 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
             else:
                 controller_final=controller_commit
                 controller_final_result=roles.handle_controller(controller_final)
+                # Task 16c (P14): the controller's POST_LOAD family request and the bootstrap's fixed RESULT.
+                controller_family=request(4,'BROWSER_FAMILY',dict(generation=1,point='POST_LOAD'))
+                try:controller_family_result=roles.handle_controller(controller_family)
+                except Exception as error:self.fail('BROWSER_FAMILY POST_LOAD refused: '+str(error))
+                self.assertEqual(json.loads(controller_family_result[4:])['payload'],
+                    {'requestSequence':4,'result':{'members':5,'ordinal':2,'point':'POST_LOAD','status':'CLEAN'}})
             sent_actions={json.loads(data[4:])['action']:data for data in captured
                           if 'action' in json.loads(data[4:])}
             received_actions={json.loads(data[4:])['action']:data for data in received}
@@ -2347,7 +2441,9 @@ class BootstrapOwnedCompositionTests(unittest.TestCase):
                     browserRefresh=received_actions['REFRESH'],
                     browserCurrent=sent_actions['CURRENT'],
                     browserStarted=received_actions['STARTED'],
-                    controllerCommitResult=controller_final_result)
+                    controllerCommitResult=controller_final_result,
+                    controllerFamily=controller_family,
+                    controllerFamilyResult=controller_family_result)
             order=list(frames)
             return {'binding':roles.binding.to_record(),'roles':list(rows),
                 'order':order,'frames':{name:value.hex() for name,value in frames.items()},

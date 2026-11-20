@@ -454,6 +454,117 @@ class V1RoleTests(unittest.TestCase):
         budget.clock.mono=70000
         self.assertEqual(budget.remaining(),0)
 
+    # Task 16c (P76, owner decision 2026-11-20): the bootstrap, not the uid-10002 worker, inspects the BROWSER
+    # family. LAUNCH runs inside COMMIT_BROWSER after STARTED and before ACTIVE.
+    def test_v1_original_roles_inspect_family_at_launch_before_active(self):
+        roles,k,budget,proof,writes,init=self.setup_roles()
+        reads=[];read=k.read_role
+        def recorded(owned,limit):
+            data=read(owned,limit);reads.append(json.loads(data[4:])['action']);return data
+        k.read_role=recorded;owner=roles.prepare_browser(proof)
+        k.family_probe=lambda:(owner._committed,list(reads),[v['action'] for _,v in writes if 'action' in v])
+        self.assertEqual(roles.commit_browser(owner),{'status':'ACTIVE','generation':1})
+        self.assertEqual([call[0] for call in k.family_calls],['LAUNCH'])
+        point,limit,(committed,seen,sent),handoff=k.family_calls[0]
+        self.assertIs(committed,False,'LAUNCH precedes the committed transition')
+        self.assertEqual(seen,['PREPARED','REFRESH','STARTED'],'LAUNCH follows the worker STARTED')
+        self.assertEqual(sent,['PREPARE','COMMIT','CURRENT'])
+        self.assertIs(handoff,roles._handoffs['BROWSER'])
+        self.assertTrue(0<limit<=1000);self.assertEqual(limit,1000)
+        self.assertTrue(owner._committed);self.assertEqual(roles._family_ordinal,1)
+        # The bound is the earliest of 1000 ms, the proof's monotonic deadline and its wall expiry.
+        for name,wall,mono,want in (('monotonic deadline',100,8500,500),('wall expiry',8700,100,300)):
+            with self.subTest(bound=name):
+                roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof)
+                budget.clock.wall,budget.clock.mono=wall,mono
+                self.assertEqual(roles.commit_browser(owner),{'status':'ACTIVE','generation':1})
+                self.assertEqual([call[:2] for call in k.family_calls],[('LAUNCH',want)])
+        # A failed inspection: no ACTIVE, nothing committed, the role set terminal.
+        for fault in ('FAMILY_DENIED','FAMILY_UNREADABLE','AUTHORITY_LOST'):
+            with self.subTest(fault=fault):
+                roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof)
+                k.family_fault=lambda point,fault=fault:fault
+                with self.assertRaisesRegex(c.ConfinementError,'^'+fault+'$'):roles.commit_browser(owner)
+                self.assertFalse(owner._committed);self.assertTrue(roles._terminal)
+                self.assertEqual(roles._family_ordinal,0)
+        # No kernel-type gate: a kernel without the method fails closed.
+        roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof)
+        k.inspect_browser_family=None
+        with self.assertRaisesRegex(c.ConfinementError,'^AUTHORITY_LOST$'):roles.commit_browser(owner)
+        self.assertFalse(owner._committed);self.assertTrue(roles._terminal)
+
+    @staticmethod
+    def family_frame(roles,init,sequence,payload,*,role='BROWSER',key='CONTROLLER',action='BROWSER_FAMILY'):
+        """One controller-channel request; key names the channel key that MACs it."""
+        row=next(r for r in init['CONTROLLER']['roles'] if r['role']==role)
+        value=dict(version=1,binding=roles.binding.to_record(),sequence=sequence,**row,action=action,payload=payload)
+        value['mac']=hmac.new(bytes.fromhex(init[key]['channelKeyHex']),b'acceptance:bootstrap-composition:v1\0CONTROLLER:TO_BOOTSTRAP\0'+v1_bytes(value)[4:],hashlib.sha256).hexdigest()
+        return v1_bytes(value)
+
+    @staticmethod
+    def family_result(init,data):
+        value=json.loads(data[4:]);supplied=value.pop('mac')
+        expected=hmac.new(bytes.fromhex(init['CONTROLLER']['channelKeyHex']),b'acceptance:bootstrap-composition:v1\0CONTROLLER:FROM_BOOTSTRAP\0'+v1_bytes(value)[4:],hashlib.sha256).hexdigest()
+        assert supplied==expected
+        return value
+
+    def committed_roles(self):
+        roles,k,budget,proof,writes,init=self.setup_roles();owner=roles.prepare_browser(proof);roles.commit_browser(owner)
+        return roles,k,init
+
+    def test_v1_browser_family_action_order_and_result(self):
+        # Before COMMIT_BROWSER there is no committed preparation: terminal, no RESULT.
+        roles,k,budget,proof,writes,init=self.setup_roles()
+        with self.assertRaisesRegex(c.ConfinementError,'^AUTHORITY_LOST$'):
+            roles.handle_controller(self.family_frame(roles,init,1,dict(generation=1,point='POST_LOAD')))
+        self.assertTrue(roles._terminal);self.assertEqual(k.family_calls,[])
+        # POST_LOAD, then FINAL: the fixed RESULT, with ordinals 2 and 3.
+        roles,k,init=self.committed_roles()
+        for sequence,point,ordinal in ((1,'POST_LOAD',2),(2,'FINAL',3)):
+            value=self.family_result(init,roles.handle_controller(self.family_frame(roles,init,sequence,dict(generation=1,point=point))))
+            self.assertEqual((value['action'],value['role']),('RESULT','BROWSER'))
+            self.assertEqual(value['payload'],{'requestSequence':sequence,'result':{'members':5,'ordinal':ordinal,'point':point,'status':'CLEAN'}})
+            self.assertEqual(k.family_calls[-1][:2],(point,1000))
+            self.assertIs(k.family_calls[-1][3],roles._handoffs['BROWSER'])
+        self.assertEqual([call[0] for call in k.family_calls],['LAUNCH','POST_LOAD','FINAL'])
+        self.assertFalse(roles._terminal)
+        # Out of order: POST_LOAD twice, FINAL before POST_LOAD, anything after FINAL.
+        for name,points in (('POST_LOAD twice',('POST_LOAD','POST_LOAD')),('FINAL first',('FINAL',)),
+                            ('FINAL twice',('POST_LOAD','FINAL','FINAL'))):
+            with self.subTest(order=name):
+                roles,k,init=self.committed_roles()
+                for sequence,point in enumerate(points[:-1],1):
+                    roles.handle_controller(self.family_frame(roles,init,sequence,dict(generation=1,point=point)))
+                with self.assertRaisesRegex(c.ConfinementError,'^AUTHORITY_LOST$'):
+                    roles.handle_controller(self.family_frame(roles,init,len(points),dict(generation=1,point=points[-1])))
+                self.assertTrue(roles._terminal)
+                self.assertEqual(len(k.family_calls),len(points),'no inspection runs for a refused request')
+        # Malformed requests are FRAME_DENIED and terminal.
+        for name,build in (
+                ('extra key',lambda r,i:self.family_frame(r,i,1,dict(generation=1,point='POST_LOAD',members=5))),
+                ('generation 2',lambda r,i:self.family_frame(r,i,1,dict(generation=2,point='POST_LOAD'))),
+                ('generation true',lambda r,i:self.family_frame(r,i,1,dict(generation=True,point='POST_LOAD'))),
+                ('unknown point',lambda r,i:self.family_frame(r,i,1,dict(generation=1,point='PERIODIC'))),
+                ('LAUNCH point',lambda r,i:self.family_frame(r,i,1,dict(generation=1,point='LAUNCH'))),
+                ('role VERIFIER',lambda r,i:self.family_frame(r,i,1,dict(generation=1,point='POST_LOAD'),role='VERIFIER')),
+                ('BROWSER key',lambda r,i:self.family_frame(r,i,1,dict(generation=1,point='POST_LOAD'),key='BROWSER'))):
+            with self.subTest(frame=name):
+                roles,k,init=self.committed_roles()
+                with self.assertRaisesRegex(c.ConfinementError,'^FRAME_DENIED$'):roles.handle_controller(build(roles,init))
+                self.assertTrue(roles._terminal);self.assertEqual([call[0] for call in k.family_calls],['LAUNCH'])
+        # A dirty family: no RESULT, the role set terminal, and the ordinal does not advance.
+        for point,prior in (('POST_LOAD',()),('FINAL',('POST_LOAD',))):
+            with self.subTest(dirty=point):
+                roles,k,init=self.committed_roles()
+                for sequence,earlier in enumerate(prior,1):
+                    roles.handle_controller(self.family_frame(roles,init,sequence,dict(generation=1,point=earlier)))
+                k.family_fault=lambda requested,point=point:'FAMILY_DENIED' if requested==point else None
+                ordinal=roles._family_ordinal
+                with self.assertRaisesRegex(c.ConfinementError,'^FAMILY_DENIED$'):
+                    roles.handle_controller(self.family_frame(roles,init,len(prior)+1,dict(generation=1,point=point)))
+                self.assertTrue(roles._terminal);self.assertEqual(roles._family_ordinal,ordinal)
+                self.assertIsNotNone(roles._budget.deadline,'a failed inspection is terminal: the shared end starts')
+
 def composition_role_runtime():
     """The exported composition fixture's four roleRuntime rows (topology_test exporter)."""
     runtime=[]
@@ -691,6 +802,17 @@ class Kernel:
         self.children = {}
         self.stopped = []
         self.next_pid = 200
+        # Task 16c (P14): the bootstrap's BROWSER family inspection, recorded. family_probe() runs at the call;
+        # family_fault(point) names a code the inspection raises instead of the clean five-member result.
+        self.family_calls = []
+        self.family_probe = None
+        self.family_fault = None
+
+    def inspect_browser_family(self, handoff, point, *, limit_ms):
+        self.family_calls.append((point, limit_ms, self.family_probe() if self.family_probe else None, handoff))
+        code = self.family_fault(point) if self.family_fault else None
+        if code: raise c.ConfinementError(code)
+        return types.MappingProxyType({'point': point, 'members': 5, 'attempts': 1})
 
     def spawn_waiting(self, launch, entry):
         if launch.role == self.fail_spawn: raise RuntimeError('finite spawn failure')
@@ -2532,6 +2654,450 @@ class NativeAttestationTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(c.ConfinementError, '^ATTESTATION_FAILED$'):
                         k.inspect_runtime(handoff, 'SERVICE', owner)
+
+class FamilyProc:
+    """Literal Linux 6.8 /proc for the BROWSER family as the root bootstrap reads it (Task 16c, P73-P80).
+
+    Bindings: exactly the six inspect_browser_family may use (read_file, os.listdir, os.readlink, os.stat, monotonic
+    and sleep; the clock is a fake in seconds). Anything else is an AttributeError. The family: 101 the worker root,
+    child of the outer helper 100; 202 Chromium (child of 101); 203 (child of 202) in its own network and user
+    namespace (netns SANDBOX); 204 (child of 203); 205 (child of 204). 203-205 are non-dumpable, so their
+    /proc/<pid>/fd is owned by uid 0 mode 0500 (K1); root reads them anyway (K2-K4). Pid 1, the outer helper 100 and a
+    CONTROLLER process 300 are outside the family. Formats: fs/proc/array.c task_state and task_seccomp (tab
+    separated rows, the 6.8 state strings), net/socket.c:362 `socket:[%lu]`, fs/pipe.c `pipe:[%lu]`,
+    net/unix/af_unix.c:3282-3318 (`%pK: %08X %08X %08X %04X %02X %5lu`, then a space and the raw path),
+    net/ipv4/tcp_ipv4.c:2896 and :2945-2947 (the inode is the tenth field; TIME_WAIT rows carry inode 0). Every
+    operation is appended to `events` before it is served; each `before` hook then runs and may change the state or
+    raise. Device numbers are test values: only their equality with /dev/null's matters.
+    """
+    ROOT, OUTER = 101, 100
+    NULL_RDEV, HVC0_RDEV, VDA_RDEV = 259, 58624, 64768
+    CHR, BLK, FIFO, SOCK, REG, ANON, DIR = 0o20666, 0o60660, 0o10600, 0o140777, 0o100600, 0o600, 0o40500
+    NULL = ('/dev/null', CHR, NULL_RDEV)
+    HEADERS = {
+        'unix': 'Num       RefCount Protocol Flags    Type St Inode Path',
+        'tcp': '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode' + ' ' * 22,
+        'tcp6': '  sl  local_address                         remote_address                        st tx_queue rx_queue '
+                'tr tm->when retrnsmt   uid  timeout inode',
+        'udp': '   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref '
+               'pointer drops' + ' ' * 12,
+        'udp6': '  sl  local_address                         remote_address                        st tx_queue rx_queue '
+                'tr tm->when retrnsmt   uid  timeout inode ref pointer drops'}
+
+    @staticmethod
+    def pipe(inode): return ('pipe:[%d]' % inode, FamilyProc.FIFO, 0)
+    @staticmethod
+    def sock(inode): return ('socket:[%d]' % inode, FamilyProc.SOCK, 0)
+    @staticmethod
+    def anon(name): return ('anon_inode:[%s]' % name, FamilyProc.ANON, 0)
+    @staticmethod
+    def file(path): return (path, FamilyProc.REG, 0)
+    @staticmethod
+    def unix(inode, path=''):
+        return '0000000000000000: 00000002 00000000 00000000 0001 03 %5d%s' % (inode, ' ' + path if path else '')
+    @staticmethod
+    def tcp(inode, state='01'):
+        return ('   0: 0100007F:E0A2 0100007F:0C38 %s 00000000:00000000 00:00000000 00000000 10002        0 %d 1 '
+                '0000000000000000 20 4 30 10 -1' % (state, inode))
+
+    def __init__(self):
+        self.clock, self.events, self.sleeps, self.before = 0.0, [], [], []
+        self.procs, self.extra, self.header = {}, {}, {}
+        self.exe = (254, 999)
+        self.add(1, 0, name='init', uid=0, nnp='0', seccomp='0', filters='0', owner=0)
+        self.add(100, 1, name='python3', uid=0, nnp='0', seccomp='0', filters='0', owner=0)
+        self.add(300, 299, name='node', uid=10001, filters='1', owner=10001,
+                 fds={0: self.NULL, 1: self.NULL, 2: self.NULL, 3: self.pipe(50), 4: self.pipe(51)})
+        self.add(101, 100, name='node', filters='1', fds={
+            0: self.NULL, 1: self.NULL, 2: self.NULL, 3: self.pipe(30), 4: self.pipe(40),
+            5: self.anon('eventpoll'), 6: self.pipe(31), 7: self.sock(5001)})
+        self.add(202, 101, fds={
+            0: self.NULL, 1: self.pipe(31), 2: self.NULL, 3: self.sock(5002), 4: self.sock(6001),
+            5: self.anon('eventfd'), 6: self.file('/memfd:shared_memory (deleted)')})
+        self.add(203, 202, filters='3', ns='SANDBOX', owner=0, fds={
+            0: self.NULL, 3: self.sock(7001), 4: self.file('/dev/shm/.org.chromium.Chromium.Ab12Cd (deleted)')})
+        self.add(204, 203, filters='3', ns='SANDBOX', owner=0, fds={
+            0: self.NULL, 3: self.sock(7002), 4: self.anon('eventfd'), 5: self.sock(5002)})
+        self.add(205, 204, filters='3', ns='SANDBOX', owner=0, fds={0: self.NULL, 3: self.sock(7001)})
+        self.tables = {
+            'ROOT': {'unix': [self.unix(5001), self.unix(5002, '@chromium-sandbox-ipc')],
+                     'tcp': [self.tcp(6001), '   1: 0100007F:E0A4 0100007F:0C38 06 00000000:00000000 03:00000F9F '
+                             '00000000     0        0 0 3 0000000000000000'],
+                     'tcp6': [], 'udp': [], 'udp6': []},
+            'SANDBOX': {'unix': [self.unix(7001), self.unix(7002)], 'tcp': [], 'tcp6': [], 'udp': [], 'udp6': []}}
+
+    def add(self, pid, ppid, *, name='chrome', uid=10002, nnp='1', seccomp='2', filters='2', ns='ROOT', owner=10002,
+            fds=()):
+        ids = '\t'.join([str(uid)] * 4)
+        self.procs[pid] = dict(ppid=ppid, name=name, state='S (sleeping)', ids=ids, nnp=nnp, seccomp=seccomp,
+                               filters=filters, ns=ns, owner=owner, fds=dict(fds), status={}, rows=[],
+                               cap='000001ffffffffff' if uid == 0 else '0' * 16)
+
+    def event(self, kind, path):
+        self.events.append((kind, path))
+        for hook in list(self.before): hook(self, kind, path)
+
+    def attempts(self):
+        """Root identity steps (one per attempt): a read of the root's fd 3 link not followed by its stat (step 3)."""
+        events = self.events + [None]
+        return sum(1 for at, event in enumerate(self.events)
+                   if event == ('readlink', '/proc/101/fd/3') and events[at + 1] != ('stat', '/proc/101/fd/3'))
+    def count(self, kind, path): return self.events.count((kind, path))
+
+    def member(self, path):
+        parts = path.split('/')
+        if len(parts) < 3 or parts[0] or parts[1] != 'proc' or not parts[2].isdigit(): raise FileNotFoundError(path)
+        pid = int(parts[2])
+        if pid not in self.procs: raise FileNotFoundError(path)
+        return pid, self.procs[pid], '/' + '/'.join(parts[3:])
+
+    def status(self, pid):
+        p = self.procs[pid]
+        rows = {'Name': p['name'], 'Umask': '0077', 'State': p['state'], 'Tgid': str(pid), 'Ngid': '0',
+                'Pid': str(pid), 'PPid': str(p['ppid']), 'TracerPid': '0', 'Uid': p['ids'], 'Gid': p['ids'],
+                'FDSize': '64', 'Groups': '', 'CapInh': '0' * 16, 'CapPrm': p['cap'], 'CapEff': p['cap'],
+                'CapBnd': '000001ffffffffff', 'CapAmb': '0' * 16, 'NoNewPrivs': p['nnp'], 'Seccomp': p['seccomp'],
+                'Seccomp_filters': p['filters'], 'Speculation_Store_Bypass': 'thread vulnerable'}
+        rows.update(p['status'])
+        lines = [key + ':\t' + value for key, value in rows.items() if value is not None] + p['rows']
+        return ('\n'.join(lines) + '\n').encode('latin-1')
+
+    def read_file(self, path, limit=65536):
+        self.event('read', path)
+        pid, p, rest = self.member(path)
+        if rest == '/status': data = self.status(pid)
+        elif rest.startswith('/net/') and rest[5:] in self.HEADERS:
+            table = rest[5:]
+            rows = self.tables[p['ns']][table] + self.extra.get((pid, table), [])
+            data = (self.header.get((pid, table), self.HEADERS[table]) + '\n'
+                    + ''.join(row + '\n' for row in rows)).encode('latin-1')
+        else: raise FileNotFoundError(path)
+        if len(data) > limit: raise c.ConfinementError('OBSERVATION_LIMIT')
+        return data
+
+    def listdir(self, path):
+        self.event('listdir', path)
+        if path == '/proc': return [str(pid) for pid in self.procs] + ['self', 'thread-self', 'net', 'sys', 'cpuinfo']
+        pid, p, rest = self.member(path)
+        if rest == '/fd': return [str(fd) for fd in p['fds']]
+        raise FileNotFoundError(path)
+
+    def readlink(self, path):
+        self.event('readlink', path)
+        pid, p, rest = self.member(path)
+        if rest.startswith('/fd/') and int(rest[4:]) in p['fds']: return p['fds'][int(rest[4:])][0]
+        raise FileNotFoundError(path)
+
+    def stat(self, path):
+        self.event('stat', path)
+        def node(mode, rdev=0, dev=7, ino=1, uid=0):
+            return types.SimpleNamespace(st_mode=mode, st_rdev=rdev, st_dev=dev, st_ino=ino, st_uid=uid, st_gid=uid)
+        if path == '/dev/null': return node(self.CHR, self.NULL_RDEV, 5, 6)
+        pid, p, rest = self.member(path)
+        if rest == '/exe': return node(0o100755, 0, *(self.exe if pid == self.ROOT else (254, 998)))
+        if rest == '/fd': return node(self.DIR, uid=p['owner'])
+        if rest.startswith('/fd/') and int(rest[4:]) in p['fds']:
+            link, mode, rdev = p['fds'][int(rest[4:])]
+            return node(mode, rdev, ino=int(rest[4:]))
+        raise FileNotFoundError(path)
+
+    def sleep(self, seconds):
+        self.events.append(('sleep', seconds)); self.sleeps.append(seconds); self.clock += seconds
+
+    def bindings(self):
+        return types.SimpleNamespace(os=types.SimpleNamespace(listdir=self.listdir, readlink=self.readlink,
+                                                              stat=self.stat),
+                                     read_file=self.read_file, monotonic=lambda: self.clock, sleep=self.sleep)
+
+    def port(self):
+        k = c.OfflineKernelPort(self.bindings())
+        launch = c.prepare_role('BROWSER', c.RoleConfig(ConfinementTests().config(), c.role_fds('BROWSER', RUN)))
+        digest = hashlib.sha256(c.filter_bytes(launch.filter)).hexdigest()
+        owned = c.NativeOwned(self.ROOT, RUN, 'BROWSER', object(), object())
+        k._owned[owned] = {'outer': self.OUTER, 'child': self.ROOT, 'terminal': None, 'launch': launch,
+                           'digest': digest, 'links': ('pipe:[30]', 'pipe:[40]'), 'exec_identity': (254, 999)}
+        attestation = c.RoleAttestation(pid=self.ROOT, run_id=RUN, role='BROWSER', uids=(10002,) * 3,
+            gids=(10002,) * 3, groups=(), capabilities=(0,) * 5, no_new_privs=1, seccomp=2, filter_digest=digest,
+            fds=launch.fds, views=launch.views, waiting=True, programs=launch.programs, seccomp_filters=1, tty_nr=0)
+        return k, c.RoleHandoff(launch, attestation, k, owned)
+
+    def inspect(self, point='LAUNCH', limit_ms=1000):
+        k, handoff = self.port()
+        return k.inspect_browser_family(handoff, point, limit_ms=limit_ms)
+
+
+def once(kind, path, action):
+    """A FamilyProc hook that runs ACTION(proc) at the first (KIND, PATH) operation only."""
+    fired = []
+    def hook(proc, k, p):
+        if (k, p) == (kind, path) and not fired:
+            fired.append(1); action(proc)
+    return hook
+
+
+def raising(error):
+    def action(proc): raise error
+    return action
+
+
+class BrowserFamilyInspectionTests(unittest.TestCase):
+    """Task 16c (owner decision 2026-11-20, P73-P80): the bootstrap's BROWSER family inventory over literal /proc.
+
+    Each case changes literal kernel facts before or during the read; the clean family is the control.
+    """
+    CLEAN = {'point': 'LAUNCH', 'members': 5, 'attempts': 1}
+
+    def setUp(self):
+        self.assertTrue(hasattr(c._KernelPortCore, 'inspect_browser_family'), 'no bootstrap family inspection (Task 16c)')
+
+    def denied(self, proc, code, attempts, **inspect):
+        with self.assertRaisesRegex(c.ConfinementError, '^' + code + '$'): proc.inspect(**inspect)
+        self.assertEqual(proc.attempts(), attempts)
+
+    def test_browser_family_inspection_reads_every_member_as_root(self):
+        proc = FamilyProc(); result = proc.inspect()
+        self.assertIs(type(result), types.MappingProxyType)
+        self.assertEqual(dict(result), self.CLEAN)
+        touched = [path for kind, path in proc.events if kind != 'sleep']
+        for pid in (101, 202, 203, 204, 205):
+            with self.subTest(member=pid):
+                self.assertEqual(proc.count('listdir', '/proc/%d/fd' % pid), 1)
+                for fd in proc.procs[pid]['fds']:
+                    for kind in ('readlink', 'stat'):
+                        # The root identity step reads the two control links once more.
+                        want = 2 if (pid, kind) == (101, 'readlink') and fd in (3, 4) else 1
+                        self.assertEqual(proc.count(kind, '/proc/%d/fd/%d' % (pid, fd)), want, (kind, fd))
+                for table in ('unix', 'tcp', 'tcp6', 'udp', 'udp6'):
+                    self.assertEqual(proc.count('read', '/proc/%d/net/%s' % (pid, table)), 1, table)
+                self.assertEqual(proc.count('read', '/proc/%d/status' % pid), 2, 'one status read per scan')
+        # Every listing precedes every table read (concern 3).
+        last_listing = max(i for i, (kind, path) in enumerate(proc.events) if path.endswith('/fd') and kind == 'listdir')
+        first_table = min(i for i, (kind, path) in enumerate(proc.events) if '/net/' in path)
+        self.assertLess(last_listing, first_table)
+        self.assertEqual(proc.count('listdir', '/proc'), 2, 'two full /proc scans per attempt')
+        self.assertFalse([p for p in touched if p.startswith('/proc/net') or p.startswith('/proc/self')
+                          or p.startswith('/proc/thread-self')])
+        outside = [p for p in touched if p.split('/')[2:3] in (['1'], ['100'], ['300']) and not p.endswith('/status')]
+        self.assertEqual(outside, [], 'outside the family only status (PPid) is read')
+        self.assertEqual(proc.sleeps, [])
+        for point in ('POST_LOAD', 'FINAL'):
+            with self.subTest(point=point):
+                self.assertEqual(dict(FamilyProc().inspect(point)), dict(self.CLEAN, point=point))
+        # Capabilities are not required to be empty (the zygote holds them in its own user namespace).
+        proc = FamilyProc(); proc.procs[203]['cap'] = '000001ffffffffff'
+        self.assertEqual(dict(proc.inspect()), self.CLEAN)
+
+    def test_browser_family_preconditions_are_authority_lost(self):
+        def other_kernel(proc, k, h): return c.RoleHandoff(h.launch, h.attestation, c.OfflineKernelPort(proc.bindings()), h._owned)
+        def terminal(proc, k, h): k._owned[h._owned]['terminal'] = {'status': 'EXITED'}; return h
+        def child(proc, k, h): k._owned[h._owned]['child'] = 102; return h
+        def role(proc, k, h):
+            return c.RoleHandoff(dataclasses.replace(h.launch, role='VERIFIER'), h.attestation, k, h._owned)
+        cases = [('point ' + repr(point), dict(point=point)) for point in ('PERIODIC', 'launch', None)]
+        cases += [('limit ' + repr(limit), dict(limit_ms=limit)) for limit in (0, -1, 1001, True, 1.0, '1000')]
+        cases += [(name, dict(handoff=change)) for name, change in (
+            ('other kernel', other_kernel), ('terminal state', terminal), ('child mismatch', child), ('role', role),
+            ('not a handoff', lambda proc, k, h: {'handoff': h}))]
+        for name, change in cases:
+            with self.subTest(case=name):
+                proc = FamilyProc(); k, h = proc.port()
+                handoff = change['handoff'](proc, k, h) if 'handoff' in change else h
+                with self.assertRaisesRegex(c.ConfinementError, '^AUTHORITY_LOST$'):
+                    k.inspect_browser_family(handoff, change.get('point', 'LAUNCH'), limit_ms=change.get('limit_ms', 1000))
+                self.assertEqual(proc.events, [], 'no read before the preconditions hold')
+
+    def test_browser_family_forbidden_descriptors_fail(self):
+        P = FamilyProc
+        cases = (
+            ('vsock-like socket on 205 (no table)', lambda p: p.procs[205]['fds'].update({6: P.sock(9999)}), 5),
+            ('/dev/hvc0 on 204', lambda p: p.procs[204]['fds'].update({6: ('/dev/hvc0', P.CHR, P.HVC0_RDEV)}), 1),
+            ('character device at a non-/dev path', lambda p: p.procs[204]['fds'].update(
+                {6: ('/run/acceptance/browser/profile/console', P.CHR, P.HVC0_RDEV)}), 1),
+            ('block device', lambda p: p.procs[204]['fds'].update({6: ('/dev/vda', P.BLK, P.VDA_RDEV)}), 1),
+            ("the root's control pipe held by 203", lambda p: p.procs[203]['fds'].update({6: P.pipe(40)}), 1),
+            ("the root's other control pipe held by 202", lambda p: p.procs[202]['fds'].update({8: P.pipe(30)}), 1),
+            ('netlink-like socket on 202 (no table read)', lambda p: p.procs[202]['fds'].update({7: P.sock(9998)}), 5))
+        for name, change, attempts in cases:
+            with self.subTest(case=name):
+                proc = FamilyProc(); change(proc)
+                self.denied(proc, 'FAMILY_DENIED', attempts)
+                self.assertEqual(proc.sleeps, [0.05] * (attempts - 1))
+        # Controls: the root's own control pipes and a /dev/null anywhere are clean.
+        proc = FamilyProc(); proc.procs[205]['fds'].update({1: P.NULL, 2: ('/dev/null', P.CHR, P.NULL_RDEV)})
+        proc.procs[101]['fds'].update({8: P.pipe(30), 9: P.pipe(40)})
+        self.assertEqual(dict(proc.inspect()), self.CLEAN)
+        # /dev/null itself must be a character device.
+        proc = FamilyProc(); stat = proc.stat
+        proc.stat = lambda path: types.SimpleNamespace(st_mode=P.REG, st_rdev=0) if path == '/dev/null' else stat(path)
+        self.denied(proc, 'FAMILY_UNREADABLE', 0)
+
+    def test_browser_family_status_rules(self):
+        def row(name, value): return lambda p: p.procs[204]['status'].update({name: value})
+        def ids(name, index, value):
+            return row(name, '\t'.join(value if at == index else '10002' for at in range(4)))
+        denied = [('Seccomp 0', row('Seccomp', '0')), ('Seccomp 1', row('Seccomp', '1')),
+                  ('Seccomp_filters 0', row('Seccomp_filters', '0')), ('NoNewPrivs 0', row('NoNewPrivs', '0'))]
+        denied += [('Uid field %d' % i, ids('Uid', i, '0')) for i in range(4)]
+        denied += [('Gid field %d' % i, ids('Gid', i, '10003')) for i in range(4)]
+        unreadable = [('Seccomp row missing', row('Seccomp', None)), ('Seccomp 02', row('Seccomp', '02')),
+                      ('Seccomp row duplicate', lambda p: p.procs[204]['rows'].append('Seccomp:\t2')),
+                      ('Uid row missing', row('Uid', None)), ('Gid row duplicate',
+                       lambda p: p.procs[204]['rows'].append('Gid:\t' + '\t'.join(['10002'] * 4))),
+                      ('Seccomp_filters row missing', row('Seccomp_filters', None)),
+                      ('NoNewPrivs 01', row('NoNewPrivs', '01')), ('Uid three fields', row('Uid', '10002\t10002\t10002')),
+                      ('Uid space separated', row('Uid', '10002 10002 10002 10002')),
+                      ('State row missing', row('State', None)), ('State unknown', row('State', 'Q (queued)')),
+                      ('PPid row missing', row('PPid', None)), ('PPid 0203', row('PPid', '0203'))]
+        for code, cases in (('FAMILY_DENIED', denied), ('FAMILY_UNREADABLE', unreadable)):
+            for name, change in cases:
+                with self.subTest(case=name):
+                    proc = FamilyProc(); change(proc)
+                    self.denied(proc, code, 1)
+        # Controls: a deeper filter stack and a zombie member are clean.
+        proc = FamilyProc(); proc.procs[204]['filters'] = '7'
+        self.assertEqual(dict(proc.inspect()), self.CLEAN)
+        proc = FamilyProc(); proc.procs[205].update(state='Z (zombie)', fds={})
+        self.assertEqual(dict(proc.inspect()), self.CLEAN)
+        self.assertEqual([p for k, p in proc.events if p.startswith('/proc/205/net/')], [], 'no zombie table read')
+
+    def test_browser_family_per_member_netns_tables(self):
+        proc = FamilyProc()
+        proc.procs[204]['fds'][7] = FamilyProc.sock(7100); proc.extra[(204, 'unix')] = [FamilyProc.unix(7100, '@renderer')]
+        proc.procs[202]['fds'][7] = FamilyProc.sock(6100); proc.extra[(202, 'tcp')] = [FamilyProc.tcp(6100, '08')]
+        self.assertEqual(dict(proc.inspect()), self.CLEAN)
+        # The same inode in two families is unreadable.
+        proc = FamilyProc(); proc.extra[(203, 'udp')] = [
+            '  101: 0100007F:D431 00000000:0000 07 00000000:00000000 00:00000000 00000000 10002        0 7001 2 '
+            '0000000000000000 0']
+        self.denied(proc, 'FAMILY_UNREADABLE', 1)
+
+    def test_browser_family_tables_read_after_listings(self):
+        proc = FamilyProc(); proc.procs[204]['fds'][7] = FamilyProc.sock(7300)
+        proc.before.append(once('listdir', '/proc/204/fd',
+                                lambda p: p.tables['SANDBOX']['unix'].append(FamilyProc.unix(7300))))
+        self.assertEqual(dict(proc.inspect()), self.CLEAN)
+        self.assertEqual(proc.sleeps, [])
+
+    def test_browser_family_bounded_retry_on_transients_only(self):
+        P = FamilyProc
+        with self.subTest(case='(a) unattributed on attempt 1, attributed on attempt 2'):
+            proc = P(); proc.procs[205]['fds'][6] = P.sock(8001)
+            def late(p, kind, path):
+                # From attempt 2's scan A (the third full /proc listing) on.
+                if p.count('listdir', '/proc') == 3 and P.unix(8001) not in p.tables['SANDBOX']['unix']:
+                    p.tables['SANDBOX']['unix'].append(P.unix(8001))
+            proc.before.append(late)
+            self.assertEqual(dict(proc.inspect()), dict(self.CLEAN, attempts=2))
+            self.assertEqual(proc.sleeps, [0.05])
+        with self.subTest(case='(b) 205 vanishes mid-attempt'):
+            proc = P(); proc.before.append(once('listdir', '/proc/204/fd', lambda p: p.procs.pop(205)))
+            self.assertEqual(dict(proc.inspect()), dict(self.CLEAN, members=4))
+        for fds, outcome in (({0: P.NULL}, dict(self.CLEAN, members=6, attempts=2)), ({0: P.NULL, 3: P.sock(9999)}, None)):
+            with self.subTest(case='(c) a new member only in scan B', vsock=outcome is None):
+                proc = P(); scans = []
+                def spawn(p, kind, path, fds=fds):
+                    if (kind, path) == ('listdir', '/proc'):
+                        scans.append(1)
+                        if len(scans) == 2: p.add(206, 204, filters='3', ns='SANDBOX', owner=0, fds=fds)
+                proc.before.append(spawn)
+                if outcome is not None: self.assertEqual(dict(proc.inspect()), outcome)
+                else: self.denied(proc, 'FAMILY_DENIED', 5)
+        with self.subTest(case='(d) a closed descriptor, absent from the second listing, is dropped'):
+            def close(p): p.procs[204]['fds'].pop(4); raise FileNotFoundError('/proc/204/fd/4')
+            proc = P(); proc.before.append(once('readlink', '/proc/204/fd/4', close))
+            self.assertEqual(dict(proc.inspect()), self.CLEAN)
+            self.assertEqual(proc.count('listdir', '/proc/204/fd'), 2)
+        with self.subTest(case='(d) present in the second listing, so re-read'):
+            def reopen(p): p.procs[204]['fds'][4] = ('/dev/hvc0', P.CHR, P.HVC0_RDEV); raise FileNotFoundError('fd 4')
+            proc = P(); proc.before.append(once('stat', '/proc/204/fd/4', reopen))
+            self.denied(proc, 'FAMILY_DENIED', 1)
+            self.assertEqual(proc.count('listdir', '/proc/204/fd'), 2)
+        with self.subTest(case='(d) present and unreadable twice: transient'):
+            proc = P(); failures = []
+            def twice(p, kind, path):
+                if (kind, path) == ('readlink', '/proc/204/fd/4') and len(failures) < 2:
+                    failures.append(1); raise FileNotFoundError(path)
+            proc.before.append(twice)
+            self.assertEqual(dict(proc.inspect()), dict(self.CLEAN, attempts=2))
+        with self.subTest(case='(e) a socket permanently unattributed'):
+            proc = P(); proc.procs[205]['fds'][6] = P.sock(9999)
+            self.denied(proc, 'FAMILY_DENIED', 5)
+            self.assertEqual(proc.sleeps, [0.05] * 4); self.assertLessEqual(proc.clock, 1.0)
+        with self.subTest(case='(f) a new member in every scan B'):
+            proc = P(); scans = []
+            def churn(p, kind, path):
+                if (kind, path) == ('listdir', '/proc'):
+                    scans.append(1)
+                    if len(scans) % 2 == 0: p.add(400 + len(scans), 204, filters='3', ns='SANDBOX', owner=0, fds={0: P.NULL})
+            proc.before.append(churn)
+            self.denied(proc, 'FAMILY_UNREADABLE', 5)
+        with self.subTest(case='(g) limit_ms=120'):
+            proc = P(); proc.procs[205]['fds'][6] = P.sock(9999); seen = []
+            proc.before.append(lambda p, kind, path: seen.append(p.clock))
+            self.denied(proc, 'FAMILY_DENIED', 3, limit_ms=120)
+            self.assertLessEqual(max(seen + [proc.clock]), 0.120)
+            self.assertEqual(proc.sleeps, [0.05, 0.05])
+
+    def test_browser_family_non_transient_errors_fail_without_retry(self):
+        P = FamilyProc
+        def remove(*pids):
+            def action(p):
+                for pid in pids: p.procs.pop(pid)
+            return action
+        def header(pid, table, text): return lambda p, kind, path: p.header.update({(pid, table): text})
+        cases = (
+            ('PermissionError on a live member fd listing', 'FAMILY_UNREADABLE',
+             once('listdir', '/proc/204/fd', raising(PermissionError('/proc/204/fd')))),
+            ('PermissionError on a live member fd entry', 'FAMILY_UNREADABLE',
+             once('readlink', '/proc/204/fd/3', raising(PermissionError('/proc/204/fd/3')))),
+            ('PermissionError on a live member table', 'FAMILY_UNREADABLE',
+             once('read', '/proc/204/net/tcp', raising(PermissionError('/proc/204/net/tcp')))),
+            ('an OSError that is neither class', 'FAMILY_UNREADABLE',
+             once('readlink', '/proc/203/fd/3', raising(OSError('inert I/O failure')))),
+            ('a ProcessLookupError on an fd entry', 'FAMILY_UNREADABLE',
+             once('stat', '/proc/203/fd/3', raising(ProcessLookupError('inert')))),
+            ('a unix row split by a newline in its path', 'FAMILY_UNREADABLE',
+             lambda p, k, path: p.tables['SANDBOX']['unix'].append(P.unix(7003, '@x\nB')) if (k, path) == ('listdir', '/proc') and P.unix(7003, '@x\nB') not in p.tables['SANDBOX']['unix'] else None),
+            ('a unix row with an unpadded inode', 'FAMILY_UNREADABLE',
+             lambda p, k, path: p.tables['ROOT']['unix'].append('0000000000000000: 00000002 00000000 00000000 0001 03 77') if (k, path) == ('listdir', '/proc') and len(p.tables['ROOT']['unix']) == 2 else None),
+            ('a unix row with a lowercase field', 'FAMILY_UNREADABLE',
+             lambda p, k, path: p.tables['ROOT']['unix'].append('0000000000000000: 0000000a 00000000 00000000 0001 03 77777') if (k, path) == ('listdir', '/proc') and len(p.tables['ROOT']['unix']) == 2 else None),
+            ('a table header mismatch', 'FAMILY_UNREADABLE',
+             header(204, 'unix', 'Num       RefCount Protocol Flags    Type Inode St Path')),
+            ('a tcp row with a non-canonical inode', 'FAMILY_UNREADABLE',
+             lambda p, k, path: p.extra.update({(202, 'tcp6'): ['   0: 00000000000000000000000001000000:E0A6 00000000000000000000000001000000:0C38 01 00000000:00000000 00:00000000 00000000 10002        0 06002 1 0000000000000000 20 4 30 10 -1']})),
+            ('a table over 1 MiB', 'FAMILY_UNREADABLE',
+             lambda p, k, path: p.extra.update({(203, 'udp6'): [' ' * 1048576]})),
+            ('a status over 8 KiB', 'FAMILY_UNREADABLE',
+             lambda p, k, path: p.procs[203]['rows'].__setitem__(slice(None), ['Pad:\t' + 'x' * 8192])),
+            ('a malformed fd name', 'FAMILY_UNREADABLE',
+             lambda p, k, path: p.procs[204]['fds'].update({'07': P.NULL}) if '07' not in p.procs[204]['fds'] else None),
+            ('a malformed socket link', 'FAMILY_UNREADABLE',
+             lambda p, k, path: p.procs[204]['fds'].update({8: ('socket:[007]', P.SOCK, 0)})),
+            ('the root gone', 'FAMILY_UNREADABLE',
+             once('readlink', '/proc/101/fd/3', raising(FileNotFoundError('/proc/101/fd/3')))),
+            ('the root gone during scan A', 'FAMILY_UNREADABLE', once('listdir', '/proc', remove(101))),
+            ("the root's fd listing gone", 'FAMILY_UNREADABLE',
+             once('listdir', '/proc/101/fd', raising(FileNotFoundError('/proc/101/fd')))),
+            ("the root's fd 3 link changed", 'AUTHORITY_LOST', lambda p, k, path: p.procs[101]['fds'].update({3: P.pipe(33)})),
+            ("the root's fd 4 link changed", 'AUTHORITY_LOST', lambda p, k, path: p.procs[101]['fds'].update({4: P.pipe(44)})),
+            ("the root's executable identity changed", 'AUTHORITY_LOST', lambda p, k, path: setattr(p, 'exe', (254, 998))),
+            ("the root's PPid changed", 'AUTHORITY_LOST', lambda p, k, path: p.procs[101].update(ppid=1)),
+            ('only the root present', 'FAMILY_DENIED', once('listdir', '/proc', remove(202, 203, 204, 205))))
+        for name, code, hook in cases:
+            with self.subTest(case=name):
+                proc = P(); proc.before.append(hook)
+                self.denied(proc, code, 1)
+                self.assertEqual(proc.sleeps, [])
+        # A PermissionError for a member that is gone (K3: a vanished task reads EACCES): dropped, never terminal.
+        for kind, path in (('listdir', '/proc/205/fd'), ('readlink', '/proc/205/fd/3'), ('read', '/proc/205/net/udp')):
+            with self.subTest(case='PermissionError, member gone', at=path):
+                def vanish(p, path=path): p.procs.pop(205); raise PermissionError(path)
+                proc = P(); proc.before.append(once(kind, path, vanish))
+                self.assertEqual(dict(proc.inspect()), dict(self.CLEAN, members=4))
+        # FileNotFoundError on a live, non-zombie member's table: it is exiting, so the attempt is retried.
+        proc = P(); proc.before.append(once('read', '/proc/204/net/unix', raising(FileNotFoundError('net'))))
+        self.assertEqual(dict(proc.inspect()), dict(self.CLEAN, attempts=2))
 
 COVERAGE_V2 = ROOT / 'appliance/abi-coverage-v2.json'
 

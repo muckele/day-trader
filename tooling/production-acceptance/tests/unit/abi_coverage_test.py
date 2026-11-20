@@ -705,6 +705,8 @@ VSOCK_CID_SITES = {
 # Attested seccomp mode comparisons (/proc/<pid>/status "Seccomp:"): (file, qualname) -> count.
 SECCOMP_MODE_SITES = {
     ('confinement.py', '_check'): 1,
+    # Task 16c (P14): each BROWSER family member's status row Seccomp must be exactly SECCOMP_MODE_FILTER.
+    ('confinement.py', '_family_member_status'): 1,
     ('topology.py', '_role'): 1,
     ('topology.py', '_validate_payload'): 1,
 }

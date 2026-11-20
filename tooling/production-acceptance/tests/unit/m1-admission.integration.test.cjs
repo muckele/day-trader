@@ -33,6 +33,8 @@ test('composition_task8_browser_evidence_reaches_real_task2_task3_task4_admissio
     inspectHandoff:value=>value===handoff?{kind:'BROWSER',runId,uid:10002,child,privatePipe,waiting,confined:true}:null,
     inspectGrant:value=>value===grant?{kind:'BROWSER',runId,child,purpose:'CONFINEMENT_PROVED',session:null}:null,
     async activate(){waiting=false;},async waitExit(){return {status:'EXITED',runId,child};},async stopOwned(){return {status:'STOPPED',runId,child};},
+    // Task 16c (P14): the bootstrap authority also answers the controller's BROWSER family requests.
+    async inspectFamily(){return null;},
   };
   roles.bindRoleBootstrap(authority,runId).audit(handoff);
   const f=fixture({phase:A,runId,configIdentity:'3'.repeat(64),inspectBrowserEvidence:roles.inspectBrowserRequestEvidence}),payload={

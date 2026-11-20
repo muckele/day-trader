@@ -25,7 +25,7 @@ function pythonTranscript(){
   const expected=['controllerInit','workerInit','controllerAdopt','controllerAdoptResult',
     'controllerPrepare','browserPrepare','browserPrepared','controllerPrepareResult',
     'controllerCommit','browserCommit','browserRefresh','browserCurrent','browserStarted',
-    'controllerCommitResult'];
+    'controllerCommitResult','controllerFamily','controllerFamilyResult'];
   const cancelled=['controllerInit','workerInit','controllerAdopt','controllerAdoptResult',
     'controllerPrepare','browserPrepare','browserPrepared','controllerPrepareResult',
     'controllerCancel','browserCancel','browserCancelled','controllerCancelResult'];
@@ -88,7 +88,7 @@ function fixture(options={}) {
   const controllerChannel={audit:()=>controllerFacts,read:async()=>controllerQueue.shift(),
     async write(bytes){const v=JSON.parse(bytes.subarray(4));const unsigned={...v};delete unsigned.mac;assert.equal(v.mac,mac(unsigned,keyC,'CONTROLLER','TO_BOOTSTRAP'));
       let result,recorded;
-      if(transcript){const names={ADOPT:'controllerAdopt',PREPARE_BROWSER:'controllerPrepare',COMMIT_BROWSER:'controllerCommit',CANCEL:'controllerCancel'};assert.deepEqual(bytes,Buffer.from(transcript.frames[names[v.action]],'hex'));}
+      if(transcript){const names={ADOPT:'controllerAdopt',PREPARE_BROWSER:'controllerPrepare',COMMIT_BROWSER:'controllerCommit',CANCEL:'controllerCancel',BROWSER_FAMILY:'controllerFamily'};assert.deepEqual(bytes,Buffer.from(transcript.frames[names[v.action]],'hex'));}
       if(v.action==='ADOPT') {result={kind:v.role,runId:runBinding.runId,uid:v.role==='BROWSER'?10002:10003,childId:v.childId,pipeId:v.pipeId,waiting:true,confined:true,attestationDigest:'9'.repeat(64)};if(transcript)recorded=Buffer.from(transcript.frames.controllerAdoptResult,'hex');}
       if(v.action==='PREPARE_BROWSER') {const browserConfig=v.payload.browserConfig;prepareBytes=transcript?Buffer.from(transcript.frames.browserPrepare,'hex'):deliver('PREPARE',{grantId,...proof,...(browserConfig===undefined?{}:{browserConfig})});if(transcript)workerSeq=1;reservation=await workerBinding.prepare(prepareBytes);if(!transcript)queue.shift();result={grantId,...proof};hooks.result?.(result,f);if(transcript)recorded=Buffer.from(transcript.frames.controllerPrepareResult,'hex');}
       if(v.action==='COMMIT_BROWSER') {if(transcript)queue.push(Buffer.from(transcript.frames.browserCommit,'hex'));else deliver('COMMIT',{grantId,reservationId,commitId,generation:1});workerOutcome=await workerBinding.commitFixedBrowserLaunch(reservation,()=>{launches.push(1);const owner={stopOwned:async remaining=>{stops.push(['browser',remaining]);return {status:'STOPPED',runId:runBinding.runId};}};return hooks.launch?hooks.launch(f,owner):owner;});result={status:'ACTIVE',generation:1};if(transcript?.frames.controllerCommitResult)recorded=Buffer.from(transcript.frames.controllerCommitResult,'hex');}
@@ -96,6 +96,8 @@ function fixture(options={}) {
       if(v.action==='CANCEL'){if(transcript){await workerBinding.cancel(Buffer.from(transcript.frames.browserCancel,'hex'));recorded=Buffer.from(transcript.frames.controllerCancelResult,'hex');}else f.cancel();result={status:'CANCELLED',generation:1};}
       if(v.action==='APP_WRITE'){deliver('APP_CHUNK',v.payload);result={acceptedStreamSequence:v.payload.streamSequence};}
       if(v.action==='APP_POLL')result=workerAppChunks.length?{status:'CHUNK',chunk:workerAppChunks.shift()}:{status:'EMPTY'};
+      // Task 16c (P76): the bootstrap's fixed BROWSER_FAMILY result (Python-built in a transcript).
+      if(v.action==='BROWSER_FAMILY'){result={members:5,ordinal:v.payload.point==='POST_LOAD'?2:3,point:v.payload.point,status:'CLEAN'};if(transcript)recorded=Buffer.from(transcript.frames.controllerFamilyResult,'hex');}
       if(recorded){controllerSeq=JSON.parse(recorded.subarray(4)).sequence;controllerQueue.push(recorded);}
       else controllerQueue.push(make('CONTROLLER',keyC,++controllerSeq,'RESULT',{requestSequence:v.sequence,result},roleMap.find(r=>r.role===v.role)));
     }};
@@ -470,7 +472,7 @@ test('v1_python_transcript_each_hop_substitution_and_replay_are_denied',async t=
         const f=fixture({transcript:changed,
           cancelAt:['REFRESH','CURRENT'].includes(variant)?variant:undefined});await f.init();
         const tx=await f.bound.prepareBrowser(f.proof);
-        if(variant==='success')await tx.port.activateOnce(tx.grant);
+        if(variant==='success'){const handle=await tx.port.activateOnce(tx.grant);await handle.inspectFamily('POST_LOAD');}
         else if(variant==='PREPARED')await f.bound.cancel();
         else await tx.port.activateOnce(tx.grant);
         launches=f.launches.length;
@@ -481,4 +483,25 @@ test('v1_python_transcript_each_hop_substitution_and_replay_are_denied',async t=
   const f=await fixture({transcript}).init(),tx=await f.bound.prepareBrowser(f.proof);
   await assert.rejects(f.workerBinding.prepare(f.prepareBytes));
   await assert.rejects(tx.port.activateOnce(tx.grant));assert.equal(f.launches.length,0);
+});
+
+test('v1_python_browser_family_result_accepted_and_bound',async t=>{
+  // Task 16c (owner decision 2026-11-20, P76): the controller's POST_LOAD request and the bootstrap's fixed RESULT.
+  // Without a transcript the JS fixture answers; with one, the Python-built pair must be the exact bytes.
+  const transcript=pythonTranscript();
+  const f=await fixture({transcript}).init(),tx=await f.bound.prepareBrowser(f.proof),handle=await tx.port.activateOnce(tx.grant);
+  assert.equal(typeof handle.inspectFamily,'function','the BROWSER handle has no bootstrap family inspection');
+  assert.deepEqual({...await handle.inspectFamily('POST_LOAD')},{point:'POST_LOAD',ordinal:2,members:5});
+  if(!transcript){t.diagnostic('BOOTSTRAP_V1_INPUT absent: the Python pair is not checked');return;}
+  assert.deepEqual(JSON.parse(Buffer.from(transcript.frames.controllerFamily,'hex').subarray(4)).payload,{generation:1,point:'POST_LOAD'});
+  assert.deepEqual(JSON.parse(Buffer.from(transcript.frames.controllerFamilyResult,'hex').subarray(4)).payload.result,
+    {members:5,ordinal:2,point:'POST_LOAD',status:'CLEAN'});
+  // One flipped byte in either frame is rejected by the real role-ports.
+  for(const name of ['controllerFamily','controllerFamilyResult']){
+    const changed=JSON.parse(JSON.stringify(transcript)),bytes=Buffer.from(changed.frames[name],'hex');
+    bytes[bytes.length-2]^=1;changed.frames[name]=bytes.toString('hex');
+    changed.frameSHA256[name]=crypto.createHash('sha256').update(bytes).digest('hex');
+    const g=await fixture({transcript:changed}).init(),gx=await g.bound.prepareBrowser(g.proof),gh=await gx.port.activateOnce(gx.grant);
+    await assert.rejects(gh.inspectFamily('POST_LOAD'),{code:'ROLE_INVALID'},name);
+  }
 });

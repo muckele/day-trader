@@ -393,24 +393,15 @@ function statusAccepted(value){
 function descriptorsClean(value){
   return value.consoleFds===0&&value.unknownSocketFds===0&&value.unreadableFds===0&&value.unexpectedFds===0;
 }
+// Task 16c (owner decision 2026-11-20, P79): the startup self-check covers this worker process only. The
+// uid-10002 worker never inspects other processes; the bootstrap inspects the BROWSER family as root.
 function audit(pipe) {
-  if (!pipe || typeof pipe.audit !== 'function' || typeof pipe.inspectBrowserFamily !== 'function') fail('ROLE_INVALID');
+  if (!pipe || typeof pipe.audit !== 'function') fail('ROLE_INVALID');
   const value = pipe.audit();
   if (!value || value.version !== 1 || !statusAccepted(value) || value.capabilities !== 'EMPTY' ||
       value.procScope !== 'BROWSER_FAMILY_ONLY' || !descriptorsClean(value) || value.networkDeviceCount !== 0 || value.maxFrameBytes !== 16384 ||
       !Array.isArray(value.tmpfsPaths) || !equal([...value.tmpfsPaths].sort(), ['/dev/shm', '/run/acceptance/browser/cache', '/run/acceptance/browser/profile', '/run/acceptance/browser/support']) ||
       !/^[0-9a-f]{32}$/.test(value.runId)) fail('ROLE_INVALID');
-  return value;
-}
-// T13 m-7: an unreadable family member (or any unreadable descriptor) is the explicit
-// FAMILY_UNREADABLE; every other violation is ROLE_INVALID.
-function inspectFamily(pipe) {
-  let value;
-  try { value = pipe.inspectBrowserFamily(); } catch (cause) { fail(cause?.code === 'FAMILY_UNREADABLE' ? 'FAMILY_UNREADABLE' : 'ROLE_INVALID', cause); }
-  if (!value || !Number.isSafeInteger(value.workerPid) || value.workerPid < 1 || !Number.isSafeInteger(value.browserPid) || value.browserPid < 1 ||
-      value.procScope !== 'BROWSER_FAMILY_ONLY' || !Array.isArray(value.members) || value.members.length < 2) fail('ROLE_INVALID');
-  for (const member of value.members) if (member && Number.isSafeInteger(member.unreadableFds) && member.unreadableFds > 0) fail('FAMILY_UNREADABLE');
-  for (const member of value.members) if (!member || !Number.isSafeInteger(member.pid) || member.pid < 1 || !statusAccepted(member) || !descriptorsClean(member)) fail('ROLE_INVALID');
   return value;
 }
 function auditApplication(pipe,runId) {
@@ -607,34 +598,6 @@ function tmpfsPaths(fs) {
   return required.filter(path=>mounts.filter(row=>path===row.path||path.startsWith(row.path.endsWith('/')?row.path:row.path+'/'))
     .sort((a,b)=>b.path.length-a.path.length)[0]?.type==='tmpfs').sort();
 }
-// Fix round 1 (I-1): Linux files a child under the thread that forked it (kernel/fork.c:2632,
-// :2690), and each task's `children` file lists only that task's children (fs/proc/array.c:720-770).
-// So every thread under /proc/<pid>/task/ is read; the main thread's children come first.
-function childPids(fs,pid) {
-  const tids=fs.readdirSync('/proc/'+pid+'/task').map(String);
-  if(tids.length<1||tids.some(tid=>!/^[1-9][0-9]{0,9}$/.test(tid)))fail('FAMILY_UNREADABLE');
-  const ordered=[...tids].sort((a,b)=>(a===String(pid)?-1:b===String(pid)?1:Number(a)-Number(b))),children=[];
-  for(const tid of ordered){
-    const text=String(fs.readFileSync('/proc/'+pid+'/task/'+tid+'/children','ascii')).trim(),listed=text?text.split(/\s+/):[];
-    if(listed.some(child=>!/^[1-9][0-9]{0,9}$/.test(child)))fail('FAMILY_UNREADABLE');
-    for(const child of listed.map(Number))if(!children.includes(child))children.push(child);
-  }
-  return children;
-}
-// T13 I-6, m-7: every family member is read natively: its children, its status and each of its
-// descriptors. A member that cannot be read (for example a Chromium child that is not dumpable
-// to this UID, or one that exited mid-walk) is FAMILY_UNREADABLE, never skipped.
-function inspectNativeFamily(fs,controlTargets,root=process.pid) {
-  const socketInodes=socketInodeFamilies(fs),seen=new Set([root]),queue=[root],members=[];let browserPid=0;
-  while(queue.length){const pid=queue.shift();let children,status;
-    try{children=childPids(fs,pid);status=procStatus(fs,pid);}catch(cause){fail('FAMILY_UNREADABLE',cause);}
-    if(pid===root&&children.length&&!browserPid)browserPid=children[0];
-    for(const child of children)if(!seen.has(child)){seen.add(child);queue.push(child);}
-    const fds=forbiddenDescriptorCounts(fs,pid,pid===root?new Set():controlTargets,socketInodes);
-    members.push(Object.freeze({pid,...status,...fds}));
-  }
-  return Object.freeze({workerPid:root,browserPid,members:Object.freeze(members),procScope:'BROWSER_FAMILY_ONLY'});
-}
 function nativeTopology(fs,init) {
   const status=procStatus(fs),fds=forbiddenDescriptorCounts(fs),devices=fs.readFileSync('/proc/net/dev','utf8').split('\n').slice(2)
     .map(line=>line.split(':',1)[0].trim()).filter(name=>name&&name!=='lo').length;
@@ -643,7 +606,6 @@ function nativeTopology(fs,init) {
 }
 function inheritedPipe(fs,reader,init,initBytes,clock) {
   const command=Object.freeze({fd:3}),result=Object.freeze({fd:4}),queue=[initBytes];
-  const controlTargets=new Set([fs.readlinkSync('/proc/self/fd/3'),fs.readlinkSync('/proc/self/fd/4')]);
   const topology=nativeTopology(fs,init),channel={
     audit:()=>Object.freeze({role:'BROWSER',childId:init.childId,pipeId:init.pipeId,channelKeyHex:init.channelKeyHex,
       binding:init.binding,command,result}),
@@ -663,7 +625,7 @@ function inheritedPipe(fs,reader,init,initBytes,clock) {
     remaining(){if(cleanupEnd===null)fail('CLEANUP_NOT_STARTED');return Math.max(0,cleanupEnd-monotonic());},
     clamp(end){if(!Number.isSafeInteger(end)||end<0)fail('CLEANUP_UNCERTAIN');startCleanup();cleanupEnd=Math.min(cleanupEnd,end);},
   };
-  const pipe={audit:()=>topology,inspectBrowserFamily:()=>inspectNativeFamily(fs,controlTargets)};
+  const pipe={audit:()=>topology};
   const launchClock=clock&&typeof clock.sample==='function'?clock:Object.freeze({sample:()=>[Date.now(),Number(process.hrtime.bigint()/1000000n)]});
   pipe.launchContext=Object.freeze({channel,expected:channel.audit(),clock:launchClock,cleanupBudget:cleanup});
   return pipe;
@@ -740,7 +702,6 @@ async function runBrowserWorker(pipe, config) {
     });
     if (!outcome || outcome.status !== 'STARTED' || !launched) fail('LAUNCH_FAILED');state=launched;startup.assert();
     wire=rpc(outcome.applicationPipe,auditApplication(outcome.applicationPipe,topology.runId));
-    inspectFamily(pipe);
     const decisions=new Map();launched.decisions=decisions;let ready=false,commandFailure,loginSpent=false,boundSession=null,activeAction=null;
     let readinessState=null,paperFacts=null,lastReadinessSequence=0;const readinessPhases=new Set();
     const sessionKey=randomBytes(32);
@@ -875,9 +836,6 @@ async function runBrowserWorker(pipe, config) {
       await startup.race(Promise.all(assetTasks));
       if(commandFailure)throw commandFailure;
       if(assetFailure||!documentValidated||validatedAssets.size!==config.assetEntries.length)fail('OBSERVATION_FAILED',assetFailure);
-      // T13 m-7: the renderer and utility processes exist only now. The family is inspected
-      // again after the first page load and before READY, so before any credential arrives.
-      inspectFamily(pipe);
       launched.page=primary;launched.assetProofs=config.assetEntries.map(entry=>validatedAssets.get(entry.path));
     } catch(cause){try{await launched.owner.stopOwned();}catch{}throw cause;}
     await startup.race(wire.write('ASSETS', { proofs: state.assetProofs }));
@@ -894,7 +852,7 @@ async function runBrowserWorker(pipe, config) {
   }
 }
 
-// The native readers are exported for the offline fake-/proc tests and the gated guest test.
+// The native self-check readers are exported for the offline fake-/proc tests and the gated guest test.
 module.exports = Object.freeze({ runBrowserWorker, inheritedMain, main,
-  classifyDescriptor, socketInodeFamilies, procStatus, forbiddenDescriptorCounts, inspectNativeFamily, nativeTopology });
+  classifyDescriptor, socketInodeFamilies, procStatus, forbiddenDescriptorCounts, nativeTopology });
 if(require.main===module)main().then(code=>{process.exitCode=code;},()=>{process.exitCode=1;});

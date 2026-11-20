@@ -23,6 +23,7 @@ import json
 import pathlib
 import re
 import secrets
+import stat as _statmod
 import struct
 import sys
 import threading
@@ -646,6 +647,8 @@ class OriginalRoleSet:
         self._cleanup_lock=threading.RLock();self._stop_tokens={};self._clock_failed=False
         self._application={name:dict(stream=0,message=0,index=0,size=0,open=False)
                            for name in ('CONTROLLER','BROWSER')}
+        # Task 16c (P76): clean BROWSER family inspections so far (LAUNCH 1, POST_LOAD 2, FINAL 3).
+        self._family_ordinal=0
 
     @property
     def originals(self): return tuple(self._originals)
@@ -812,11 +815,33 @@ class OriginalRoleSet:
             response=self._worker()
             _v1_exact(response['payload'],('requestSequence',*p));_v1_int(response['payload']['requestSequence']);_v1_int(response['payload']['generation'])
             if response['action']!='STARTED' or response['payload']!=dict(requestSequence=seq,**p): _fail('AUTHORITY_LOST')
-            self._check(owner._proof);owner._committed=True
+            self._check(owner._proof)
+            # Task 16c (P76, C9): the uid-10002 worker never inspects other processes; the bootstrap does (owner
+            # decision 2026-11-20). LAUNCH: the family on the worker's STARTED, before ACTIVE and before the committed
+            # transition, bounded by 1000 ms and the activation proof (never the cleanup budget, C1). No kernel-type
+            # gate: a kernel without the method fails closed.
+            wall,mono=self._sample()
+            self._inspect_family('LAUNCH',min(owner._proof['monotonicDeadlineMs']-mono,owner._proof['expiresAtMs']-wall))
+            self._check(owner._proof);self._family_ordinal=1
+            owner._committed=True
             if type(self._config.kernel) in (NativeKernelPort,OfflineKernelPort):self._config.kernel._commit_browser_runtime(owner)
             return {'status':'ACTIVE','generation':1}
         except Exception as error:
             self._failed(error);raise
+
+    def _inspect_family(self,point,bound_ms):
+        """One bootstrap BROWSER family inspection (Task 16c), bounded by min(1000 ms, BOUND_MS); a bound <= 0 is
+        EXPIRED. Only the kernel port's exact clean result counts; any failure raises."""
+        limit=min(_FAMILY_LIMIT_MS,bound_ms)
+        if limit<=0: _fail('EXPIRED')
+        inspect=getattr(self._config.kernel,'inspect_browser_family',None)
+        if not callable(inspect): _fail('AUTHORITY_LOST')
+        result=inspect(self._handoffs['BROWSER'],point,limit_ms=limit)
+        if (type(result) is not MappingProxyType or set(result)!={'point','members','attempts'} or result['point']!=point
+                or type(result['members']) is not int or not 2<=result['members']<=_FAMILY_MAX_MEMBERS
+                or type(result['attempts']) is not int or not 1<=result['attempts']<=_FAMILY_ATTEMPTS):
+            _fail('AUTHORITY_LOST')
+        return result['members']
 
     def _clamp(self,end):
         _v1_int(end,0)
@@ -902,6 +927,21 @@ class OriginalRoleSet:
                 _v1_int(p['generation'])
                 if p['generation']!=1 or self._preparation is None:_fail('AUTHORITY_LOST')
                 result=dict(proofDigest=self._preparation._proof['proofDigest'],eventCheckpoint=self._current(self._preparation._proof))
+            elif action=='BROWSER_FAMILY' and role=='BROWSER':
+                # Task 16c (P76, C9): the controller's fixed request, after READY (POST_LOAD) and before CLOSE (FINAL),
+                # each once and in order after LAUNCH. Only CLEAN is ever answered; any failure is terminal through
+                # _failed with no RESULT. No topology current check runs here (C5 unaffected).
+                _v1_exact(p,('generation','point'))
+                if type(p['generation']) is not int or p['generation']!=1 or p['point'] not in _FAMILY_REQUESTS:
+                    _fail('FRAME_DENIED')
+                ordinal=_FAMILY_REQUESTS[p['point']]
+                if self._preparation is None or not self._preparation._committed or self._family_ordinal!=ordinal-1:
+                    _fail('AUTHORITY_LOST')
+                self._check(self._preparation._proof)
+                wall,_=self._sample()
+                members=self._inspect_family(p['point'],self.binding.expiresAtMs-wall)
+                self._check(self._preparation._proof);self._family_ordinal=ordinal
+                result=dict(members=members,ordinal=ordinal,point=p['point'],status='CLEAN')
             elif action=='PROXY_CURRENT' and role=='PROXY':_fail('NATIVE_PROXY_RUNTIME_UNAVAILABLE')
             elif action=='APP_WRITE' and role=='BROWSER':
                 if self._preparation is None or not self._preparation._committed:_fail('AUTHORITY_LOST')
@@ -1610,6 +1650,134 @@ def validate_runtime_observation(value,handoff,lifecycle,*,originals=None,_allow
     return row
 
 
+# Task 16c (owner decision 2026-11-20, "Move check to the bootstrap"; P73-P80, C9): the BROWSER family's descriptor
+# and status inventory, taken by this root bootstrap, never by the uid-10002 worker (a non-dumpable Chromium child's
+# 0500 /proc/<pid>/fd belongs to root: fs/proc/base.c:1845-1861, :3250). Plan-chosen bounds (P75; Stage 2 may
+# tighten them, widening needs a decision); RLIMIT_NOFILE 4096 bounds a member's descriptor names, as for PROXY.
+_FAMILY_ATTEMPTS=5
+_FAMILY_RETRY_MS=50
+_FAMILY_LIMIT_MS=1000
+_FAMILY_MAX_MEMBERS=256
+_FAMILY_MAX_PIDS=4096
+_FAMILY_STATUS_BYTES=8192
+_FAMILY_TABLE_BYTES=1048576
+_FAMILY_POINTS=('LAUNCH','POST_LOAD','FINAL')
+# The controller's two requested points and the ordinal each returns (LAUNCH, bootstrap-internal, is ordinal 1).
+_FAMILY_REQUESTS=MappingProxyType({'POST_LOAD':2,'FINAL':3})
+_FAMILY_PID=re.compile('[1-9][0-9]{0,9}')
+_FAMILY_DECIMAL=re.compile('0|[1-9][0-9]*')
+_FAMILY_SOCKET=re.compile(r'socket:\[(0|[1-9][0-9]*)\]')
+# fs/proc/array.c:126-140 task_state_array, as task_state prints it (:181-182). A zombie or dead task has already
+# run exit_files and exit_task_namespaces (kernel/exit.c:866, :870): no descriptors, no net directory (K6).
+_FAMILY_STATES=frozenset(('R (running)','S (sleeping)','D (disk sleep)','T (stopped)','t (tracing stop)','X (dead)',
+                          'Z (zombie)','P (parked)','I (idle)'))
+_FAMILY_EXITED=frozenset(('X (dead)','Z (zombie)'))
+# fs/proc/array.c:160-161 and :187 (PPid, the real parent's tgid in the reader's pid namespace), :189-196 (four Uid
+# and four Gid fields, tab separated), :335-340 (NoNewPrivs, Seccomp, Seccomp_filters): each `Key:\t` exactly once.
+_FAMILY_STATUS_ROWS=(b'Uid',b'Gid',b'NoNewPrivs',b'Seccomp',b'Seccomp_filters',b'PPid',b'State')
+# The five socket tables a member's own /proc/<pid>/net shows (its own netns, fs/proc/proc_net.c:267-300), with the
+# Linux 6.8 header texts compared after whitespace normalization: net/unix/af_unix.c:3282-3283; net/ipv4/
+# tcp_ipv4.c:2945-2947; net/ipv6/tcp_ipv6.c:2271-2273; net/ipv4/udp.c:3098-3100; include/net/transp_v6.h:60-64.
+# Rows: af_unix.c:3289-3318 (`%pK: %08X %08X %08X %04X %02X %5lu`, then a space and the raw path); tcp_ipv4.c:2896,
+# tcp_ipv6.c:2212, udp.c:3082 and net/ipv6/datagram.c:1056 (the inode is the tenth field). Request and TIME_WAIT
+# rows carry inode 0 (tcp_ipv4.c:2835, :2929), which attributes nothing. Socket inodes come from get_next_ino
+# (net/socket.c:640), unique across network namespaces. These are procfs text formats, not ABI values (R13).
+_FAMILY_TABLES=(
+    ('unix','UNIX',b'Num RefCount Protocol Flags Type St Inode Path'),
+    ('tcp','TCP',b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode'),
+    ('tcp6','TCP',b'sl local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode'),
+    ('udp','UDP',b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode ref '
+                 b'pointer drops'),
+    ('udp6','UDP',b'sl local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode ref '
+                  b'pointer drops'))
+# P80 (folds Task 16 m-4): the strict 6.8 unix row. A lowercase-hex %pK token (16 digits on LP64) and ':', five
+# uppercase-hex fields of widths 8, 8, 8, 4 and 2, the %5lu inode (padded to five columns), then optionally a space
+# and the raw path. A row a newline in a path split off fails this grammar.
+_FAMILY_UNIX_ROW=re.compile(rb'[0-9a-f]{16}: [0-9A-F]{8} [0-9A-F]{8} [0-9A-F]{8} [0-9A-F]{4} [0-9A-F]{2} ( *)'
+                            rb'(0|[1-9][0-9]*)(?: [^\n]*)?')
+_FAMILY_TABLE_INODE=re.compile(rb'0|[1-9][0-9]*')
+
+
+class _FamilyStop(Exception):
+    """A terminal family outcome; its code is the inspection's ConfinementError."""
+    def __init__(self,code): super().__init__(code); self.code=code
+
+
+class _FamilyRetry(Exception):
+    """A transient attempt (P75): discarded and retried. unattributed: it failed on an UNATTRIBUTED socket."""
+    def __init__(self,unattributed): super().__init__('FAMILY_RETRY'); self.unattributed=unattributed
+
+
+def _family_rows(data,keys):
+    """Exactly one `Key:\\tvalue` row for each of KEYS in one /proc/<pid>/status text; any other row is ignored
+    unread (Name's comm has its newlines escaped, fs/proc/array.c:115, so no row can be injected through it)."""
+    if type(data) is not bytes: raise _FamilyStop('FAMILY_UNREADABLE')
+    rows={}
+    for line in data.split(b'\n'):
+        key,separator,value=line.partition(b':')
+        if not separator or key not in keys: continue
+        if key in rows or value[:1]!=b'\t': raise _FamilyStop('FAMILY_UNREADABLE')
+        rows[key]=value[1:].decode('ascii')
+    if set(rows)!=set(keys): raise _FamilyStop('FAMILY_UNREADABLE')
+    if b'PPid' in rows and _FAMILY_DECIMAL.fullmatch(rows[b'PPid']) is None: raise _FamilyStop('FAMILY_UNREADABLE')
+    if b'State' in rows and rows[b'State'] not in _FAMILY_STATES: raise _FamilyStop('FAMILY_UNREADABLE')
+    return rows
+
+
+def _family_member_status(data):
+    """A member's status rules (C9): all four Uid and all four Gid fields 10002, NoNewPrivs 1, Seccomp exactly
+    SECCOMP_MODE_FILTER, Seccomp_filters at least 1. A violation is FAMILY_DENIED; a missing, duplicate or
+    non-canonical row is FAMILY_UNREADABLE. Capabilities are not checked (Chromium's zygote holds them in its own
+    user namespace)."""
+    rows=_family_rows(data,_FAMILY_STATUS_ROWS)
+    def decimal(text):
+        if _FAMILY_DECIMAL.fullmatch(text) is None: raise _FamilyStop('FAMILY_UNREADABLE')
+        return int(text)
+    ids=[]
+    for key in (b'Uid',b'Gid'):
+        fields=rows[key].split('\t')
+        if len(fields)!=4: raise _FamilyStop('FAMILY_UNREADABLE')
+        ids.extend(decimal(field) for field in fields)
+    facts={'seccomp':decimal(rows[b'Seccomp']),'filters':decimal(rows[b'Seccomp_filters']),
+           'no_new_privs':decimal(rows[b'NoNewPrivs']),'state':rows[b'State']}
+    if facts['seccomp']!=2: raise _FamilyStop('FAMILY_DENIED')
+    if any(value!=UIDS['BROWSER'] for value in ids) or facts['no_new_privs']!=1 or facts['filters']<1:
+        raise _FamilyStop('FAMILY_DENIED')
+    return facts
+
+
+def _family_fd_names(names):
+    """A member's /proc/<pid>/fd listing: unique canonical names 0..4095, at most 4096 of them."""
+    if (type(names) is not list or len(names)>4096
+            or any(type(name) is not str or _FD_NAME.fullmatch(name) is None or int(name)>4095 for name in names)
+            or len(set(names))!=len(names)):
+        raise _FamilyStop('FAMILY_UNREADABLE')
+    return sorted(int(name) for name in names)
+
+
+def _family_table_inodes(data,table,header):
+    """The non-zero socket inodes of one member table, rows checked (P80 for unix)."""
+    if type(data) is not bytes or not data.endswith(b'\n'): raise _FamilyStop('FAMILY_UNREADABLE')
+    lines=data[:-1].split(b'\n')
+    if b' '.join(lines[0].split())!=header: raise _FamilyStop('FAMILY_UNREADABLE')
+    inodes=[]
+    for line in lines[1:]:
+        if table=='unix':
+            match=_FAMILY_UNIX_ROW.fullmatch(line)
+            if match is None or len(match.group(1))!=max(0,5-len(match.group(2))): raise _FamilyStop('FAMILY_UNREADABLE')
+            inode=match.group(2)
+        else:
+            fields=line.split()
+            if len(fields)<10 or _FAMILY_TABLE_INODE.fullmatch(fields[9]) is None: raise _FamilyStop('FAMILY_UNREADABLE')
+            inode=fields[9]
+        if inode!=b'0': inodes.append(int(inode))
+    return inodes
+
+
+_FAMILY_GONE=object()
+_FAMILY_CLOSED=object()
+
+
 class _KernelPortCore:
     """Root bootstrap parent + fixed per-role direct-parent reaper.
 
@@ -1760,6 +1928,182 @@ class _KernelPortCore:
         handoff=preparation._child;state=self._runtime_owners.get(id(handoff))
         if not state or state['handoff'] is not handoff or handoff._kernel is not self or state['lifecycle']!='WAITING': _fail('AUTHORITY_LOST')
         state['lifecycle']='BROWSER_ACTIVE'
+
+    def inspect_browser_family(self,handoff,point,*,limit_ms):
+        """Task 16c (owner decision 2026-11-20; P73-P80; C9): the BROWSER family's descriptor and status inventory,
+        read by this root bootstrap at LAUNCH, POST_LOAD or FINAL. The uid-10002 worker never inspects other processes.
+
+        One bounded snapshot. The family is the PPid closure of the worker root over two full /proc scans (P73; K8:
+        a `children` read can skip living children). Every member's descriptors are read before any member's socket
+        tables (concern 3), and each socket is attributed from the union of every member's own /proc/<pid>/net tables
+        (concern 1; K5, K9). A character or block device other than /dev/null is denied by st_rdev, whatever its path
+        (P74). At most _FAMILY_ATTEMPTS attempts, _FAMILY_RETRY_MS apart, never sleeping past LIMIT_MS on
+        self.b.monotonic, and a result counts only if its attempt ended within LIMIT_MS (P75). Only a vanished member
+        or descriptor, an unattributed socket or family churn between the scans is retried; a PermissionError on a
+        member that still exists is terminal (P77). Errors are told apart by exception class and file types by stat
+        predicates, with no errno number (P78).
+
+        It uses only self.b.os.listdir, readlink and stat, self.b.read_file, self.b.monotonic and self.b.sleep. It
+        never opens a member's descriptor, signals, attaches, writes /proc, reads /proc/self or /proc/net, or touches
+        the cleanup budget (C1). Returns {'point', 'members', 'attempts'}; otherwise ConfinementError FAMILY_DENIED,
+        FAMILY_UNREADABLE or AUTHORITY_LOST.
+        """
+        if (type(handoff) is not RoleHandoff or handoff._kernel is not self or handoff.launch.role!='BROWSER'
+                or point not in _FAMILY_POINTS or type(limit_ms) is not int or not 1<=limit_ms<=_FAMILY_LIMIT_MS):
+            _fail('AUTHORITY_LOST')
+        state=self._owned.get(handoff._owned)
+        if not state or state['terminal'] is not None or state['child']!=handoff.attestation.pid: _fail('AUTHORITY_LOST')
+        code='FAMILY_UNREADABLE'
+        try:
+            b=self.b;end=b.monotonic()+limit_ms/1000
+            null=b.os.stat('/dev/null')   # once per inspection: the one character device a member may hold
+            if not _statmod.S_ISCHR(null.st_mode): raise _FamilyStop('FAMILY_UNREADABLE')
+            attempts=0
+            while True:
+                attempts+=1;unattributed=False
+                try:
+                    members=self._family_attempt(handoff,state,null.st_rdev)
+                    if b.monotonic()<=end:
+                        return MappingProxyType({'point':point,'members':members,'attempts':attempts})
+                except _FamilyRetry as retry: unattributed=retry.unattributed
+                if attempts>=_FAMILY_ATTEMPTS or b.monotonic()+_FAMILY_RETRY_MS/1000>=end:
+                    code='FAMILY_DENIED' if unattributed else 'FAMILY_UNREADABLE'
+                    break
+                b.sleep(_FAMILY_RETRY_MS/1000)
+        except _FamilyStop as error: code=error.code
+        except Exception: code='FAMILY_UNREADABLE'
+        _fail(code)
+
+    def _family_attempt(self,handoff,state,null_rdev):
+        """One attempt (P73): root identity, scan A, descriptors, tables, scan B, sockets. Returns |B|."""
+        b=self.b;root=handoff.attestation.pid;base='/proc/'+str(root)
+        # 1. Root identity: the two control links and the pinned executable retained at spawn. The links are the
+        #    control targets no other member may hold.
+        try:
+            links=tuple(b.os.readlink(base+'/fd/'+str(fd)) for fd in (3,4))
+            executable=b.os.stat(base+'/exe');identity=(executable.st_dev,executable.st_ino)
+        except Exception: raise _FamilyStop('FAMILY_UNREADABLE') from None
+        if links!=state['links'] or identity!=state['exec_identity']: raise _FamilyStop('AUTHORITY_LOST')
+        # 2. Scan A: the PPid closure from the root, and every member's status rules.
+        family,statuses=self._family_scan(root,state['outer'])
+        facts={pid:_family_member_status(statuses[pid]) for pid in family}
+        # 3. Every member's descriptors, in ascending pid order, before any table is read (concern 3).
+        gone,sockets,controls=set(),{},frozenset(links)
+        for pid in sorted(family):
+            inodes=self._family_descriptors(pid,root,controls,null_rdev)
+            if inodes is _FAMILY_GONE: gone.add(pid)
+            else: sockets[pid]=inodes
+        # 4. Each member's own five tables, unless it is gone or already exited (no net directory, K6).
+        union={}
+        for pid in sorted(family-gone):
+            if facts[pid]['state'] not in _FAMILY_EXITED and not self._family_tables(pid,root,union): gone.add(pid)
+        # 5. Scan B: complete only if every member of B was in A and fully read. A's members absent from B exited.
+        later,_=self._family_scan(root,state['outer'])
+        if not later<=family-gone: raise _FamilyRetry(False)
+        # 6. The worker root plus Chromium at least, and every socket of B attributed.
+        if len(later)<2: raise _FamilyStop('FAMILY_DENIED')
+        for pid in sorted(later):
+            if any(inode not in union for inode in sockets[pid]): raise _FamilyRetry(True)
+        return len(later)
+
+    def _family_scan(self,root,outer):
+        """One full /proc scan (P73): the PPid closure of ROOT and every listed pid's status text. /proc lists tgids in
+        ascending order, so a process alive across the scan is listed (fs/proc/base.c:3486-3507, K8)."""
+        names=self.b.os.listdir('/proc')
+        if type(names) is not list: raise _FamilyStop('FAMILY_UNREADABLE')
+        pids=[int(name) for name in names if type(name) is str and _FAMILY_PID.fullmatch(name) is not None]
+        if len(pids)>_FAMILY_MAX_PIDS or len(set(pids))!=len(pids): raise _FamilyStop('FAMILY_UNREADABLE')
+        statuses,children={},{}
+        for pid in pids:
+            try: data=self.b.read_file('/proc/'+str(pid)+'/status',_FAMILY_STATUS_BYTES)
+            except (FileNotFoundError,ProcessLookupError):
+                if pid==root: raise _FamilyStop('FAMILY_UNREADABLE') from None
+                continue   # exited after the listing
+            statuses[pid]=data
+            children.setdefault(int(_family_rows(data,(b'PPid',))[b'PPid']),[]).append(pid)
+        if root not in statuses: raise _FamilyStop('FAMILY_UNREADABLE')
+        if int(_family_rows(statuses[root],(b'PPid',))[b'PPid'])!=outer: raise _FamilyStop('AUTHORITY_LOST')
+        family,queue={root},[root]
+        while queue:
+            for child in children.get(queue.pop(),()):
+                if child not in family:
+                    family.add(child);queue.append(child)
+                    if len(family)>_FAMILY_MAX_MEMBERS: raise _FamilyStop('FAMILY_UNREADABLE')
+        return frozenset(family),statuses
+
+    def _family_present(self,pid):
+        """A fresh status read: 'GONE' (reaped), 'EXITED' (zombie or dead) or 'LIVE'."""
+        try: data=self.b.read_file('/proc/'+str(pid)+'/status',_FAMILY_STATUS_BYTES)
+        except (FileNotFoundError,ProcessLookupError): return 'GONE'
+        return 'EXITED' if _family_rows(data,(b'State',))[b'State'] in _FAMILY_EXITED else 'LIVE'
+
+    def _family_read(self,pid,root,read):
+        """One read of a member's /proc entry; _FAMILY_GONE when the member is gone (dropped from this attempt).
+
+        FileNotFoundError or ProcessLookupError: a member that is gone or already exited is dropped, which is not
+        itself a retry; one still shown and not a zombie is exiting (K6), which retries the attempt. PermissionError:
+        a vanished task reads EACCES too (K3), so the member is dropped only when its status proves it gone; on a
+        member that still exists it is terminal, never a skip (P77, the E1 class). The root is never dropped.
+        """
+        try: return read()
+        except (FileNotFoundError,ProcessLookupError):
+            if pid==root: raise _FamilyStop('FAMILY_UNREADABLE') from None
+            if self._family_present(pid)!='LIVE': return _FAMILY_GONE
+            raise _FamilyRetry(False) from None
+        except PermissionError:
+            if pid!=root and self._family_present(pid)=='GONE': return _FAMILY_GONE
+            raise _FamilyStop('FAMILY_UNREADABLE') from None
+
+    def _family_entry(self,pid,root,base,fd):
+        """(link, stat) of one descriptor, the stat following the link. On FileNotFoundError the member's fds are
+        listed again: an absent number closed (_FAMILY_CLOSED); a present one is read once more, and a second failure
+        retries the attempt. _FAMILY_GONE when the member is gone."""
+        b=self.b;path=base+'/fd/'+str(fd)
+        for again in (False,True):
+            try: return b.os.readlink(path),b.os.stat(path)
+            except FileNotFoundError:
+                if again: raise _FamilyRetry(False) from None
+            except PermissionError:
+                if pid!=root and self._family_present(pid)=='GONE': return _FAMILY_GONE
+                raise _FamilyStop('FAMILY_UNREADABLE') from None
+            names=self._family_read(pid,root,lambda:b.os.listdir(base+'/fd'))
+            if names is _FAMILY_GONE: return _FAMILY_GONE
+            if fd not in _family_fd_names(names): return _FAMILY_CLOSED
+
+    def _family_descriptors(self,pid,root,controls,null_rdev):
+        """Step 3 for one member: every descriptor classified; its socket inodes, or _FAMILY_GONE."""
+        b=self.b;base='/proc/'+str(pid)
+        names=self._family_read(pid,root,lambda:b.os.listdir(base+'/fd'))
+        if names is _FAMILY_GONE: return _FAMILY_GONE
+        inodes=[]
+        for fd in _family_fd_names(names):
+            entry=self._family_entry(pid,root,base,fd)
+            if entry is _FAMILY_GONE: return _FAMILY_GONE
+            if entry is _FAMILY_CLOSED: continue
+            link,metadata=entry
+            if type(link) is not str or not link: raise _FamilyStop('FAMILY_UNREADABLE')
+            if link.startswith('socket:'):
+                # net/socket.c:362 `socket:[%lu]`; attributed in step 6. Any other socket: form is unreadable.
+                match=_FAMILY_SOCKET.fullmatch(link)
+                if match is None: raise _FamilyStop('FAMILY_UNREADABLE')
+                inodes.append(int(match.group(1)))
+                continue
+            if pid!=root and link in controls: raise _FamilyStop('FAMILY_DENIED')
+            mode=metadata.st_mode
+            if type(mode) is not int: raise _FamilyStop('FAMILY_UNREADABLE')
+            if (_statmod.S_ISCHR(mode) or _statmod.S_ISBLK(mode)) and metadata.st_rdev!=null_rdev:
+                raise _FamilyStop('FAMILY_DENIED')
+        return inodes
+
+    def _family_tables(self,pid,root,union):
+        """Step 4 for one member: its own five tables into UNION (inode -> family); False when it is gone."""
+        for table,family,header in _FAMILY_TABLES:
+            data=self._family_read(pid,root,lambda table=table:self.b.read_file(
+                '/proc/'+str(pid)+'/net/'+table,_FAMILY_TABLE_BYTES))
+            if data is _FAMILY_GONE: return False
+            for inode in _family_table_inodes(data,table,header):
+                if union.setdefault(inode,family)!=family: raise _FamilyStop('FAMILY_UNREADABLE')
+        return True
 
     def write_role(self,owned,data):
         state=self._owned.get(owned)

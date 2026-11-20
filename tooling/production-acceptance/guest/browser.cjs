@@ -209,7 +209,8 @@ async function openBrowser(config, ports) {
     return stopped;
   }
   try {
-    if(typeof role.cleanupRemaining!=='function')fail('ROLE_INVALID');
+    // Task 16c (P76): the role handle must carry the bootstrap's family inspection.
+    if(typeof role.cleanupRemaining!=='function'||typeof role.inspectFamily!=='function')fail('ROLE_INVALID');
     facts = auditPipe(role.privatePipe);
     if (facts.runId !== config.runBinding.runId) fail('ROLE_INVALID');
     wire = rpc(role.privatePipe, facts);
@@ -304,6 +305,10 @@ async function openBrowser(config, ports) {
         if(frame.type==='READY'&&assets){exact(frame.payload,['status']);if(frame.payload.status!=='READY')fail('FRAME_DENIED');ready=true;continue;}
         fail('FRAME_DENIED');
       }
+      // Task 16c (owner decision 2026-11-20, P76): the uid-10002 worker never inspects other processes; the
+      // bootstrap does. POST_LOAD: after READY, inside the startup expiry, before the session exists, so before any
+      // credential. Worker-authored family facts are never evidence (a worker FAMILY frame is FRAME_DENIED above).
+      try { await startup.race(role.inspectFamily('POST_LOAD')); } catch (cause) { fail('ROLE_INVALID', cause); }
     } finally { startup.clear(); }
   } catch (cause) {
     try { await stopRole(); } catch {}
@@ -436,8 +441,16 @@ async function openBrowser(config, ports) {
       // A latched session is stopped, not closed over the wire; close then rejects
       // with the latched code (or CLEANUP_UNCERTAIN if the stop itself fails).
       if (failure !== null) { closeOperation = (async () => { await stopRole(); fail(failure); })(); return closeOperation; }
-      let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); closeSignal = { promise, resolve, reject };
-      closeOperation=(async()=>{try { await wire.write('CLOSE', {}); } catch (cause) { reject(cause); }
+      closeOperation=(async()=>{
+        // Task 16c (P76): FINAL before CLOSE, bounded by the run expiry (never cleanupRemaining, C1). A failure
+        // latches ROLE_INVALID, stops the role and writes no CLOSE.
+        const expiry = runExpiry(clock, expiresAt);
+        try { await expiry.race(Promise.resolve().then(() => role.inspectFamily('FINAL'))); }
+        catch (cause) { const error = latch('ROLE_INVALID', cause); try { await stopRole(); } catch {} throw error; }
+        finally { expiry.clear(); }
+        if (failure !== null) { await stopRole(); fail(failure); }
+        let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); closeSignal = { promise, resolve, reject };
+        try { await wire.write('CLOSE', {}); } catch (cause) { reject(cause); }
         try { return Object.freeze(await bounded(promise, role.cleanupRemaining(), 'CLEANUP_UNCERTAIN')); }
         finally { await stopRole(); }})();
       return closeOperation;

@@ -15,6 +15,9 @@ const browserApplicationPipes = new WeakMap(), browserRequestEvidence = new Weak
 const adoptedRolePorts = new WeakSet();
 function inspectAdoptedRolePort(value) { return adoptedRolePorts.has(value); }
 const kinds = Object.freeze({ BROWSER: 10002, VERIFIER: 10003 });
+// Task 16c (owner decision 2026-11-20, P76): the controller's two BROWSER family points and the ordinal each
+// returns; the bootstrap's internal LAUNCH inspection is ordinal 1. The bootstrap inspects; the worker never does.
+const FAMILY_ORDINALS = Object.freeze({ POST_LOAD: 2, FINAL: 3 });
 function fail(code) { const e = new Error(code); e.code = code; throw e; }
 function object(v) { return v !== null && (typeof v === 'object' || typeof v === 'function'); }
 function privateHandle(value) {
@@ -31,7 +34,7 @@ function same(f, expected, waiting) {
 }
 function bindRoleBootstrap(authority, runId) {
   if (typeof runId !== 'string' || !/^[0-9a-f]{32}$/.test(runId) || !authority ||
-      ['inspectHandoff','inspectGrant','activate','waitExit','stopOwned'].some(n=>typeof authority[n] !== 'function')) fail('HANDOFF_DENIED');
+      ['inspectHandoff','inspectGrant','activate','waitExit','stopOwned','inspectFamily'].some(n=>typeof authority[n] !== 'function')) fail('HANDOFF_DENIED');
   // This is a trusted embedding API, not a generic bootstrap RPC or verifier
   // installed from incoming worker data. Capture the authority object; the
   // facts it reports are rechecked before and after each await. Role ports do
@@ -116,10 +119,24 @@ function adoptRole(kind, handoff) {
       }
       const e=new Error('ACTIVATION_DENIED',{cause});e.code='ACTIVATION_DENIED';throw e;
     }
-    return privateHandle({privatePipe:r.expected.privatePipe,
+    const activated={privatePipe:r.expected.privatePipe,
       // Called only on browser close/stop paths (terminal).
       cleanupRemaining(){const budget=r.authority.cleanupBudget;return budget?terminalRemaining(budget):120000;},
-      waitExit:cleanup.waitExit, stopOwned:cleanup.stopOwned});
+      waitExit:cleanup.waitExit, stopOwned:cleanup.stopOwned};
+    // Task 16c (P76, C9): the BROWSER handle asks the bootstrap to inspect the family at POST_LOAD or FINAL and
+    // accepts only its exact clean result {point, ordinal, status:'CLEAN', members}. Anything else is ROLE_INVALID.
+    if(kind==='BROWSER')activated.inspectFamily=async function(point){
+      if(arguments.length!==1||!Object.hasOwn(FAMILY_ORDINALS,point))fail('ROLE_INVALID');
+      let value;
+      try{current('ROLE_INVALID',false);value=await r.authority.inspectFamily(r.expected.child,point);current('ROLE_INVALID',false);}
+      catch(cause){const e=new Error('ROLE_INVALID',{cause});e.code='ROLE_INVALID';throw e;}
+      if(!value||typeof value!=='object'||Array.isArray(value)||Reflect.ownKeys(value).length!==4||
+          !['point','ordinal','status','members'].every(key=>Object.hasOwn(value,key))||value.point!==point||
+          value.ordinal!==FAMILY_ORDINALS[point]||value.status!=='CLEAN'||!Number.isSafeInteger(value.members)||
+          value.members<2||value.members>256)fail('ROLE_INVALID');
+      return Object.freeze({point,ordinal:value.ordinal,members:value.members});
+    };
+    return privateHandle(activated);
   }});
   adoptedRolePorts.add(port);
   return port;
@@ -370,6 +387,11 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
       return {kind:'BROWSER',runId:binding.runId,child:r.child,purpose:'CONFINEMENT_PROVED',session:null,remainingMs};},
     async activate(child,p){const g=projectedGrants.get(p),r=g&&grants.get(g);if(!r||r.child!==child||r.used)fail('ACTIVATION_DENIED');r.used=true;current(r.proof);const result=await request('BROWSER','COMMIT_BROWSER',{grantId:r.grantId,generation:r.proof.generation});current(r.proof);exact(result,['status','generation']);if(result.status!=='ACTIVE'||result.generation!==1)fail('ACTIVATION_DENIED');r.active=true;},
     async stopOwned(child,ms){const r=[...local.values()].find(r=>r.child===child);if(!r)fail('EXIT_DENIED');return {...await stop(r.kind,ms),child};},
+    // Task 16c (P76): the fixed BROWSER_FAMILY request on the controller channel, through appOperation so it never
+    // overlaps APP_POLL or APP_WRITE (request admits one in flight). Only for the local, active BROWSER record.
+    async inspectFamily(child,point){const r=[...local.values()].find(r=>r.child===child);
+      if(!r||r.kind!=='BROWSER'||!r.active)fail('AUTHORITY_LOST');if(!Object.hasOwn(FAMILY_ORDINALS,point))fail('FRAME_DENIED');
+      return appOperation(()=>request('BROWSER','BROWSER_FAMILY',{generation:1,point}));},
     async waitExit(child,ms){const r=[...local.values()].find(r=>r.child===child);if(!r)fail('EXIT_DENIED');return {...await stop(r.kind,ms,'WAIT_EXIT'),child};}};
   const bootstrap=bindRoleBootstrap(authority,binding.runId), adopted=new Map();
   const applicationPipe=browserApplicationPipe(binding.runId,

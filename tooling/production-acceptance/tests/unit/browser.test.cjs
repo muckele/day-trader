@@ -112,7 +112,8 @@ function compositionBinding(runId, overrides = {}) {
 
 // Task 16 (T13 I-6, m-1): the worker's status facts are all four Uid and Gid fields,
 // NoNewPrivs, the Seccomp mode and the Seccomp_filters depth; descriptor facts are the
-// console, unattributed-socket, unreadable and control-pipe counts.
+// console, unattributed-socket, unreadable and control-pipe counts. Task 16c (P79): these are
+// the worker's own startup self-check only; the bootstrap inspects the family.
 const ROLE_IDS = Object.freeze([10002, 10002, 10002, 10002]);
 function statusFacts(overrides = {}) {
   return { uids: ROLE_IDS, gids: ROLE_IDS, noNewPrivs: true, seccomp: 2, seccompFilters: 1,
@@ -126,19 +127,12 @@ function topology(overrides = {}) {
     ...overrides,
   });
 }
+// Task 16c (P76): the bootstrap's clean answer to the controller's BROWSER_FAMILY request.
+const FAMILY_ORDINALS = Object.freeze({ POST_LOAD: 2, FINAL: 3 });
+function cleanFamily(point) { return { point, ordinal: FAMILY_ORDINALS[point], status: 'CLEAN', members: 5 }; }
+function familyError(code = 'FAMILY_DENIED') { return Object.assign(new Error(code), { code }); }
 
-function member(pid, overrides = {}) { return Object.freeze({ pid, ...statusFacts(overrides) }); }
-function family(overrides = {}) {
-  return Object.freeze({
-    workerPid: 101,
-    browserPid: 202,
-    members: Object.freeze([member(101), member(202), member(203)]),
-    procScope: 'BROWSER_FAMILY_ONLY',
-    ...overrides,
-  });
-}
-
-function duplex(audit = topology(), inspected = family(), options = {}) {
+function duplex(audit = topology(), options = {}) {
   const logs = [];
   function endpoint(label) {
     const queued = [];
@@ -146,7 +140,6 @@ function duplex(audit = topology(), inspected = family(), options = {}) {
     let peer,writing=false,nextWriteGate;
     const value = {
       audit: () => audit,
-      inspectBrowserFamily: () => inspected,
       async write(bytes) {
         if(options.strictWrites&&writing)throw Object.assign(new Error('FRAME_DENIED'),{code:'FRAME_DENIED'});
         writing=true;
@@ -408,12 +401,11 @@ async function startHarness(options = {}) {
   const testRun=crypto.randomBytes(16).toString('hex');
   const fake = fakePlaywright({ ...(options.fake || {}), subresources: options.cssAsset ? [CSS_ASSET] : [] });
   const audit=topology({...(options.audit||{}),runId:testRun});
-  const links = duplex(audit, options.family || family(), { strictWrites: options.strictWrites === true });
-  // T13 m-7: each family inspection is recorded with the number of Playwright events seen
-  // before it; a function `family` option answers per inspection (1-based).
-  const inspections = [], familySource = options.family || family();
-  links.worker.inspectBrowserFamily = () => { inspections.push(fake.calls.events.length);
-    return typeof familySource === 'function' ? familySource(inspections.length) : familySource; };
+  const links = duplex(audit, { strictWrites: options.strictWrites === true });
+  // Task 16c (P76): the bootstrap's family inspections the controller requests, each recorded
+  // with the worker and controller frames written before it; `familyInspect(point, call)`
+  // answers per request (1-based), else the clean result.
+  const familyCalls = [];
   const assetProofs = [];
   const launchEvents = [];
   let activationResolve,activationReject;
@@ -481,6 +473,10 @@ async function startHarness(options = {}) {
     async activate(){activations++;await activationReady;waiting=false;},
     async stopOwned(owned){assert.equal(owned,child);stops++;return {status:options.stopTimeout?'TIMEOUT':'STOPPED',runId:testRun,child};},
     async waitExit(owned){assert.equal(owned,child);waits++;return {status:'EXITED',runId:testRun,child};},
+    async inspectFamily(owned,point){assert.equal(owned,child);
+      familyCalls.push(Object.freeze({point,worker:decodedFrames(links.logs,'worker').map(frame=>frame.type),
+        controller:decodedFrames(links.logs,'controller').map(frame=>frame.type)}));
+      return options.familyInspect?options.familyInspect(point,familyCalls.length):cleanFamily(point);},
   };
   const bootstrap=roles.bindRoleBootstrap(authority,testRun);bootstrap.audit(handoff);
   const rolePort=roles.adoptRole('BROWSER',handoff);
@@ -488,13 +484,13 @@ async function startHarness(options = {}) {
   const workerResult = workerAPI.runBrowserWorker(links.worker, workerCfg);
   workerResult.then(result=>{if(result?.status==='FAILED')activationReject(Object.assign(new Error(result.code),{code:result.code}));}).catch(activationReject);
   if (options.observed) Object.assign(options.observed, {
-    fake, links, workerResult, assetProofs, stops: () => stops, waits: () => waits, runId: testRun, inspections: () => [...inspections],
+    fake, links, workerResult, assetProofs, stops: () => stops, waits: () => waits, runId: testRun, familyCalls: () => [...familyCalls],
   });
   const clock = options.controllerClock || Object.freeze({ sample: () => [160, 1000] });
   const session = await api.openBrowser(cfg, { rolePort, grant, admissionPort, clock });
   return { api, fake, links, cfg, session, workerResult, assetProofs, decisions:routeFixture.intents, launchEvents,runId:testRun, routeFixture,
     activations: () => activations, stops: () => stops, waits: () => waits, cleanupStarted: () => cleanupStarted,
-    inspections: () => [...inspections] };
+    familyCalls: () => [...familyCalls] };
 }
 
 // Task 16 (T13 I-8): a real BrowserSession whose worker side the test scripts frame by
@@ -517,12 +513,17 @@ function scriptedBrowser(options = {}) {
   if (options.controllerAudit) links.controller.audit = options.controllerAudit;
   const handoff = Object.freeze({}), child = Object.freeze({}), grant = Object.freeze({});
   let waiting = true, stops = 0, outgoing = 0;
+  const familyCalls = [];
   const authority = {
     inspectHandoff: value => value === handoff ? { kind: 'BROWSER', runId: pipeRunId, uid: 10002, child, privatePipe: links.controller, waiting, confined: true } : null,
     inspectGrant: value => value === grant ? { kind: 'BROWSER', runId: pipeRunId, child, purpose: 'CONFINEMENT_PROVED', session: null, remainingMs: 60000 } : null,
     async activate() { waiting = false; },
     async stopOwned(owned) { assert.equal(owned, child); stops++; return { status: 'STOPPED', runId: pipeRunId, child }; },
     async waitExit(owned) { assert.equal(owned, child); return { status: 'EXITED', runId: pipeRunId, child }; },
+    // Task 16c (P76): the bootstrap's answer to the controller's BROWSER_FAMILY request.
+    async inspectFamily(owned, point) { assert.equal(owned, child);
+      familyCalls.push(Object.freeze({ point, controller: decodedFrames(links.logs, 'controller').map(frame => frame.type) }));
+      return options.familyInspect ? options.familyInspect(point, familyCalls.length) : cleanFamily(point); },
   };
   roles.bindRoleBootstrap(authority, pipeRunId).audit(handoff);
   const rolePort = roles.adoptRole('BROWSER', handoff);
@@ -563,7 +564,10 @@ function scriptedBrowser(options = {}) {
   const valid = entries.map(entry => ({ entryId: 'frontend-asset:' + entry.path, hash: entry.hash, sizeMatch: true, hashMatch: true, mimeMatch: true }));
   const proofs = typeof options.proofs === 'function' ? options.proofs(valid) : valid;
   (async () => {
-    await send('ASSETS', { proofs }); await send('READY', { status: 'READY' });
+    await send('ASSETS', { proofs });
+    // Task 16c: extra worker frames before READY (a worker-authored FAMILY frame is never evidence).
+    for (const [type, payload] of options.beforeReady || []) await send(type, payload);
+    await send('READY', { status: 'READY' });
     while (true) {
       const frame = JSON.parse((await links.worker.read()).subarray(4).toString('ascii')); received.push(frame);
       if (frame.type === 'CLOSE') { await send('EXIT', { status: 'EXITED', runId: pipeRunId }); return; }
@@ -572,7 +576,8 @@ function scriptedBrowser(options = {}) {
   })().catch(() => {});
   const opened = api.openBrowser(cfg, { rolePort, grant, admissionPort: Object.freeze({}), clock: Object.freeze({ sample: () => [160, 1000] }) });
   opened.catch(() => {});
-  return { api, cfg, links, runId, opened, stops: () => stops, routeFixture,
+  return { api, cfg, links, runId, opened, stops: () => stops, routeFixture, familyCalls: () => [...familyCalls],
+    send: (type, payload) => send(type, payload),
     actions: () => received.filter(frame => frame.type === 'ACTION').map(frame => frame.payload),
     written: () => Buffer.concat(links.logs.filter(row => row.from === 'controller').map(row => row.bytes)).toString('ascii') };
 }
@@ -614,64 +619,39 @@ function statusText(overrides = {}) {
     ...['CapEff', 'NoNewPrivs', 'Seccomp', 'Seccomp_filters'].filter(name => rows[name] !== null).map(name => name + ':\t' + rows[name]),
     'Speculation_Store_Bypass:\tthread vulnerable', ''].join('\n');
 }
-// The reader's own listing descriptor resolves only while its /proc/<pid>/fd listing is open.
-const LISTING = open => { if (!open) throw procError('ENOENT', 'closed listing descriptor'); return '/proc/101/fd'; };
-// Fix round 1 (I-1): `threads` maps each tid under /proc/<pid>/task/ to the children that
-// thread forked. Linux files a child under the forking thread (kernel/fork.c:2632, :2690) and
-// each task's `children` lists only that task's children (fs/proc/array.c:720-770). Here the
-// browser (202) forks 204 from a non-main thread (251), as Chromium's launcher thread does.
-function cleanProcesses() {
-  return {
-    101: { threads: { 101: [202], 102: [] }, status: statusText(), fds: { 0: '/dev/null', 1: '/dev/null', 2: '/dev/null', 3: 'pipe:[11]', 4: 'pipe:[12]',
-      5: 'anon_inode:[eventpoll]', 6: 'pipe:[13]', 7: 'anon_inode:[eventfd]', 9: LISTING } },
-    202: { threads: { 202: [203], 251: [204], 252: [] }, status: statusText(), fds: { 0: '/dev/null', 1: '/dev/null', 2: '/dev/null', 3: 'pipe:[13]',
-      5: 'socket:[41001]', 6: 'socket:[41003]', 7: 'socket:[41004]', 8: 'socket:[41005]', 9: '/dev/shm/.org.chromium.Chromium.Ab12Cd (deleted)',
-      10: 'anon_inode:[eventfd]', 11: '/run/acceptance/browser/profile/Default/Cookies' } },
-    203: { threads: { 203: [] }, status: statusText({ Seccomp_filters: '3' }), fds: { 0: '/dev/null', 5: 'socket:[41002]', 6: '/memfd:shared_memory (deleted)' } },
-    204: { threads: { 204: [] }, status: statusText({ Seccomp_filters: '2' }), fds: { 0: '/dev/null', 5: 'socket:[41001]', 6: 'anon_inode:[eventpoll]' } },
-  };
-}
-function fakeProc(processes = cleanProcesses(), net = {}) {
+// Task 16c (P79): the worker reads only its own /proc/self view (and /proc/net, its own netns).
+// The family walk (children files, other processes' fd tables) moved to the bootstrap.
+function fakeProc(processes = selfProcesses(), net = {}) {
   const tables = { ...NET_TABLES, ...net }, open = new Set();
-  const processFor = (pid, target) => { const value = processes[pid === 'self' ? 'self' : pid]; if (!value) throw procError('ENOENT', target); return value; };
+  const processFor = (pid, target) => { const value = processes[pid]; if (!value) throw procError('ENOENT', target); return value; };
   return {
-    readdirSync(target) {
-      const match = /^\/proc\/([0-9]+)\/task$/.exec(target); if (!match) throw procError('ENOENT', target);
-      const threads = processFor(match[1], target).threads; if (threads instanceof Error) throw threads;
-      return Object.keys(threads);
-    },
     readFileSync(target) {
       let match;
       if ((match = /^\/proc\/net\/(unix|tcp6?|udp6?)$/.exec(target))) { const value = tables[match[1]]; if (value instanceof Error) throw value; return value; }
-      if ((match = /^\/proc\/([0-9]+)\/task\/([0-9]+)\/children$/.exec(target))) {
-        const threads = processFor(match[1], target).threads, children = threads instanceof Error ? undefined : threads[match[2]];
-        if (children === undefined) throw procError('ENOENT', target); if (children instanceof Error) throw children;
-        return children.map(pid => pid + ' ').join(''); }
-      if ((match = /^\/proc\/([0-9]+|self)\/status$/.exec(target))) { const status = processFor(match[1], target).status; if (status instanceof Error) throw status; return status; }
+      if (target === '/proc/self/status') { const status = processFor('self', target).status; if (status instanceof Error) throw status; return status; }
       if (processes.self && target === '/proc/net/dev') return processes.self.netDev;
       if (processes.self && target === '/proc/self/mountinfo') return processes.self.mountinfo;
       throw procError('ENOENT', target);
     },
     opendirSync(target) {
-      const match = /^\/proc\/([0-9]+|self)\/fd$/.exec(target); if (!match) throw procError('ENOENT', target);
-      const fds = processFor(match[1], target).fds; if (fds instanceof Error) throw fds;
-      const names = Object.keys(fds); let index = 0; open.add(match[1]);
-      return { readSync() { return index < names.length ? { name: names[index++] } : null; }, closeSync() { open.delete(match[1]); } };
+      if (target !== '/proc/self/fd') throw procError('ENOENT', target);
+      const fds = processFor('self', target).fds; if (fds instanceof Error) throw fds;
+      const names = Object.keys(fds); let index = 0; open.add('self');
+      return { readSync() { return index < names.length ? { name: names[index++] } : null; }, closeSync() { open.delete('self'); } };
     },
     readlinkSync(target) {
-      const match = /^\/proc\/([0-9]+|self)\/fd\/([0-9]+)$/.exec(target); if (!match) throw procError('ENOENT', target);
-      const link = processFor(match[1], target).fds[match[2]];
-      if (typeof link === 'function') return link(open.has(match[1]));
+      const match = /^\/proc\/self\/fd\/([0-9]+)$/.exec(target); if (!match) throw procError('ENOENT', target);
+      const link = processFor('self', target).fds[match[1]];
+      if (typeof link === 'function') return link(open.has('self'));
       if (link === undefined) throw procError('ENOENT', target);
       if (link instanceof Error) throw link;
       return link;
     },
   };
 }
-const CONTROL_TARGETS = Object.freeze(['pipe:[11]', 'pipe:[12]']);
 function nativeReaders() {
   const api = worker(fakePlaywright(), receipts, async () => assert.fail('binding must not start'), { process });
-  for (const name of ['classifyDescriptor', 'socketInodeFamilies', 'procStatus', 'forbiddenDescriptorCounts', 'inspectNativeFamily', 'nativeTopology'])
+  for (const name of ['classifyDescriptor', 'socketInodeFamilies', 'procStatus', 'forbiddenDescriptorCounts', 'nativeTopology'])
     assert.equal(typeof api[name], 'function', name + ' native reader is absent');
   return api;
 }
@@ -973,28 +953,29 @@ test('inherited_filter_all_children', async () => {
   const h = await startHarness();
   assert.equal(h.fake.calls.launch.length, 1);
   await closeHarness(h);
-  // A child whose seccomp filter is not inherited (mode 0, no filters).
-  const observed={};const bad = startHarness({ observed,family: family({ members: Object.freeze([
-    member(101), member(202, { seccomp: 0, seccompFilters: 0 }),
-  ]) }) });
-  await assert.rejects(bad, { code: 'ROLE_INVALID' });
-  assert.equal(observed.fake.calls.contextCloses,1);assert.equal(observed.fake.calls.browserCloses,1);
+  // Task 16c (P79): the worker's own startup self-check; a Chromium child's filter is the bootstrap's
+  // check (confinement_test test_browser_family_status_rules). A worker without its inherited filter
+  // (mode 0, no filters) never launches.
+  const observed={};const bad = startHarness({ observed, audit: { seccomp: 0, seccompFilters: 0 } });
+  await assert.rejects(bad, { code: 'ACTIVATION_DENIED' });
+  assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' });
+  assert.equal(observed.fake.calls.launch.length, 0);
 });
 
 test('browser_pid_uid_proc_console_inventory', async () => {
   const h = await startHarness();
   await closeHarness(h);
-  // Each altered member sits in an otherwise valid two-member family, so only its own fact fails.
+  // Task 16c (P79): the worker's own startup self-check, one altered fact at a time. The family's
+  // members (and the browser pid) are the bootstrap's check (confinement_test BrowserFamilyInspectionTests).
   for (const altered of [
-    { browserPid: 0 }, { procScope: 'HOST' },
-    { members: Object.freeze([member(101), member(202, { uids: Object.freeze([0, 0, 0, 0]) })]) },
-    { members: Object.freeze([member(101), member(202, { uids: Object.freeze([10002, 0, 10002, 10002]) })]) },
-    { members: Object.freeze([member(101), member(202, { gids: Object.freeze([10002, 10002, 10002, 0]) })]) },
-    { members: Object.freeze([member(101), member(202, { consoleFds: 1 })]) },
-    { members: Object.freeze([member(101), member(202, { unknownSocketFds: 1 })]) },
-    { members: Object.freeze([member(101), member(202, { unexpectedFds: 1 })]) },
-    { members: Object.freeze([member(101), member(202, { unreadableFds: 1 })]) },
-  ]) await assert.rejects(startHarness({ family: family(altered) }), { code: 'ROLE_INVALID' }, JSON.stringify(altered));
+    { procScope: 'HOST' }, { uids: Object.freeze([0, 0, 0, 0]) }, { uids: Object.freeze([10002, 0, 10002, 10002]) },
+    { gids: Object.freeze([10002, 10002, 10002, 0]) }, { consoleFds: 1 }, { unknownSocketFds: 1 }, { unexpectedFds: 1 },
+    { unreadableFds: 1 }, { capabilities: 'PRESENT' },
+  ]) {
+    const observed = {};
+    await assert.rejects(startHarness({ observed, audit: altered }), { code: 'ACTIVATION_DENIED' }, JSON.stringify(altered));
+    assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' }, JSON.stringify(altered));
+  }
 });
 
 test('runtime_inventory_package_and_lock_are_exact_and_hold_distribution', () => {
@@ -1839,12 +1820,6 @@ test('redirects_latch_route_denied', async () => {
 // ---- Task 16: browser provenance (T13 I-8), descriptor inventory (I-6, m-1, m-7) and unbound checks (I-10) ----
 
 const CANARY = 'REVIEW-CANARY-PASSWORD';
-function nativeFamily(processes, net) {
-  const readers = nativeReaders();
-  return () => readers.inspectNativeFamily(fakeProc(processes, net), new Set(CONTROL_TARGETS), 101);
-}
-function withProcess(pid, change) { const processes = cleanProcesses(); change(processes[pid], processes); return processes; }
-
 test('forged_role_port_cannot_open_session', async () => {
   // Review D4: a duck-typed role port with an otherwise valid-looking pipe and grant.
   const api = controller();
@@ -1883,7 +1858,7 @@ test('forged_role_port_cannot_open_session', async () => {
     inspectHandoff: value => value === handoff ? { kind: 'BROWSER', runId: runId2, uid: 10002, child, privatePipe: unadopted, waiting, confined: true } : null,
     inspectGrant: value => value === grant ? { kind: 'BROWSER', runId: runId2, child, purpose: 'CONFINEMENT_PROVED', session: null, remainingMs: 60000 } : null,
     async activate() { waiting = false; }, async stopOwned() { stops++; return { status: 'STOPPED', runId: runId2, child }; },
-    async waitExit() { return { status: 'EXITED', runId: runId2, child }; },
+    async waitExit() { return { status: 'EXITED', runId: runId2, child }; }, async inspectFamily(owned, point) { return cleanFamily(point); },
   };
   roles.bindRoleBootstrap(authority, runId2).audit(handoff);
   const adopted = roles.adoptRole('BROWSER', handoff);
@@ -1904,6 +1879,7 @@ test('forged_role_port_cannot_open_session', async () => {
     inspectGrant() { verifierCalls++; return null; }, async activate() { verifierCalls++; },
     async stopOwned() { verifierCalls++; return { status: 'STOPPED', runId: verifierRun, child: verifierChild }; },
     async waitExit() { verifierCalls++; return { status: 'EXITED', runId: verifierRun, child: verifierChild }; },
+    async inspectFamily() { verifierCalls++; return null; },
   }, verifierRun).audit(verifierHandoff);
   const verifierPort = roles.adoptRole('VERIFIER', verifierHandoff);
   assert.equal(roles.inspectAdoptedRolePort(verifierPort), true);
@@ -1940,6 +1916,8 @@ test('legacy_confinement_boolean_branch_removed', async () => {
 
 test('vsock_socket_unattributable_fails_inventory', async () => {
   // T13 I-6: a socket is attributed only from /proc/net/{unix,tcp,tcp6,udp,udp6}; vsock has no table.
+  // Task 16c (P79): the worker's own startup self-check. A Chromium child's unattributed socket is the
+  // bootstrap's check (confinement_test test_browser_family_forbidden_descriptors_fail).
   const readers = nativeReaders();
   const families = readers.socketInodeFamilies(fakeProc());
   assert.deepEqual(Object.fromEntries([...families.entries()]), { ...SOCKET_INODES });
@@ -1950,24 +1928,21 @@ test('vsock_socket_unattributable_fails_inventory', async () => {
     assert.equal(readers.classifyDescriptor(link, known), kind, link);
   assert.equal(readers.classifyDescriptor('socket:[41001]', new Map()), 'UNKNOWN_SOCKET');
   assert.equal(readers.classifyDescriptor('socket:[41001]', undefined), 'UNKNOWN_SOCKET');
-  // A vsock descriptor (inode 99999 is in no table) fails a Chromium child, the browser and the worker itself.
-  for (const pid of [203, 202]) {
-    const processes = withProcess(pid, row => { row.fds[12] = 'socket:[99999]'; });
-    const counts = readers.forbiddenDescriptorCounts(fakeProc(processes), String(pid), new Set(CONTROL_TARGETS), families);
-    assert.deepEqual(plainCopy(counts), { consoleFds: 0, unknownSocketFds: 1, unreadableFds: 0, unexpectedFds: 0 });
-    await assert.rejects(startHarness({ family: nativeFamily(processes) }), { code: 'ROLE_INVALID' }, String(pid));
-  }
+  // A vsock descriptor (inode 99999 is in no table) fails the worker's own audit.
   const self = selfProcesses(); self.self.fds[6] = 'socket:[99999]';
+  assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc(self))), { consoleFds: 0, unknownSocketFds: 1, unreadableFds: 0, unexpectedFds: 0 });
   const observed = {};
   await assert.rejects(startHarness({ observed, audit: readers.nativeTopology(fakeProc(self), SELF_INIT) }), { code: 'ACTIVATION_DENIED' });
   assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' });
-  // Control: the attributed family and the clean worker view open a session.
-  const h = await startHarness({ family: nativeFamily(), audit: readers.nativeTopology(fakeProc(selfProcesses()), SELF_INIT) });
+  // Control: the clean worker view opens a session.
+  const h = await startHarness({ audit: readers.nativeTopology(fakeProc(selfProcesses()), SELF_INIT) });
   await closeHarness(h);
 });
 
 test('hvc0_vport_console_descriptors_fail', async () => {
   // T13 I-6: the virtio console (console=hvc0), virtio ports and every tty are consoles.
+  // Task 16c (P79): the worker's own startup self-check. A Chromium child's console is the bootstrap's
+  // check, by device number rather than path (P74; confinement_test test_browser_family_forbidden_descriptors_fail).
   const readers = nativeReaders(), known = new Map(Object.entries(SOCKET_INODES));
   for (const link of ['/dev/hvc0', '/dev/hvc1', '/dev/vport0p1', '/dev/vport1p2', '/dev/console', '/dev/tty', '/dev/tty1', '/dev/ttyAMA0',
     '/dev/ttyS0', '/dev/pts/0', '/dev/pts/12', '/dev/pts/3 (deleted)'])
@@ -1975,11 +1950,9 @@ test('hvc0_vport_console_descriptors_fail', async () => {
   for (const [link, kind] of [['/dev/null', 'NULL'], ['/dev/urandom', 'OTHER'], ['/dev/shm/.org.chromium.Chromium.x', 'OTHER'], ['/dev/ptmx', 'OTHER']])
     assert.equal(readers.classifyDescriptor(link, known), kind, link);
   for (const link of ['/dev/hvc0', '/dev/vport0p1', '/dev/console', '/dev/pts/0']) {
-    const processes = withProcess(203, row => { row.fds[2] = link; });
-    assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc(processes), '203', new Set(CONTROL_TARGETS))),
-      { consoleFds: 1, unknownSocketFds: 0, unreadableFds: 0, unexpectedFds: 0 }, link);
-    await assert.rejects(startHarness({ family: nativeFamily(processes) }), { code: 'ROLE_INVALID' }, link);
     const self = selfProcesses(); self.self.fds[2] = link;
+    assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc(self))),
+      { consoleFds: 1, unknownSocketFds: 0, unreadableFds: 0, unexpectedFds: 0 }, link);
     const observed = {};
     await assert.rejects(startHarness({ observed, audit: readers.nativeTopology(fakeProc(self), SELF_INIT) }), { code: 'ACTIVATION_DENIED' }, link);
     assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' }, link);
@@ -1987,97 +1960,50 @@ test('hvc0_vport_console_descriptors_fail', async () => {
 });
 
 test('unreadable_descriptor_fails', async () => {
-  // T13 I-6 / m-7: a readlink error is UNREADABLE; an unreadable Chromium child is FAMILY_UNREADABLE.
+  // T13 I-6 / m-7: a readlink error is UNREADABLE. Task 16c (P79, P77): the worker's own startup
+  // self-check only; an unreadable family member is the bootstrap's terminal FAMILY_UNREADABLE
+  // (confinement_test test_browser_family_non_transient_errors_fail_without_retry).
   const readers = nativeReaders();
   for (const link of [null, undefined, '', procError('EACCES', 'x')]) assert.equal(readers.classifyDescriptor(link, new Map()), 'UNREADABLE', String(link));
-  const unreadableLink = withProcess(203, row => { row.fds[7] = procError('EACCES', '/proc/203/fd/7'); });
-  assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc(unreadableLink), '203', new Set(CONTROL_TARGETS))),
-    { consoleFds: 0, unknownSocketFds: 0, unreadableFds: 1, unexpectedFds: 0 });
+  const unreadable = selfProcesses(); unreadable.self.fds[8] = procError('EACCES', '/proc/self/fd/8');
+  assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc(unreadable))), { consoleFds: 0, unknownSocketFds: 0, unreadableFds: 1, unexpectedFds: 0 });
+  // The worker's own unreadable descriptor, descriptor directory, status or socket table fails its own audit.
   for (const [name, processes, net] of [
-    ['unreadable descriptor', unreadableLink],
-    ['closed descriptor', withProcess(204, row => { row.fds[8] = procError('ENOENT', '/proc/204/fd/8'); })],
-    ['unreadable status', withProcess(204, row => { row.status = procError('EACCES', '/proc/204/status'); })],
-    ['unreadable descriptor directory', withProcess(204, row => { row.fds = procError('EACCES', '/proc/204/fd'); })],
-    ['unreadable children', withProcess(202, row => { row.threads[202] = procError('EACCES', '/proc/202/task/202/children'); })],
-    ['vanished child', withProcess(202, row => { row.threads[202] = [203, 205]; })],
-    // Fix round 1 (I-1): every thread's children file is read.
-    ['unreadable non-main thread children', withProcess(202, row => { row.threads[251] = procError('EACCES', '/proc/202/task/251/children'); })],
-    ['vanished child of a non-main thread', withProcess(202, row => { row.threads[251] = [204, 206]; })],
-    ['unreadable task directory', withProcess(202, row => { row.threads = procError('EACCES', '/proc/202/task'); })],
-    ['malformed task entry', withProcess(202, row => { row.threads = { 202: [203], 251: [204], 'self': [] }; })],
-    ['malformed children entry', withProcess(202, row => { row.threads[252] = ['204x']; })],
-    ['unreadable socket table', cleanProcesses(), { udp6: procError('EACCES', '/proc/net/udp6') }],
-    ['malformed socket table', cleanProcesses(), { unix: 'Num RefCount Inode\n0000000000000000: 00000002 41001\n' }],
-    // Well-formed rows under a header whose columns are not the 6.8 layout.
-    ['reordered table header', cleanProcesses(), { unix: NET_TABLES.unix.replace('St Inode Path', 'Inode St Path') }],
-    // One inode claimed by two families.
-    ['inode in two families', cleanProcesses(), { udp6: NET_TABLES.udp6 +
+    ['unreadable descriptor', unreadable],
+    ['unreadable descriptor directory', selfProcesses({ fds: procError('EACCES', '/proc/self/fd') })],
+    ['unreadable socket table', selfProcesses(), { udp6: procError('EACCES', '/proc/net/udp6') }],
+    ['malformed socket table', selfProcesses(), { unix: 'Num RefCount Inode\n0000000000000000: 00000002 41001\n' }],
+    ['reordered table header', selfProcesses(), { unix: NET_TABLES.unix.replace('St Inode Path', 'Inode St Path') }],
+    ['inode in two families', selfProcesses(), { udp6: NET_TABLES.udp6 +
       '  102: 00000000000000000000000001000000:D433 00000000000000000000000000000000:0000 07 00000000:00000000 00:00000000 00000000 10002        0 41003 2 0000000000000000 0\n' }],
   ]) {
-    await assert.rejects(startHarness({ family: nativeFamily(processes, net) }), { code: 'ROLE_INVALID', workerCode: 'FAMILY_UNREADABLE' }, name);
+    let audit = null;
+    try { audit = readers.nativeTopology(fakeProc(processes, net), SELF_INIT); } catch (cause) { assert.equal(cause.code, 'FAMILY_UNREADABLE', name); continue; }
+    const observed = {};
+    await assert.rejects(startHarness({ observed, audit }), { code: 'ACTIVATION_DENIED' }, name);
+    assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' }, name);
   }
-  // The worker's own unreadable descriptor fails its own audit.
-  const self = selfProcesses(); self.self.fds[8] = procError('EACCES', '/proc/self/fd/8');
-  const observed = {};
-  await assert.rejects(startHarness({ observed, audit: readers.nativeTopology(fakeProc(self), SELF_INIT) }), { code: 'ACTIVATION_DENIED' });
-  assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' });
 });
 
 test('native_readers_parse_fake_proc', () => {
-  // T13 I-6: inspectNativeFamily and forbiddenDescriptorCounts run against a fake /proc in the 6.8 formats.
+  // T13 I-6: forbiddenDescriptorCounts and procStatus run against a fake /proc in the 6.8 formats.
+  // Task 16c (P79): on the worker's own /proc/self only; inspectNativeFamily is removed.
   const readers = nativeReaders();
+  assert.equal(Object.hasOwn(readers, 'inspectNativeFamily'), false);
   const status = { uids: [10002, 10002, 10002, 10002], gids: [10002, 10002, 10002, 10002], noNewPrivs: true, seccomp: 2, capabilities: 'EMPTY' };
   const clean = { consoleFds: 0, unknownSocketFds: 0, unreadableFds: 0, unexpectedFds: 0 };
-  assert.deepEqual(plainCopy(readers.inspectNativeFamily(fakeProc(), new Set(CONTROL_TARGETS), 101)), {
-    workerPid: 101, browserPid: 202, procScope: 'BROWSER_FAMILY_ONLY', members: [
-      { pid: 101, ...status, seccompFilters: 1, ...clean },
-      { pid: 202, ...status, seccompFilters: 1, ...clean },
-      { pid: 203, ...status, seccompFilters: 3, ...clean },
-      { pid: 204, ...status, seccompFilters: 2, ...clean },
-    ] });
-  // The worker's control pipes are expected only in the worker; in a child they count.
-  const leaked = withProcess(202, row => { row.fds[12] = 'pipe:[11]'; row.fds[13] = 'pipe:[12]'; row.fds[14] = '/dev/hvc0';
-    row.fds[15] = 'socket:[88888]'; row.fds[16] = procError('EACCES', '/proc/202/fd/16'); });
-  assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc(leaked), '202', new Set(CONTROL_TARGETS))),
-    { consoleFds: 1, unknownSocketFds: 1, unreadableFds: 1, unexpectedFds: 2 });
-  assert.deepEqual(plainCopy(readers.inspectNativeFamily(fakeProc(leaked), new Set(CONTROL_TARGETS), 101).members[1]),
-    { pid: 202, ...status, seccompFilters: 1, consoleFds: 1, unknownSocketFds: 1, unreadableFds: 1, unexpectedFds: 2 });
+  const leaked = selfProcesses(); Object.assign(leaked.self.fds, { 14: '/dev/hvc0', 15: 'socket:[88888]', 16: procError('EACCES', '/proc/self/fd/16') });
+  assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc(leaked))),
+    { consoleFds: 1, unknownSocketFds: 1, unreadableFds: 1, unexpectedFds: 0 });
   // The listing stays open while each descriptor is read, so the reader's own listing descriptor resolves.
-  assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc(), '101', new Set())), clean);
+  assert.deepEqual(plainCopy(readers.forbiddenDescriptorCounts(fakeProc())), clean);
   // procStatus reads all four Uid and Gid fields and both seccomp rows.
-  assert.deepEqual(plainCopy(readers.procStatus(fakeProc(withProcess(203, row => { row.status = statusText({ Uid: '10002\t0\t10002\t10002', Seccomp_filters: '4' }); })), '203')),
+  assert.deepEqual(plainCopy(readers.procStatus(fakeProc(selfProcesses({ status: statusText({ Uid: '10002\t0\t10002\t10002', Seccomp_filters: '4' }) })))),
     { ...status, uids: [10002, 0, 10002, 10002], seccompFilters: 4 });
   // The worker's own view. Fix round 1 (P28): the composition channel key is not copied into it.
   const self = plainCopy(readers.nativeTopology(fakeProc(selfProcesses()), SELF_INIT));
   assert.deepEqual(self, { version: 1, runId: RUN, maxFrameBytes: 16384, ...status, seccompFilters: 1,
     procScope: 'BROWSER_FAMILY_ONLY', ...clean, networkDeviceCount: 0, tmpfsPaths: ['/dev/shm', PATHS.cache, PATHS.profile, PATHS.support] });
-});
-
-test('family_walk_reads_every_thread_children', async () => {
-  // Fix round 1 (I-1): a child forked by a non-main thread (filed under /proc/<pid>/task/<tid>/children,
-  // kernel/fork.c:2632, :2690; fs/proc/array.c:720-770) is a family member and is inspected.
-  const readers = nativeReaders();
-  const family = plainCopy(readers.inspectNativeFamily(fakeProc(), new Set(CONTROL_TARGETS), 101));
-  assert.deepEqual(family.members.map(row => row.pid), [101, 202, 203, 204]);
-  assert.equal(family.browserPid, 202);
-  // Deeper: a grandchild forked by a non-main thread of a non-main-thread child.
-  const deep = cleanProcesses();
-  deep[204].threads = { 204: [], 260: [205] };
-  deep[205] = { threads: { 205: [] }, status: statusText({ Seccomp_filters: '2' }), fds: { 0: '/dev/null' } };
-  assert.deepEqual(plainCopy(readers.inspectNativeFamily(fakeProc(deep), new Set(CONTROL_TARGETS), 101)).members.map(row => row.pid), [101, 202, 203, 204, 205]);
-  // A member that only a non-main thread forked fails the run on its own facts: console, vsock, status, control pipe.
-  for (const [name, change] of [
-    ['console', row => { row.fds[2] = '/dev/hvc0'; }], ['vsock', row => { row.fds[7] = 'socket:[99999]'; }],
-    ['seccomp', row => { row.status = statusText({ Seccomp: '0', Seccomp_filters: '0' }); }], ['control pipe', row => { row.fds[8] = 'pipe:[11]'; }],
-  ]) {
-    await assert.rejects(startHarness({ family: nativeFamily(withProcess(204, change)) }), { code: 'ROLE_INVALID' }, name);
-    const deeper = cleanProcesses(); deeper[204].threads = { 204: [], 260: [205] };
-    deeper[205] = { threads: { 205: [] }, status: statusText({ Seccomp_filters: '2' }), fds: { 0: '/dev/null' } }; change(deeper[205]);
-    await assert.rejects(startHarness({ family: nativeFamily(deeper) }), { code: 'ROLE_INVALID' }, 'grandchild ' + name);
-  }
-  // The main thread's children come first, so the browser is still the root's first child.
-  const root = cleanProcesses(); root[101].threads = { 102: [], 101: [202] };
-  assert.equal(plainCopy(readers.inspectNativeFamily(fakeProc(root), new Set(CONTROL_TARGETS), 101)).browserPid, 202);
 });
 
 test('route_evidence_claim_refuses_mac_frame_form', async () => {
@@ -2103,59 +2029,27 @@ const STATUS_VARIANTS = Object.freeze([
 
 test('seccomp_status_requires_mode_2_filters_and_all_uids', async () => {
   // T13 m-1 (Option A m3): Seccomp exactly 2, Seccomp_filters >= 1, all four Uid and all four Gid fields 10002.
+  // Task 16c (P79): the worker itself; each Chromium child's rows are the bootstrap's check
+  // (confinement_test test_browser_family_status_rules).
   const readers = nativeReaders();
   for (const [name, change] of STATUS_VARIANTS) {
-    // A Chromium child (its own seccomp depth is above the worker's) and the worker itself.
-    const child = withProcess(204, row => { row.status = statusText({ Seccomp_filters: '2', ...change }); });
-    await assert.rejects(startHarness({ family: nativeFamily(child) }), { code: 'ROLE_INVALID' }, 'child ' + name);
     const observed = {};
     await assert.rejects(startHarness({ observed, audit: readers.nativeTopology(fakeProc(selfProcesses({ status: statusText(change) })), SELF_INIT) }),
       { code: 'ACTIVATION_DENIED' }, 'self ' + name);
     assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' }, 'self ' + name);
   }
-  // Control: a deeper filter stack (Chromium adds its own filters) is accepted.
-  const deep = withProcess(203, row => { row.status = statusText({ Seccomp_filters: '7' }); });
-  await closeHarness(await startHarness({ family: nativeFamily(deep), audit: readers.nativeTopology(fakeProc(selfProcesses({ status: statusText({ Seccomp_filters: '2' }) })), SELF_INIT) }));
+  // Control: a deeper filter stack is accepted.
+  await closeHarness(await startHarness({ audit: readers.nativeTopology(fakeProc(selfProcesses({ status: statusText({ Seccomp_filters: '2' }) })), SELF_INIT) }));
 });
 
 test('native_status_seccomp_checked', async () => {
-  // I-10 M2: the native status check reads the seccomp mode, not only NoNewPrivs.
+  // I-10 M2: the native status check reads the seccomp mode, not only NoNewPrivs. Task 16c (P79): the worker itself.
   const readers = nativeReaders();
-  const off = withProcess(202, row => { row.status = statusText({ Seccomp: '0', Seccomp_filters: '0' }); });
-  await assert.rejects(startHarness({ family: nativeFamily(off) }), { code: 'ROLE_INVALID' });
   const observed = {};
   await assert.rejects(startHarness({ observed, audit: readers.nativeTopology(fakeProc(selfProcesses({ status: statusText({ Seccomp: '0', Seccomp_filters: '0' }) })), SELF_INIT) }),
     { code: 'ACTIVATION_DENIED' });
   assert.deepEqual({ ...(await observed.workerResult) }, { status: 'FAILED', code: 'ROLE_INVALID' });
-  await closeHarness(await startHarness({ family: nativeFamily() }));
-});
-
-test('family_reinspected_after_first_load', async () => {
-  // T13 m-7: the family is inspected after launch and again after the first page load, before READY (so before credentials).
-  const h = await startHarness();
-  const [first, second, ...rest] = h.inspections(), events = h.fake.calls.events;
-  assert.deepEqual(rest, []);
-  assert.ok(first <= events.indexOf('route'), 'first inspection precedes routing: ' + first);
-  assert.ok(second > events.indexOf('load'), 'second inspection follows the first page load: ' + second);
-  await closeHarness(h);
-  // A console, an unattributed socket or a status failure that appears only after the page load stops the run before READY.
-  for (const later of [member(204, { consoleFds: 1 }), member(204, { unknownSocketFds: 1 }), member(204, { seccomp: 0 })]) {
-    const observed = {};
-    await assert.rejects(startHarness({ observed, family: call => call === 1 ? family() : family({ members: Object.freeze([...family().members, later]) }) }),
-      { code: 'ROLE_INVALID' });
-    assert.equal(observed.inspections().length, 2);
-    assert.equal(decodedFrames(observed.links.logs, 'worker').some(frame => ['ASSETS', 'READY'].includes(frame.type)), false);
-    assert.equal(observed.fake.calls.selectors.some(row => row[0] === 'placeholder'), false);
-    assert.equal(observed.fake.calls.browserCloses, 1);
-  }
-  // Unreadable Chromium children after the load: the explicit FAMILY_UNREADABLE code.
-  const unreadable = {};
-  await assert.rejects(startHarness({ observed: unreadable, family: call => { if (call === 2) throw Object.assign(new Error('FAMILY_UNREADABLE'), { code: 'FAMILY_UNREADABLE' }); return family(); } }),
-    { code: 'ROLE_INVALID', workerCode: 'FAMILY_UNREADABLE' });
-  assert.equal(decodedFrames(unreadable.links.logs, 'worker').some(frame => ['ASSETS', 'READY'].includes(frame.type)), false);
-  const unreadableMember = {};
-  await assert.rejects(startHarness({ observed: unreadableMember, family: call => call === 1 ? family() : family({ members: Object.freeze([...family().members, member(204, { unreadableFds: 1 })]) }) }),
-    { code: 'ROLE_INVALID', workerCode: 'FAMILY_UNREADABLE' });
+  await closeHarness(await startHarness({ audit: readers.nativeTopology(fakeProc(selfProcesses()), SELF_INIT) }));
 });
 
 test('controller_asset_proof_validation_bound', async () => {
@@ -2537,6 +2431,115 @@ test('worker_result_has_no_constant_freshness_claims', async () => {
   await two.session.perform('OBSERVE_VIEW', { phase: B_PHASE, view: 'ROBO' });
   assert.equal(workerResults(two).at(-1).source, null);
   await closeHarness(two);
+});
+
+// Task 16c (owner decision 2026-11-20, "Move check to the bootstrap"; P76, P79): the uid-10002 worker
+// never inspects other processes; the bootstrap does, at LAUNCH (inside COMMIT_BROWSER), POST_LOAD and FINAL.
+test('controller_requires_bootstrap_post_load_family_before_session', async () => {
+  const h = await startHarness();
+  assert.deepEqual(h.familyCalls().map(call => call.point), ['POST_LOAD']);
+  const [call] = h.familyCalls();
+  assert.equal(call.worker.at(-1), 'READY', 'POST_LOAD follows READY');
+  assert.equal(call.controller.includes('ACTION'), false, 'POST_LOAD precedes any action, so any credential');
+  assert.equal(h.api.isBrowserSession(h.session), true);
+  await closeHarness(h);
+  // A refused or malformed bootstrap answer: no session, the role stopped, no ACTION reaches the worker.
+  for (const answer of [() => { throw familyError(); }, () => { throw familyError('FAMILY_UNREADABLE'); },
+    () => cleanFamily('FINAL'), () => ({ ...cleanFamily('POST_LOAD'), status: 'DIRTY' })]) {
+    const observed = {};
+    await assert.rejects(startHarness({ observed, familyInspect: answer }), { code: 'ROLE_INVALID' });
+    assert.equal(observed.familyCalls().length, 1);
+    assert.equal(observed.stops(), 1, 'the role is stopped');
+    assert.equal(decodedFrames(observed.links.logs, 'controller').some(frame => frame.type === 'ACTION'), false);
+  }
+  // Worker-authored family facts are never evidence: a FAMILY frame from the worker is FRAME_DENIED,
+  // and a refused bootstrap answer still keeps the session closed.
+  for (const familyInspect of [undefined, () => { throw familyError(); }]) {
+    const scripted = scriptedBrowser({ beforeReady: [['FAMILY', { status: 'CLEAN' }]], familyInspect });
+    await assert.rejects(scripted.opened, { code: 'FRAME_DENIED' });
+    assert.equal(scripted.stops(), 1);
+    assert.deepEqual(scripted.familyCalls(), []);
+    assert.equal(scripted.actions().length, 0);
+  }
+  // Control: the same scripted worker without the FAMILY frame opens after one bootstrap POST_LOAD.
+  const control = scriptedBrowser({ familyInspect: point => cleanFamily(point) });
+  const session = await control.opened;
+  assert.deepEqual(control.familyCalls().map(row => row.point), ['POST_LOAD']);
+  await session.close();
+});
+
+test('controller_final_family_inspection_before_close', async () => {
+  const h = await startHarness();
+  const { workerExit } = await closeHarness(h);
+  assert.deepEqual(h.familyCalls().map(call => call.point), ['POST_LOAD', 'FINAL']);
+  assert.equal(h.familyCalls()[1].controller.includes('CLOSE'), false, 'FINAL precedes CLOSE');
+  assert.equal(decodedFrames(h.links.logs, 'controller').filter(frame => frame.type === 'CLOSE').length, 1);
+  assert.equal(workerExit.status, 'EXITED');
+  // A refused or malformed FINAL: ROLE_INVALID latched, the role stopped, no CLOSE written.
+  for (const answer of [() => { throw familyError(); }, () => ({ ...cleanFamily('FINAL'), ordinal: 2 }), () => cleanFamily('POST_LOAD')]) {
+    const r = await startHarness({ familyInspect: point => point === 'FINAL' ? answer() : cleanFamily(point) });
+    await assert.rejects(r.session.close(), { code: 'ROLE_INVALID' });
+    assert.deepEqual(r.familyCalls().map(call => call.point), ['POST_LOAD', 'FINAL']);
+    assert.equal(decodedFrames(r.links.logs, 'controller').some(frame => frame.type === 'CLOSE'), false);
+    assert.equal(r.stops(), 1); assert.equal(r.session.failureCode(), 'ROLE_INVALID');
+    await assert.rejects(r.session.perform('SESSION_OBSERVATION', {}), { code: 'ROLE_INVALID' });
+  }
+  // A latched session goes straight to its stop, with no FINAL.
+  const scripted = await scriptedSession();
+  await scripted.send('BOGUS', {});
+  assert.equal(await settled(() => scripted.session.failureCode() !== null), true);
+  await assert.rejects(scripted.session.close(), { code: 'INVALID_FRAME' });
+  assert.deepEqual(scripted.familyCalls().map(call => call.point), ['POST_LOAD']);
+  assert.equal(scripted.written().includes('"CLOSE"'), false);
+});
+
+test('worker_reads_only_its_own_proc', async () => {
+  // E1: a sandboxed Chromium child is non-dumpable, so its /proc/<pid>/fd is owned by root and the
+  // capability-less worker cannot read it (fs/proc/base.c:1845-1861, :3250). Here any /proc/<n>/...
+  // other than /proc/self throws EACCES; the real worker, entered as inherited, still reaches READY.
+  const fake = fakePlaywright(), runId = crypto.randomBytes(16).toString('hex'), key = '6'.repeat(64);
+  const binding = compositionBinding(runId), identity = { childId: '7'.repeat(32), pipeId: '8'.repeat(32) };
+  const routeFixture = budgetFixture({ runId, configIdentity: binding.configIdentity, assetPath: '/static/js/main.js',
+    assetBody: Buffer.from('abc'), extraAssets: [INDEX_ASSET] });
+  const bundle = receipts.createBrowserAssetBundle(routeFixture.release, routeFixture.assets, routeFixture.trust, routeFixture.releaseBytes, routeFixture.assetBytes);
+  const workerCfg = JSON.parse(JSON.stringify(receipts.inspectBrowserControllerConfig(receipts.createBrowserControllerConfig(routeFixture.release,
+    routeFixture.assets, routeFixture.trust, bundle, { runtime: JSON.parse(JSON.stringify(controller().RUNTIME_PINS)), paths: { ...PATHS } }, binding))));
+  const links = duplex(topology({ runId })), own = fakeProc(selfProcesses()), denied = [], touched = [];
+  function guarded(method) {
+    return (target, ...args) => { touched.push(String(target));
+      if (/^\/proc\/[0-9]+(?:\/|$)/.test(String(target))) { denied.push(String(target)); throw procError('EACCES', target); }
+      if (typeof own[method] !== 'function') throw procError('ENOENT', target);
+      return own[method](target, ...args); };
+  }
+  const fsBinding = { readFileSync: guarded('readFileSync'), readdirSync: guarded('readdirSync'), opendirSync: guarded('opendirSync'),
+    readlinkSync: guarded('readlinkSync'), statSync: guarded('statSync'),
+    writeSync(fd, bytes, start, length) { assert.equal(fd, 4); return length; }, closeSync() {} };
+  const queued = [inheritedFrame({ version: 1, kind: 'BROWSER_WORKER_INIT', binding, role: 'BROWSER', ...identity, channelKeyHex: key })];
+  const reader = { read: async () => queued.length ? queued.shift() : new Promise(() => {}), drain: () => [], close() {} };
+  const workerAPI = worker({ chromium: fake.chromium }, receipts, async () => {
+    const reservation = Object.freeze({});
+    return Object.freeze({
+      async prepare() { return reservation; },
+      inspectPreparedBrowserConfig() { return workerCfg; },
+      async commitFixedBrowserLaunch(value, launchPinnedBrowser) { assert.equal(value, reservation);
+        return Object.freeze({ status: 'STARTED', browserOwner: await launchPinnedBrowser(), applicationPipe: links.worker }); },
+    });
+  }, { process });
+  const exit = workerAPI.inheritedMain(['--inherited'], { fs: fsBinding, reader, clock: { sample: () => [160, 1000] },
+    platform: 'linux', arch: 'arm64', uid: 10002 });
+  assert.equal(await settled(() => decodedFrames(links.logs, 'worker').some(frame => ['READY', 'ERROR'].includes(frame.type)), 2000), true);
+  assert.deepEqual(decodedFrames(links.logs, 'worker').map(frame => [frame.type, frame.payload.code]),
+    [['ASSETS', undefined], ['READY', undefined]], 'the worker reaches READY without reading another process');
+  assert.deepEqual(denied, []);
+  assert.ok(touched.includes('/proc/self/status') && touched.includes('/proc/self/fd'), 'the startup self-check still runs');
+  await links.controller.write(inheritedFrame({ version: 1, runId, sequence: 1, type: 'CLOSE', payload: {} }));
+  assert.equal(await exit, 0);
+  assert.equal(decodedFrames(links.logs, 'worker').at(-1).type, 'EXIT');
+  // P79: the worker's family reader and its pipe hook are gone; the self-check readers stay.
+  assert.equal(Object.hasOwn(workerAPI, 'inspectNativeFamily'), false, 'the family reader is not exported');
+  const source = fs.readFileSync(WORKER, 'utf8');
+  for (const removed of ['inspectBrowserFamily', 'inspectNativeFamily', 'childPids', '/task/'])
+    assert.equal(source.includes(removed), false, removed);
 });
 
 module.exports = { startHarness, closeHarness, scriptedBrowser, scriptedSession, login, settled, within, decodedFrames, ready, readinessBody, FRONTEND, BACKEND };

@@ -83,8 +83,9 @@ test('actual_chromium_sandbox_children_and_tmpfs', async () => {
     const family = new Set(roots), queue = [...roots];
     while (queue.length) for (const child of childPids(queue.shift())) if (!family.has(child)) { family.add(child); queue.push(child); }
     assert.ok(family.size > 1, 'Chromium descendants are absent');
-    // Sockets are attributed only from /proc/net/{unix,tcp,tcp6,udp,udp6}; vsock has no table.
-    const sockets = socketInodeFamilies(fs);
+    // Task 16c (E1, P79): status is 0444 (fs/proc/base.c:3259), so the members' status rows stay readable
+    // here. Their descriptor tables do not: a non-dumpable child's 0500 /proc/<pid>/fd belongs to root
+    // (fs/proc/base.c:1845-1861, :3250), so the bootstrap inspects the family's descriptors, never uid 10002.
     for (const pid of family) {
       const status = procStatus(pid), parsed = workerStatus(fs, pid);
       assert.match(status, /^Uid:\s+10002\s+10002\s+10002\s+10002$/m);
@@ -94,17 +95,19 @@ test('actual_chromium_sandbox_children_and_tmpfs', async () => {
       assert.match(status, /^Seccomp:\s+2$/m);
       assert.equal(parsed.seccomp, 2);
       assert.ok(Number.isSafeInteger(parsed.seccompFilters) && parsed.seccompFilters >= 1, `${pid} Seccomp_filters ${parsed.seccompFilters}`);
-      const directory = fs.opendirSync(`/proc/${pid}/fd`), kinds = [];
-      try {
-        for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
-          let link = null;
-          try { link = fs.readlinkSync(`/proc/${pid}/fd/${entry.name}`); } catch { link = null; }
-          kinds.push([entry.name, link, classifyDescriptor(link, sockets)]);
-        }
-      } finally { directory.closeSync(); }
-      for (const forbidden of ['CONSOLE', 'UNKNOWN_SOCKET', 'UNREADABLE'])
-        assert.deepEqual(kinds.filter(row => row[2] === forbidden), [], `${pid} ${forbidden}`);
     }
+    // The worker's own descriptors: sockets are attributed only from /proc/net/{unix,tcp,tcp6,udp,udp6};
+    // vsock has no table.
+    const sockets = socketInodeFamilies(fs), directory = fs.opendirSync('/proc/self/fd'), kinds = [];
+    try {
+      for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+        let link = null;
+        try { link = fs.readlinkSync(`/proc/self/fd/${entry.name}`); } catch { link = null; }
+        kinds.push([entry.name, link, classifyDescriptor(link, sockets)]);
+      }
+    } finally { directory.closeSync(); }
+    for (const forbidden of ['CONSOLE', 'UNKNOWN_SOCKET', 'UNREADABLE'])
+      assert.deepEqual(kinds.filter(row => row[2] === forbidden), [], `self ${forbidden}`);
     for (const path of ['/run/acceptance/browser/support', '/run/acceptance/browser/profile', '/run/acceptance/browser/cache', '/dev/shm']) {
       const mount = fs.readFileSync('/proc/self/mountinfo', 'utf8').split('\n').find(line => line.split(' ')[4] === path);
       assert.ok(mount && mount.includes(' - tmpfs '), `${path} is not tmpfs`);
