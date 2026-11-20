@@ -10,13 +10,17 @@
 // worker's SESSION_READINESS). The port supplies fixture identity and fixture
 // inputs only: how to open the real browser, the synthetic owner and credential,
 // the fixture's maintenance/DB receipt handles, and the fixture's backend
-// restart. It never supplies a body, a proof, an outcome or a verdict.
+// restart (which yields the run's RESTART_RECEIPT handle, verified under the
+// session's own release trust). It never supplies a body, a proof, an outcome
+// or a verdict. P72: the post-restart interval comes only from receipts.cjs's
+// session-owned transition of that same trust context.
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const observation = require('../../guest/observation.cjs');
 const session = require('../../guest/session.cjs');
 const { isBrowserSession } = require('../../guest/browser.cjs');
+const { advanceSessionTrust } = require('../../guest/receipts.cjs');
 
 const B = 'OBSERVE_BEFORE_RESTART', C = 'OBSERVE_AFTER_RESTART';
 const PORT_METHODS = Object.freeze(['openBrowser', 'owner', 'credential', 'maintenanceReceipts', 'restartBackend', 'publicOutput']);
@@ -47,6 +51,8 @@ async function loggedIn(scenario) {
   const privateSession = await session.loginOnce(browserSession, fixture.credential(), fixture.owner());
   return { fixture, browserSession, privateSession };
 }
+// P72: the session's own trust context advances once, with the fixture's restart receipt.
+async function restart(run) { advanceSessionTrust(run.browserSession, await run.fixture.restartBackend(run.browserSession)); }
 async function observe(run, phase, sequence) {
   const maintenance = observation.validateMaintenance(run.browserSession, { ...run.fixture.maintenanceReceipts(run.browserSession, phase), phase });
   return observation.observeViews(run.browserSession, phase, { privateSession: run.privateSession, maintenance, sequence });
@@ -75,7 +81,7 @@ test('compiled_frontend_legitimate_empty_fixture_has_zero_visible_rows', async (
 test('compiled_frontend_after_restart_rechecks_readiness_owner_and_robo_on_the_same_private_session', async () => {
   const run = await loggedIn('POPULATED');
   await observe(run, B, 1);
-  await run.fixture.restartBackend();
+  await restart(run);
   const result = await observe(run, C, 2);
   assert.deepEqual(Object.keys(result.views), ['ROBO']);
   assertView(result.views.ROBO,7);
@@ -90,7 +96,7 @@ test('compiled_frontend_empty_error_schema_readiness_owner_and_session_negative_
   // Post-restart owner continuity: the fixture's backend answers /api/me for another owner after its restart.
   const run = await loggedIn('OWNER_CHANGED_AFTER_RESTART');
   await observe(run, B, 1);
-  await run.fixture.restartBackend();
+  await restart(run);
   await assert.rejects(observe(run, C, 2), { code: 'IDENTITY_MISMATCH' });
 });
 

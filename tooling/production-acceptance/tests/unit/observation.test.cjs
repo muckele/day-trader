@@ -90,19 +90,26 @@ async function privateSession(browserSession) {
   });
 }
 
-// T13 m-9: maintenance and DB receipts verified under the BrowserSession's own release trust (B),
-// or under a post-restart trust context for the same release and pinned keys (C).
+// T13 m-9 / P72: maintenance and DB receipts are verified under the BrowserSession's own release
+// trust (B); for C that same context is first advanced once with the run's restart receipt, and the
+// AFTER receipts (next maintenance sequence, DB interval AFTER) are issued after the restart
+// completed (the restart vector's completedAt is 150).
+function afterFrames(f, issuedAt = 151) {
+  const maintenance = clone(f.frames.MAINTENANCE_RECEIPT); maintenance.sequence = 2; maintenance.payload.issuedAt = issuedAt;
+  const database = clone(f.frames.DB_RECEIPT); database.payload.interval = 'AFTER'; database.payload.issuedAt = issuedAt;
+  return { maintenance, database };
+}
+function advance(b) {
+  return attempt(() => receiptApi.advanceSessionTrust(b.handle, b.routeFixture.restart), 'advanceSessionTrust(session, restart receipt) (P72)');
+}
 function sessionReceipts(b, phase = B) {
   const f = b.routeFixture;
   if (phase === B) return { maintenanceReceipt: f.maintenance,
     databaseReceipt: receiptApi.verifyReceipt(f.sign(f.frames.DB_RECEIPT), 'DB_RECEIPT', f.trust) };
-  const expected = clone(f.options.expected);
-  expected.MAINTENANCE_RECEIPT.sequence = 2; expected.DB_RECEIPT.payload.interval = 'AFTER';
-  const post = receiptApi.createTrustContext({ ...f.options, expected });
-  const maintenance = clone(f.frames.MAINTENANCE_RECEIPT); maintenance.sequence = 2;
-  const database = clone(f.frames.DB_RECEIPT); database.payload.interval = 'AFTER';
-  return { maintenanceReceipt: receiptApi.verifyReceipt(f.sign(maintenance), 'MAINTENANCE_RECEIPT', post),
-    databaseReceipt: receiptApi.verifyReceipt(f.sign(database), 'DB_RECEIPT', post) };
+  advance(b);
+  const { maintenance, database } = afterFrames(f);
+  return { maintenanceReceipt: receiptApi.verifyReceipt(f.sign(maintenance), 'MAINTENANCE_RECEIPT', f.trust),
+    databaseReceipt: receiptApi.verifyReceipt(f.sign(database), 'DB_RECEIPT', f.trust) };
 }
 // Steps that must succeed; at RED each fails as a named assertion rather than a thrown setup error.
 function attempt(step, message) { let value; assert.doesNotThrow(() => { value = step(); }, message); return value; }
@@ -475,8 +482,8 @@ test('post_restart_continuity_checks_owner', async () => {
 });
 
 test('maintenance_trust_bound_to_session_release_trust', async () => {
-  // T13 m-9: the maintenance trust is the session's private release trust context (or a
-  // post-restart context for the same release and pinned keys), never a caller-supplied one.
+  // T13 m-9 / P72: the maintenance trust is the session's own private release trust context, by
+  // identity, never a caller-supplied one.
   const b = await browser(), privateHandle = await privateSession(b.handle), own = sessionReceipts(b);
   assert.throws(() => api().validateMaintenance(b.handle, { trust: b.routeFixture.trust, ...own, phase: B }), { code: 'READINESS_FAILED' }, 'trust is not an input');
   const foreign = receiptFixture();
@@ -489,9 +496,10 @@ test('maintenance_trust_bound_to_session_release_trust', async () => {
   assert.throws(() => api().validateMaintenance(b.handle, {
     maintenanceReceipt: receiptApi.verifyReceipt(f.sign(f.frames.MAINTENANCE_RECEIPT), 'MAINTENANCE_RECEIPT', otherRelease),
     databaseReceipt: receiptApi.verifyReceipt(f.sign(f.frames.DB_RECEIPT), 'DB_RECEIPT', otherRelease), phase: B }), { code: 'READINESS_FAILED' }, 'other release');
-  // Maintenance and DB receipts must come from one trust context.
-  const after = sessionReceipts(b, C);
-  assert.throws(() => api().validateMaintenance(b.handle, { maintenanceReceipt: after.maintenanceReceipt, databaseReceipt: own.databaseReceipt, phase: B }),
+  // Maintenance and DB receipts must both come from the session's own context.
+  const sibling = receiptApi.createTrustContext({ ...f.options, consumedReceipts: new Set(), consumedNonces: new Set() });
+  const siblingDb = receiptApi.verifyReceipt(f.sign(f.frames.DB_RECEIPT), 'DB_RECEIPT', sibling);
+  assert.throws(() => api().validateMaintenance(b.handle, { maintenanceReceipt: own.maintenanceReceipt, databaseReceipt: siblingDb, phase: B }),
     { code: 'READINESS_FAILED' }, 'mixed trust contexts');
   // Control: the session's own release trust.
   const proof = attempt(() => api().validateMaintenance(b.handle, { ...own, phase: B }), 'control: the session release trust (T13 m-9)');
@@ -502,4 +510,87 @@ test('maintenance_trust_bound_to_session_release_trust', async () => {
   assert.equal(other.calls.some(call => call.action !== 'LOGIN_SESSION'), false);
   const observed = await api().observeViews(b.handle, B, { privateSession: privateHandle, maintenance: proof, sequence: 1 });
   assert.equal(observed.maintenance, true);
+});
+
+// ---- Task 17 fix round 1 (review I-1, ruling P72): the maintenance trust is the session's own context ----
+
+test('sibling_trust_context_cannot_mint_maintenance_proofs', async () => {
+  // The reviewer's demo (task-17/review-scratch/m9-sibling-demo.cjs), step by step: a caller-built
+  // sibling with the same release and keys, an AFTER DB expectation, the BEFORE maintenance
+  // expectation kept, fresh replay sets and a frozen clock. It must not mint an AFTER proof.
+  const s = await browser(), f = s.routeFixture;
+  const beforeDb = receiptApi.verifyReceipt(f.sign(f.frames.DB_RECEIPT), 'DB_RECEIPT', f.trust);
+  assert.ok(attempt(() => api().validateMaintenance(s.handle, { maintenanceReceipt: f.maintenance, databaseReceipt: beforeDb, phase: B }), 'control: BEFORE under the session trust'));
+  const expected = clone(f.options.expected);
+  expected.DB_RECEIPT.payload.interval = 'AFTER';
+  const sibling = receiptApi.createTrustContext({ ...f.options, expected, consumedReceipts: new Set(), consumedNonces: new Set(), now: () => 160 });
+  const oldMaintenance = receiptApi.verifyReceipt(f.sign(f.frames.MAINTENANCE_RECEIPT), 'MAINTENANCE_RECEIPT', sibling);
+  const afterDbFrame = clone(f.frames.DB_RECEIPT); afterDbFrame.payload.interval = 'AFTER';
+  const afterDb = receiptApi.verifyReceipt(f.sign(afterDbFrame), 'DB_RECEIPT', sibling);
+  f.time.wallMs = 201;
+  assert.equal(receiptApi.inspectReceipt(f.maintenance, 'MAINTENANCE_RECEIPT', f.trust), null, 'the session trust sees the receipt expired');
+  assert.throws(() => api().validateMaintenance(s.handle, { maintenanceReceipt: oldMaintenance, databaseReceipt: afterDb, phase: C }), { code: 'READINESS_FAILED' }, 'sibling AFTER proof');
+  // A frozen-clock copy of the session context (same expectations) is refused for BEFORE too, while
+  // the session's own context is current.
+  const fresh = await browser(), g = fresh.routeFixture;
+  const frozen = receiptApi.createTrustContext({ ...g.options, consumedReceipts: new Set(), consumedNonces: new Set(), now: () => 160 });
+  assert.throws(() => api().validateMaintenance(fresh.handle, {
+    maintenanceReceipt: receiptApi.verifyReceipt(g.sign(g.frames.MAINTENANCE_RECEIPT), 'MAINTENANCE_RECEIPT', frozen),
+    databaseReceipt: receiptApi.verifyReceipt(g.sign(g.frames.DB_RECEIPT), 'DB_RECEIPT', frozen), phase: B }), { code: 'READINESS_FAILED' }, 'frozen-clock copy');
+  // Control on that session: its own context.
+  assert.ok(attempt(() => api().validateMaintenance(fresh.handle, { ...sessionReceipts(fresh), phase: B }), 'control: the session trust'));
+  // Gate adapters built on a sibling context do not accept the session's gates either.
+  await privateSession(fresh.handle);
+  await settles(fresh.handle.perform('SESSION_READINESS', { phase: B, sequence: 1 }), 'SESSION_READINESS resolves (C9)');
+  const binding = { runId: RUN, phase: B, configIdentity: CONFIG, wallMs: 160, expiresAt: 200, sessionHandle: fresh.handle };
+  const gates = fresh.handle.currentGates(), browserApi = require('../../guest/browser.cjs');
+  assert.equal(receiptApi.createReceiptAdapters(g.trust, browserApi.isBrowserSession).verifyGate('readiness', gates.readiness, binding), true, 'control: own context adapters');
+  assert.equal(receiptApi.createReceiptAdapters(frozen, browserApi.isBrowserSession).verifyGate('readiness', gates.readiness, binding), false, 'sibling adapters');
+});
+
+test('stale_before_receipt_cannot_yield_after_proof', async () => {
+  // P72: the AFTER interval exists only after the session's own context advanced with the restart
+  // receipt; after that, the BEFORE receipts and proofs no longer validate.
+  const b = await browser(), f = b.routeFixture;
+  const before = sessionReceipts(b, B);
+  // Before the transition no AFTER DB receipt can even be verified under the session's context.
+  const { maintenance, database } = afterFrames(f);
+  assert.throws(() => receiptApi.verifyReceipt(f.sign(database), 'DB_RECEIPT', f.trust), { code: 'IDENTITY_MISMATCH' }, 'AFTER DB before the restart');
+  advance(b);
+  // The (unspent) BEFORE maintenance receipt with an AFTER DB receipt: refused, because the session
+  // context now expects the next maintenance sequence; the BEFORE pair is refused for BEFORE too.
+  const afterDb = receiptApi.verifyReceipt(f.sign(database), 'DB_RECEIPT', f.trust);
+  assert.throws(() => api().validateMaintenance(b.handle, { maintenanceReceipt: before.maintenanceReceipt, databaseReceipt: afterDb, phase: C }), { code: 'READINESS_FAILED' }, 'stale BEFORE maintenance');
+  assert.throws(() => api().validateMaintenance(b.handle, { ...before, phase: B }), { code: 'READINESS_FAILED' }, 'BEFORE pair after the restart');
+  // The BEFORE maintenance bytes cannot be re-verified, and a next-sequence receipt issued before the restart completed is refused.
+  assert.throws(() => receiptApi.verifyReceipt(f.sign(f.frames.MAINTENANCE_RECEIPT), 'MAINTENANCE_RECEIPT', f.trust), 'BEFORE maintenance bytes again');
+  assert.throws(() => receiptApi.verifyReceipt(f.sign(afterFrames(f, 149).maintenance), 'MAINTENANCE_RECEIPT', f.trust), { code: 'EXPIRED' }, 'issued before the restart completed');
+  // The genuine post-restart path passes.
+  const afterProof = attempt(() => api().validateMaintenance(b.handle, {
+    maintenanceReceipt: receiptApi.verifyReceipt(f.sign(maintenance), 'MAINTENANCE_RECEIPT', f.trust), databaseReceipt: afterDb, phase: C }), 'genuine AFTER proof');
+  assert.ok(afterProof);
+  // A BEFORE proof minted before the transition is no longer current after it.
+  const c = await browser(), privateHandle = await privateSession(c.handle);
+  const beforeProof = attempt(() => api().validateMaintenance(c.handle, { ...sessionReceipts(c, B), phase: B }), 'control: BEFORE proof');
+  advance(c);
+  await assert.rejects(api().observeViews(c.handle, B, { privateSession: privateHandle, maintenance: beforeProof, sequence: 1 }), { code: 'READINESS_FAILED' });
+  assert.equal(c.calls.some(call => call.action === 'SESSION_READINESS' || call.action === 'OBSERVE_VIEW'), false);
+});
+
+test('session_trust_restart_transition_is_once_and_own', async () => {
+  // P72: the transition takes exactly a current restart receipt verified under the session's own
+  // context, once; never another session's or a sibling's receipt.
+  const b = await browser(), other = await browser(), f = b.routeFixture;
+  assert.throws(() => receiptApi.advanceSessionTrust(b.handle, other.routeFixture.restart), { code: 'REPLAY' }, "another session's restart receipt");
+  assert.throws(() => receiptApi.advanceSessionTrust(b.handle, f.maintenance), { code: 'REPLAY' }, 'not a restart receipt');
+  assert.throws(() => receiptApi.advanceSessionTrust(Object.freeze({}), f.restart), { code: 'REPLAY' }, 'not a session');
+  const sibling = receiptApi.createTrustContext({ ...f.options, consumedReceipts: new Set(), consumedNonces: new Set() });
+  const siblingRestart = receiptApi.verifyReceipt(f.sign(f.frames.RESTART_RECEIPT), 'RESTART_RECEIPT', sibling);
+  assert.throws(() => receiptApi.advanceSessionTrust(b.handle, siblingRestart), { code: 'REPLAY' }, "a sibling's restart receipt");
+  assert.equal(advance(b), true);
+  assert.throws(() => receiptApi.advanceSessionTrust(b.handle, f.restart), { code: 'REPLAY' }, 'second transition');
+  // An expired restart receipt does not advance a context.
+  const late = await browser();
+  late.routeFixture.time.wallMs = 201;
+  assert.throws(() => receiptApi.advanceSessionTrust(late.handle, late.routeFixture.restart), { code: 'EXPIRED' }, 'expired restart receipt');
 });

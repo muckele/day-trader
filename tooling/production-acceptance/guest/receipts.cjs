@@ -190,24 +190,48 @@ function validateAdmissionReceiptGuard(guard,wallMs) {
   // policy capabilities, and reject instead of dropping a later observed time.
   for(const {frame,state} of saved.records)timeAt(frame,state,wallMs);
 }
-// T13 m-9: a trust context is bound to a session's release trust when it is that context, or a
-// context (such as the independently selected post-restart one) for the same expected release
-// under the same pinned public keys.
-function releaseBound(candidate,release) {
-  const a=trusts.get(candidate),b=trusts.get(release);
-  return !!(a&&b&&(candidate===release||equal(a.expected.RELEASE_RECEIPT,b.expected.RELEASE_RECEIPT)&&equal(a.keys,b.keys)));
+// T13 m-9 / P72: the only trust context that counts for a BrowserSession is the private release
+// trust it was opened with, matched by identity. A sibling context with an equal release and equal
+// keys is refused: its clock, replay sets, notBefore and expectations would be the caller's choice.
+function sessionTrust(candidate,own) {
+  return trusts.has(own)&&candidate===own;
 }
-// T13 m-9: receipts read for a BrowserSession are inspected under the trust they were verified
-// under, which must be one context for all of them, release-bound to the session's private
-// release trust. No caller supplies the trust.
+// T13 m-9: receipts read for a BrowserSession are inspected only under the session's own release
+// trust context (identity), and every one of them must have been verified under it. No caller
+// supplies the trust.
 function inspectSessionReceipts(session,pairs) {
   try {
     const bound=sessionTrusts.get(session);if(!bound||!Array.isArray(pairs)||pairs.length<1)return null;
     const saved=pairs.map(pair=>Array.isArray(pair)&&pair.length===2?receipts.get(pair[0]):undefined);
-    if(saved.some(item=>!item||item.trust!==saved[0].trust)||!releaseBound(saved[0].trust,bound.trust))return null;
-    const values=pairs.map(([handle,kind])=>inspectReceipt(handle,kind,saved[0].trust));
+    if(saved.some(item=>!item||!sessionTrust(item.trust,bound.trust)))return null;
+    const values=pairs.map(([handle,kind])=>inspectReceipt(handle,kind,bound.trust));
     return values.every(Boolean)?Object.freeze(values):null;
   } catch { return null; }
+}
+// P72: the post-restart DB interval is served by a session-owned transition of that same context.
+// Once, with exactly a current RESTART_RECEIPT verified under the session's own release trust, the
+// context advances in place: the expected maintenance sequence becomes the next one, the expected
+// DB interval becomes AFTER, and the maintenance and DB notBefore move to the restart's completion.
+// The context's own clock, replay sets, keys, maxAgeMs and deadline are kept; nothing is caller-supplied.
+// Afterwards the BEFORE maintenance and DB receipts no longer validate under it.
+function advanceSessionTrust(session,restartReceipt) {
+  const bound=sessionTrusts.get(session),state=bound&&trusts.get(bound.trust),saved=receipts.get(restartReceipt);
+  if(!bound||!state||state.advanced===true||!saved||!sessionTrust(saved.trust,bound.trust)||saved.frame.kind!=='RESTART_RECEIPT')fail('REPLAY');
+  if(!inspectReceipt(restartReceipt,'RESTART_RECEIPT',bound.trust))fail('EXPIRED');
+  const completedAt=saved.frame.payload.completedAt,maintenance=state.expected.MAINTENANCE_RECEIPT,database=state.expected.DB_RECEIPT;
+  if(!maintenance||!database||!safe(completedAt)||completedAt>=state.deadline||!safe(maintenance.sequence)||database.payload.interval!=='BEFORE')fail();
+  const expected=copy(state.expected);
+  expected.MAINTENANCE_RECEIPT.sequence=maintenance.sequence+1;expected.DB_RECEIPT.payload.interval='AFTER';
+  // The advanced expectations are decoded exactly as createTrustContext decodes the pinned ones.
+  for(const kind of ['MAINTENANCE_RECEIPT','DB_RECEIPT']) {
+    const template=copy(expected[kind]);
+    Object.assign(template.payload,{issuedAt:0,expiresAt:1,keyId:hash(Buffer.from(state.keys[kind],'hex')),signature:'0'.repeat(128)});
+    if(!equal(bindings(decodeFrame(Buffer.from(JSON.stringify(template)),kind)),expected[kind]))fail();
+  }
+  const notBefore=copy(state.notBefore);
+  for(const kind of ['MAINTENANCE_RECEIPT','DB_RECEIPT'])notBefore[kind]=Math.max(notBefore[kind],completedAt);
+  state.expected=freeze(expected);state.notBefore=freeze(notBefore);state.advanced=true;
+  return true;
 }
 // T13 I-4/I-5 (P20): browser.cjs claims the WorkerGateHandle minting authority once, at load; no
 // later caller can claim it, so no gate can be minted from a literal. A session is bound to the
@@ -241,13 +265,13 @@ function inspectWorkerGate(handle,session) {
 }
 // The readiness and owner kinds: only a current WorkerGateHandle of that kind, minted for the
 // binding's BrowserSession (checked with the injected brand) and phase, of the binding's run and
-// config, under adapters whose trust is release-bound to that session's release trust.
+// config, under adapters of that session's own release trust context (identity, P72).
 function workerGateCurrent(kind,handle,binding,trust,isBrowserSession) {
   try {
     const gate=workerGates.get(handle),bound=gate&&sessionTrusts.get(gate.session);
     return !!(gate&&bound&&gate.kind===kind&&gate.retired===false&&typeof isBrowserSession==='function'&&binding&&typeof binding==='object'&&
       isBrowserSession(binding.sessionHandle)===true&&gate.session===binding.sessionHandle&&gate.phase===binding.phase&&
-      gate.runId===binding.runId&&gate.configIdentity===binding.configIdentity&&releaseBound(trust,bound.trust)&&
+      gate.runId===binding.runId&&gate.configIdentity===binding.configIdentity&&sessionTrust(trust,bound.trust)&&
       safe(binding.wallMs)&&safe(binding.expiresAt)&&binding.wallMs<binding.expiresAt);
   } catch { return false; }
 }
@@ -262,4 +286,4 @@ function createReceiptAdapters(trust,isBrowserSession) {
   });
 }
 module.exports={createAdmissionReceiptGuard,sampleAdmissionReceiptGuard,validateAdmissionReceiptGuard,createTrustContext,verifyReceipt,inspectReceipt,verifyAssets,inspectAssets,validateAssetResponse,createBrowserAssetBundle,importBrowserAssetBundle,createBrowserControllerConfig,inspectBrowserControllerConfig,createReceiptAdapters,
-  claimWorkerGateAuthority,inspectWorkerGate,inspectSessionReceipts};
+  claimWorkerGateAuthority,inspectWorkerGate,inspectSessionReceipts,advanceSessionTrust};

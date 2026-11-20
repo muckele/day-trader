@@ -7,7 +7,9 @@
 // Task 17 (T13 m-3): the suite drives the real modules (browser.cjs, session.cjs,
 // observation.cjs). The port supplies fixture identity and fixture inputs only:
 // how to open the real browser, the synthetic owner and one-shot credential,
-// the fixture's maintenance/DB receipt handles and the fixture's backend restart.
+// the fixture's maintenance/DB receipt handles and the fixture's backend restart
+// (which yields the run's RESTART_RECEIPT handle under the session's own trust;
+// P72: receipts.cjs advances that same context, nothing caller-built).
 // Every status asserted here is produced by the real modules, never by the port.
 const assert = require('node:assert/strict');
 const test = require('node:test');
@@ -15,6 +17,7 @@ const test = require('node:test');
 const session = require('../../guest/session.cjs');
 const observation = require('../../guest/observation.cjs');
 const { isBrowserSession } = require('../../guest/browser.cjs');
+const { advanceSessionTrust } = require('../../guest/receipts.cjs');
 
 const B = 'OBSERVE_BEFORE_RESTART', C = 'OBSERVE_AFTER_RESTART';
 const PORT_METHODS = Object.freeze(['openBrowser', 'owner', 'credential', 'maintenanceReceipts', 'restartBackend', 'publicOutput']);
@@ -55,7 +58,7 @@ test('same context and private session survive synthetic backend restart', async
     maintenance: observation.validateMaintenance(browserSession, { ...fixture.maintenanceReceipts(browserSession, phase), phase }) });
   const stale = await browserSession.perform('SESSION_OBSERVATION', {});
   await observe(B, 1);
-  await fixture.restartBackend();
+  advanceSessionTrust(browserSession, await fixture.restartBackend(browserSession));
   const after = await observe(C, 2);
   assert.deepEqual(Object.keys(after.views), ['ROBO']);
   // An observation from before the restart cannot stand in for continuity after it.

@@ -86,8 +86,9 @@ function readinessPredicate(body) {
   } catch { return false; }
 }
 
-// T13 m-9: the maintenance and DB receipts are read under the BrowserSession's private release
-// trust context (receipts.cjs), never under a caller-supplied trust; the proof is bound to the session.
+// T13 m-9 / P72: the maintenance and DB receipts are read only under the BrowserSession's own private
+// release trust context (receipts.cjs, by identity), never under a caller-supplied or sibling trust; the
+// AFTER interval exists only after that same context's restart transition. The proof is bound to the session.
 function sessionReceipts(session, maintenanceReceipt, databaseReceipt) {
   return inspectSessionReceipts(session, [[maintenanceReceipt, 'MAINTENANCE_RECEIPT'], [databaseReceipt, 'DB_RECEIPT']]) || [];
 }
