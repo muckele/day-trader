@@ -132,8 +132,14 @@ From the status handoff, plus local evidence checked on 2026-11-14:
     - Re-estimate: 2–4+ weeks of remediation before Stage 2, for a Path A total of roughly 6–10+ weeks.
   - **Owner decision, 2026-11-17: continue Path A** ("Continue Path A"), after being shown the 6–10+ week re-estimate and a recommendation to switch to Path B.
   - **Proposed design decisions E1–E7:** `docs/STAGE1_REMEDIATION_DECISIONS.md` on the Stage 1 branch (`2495ffa`). Status PROPOSED. **Approved 2026-11-17** ("Approve all"). Remediation plan: `docs/superpowers/plans/2026-11-17-stage1-remediation.md` on the Stage 1 branch: 18 tasks, rough estimate ≈ 40 working days, above the earlier 2–4+ weeks.
-  - **Remediation in progress** (owner: "Start, subagent-driven", 2026-11-18). Ledger: `$RM_EVIDENCE/progress.md`, under `~/day-trader-evidence/production-acceptance-tooling/20261117T002012Z-stage1/remediation-shhzhEl6/`. A pre-flight scan found 33 plan conflicts; rulings P1–P41 are in the ledger.
-    - **Done locally, each independently reviewed clean:** Tasks 1–6, `8f979c8..35daf35`, not pushed:
+  - **Remediation in progress** (owner: "Start, subagent-driven", 2026-11-18). Ledger: `$RM_EVIDENCE/progress.md`, under `~/day-trader-evidence/production-acceptance-tooling/20261117T002012Z-stage1/remediation-shhzhEl6/`. A pre-flight scan found 33 plan conflicts; rulings P1–P72 are in the ledger.
+    - **Status 2026-11-19:** Tasks 1–17, plus owner-added Task 8b and controller-added Task 16b, are done locally, each independently reviewed clean (`8f979c8..bf2a1a0`, 53 commits, not pushed). The M2 broker diff `d5c1a4b..35daf35` was accepted by the owner ("Accept, start Task 7"). Task 18 (whole-M4 review, full verification, record) has not started.
+    - **Stopped before Task 18 for three owner decisions**, each a real-run blocker that the reviews found and that offline tests could not show:
+      - the frontend loads Google Fonts from outside the run origins (Task 15 review);
+      - Chromium's sandboxed children are non-dumpable, so the browser worker cannot read their `/proc/<pid>/fd` (Task 16 review);
+      - the BROWSER seccomp filter admits only socket protocol 0, while Chromium opens TCP sockets with `IPPROTO_TCP` (Task 16 review).
+    - Many other real-run blockers found by the reviews were fixed in their tasks (pivot_root views, audit framing and ordering, family pid numbering, cleanup budget, accept headers, zero-length bodies). Stage 2 obligations are collected in the ledger as "CARRY to Task 18 C10".
+    - **Earlier (Tasks 1–6):**
       - contract;
       - cleanup budget (E7);
       - host challenge and keys (E2);
@@ -143,7 +149,7 @@ From the status handoff, plus local evidence checked on 2026-11-14:
     - **Lane redesign done** (owner: "Redesign lanes now", 2026-11-18). Rulings P40/P41; commits `61c29bd`, `29c0fe8`, `35daf35`; independently reviewed clean after one fix round.
       - The 16 relay pipe pairs are now reusable lanes, one guest vsock connection at a time, framed in launcher-authored records (OPEN/DATA/END). Ordinary tunnel ends no longer retire a lane.
       - The real launcher side is Stage 2 work, bound by contract C10 obligations (a)–(e).
-    - **Stopped at Task 6 (R7), second time.** Waiting for the owner to accept the reviewed M2 broker diff `d5c1a4b..35daf35` (`EgressBroker.swift`). Owner summary: top of `task-6-report.md` in the plan workspace (copy in `$RM_EVIDENCE`). Tasks 7–18 start after acceptance.
+    - **Task 6 stop resolved:** the owner accepted the reviewed M2 broker diff `d5c1a4b..35daf35` (`EgressBroker.swift`) on 2026-11-18.
 
 ### Next sequence when Day Trader resumes
 
