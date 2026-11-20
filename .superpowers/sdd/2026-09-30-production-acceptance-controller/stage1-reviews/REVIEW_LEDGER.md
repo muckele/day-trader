@@ -131,3 +131,58 @@ The offline launch, ordering and child-ownership logic is sound.
 - **Verdicts:** 7 REJECT. Composition part A rejected only its plan Task 5; part A's Tasks 1–4 passed with notes.
 - **Findings:** 0 Critical, **47 Important**, about 58 Minor.
 - **Fail-closed status:** every reviewer found the real/native paths fail closed. Nothing can emit a qualification today.
+
+## Remediation dispositions
+
+- **Recorded:** 2026-11-20, branch `claude/production-acceptance-stage1` at `6d6c894`, remediation base `8f979c8`. Offline only; nothing pushed.
+- **Full record:** `../stage1-remediation/report.md` holds the complete disposition table, every Minor finding (the 58 above plus the per-task review minors), the Option A gaps, the final review and fix wave, the owner decisions, the controller rulings and the C10 summary.
+- **Terms:** "fixed offline" means closed at HEAD with a binding test and recorded mutant kills; "Stage 2 confirms" means a native fact is carried to contract C10; "carried to C10" means a composition step is still owed. Every finding fails closed at HEAD.
+- **M4 status: still OPEN.** The real gate is Stage 2.
+
+- **T8-01** → Task 10, `04a1377..7459511`: fixed offline, Stage 2 confirms.
+- **T8-02** → Task 10, `04a1377..7459511`: fixed offline, Stage 2 confirms.
+- **T8-03** → Task 10, `04a1377..7459511`: fixed offline.
+- **T8-04** → Task 9, `69ed46e..04a1377`; fix wave `d8a6b30`: fixed offline.
+- **T8-05** → Task 9, `69ed46e..04a1377`: fixed offline, Stage 2 confirms.
+- **T8-06** → Tasks 8 (`cb0b85f..fa14b11`), 8b (`fa14b11..69ed46e`), 11 (`7459511..fdb6f3e`), 8c (`bf2a1a0..7bc192b`): fixed offline, Stage 2 confirms.
+- **T9-1** → Task 5, `91e70cd..d5c1a4b`: fixed offline.
+- **T9-2** → Task 5, `91e70cd..d5c1a4b` (proxy); Task 6, `d5c1a4b..35daf35` (broker): fixed offline, Stage 2 confirms.
+- **T9-3** → Task 6, `d5c1a4b..35daf35` (owner-accepted broker diff): fixed offline.
+- **T9-4** → Task 5, `91e70cd..d5c1a4b`: fixed offline.
+- **T9-5** → Task 5, `91e70cd..d5c1a4b`: fixed offline.
+- **T10-1** → Task 3, `d6bff51..c5e6277`: fixed offline, Stage 2 confirms.
+- **T10-2** → Task 4, `c5e6277..91e70cd`: fixed offline, Stage 2 confirms.
+- **T10-3** → Task 4, `c5e6277..91e70cd`: fixed offline.
+- **T10-4** → Task 4, `c5e6277..91e70cd`: fixed offline.
+- **T10-5** → Task 4, `c5e6277..91e70cd`: fixed offline.
+- **T10-6** → Task 4, `c5e6277..91e70cd`: fixed offline.
+- **T10-7** → Task 3, `d6bff51..c5e6277`: fixed offline, Stage 2 confirms.
+- **T10-8** → Task 4, `c5e6277..91e70cd`: fixed offline, Stage 2 confirms.
+- **CA-I1** → Task 2, `e9560e0..d6bff51`: fixed offline.
+- **CB-I1** → Task 2, `e9560e0..d6bff51`: fixed offline.
+- **CB-I2** → Task 7, `35daf35..cb0b85f`: fixed offline, Stage 2 confirms.
+- **CB-I3** → Task 11, `7459511..fdb6f3e`; fix wave `e8fff93`: fixed offline.
+- **CB-I4** → Task 11, `7459511..fdb6f3e`: fixed offline, Stage 2 confirms.
+- **CB-I5** → Task 2, `e9560e0..d6bff51`: fixed offline.
+- **CB-I6** → Task 11, `7459511..fdb6f3e`: fixed offline.
+- **CB-I7** → Task 7, `35daf35..cb0b85f`: fixed offline.
+- **T11-I1** → Task 12, `fdb6f3e..5116fa9`: fixed offline.
+- **T11-I2** → Task 12, `fdb6f3e..5116fa9`: fixed offline.
+- **T11-I3** → Task 12, `fdb6f3e..5116fa9`; fix wave `c4c526e`, `94daa84`, `b06fa10`: fixed offline, Stage 2 confirms.
+- **T12-I1** → Task 13, `5116fa9..f038470`: fixed offline.
+- **T12-I2** → Task 13, `5116fa9..f038470`: fixed offline.
+- **T12-I3** → Task 13, `5116fa9..f038470`: fixed offline in the reducer; the sign-out path is carried to C10.
+- **T12-I4** → Task 13, `5116fa9..f038470`: fixed offline.
+- **T18-I1** → Task 14, `f038470..4f39a98`: fixed offline, Stage 2 confirms.
+- **T18-I2** → Task 14, `f038470..4f39a98`: fixed offline, Stage 2 confirms.
+- **T18-I3** → Task 14, `f038470..4f39a98`: fixed offline.
+- **T13 I-1** → Task 15, `4f39a98..a7d26e4`: fixed offline.
+- **T13 I-2** → Task 15, `4f39a98..a7d26e4`: fixed offline, Stage 2 confirms.
+- **T13 I-3** → Task 15, `4f39a98..a7d26e4`: fixed offline, Stage 2 confirms.
+- **T13 I-4** → Task 17, `508c2c0..bf2a1a0`: fixed offline.
+- **T13 I-5** → Task 17, `508c2c0..bf2a1a0`: fixed offline in the modules; the composition wiring is carried to C10.
+- **T13 I-6** → Task 16, `a7d26e4..9e1996c`; Task 16c, `7bc192b..6d87337`: fixed offline, Stage 2 confirms.
+- **T13 I-7** → Task 15, `4f39a98..a7d26e4`; fix wave `4d9e42e`: fixed offline.
+- **T13 I-8** → Task 16, `a7d26e4..9e1996c`: fixed offline.
+- **T13 I-9** → Task 17, `508c2c0..bf2a1a0`: fixed offline.
+- **T13 I-10** → Task 16, `a7d26e4..9e1996c`: fixed offline.
