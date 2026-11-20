@@ -40,9 +40,15 @@ function ownedFixture() {
   return Object.freeze({ allowed: value.allowedOrigin, forbidden: value.forbiddenOrigin });
 }
 function procStatus(pid) { return fs.readFileSync(`/proc/${pid}/status`, 'utf8'); }
+// Task 16 fix round 1 (I-1): a child is filed under the thread that forked it, so every thread's
+// children file is read (kernel/fork.c:2632, :2690; fs/proc/array.c:720-770).
 function childPids(pid) {
-  const children = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, 'ascii').trim();
-  return children ? children.split(/\s+/).map(Number) : [];
+  const children = [];
+  for (const tid of fs.readdirSync(`/proc/${pid}/task`)) {
+    const text = fs.readFileSync(`/proc/${pid}/task/${tid}/children`, 'ascii').trim();
+    for (const child of text ? text.split(/\s+/).map(Number) : []) if (!children.includes(child)) children.push(child);
+  }
+  return children;
 }
 function launchOptions() {
   return {

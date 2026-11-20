@@ -284,7 +284,8 @@ function claimBrowserRequestEvidence(pipe,bytes,payload) {
   const state=browserApplicationPipes.get(pipe);
   if(!state||!Buffer.isBuffer(bytes)||!payload||typeof payload!=='object')fail('IDENTITY_MISMATCH');
   const frame=decode(bytes),keys=Reflect.ownKeys(frame).sort().join(',');
-  if(!['mac,payload,runId,sequence,type,version','payload,runId,sequence,type,version'].includes(keys)||
+  // Only the Task 13 application frame form; the MAC'd form left with browser.cjs's MAC path (P28).
+  if(keys!=='payload,runId,sequence,type,version'||
       frame.version!==1||frame.runId!==state.runId||frame.type!=='ROUTE'||canonical(frame.payload)!==canonical(payload))fail('IDENTITY_MISMATCH');
   exact(payload,['runId','requestId','sequence','method','url','headers','byteLength','schema']);
   if(payload.runId!==state.runId||typeof payload.requestId!=='string'||!integer(payload.sequence)||

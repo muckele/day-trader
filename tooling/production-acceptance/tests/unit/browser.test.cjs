@@ -103,7 +103,7 @@ function statusFacts(overrides = {}) {
 }
 function topology(overrides = {}) {
   return Object.freeze({
-    version: 1, kind: 'TASK13_BROWSER_APPLICATION', runId: RUN, channelKeyHex: KEY, maxFrameBytes: 16384,
+    version: 1, kind: 'TASK13_BROWSER_APPLICATION', runId: RUN, maxFrameBytes: 16384,
     ...statusFacts(), capabilities: 'EMPTY', procScope: 'BROWSER_FAMILY_ONLY', networkDeviceCount: 0,
     tmpfsPaths: Object.freeze(['/dev/shm', PATHS.cache, PATHS.profile, PATHS.support]),
     ...overrides,
@@ -589,26 +589,36 @@ function statusText(overrides = {}) {
 }
 // The reader's own listing descriptor resolves only while its /proc/<pid>/fd listing is open.
 const LISTING = open => { if (!open) throw procError('ENOENT', 'closed listing descriptor'); return '/proc/101/fd'; };
+// Fix round 1 (I-1): `threads` maps each tid under /proc/<pid>/task/ to the children that
+// thread forked. Linux files a child under the forking thread (kernel/fork.c:2632, :2690) and
+// each task's `children` lists only that task's children (fs/proc/array.c:720-770). Here the
+// browser (202) forks 204 from a non-main thread (251), as Chromium's launcher thread does.
 function cleanProcesses() {
   return {
-    101: { children: [202], status: statusText(), fds: { 0: '/dev/null', 1: '/dev/null', 2: '/dev/null', 3: 'pipe:[11]', 4: 'pipe:[12]',
+    101: { threads: { 101: [202], 102: [] }, status: statusText(), fds: { 0: '/dev/null', 1: '/dev/null', 2: '/dev/null', 3: 'pipe:[11]', 4: 'pipe:[12]',
       5: 'anon_inode:[eventpoll]', 6: 'pipe:[13]', 7: 'anon_inode:[eventfd]', 9: LISTING } },
-    202: { children: [203, 204], status: statusText(), fds: { 0: '/dev/null', 1: '/dev/null', 2: '/dev/null', 3: 'pipe:[13]',
+    202: { threads: { 202: [203], 251: [204], 252: [] }, status: statusText(), fds: { 0: '/dev/null', 1: '/dev/null', 2: '/dev/null', 3: 'pipe:[13]',
       5: 'socket:[41001]', 6: 'socket:[41003]', 7: 'socket:[41004]', 8: 'socket:[41005]', 9: '/dev/shm/.org.chromium.Chromium.Ab12Cd (deleted)',
       10: 'anon_inode:[eventfd]', 11: '/run/acceptance/browser/profile/Default/Cookies' } },
-    203: { children: [], status: statusText({ Seccomp_filters: '3' }), fds: { 0: '/dev/null', 5: 'socket:[41002]', 6: '/memfd:shared_memory (deleted)' } },
-    204: { children: [], status: statusText({ Seccomp_filters: '2' }), fds: { 0: '/dev/null', 5: 'socket:[41001]', 6: 'anon_inode:[eventpoll]' } },
+    203: { threads: { 203: [] }, status: statusText({ Seccomp_filters: '3' }), fds: { 0: '/dev/null', 5: 'socket:[41002]', 6: '/memfd:shared_memory (deleted)' } },
+    204: { threads: { 204: [] }, status: statusText({ Seccomp_filters: '2' }), fds: { 0: '/dev/null', 5: 'socket:[41001]', 6: 'anon_inode:[eventpoll]' } },
   };
 }
 function fakeProc(processes = cleanProcesses(), net = {}) {
   const tables = { ...NET_TABLES, ...net }, open = new Set();
   const processFor = (pid, target) => { const value = processes[pid === 'self' ? 'self' : pid]; if (!value) throw procError('ENOENT', target); return value; };
   return {
+    readdirSync(target) {
+      const match = /^\/proc\/([0-9]+)\/task$/.exec(target); if (!match) throw procError('ENOENT', target);
+      const threads = processFor(match[1], target).threads; if (threads instanceof Error) throw threads;
+      return Object.keys(threads);
+    },
     readFileSync(target) {
       let match;
       if ((match = /^\/proc\/net\/(unix|tcp6?|udp6?)$/.exec(target))) { const value = tables[match[1]]; if (value instanceof Error) throw value; return value; }
-      if ((match = /^\/proc\/([0-9]+)\/task\/([0-9]+)\/children$/.exec(target)) && match[1] === match[2]) {
-        const children = processFor(match[1], target).children; if (children instanceof Error) throw children;
+      if ((match = /^\/proc\/([0-9]+)\/task\/([0-9]+)\/children$/.exec(target))) {
+        const threads = processFor(match[1], target).threads, children = threads instanceof Error ? undefined : threads[match[2]];
+        if (children === undefined) throw procError('ENOENT', target); if (children instanceof Error) throw children;
         return children.map(pid => pid + ' ').join(''); }
       if ((match = /^\/proc\/([0-9]+|self)\/status$/.exec(target))) { const status = processFor(match[1], target).status; if (status instanceof Error) throw status; return status; }
       if (processes.self && target === '/proc/net/dev') return processes.self.netDev;
@@ -641,11 +651,12 @@ function nativeReaders() {
 function plainCopy(value) { return JSON.parse(JSON.stringify(value)); }
 // The worker's own /proc/self view for nativeTopology.
 function selfProcesses(overrides = {}) {
-  return { self: { children: [], status: statusText(), netDev: 'Inter-|   Receive\n face |bytes\n    lo: 0 0\n',
+  return { self: { status: statusText(), netDev: 'Inter-|   Receive\n face |bytes\n    lo: 0 0\n',
     mountinfo: '36 25 0:32 / / rw,nosuid - tmpfs tmpfs rw\n',
     fds: { 0: '/dev/null', 1: '/dev/null', 2: '/dev/null', 3: 'pipe:[11]', 4: 'pipe:[12]', 5: 'anon_inode:[eventpoll]',
       9: open => { if (!open) throw procError('ENOENT', 'closed listing descriptor'); return '/proc/101/fd'; } }, ...overrides } };
 }
+// The real init frame carries the composition channel key; the worker topology must not copy it (P28).
 const SELF_INIT = Object.freeze({ binding: Object.freeze({ runId: RUN }), channelKeyHex: KEY });
 
 async function closeHarness(h) {
@@ -1948,8 +1959,14 @@ test('unreadable_descriptor_fails', async () => {
     ['closed descriptor', withProcess(204, row => { row.fds[8] = procError('ENOENT', '/proc/204/fd/8'); })],
     ['unreadable status', withProcess(204, row => { row.status = procError('EACCES', '/proc/204/status'); })],
     ['unreadable descriptor directory', withProcess(204, row => { row.fds = procError('EACCES', '/proc/204/fd'); })],
-    ['unreadable children', withProcess(202, row => { row.children = procError('EACCES', '/proc/202/task/202/children'); })],
-    ['vanished child', withProcess(202, row => { row.children = [203, 204, 205]; })],
+    ['unreadable children', withProcess(202, row => { row.threads[202] = procError('EACCES', '/proc/202/task/202/children'); })],
+    ['vanished child', withProcess(202, row => { row.threads[202] = [203, 205]; })],
+    // Fix round 1 (I-1): every thread's children file is read.
+    ['unreadable non-main thread children', withProcess(202, row => { row.threads[251] = procError('EACCES', '/proc/202/task/251/children'); })],
+    ['vanished child of a non-main thread', withProcess(202, row => { row.threads[251] = [204, 206]; })],
+    ['unreadable task directory', withProcess(202, row => { row.threads = procError('EACCES', '/proc/202/task'); })],
+    ['malformed task entry', withProcess(202, row => { row.threads = { 202: [203], 251: [204], 'self': [] }; })],
+    ['malformed children entry', withProcess(202, row => { row.threads[252] = ['204x']; })],
     ['unreadable socket table', cleanProcesses(), { udp6: procError('EACCES', '/proc/net/udp6') }],
     ['malformed socket table', cleanProcesses(), { unix: 'Num RefCount Inode\n0000000000000000: 00000002 41001\n' }],
     // Well-formed rows under a header whose columns are not the 6.8 layout.
@@ -1991,10 +2008,48 @@ test('native_readers_parse_fake_proc', () => {
   // procStatus reads all four Uid and Gid fields and both seccomp rows.
   assert.deepEqual(plainCopy(readers.procStatus(fakeProc(withProcess(203, row => { row.status = statusText({ Uid: '10002\t0\t10002\t10002', Seccomp_filters: '4' }); })), '203')),
     { ...status, uids: [10002, 0, 10002, 10002], seccompFilters: 4 });
-  // The worker's own view.
+  // The worker's own view. Fix round 1 (P28): the composition channel key is not copied into it.
   const self = plainCopy(readers.nativeTopology(fakeProc(selfProcesses()), SELF_INIT));
-  assert.deepEqual(self, { version: 1, runId: RUN, channelKeyHex: KEY, maxFrameBytes: 16384, ...status, seccompFilters: 1,
+  assert.deepEqual(self, { version: 1, runId: RUN, maxFrameBytes: 16384, ...status, seccompFilters: 1,
     procScope: 'BROWSER_FAMILY_ONLY', ...clean, networkDeviceCount: 0, tmpfsPaths: ['/dev/shm', PATHS.cache, PATHS.profile, PATHS.support] });
+});
+
+test('family_walk_reads_every_thread_children', async () => {
+  // Fix round 1 (I-1): a child forked by a non-main thread (filed under /proc/<pid>/task/<tid>/children,
+  // kernel/fork.c:2632, :2690; fs/proc/array.c:720-770) is a family member and is inspected.
+  const readers = nativeReaders();
+  const family = plainCopy(readers.inspectNativeFamily(fakeProc(), new Set(CONTROL_TARGETS), 101));
+  assert.deepEqual(family.members.map(row => row.pid), [101, 202, 203, 204]);
+  assert.equal(family.browserPid, 202);
+  // Deeper: a grandchild forked by a non-main thread of a non-main-thread child.
+  const deep = cleanProcesses();
+  deep[204].threads = { 204: [], 260: [205] };
+  deep[205] = { threads: { 205: [] }, status: statusText({ Seccomp_filters: '2' }), fds: { 0: '/dev/null' } };
+  assert.deepEqual(plainCopy(readers.inspectNativeFamily(fakeProc(deep), new Set(CONTROL_TARGETS), 101)).members.map(row => row.pid), [101, 202, 203, 204, 205]);
+  // A member that only a non-main thread forked fails the run on its own facts: console, vsock, status, control pipe.
+  for (const [name, change] of [
+    ['console', row => { row.fds[2] = '/dev/hvc0'; }], ['vsock', row => { row.fds[7] = 'socket:[99999]'; }],
+    ['seccomp', row => { row.status = statusText({ Seccomp: '0', Seccomp_filters: '0' }); }], ['control pipe', row => { row.fds[8] = 'pipe:[11]'; }],
+  ]) {
+    await assert.rejects(startHarness({ family: nativeFamily(withProcess(204, change)) }), { code: 'ROLE_INVALID' }, name);
+    const deeper = cleanProcesses(); deeper[204].threads = { 204: [], 260: [205] };
+    deeper[205] = { threads: { 205: [] }, status: statusText({ Seccomp_filters: '2' }), fds: { 0: '/dev/null' } }; change(deeper[205]);
+    await assert.rejects(startHarness({ family: nativeFamily(deeper) }), { code: 'ROLE_INVALID' }, 'grandchild ' + name);
+  }
+  // The main thread's children come first, so the browser is still the root's first child.
+  const root = cleanProcesses(); root[101].threads = { 102: [], 101: [202] };
+  assert.equal(plainCopy(readers.inspectNativeFamily(fakeProc(root), new Set(CONTROL_TARGETS), 101)).browserPid, 202);
+});
+
+test('route_evidence_claim_refuses_mac_frame_form', async () => {
+  // Fix round 1 (P28): the MAC'd frame form is gone, so a ROUTE frame carrying a `mac` key is not route evidence.
+  const scripted = await scriptedSession();
+  const payload = { runId: scripted.runId, requestId: 'browser-1', sequence: 1, method: 'GET', url: BACKEND + '/api/me',
+    headers: [['accept', 'application/json']], byteLength: 0, schema: 'ABSENT' };
+  const bare = { version: 1, runId: scripted.runId, sequence: 1, type: 'ROUTE', payload };
+  assert.equal(roles.inspectBrowserRequestEvidence(roles.claimBrowserRequestEvidence(scripted.links.controller, inheritedFrame(bare), payload)).requestId, 'browser-1');
+  assert.throws(() => roles.claimBrowserRequestEvidence(scripted.links.controller, inheritedFrame({ ...bare, mac: 'a'.repeat(64) }), payload), { code: 'IDENTITY_MISMATCH' });
+  await scripted.session.close();
 });
 
 const STATUS_VARIANTS = Object.freeze([

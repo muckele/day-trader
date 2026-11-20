@@ -349,7 +349,7 @@ function audit(pipe) {
   if (!value || value.version !== 1 || !statusAccepted(value) || value.capabilities !== 'EMPTY' ||
       value.procScope !== 'BROWSER_FAMILY_ONLY' || !descriptorsClean(value) || value.networkDeviceCount !== 0 || value.maxFrameBytes !== 16384 ||
       !Array.isArray(value.tmpfsPaths) || !equal([...value.tmpfsPaths].sort(), ['/dev/shm', '/run/acceptance/browser/cache', '/run/acceptance/browser/profile', '/run/acceptance/browser/support']) ||
-      !/^[0-9a-f]{32}$/.test(value.runId) || !/^[0-9a-f]{64}$/.test(value.channelKeyHex)) fail('ROLE_INVALID');
+      !/^[0-9a-f]{32}$/.test(value.runId)) fail('ROLE_INVALID');
   return value;
 }
 // T13 m-7: an unreadable family member (or any unreadable descriptor) is the explicit
@@ -557,10 +557,19 @@ function tmpfsPaths(fs) {
   return required.filter(path=>mounts.filter(row=>path===row.path||path.startsWith(row.path.endsWith('/')?row.path:row.path+'/'))
     .sort((a,b)=>b.path.length-a.path.length)[0]?.type==='tmpfs').sort();
 }
+// Fix round 1 (I-1): Linux files a child under the thread that forked it (kernel/fork.c:2632,
+// :2690), and each task's `children` file lists only that task's children (fs/proc/array.c:720-770).
+// So every thread under /proc/<pid>/task/ is read; the main thread's children come first.
 function childPids(fs,pid) {
-  const text=String(fs.readFileSync('/proc/'+pid+'/task/'+pid+'/children','ascii')).trim(),children=text?text.split(/\s+/):[];
-  if(children.some(child=>!/^[1-9][0-9]{0,9}$/.test(child)))fail('FAMILY_UNREADABLE');
-  return children.map(Number);
+  const tids=fs.readdirSync('/proc/'+pid+'/task').map(String);
+  if(tids.length<1||tids.some(tid=>!/^[1-9][0-9]{0,9}$/.test(tid)))fail('FAMILY_UNREADABLE');
+  const ordered=[...tids].sort((a,b)=>(a===String(pid)?-1:b===String(pid)?1:Number(a)-Number(b))),children=[];
+  for(const tid of ordered){
+    const text=String(fs.readFileSync('/proc/'+pid+'/task/'+tid+'/children','ascii')).trim(),listed=text?text.split(/\s+/):[];
+    if(listed.some(child=>!/^[1-9][0-9]{0,9}$/.test(child)))fail('FAMILY_UNREADABLE');
+    for(const child of listed.map(Number))if(!children.includes(child))children.push(child);
+  }
+  return children;
 }
 // T13 I-6, m-7: every family member is read natively: its children, its status and each of its
 // descriptors. A member that cannot be read (for example a Chromium child that is not dumpable
@@ -579,7 +588,7 @@ function inspectNativeFamily(fs,controlTargets,root=process.pid) {
 function nativeTopology(fs,init) {
   const status=procStatus(fs),fds=forbiddenDescriptorCounts(fs),devices=fs.readFileSync('/proc/net/dev','utf8').split('\n').slice(2)
     .map(line=>line.split(':',1)[0].trim()).filter(name=>name&&name!=='lo').length;
-  return Object.freeze({version:1,runId:init.binding.runId,channelKeyHex:init.channelKeyHex,maxFrameBytes:16384,...status,
+  return Object.freeze({version:1,runId:init.binding.runId,maxFrameBytes:16384,...status,
     procScope:'BROWSER_FAMILY_ONLY',...fds,networkDeviceCount:devices,tmpfsPaths:Object.freeze(tmpfsPaths(fs))});
 }
 function inheritedPipe(fs,reader,init,initBytes,clock) {
