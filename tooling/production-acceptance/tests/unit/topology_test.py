@@ -474,7 +474,10 @@ class EventNative:
         if self.fail_at == 'RULE': raise RuntimeError('inert setup failure')
         self.installed_rule = rule
     def audit_health(self, owner, sequence):
-        payload = struct.pack('<11I', 0x1f, 1, 0, 4242, 0, 256, self.lost,
+        # P85 (Task 18 F3): the kernel's AUDIT_GET reply. Linux 6.8 memsets struct
+        # audit_status (kernel/audit.c:1238) and sets every field except mask
+        # (:1239-1250), so the mask word is always 0.
+        payload = struct.pack('<11I', 0, 1, 0, 4242, 0, 256, self.lost,
                               self.health_backlog, 0, 0, 0)
         return (0, self.mono, topology._event_nlmsg(1000, sequence, payload))
     def audit_rules(self, owner, sequence):
@@ -1576,6 +1579,36 @@ class TopologyTests(unittest.TestCase):
                 return (0, self.mono, topology._event_nlmsg(2, sequence, bytes(20)))
         with self.assertRaisesRegex(topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
             self.install_events(Acknowledged())
+
+    def test_v1_audit_get_reply_mask_is_zero_as_linux_sends_it(self):
+        # P85 (Task 18 F3, review a I-1): Linux 6.8 builds the AUDIT_GET reply with
+        # memset(&s, 0, sizeof(s)) (kernel/audit.c:1238) and sets every field except
+        # mask (:1239-1250) before audit_send_reply (:1251), so a healthy reply's mask
+        # word is 0. 31, the OR of AUDIT_STATUS_ENABLED..BACKLOG_LIMIT, is an AUDIT_SET
+        # request mask, never a reply value.
+        native = EventNative()
+        self.assertEqual(struct.unpack_from('<I', native.audit_health(None, 1)[2], 16)[0], 0)
+        try:
+            owner, native, _ = self.install_events(native)
+        except topology.TopologyError as error:
+            self.fail('the kernel AUDIT_GET reply (mask 0) must install, got %s' % error)
+        self.assertEqual(self.assert_publishes(owner).generation, 1)
+
+        def masked(native, mask):
+            original = native.audit_health
+            def reply(owner, sequence):
+                sender, observed, raw = original(owner, sequence)
+                return sender, observed, topology._event_nlmsg(1000, sequence, struct.pack('<I', mask) + raw[20:])
+            native.audit_health = reply
+            return native
+        for mask in (31, 1, 16):
+            with self.subTest(at='install', mask=mask), self.assertRaisesRegex(
+                    topology.TopologyError, '^EVENT_SOURCE_TERMINAL$'):
+                self.install_events(masked(EventNative(), mask))
+            owner, native, _ = self.install_events()
+            masked(native, mask)
+            with self.subTest(at='barrier', mask=mask):
+                self.assert_terminal(owner)
 
     def test_v1_exec_must_name_pinned_chromium_executable(self):
         source, native, root = self.browser_source()

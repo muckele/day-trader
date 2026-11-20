@@ -655,7 +655,10 @@ class BootstrapEventOwner:
             self._terminate('EVENT_SOURCE_TERMINAL')
         status = struct.unpack('<11I', payload)
         receiver = self._port.audit_receiver_pid
-        if (status[0] != 31 or status[1:6] != (1, 0, receiver, 0, 256)
+        # P85: the AUDIT_GET reply's mask word is 0. Linux 6.8 memsets the reply
+        # (kernel/audit.c:1238) and sets every field except mask (:1239-1250);
+        # the AUDIT_STATUS_* OR belongs only to an AUDIT_SET request mask.
+        if (status[0] != 0 or status[1:6] != (1, 0, receiver, 0, 256)
                 or (self._lost is None and status[6] != 0)
                 or (self._lost is not None and status[6] != self._lost)):
             self._terminate('EVENT_SOURCE_TERMINAL')

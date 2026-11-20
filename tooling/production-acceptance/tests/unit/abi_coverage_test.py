@@ -440,6 +440,12 @@ R13_LITERALS = {
     'NLMSG_HDRLEN': (16, 'R13 (P62): linux-6.8/include/uapi/linux/netlink.h:100 NLMSG_HDRLEN is '
                          'NLMSG_ALIGN(sizeof(struct nlmsghdr)); struct nlmsghdr at :52-58 is __u32, __u16, __u16, '
                          '__u32, __u32 (16 bytes, already a multiple of NLMSG_ALIGNTO 4 at :98)'),
+    # Task 18 F3 (P85): kernel behaviour, not a header value. The AUDIT_STATUS_* OR (AUDIT_STATUS_MASK below) is an
+    # AUDIT_SET request mask only; the GET reply never carries it.
+    'AUDIT_GET_REPLY_MASK': (0, 'R13 (P85): linux-6.8/kernel/audit.c:1236-1251 AUDIT_GET memsets struct audit_status '
+                                '(:1238) and sets enabled, failure, pid, rate_limit, backlog_limit, lost, backlog, '
+                                'feature_bitmap and both wait fields (:1239-1250), never mask, before audit_send_reply '
+                                '(:1251): the reply mask word is always 0'),
 }
 # Task 10: literals of the guest probe catalogue that are probe choices, not ABI values. They are named only at
 # PROBE_FILE syscall sites and struct calls (never by build_filter, so POLICY_VALUES is unchanged).
@@ -1632,9 +1638,13 @@ class CodeBindingTests(unittest.TestCase):
         # Route kinds, audit kinds and the netlink reply kinds.
         for site in ('event_route_kinds', 'event_audit_kinds', 'event_health_kinds'):
             self.check_compare_site(site)
-        # AUDIT_GET status mask.
+        # Task 18 F3 (P85): the AUDIT_GET reply mask word is the kernel's 0 (AUDIT_GET_REPLY_MASK, cited), bound at its
+        # own site and never the AUDIT_SET request mask (the AUDIT_STATUS_MASK OR, 31).
         status = self.compares('topology.py', 'BootstrapEventOwner._verify_health_and_rules', ('status[0]',))
-        self.assertEqual(status, [('NotEq', (self.or_names(AUDIT_STATUS_MASK),))])
+        self.assertEqual(status, [('NotEq', (self.resolve('AUDIT_GET_REPLY_MASK'),))])
+        self.assertNotEqual(self.resolve('AUDIT_GET_REPLY_MASK'), self.or_names(AUDIT_STATUS_MASK))
+        self.assertNotIn(self.or_names(AUDIT_STATUS_MASK), _int_constants(
+            self.nodes('topology.py', 'BootstrapEventOwner._verify_health_and_rules', ast.FunctionDef)[0]))
         # Overflow bits and the watch mask test in _record's inotify branch.
         masks = [n.right for n in self.nodes('topology.py', 'BootstrapEventOwner._record', ast.BinOp)
                  if isinstance(n.op, ast.BitAnd) and ast.unparse(n.left) == 'mask']
