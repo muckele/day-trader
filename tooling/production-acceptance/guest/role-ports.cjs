@@ -281,7 +281,8 @@ function claimBrowserRequestEvidence(pipe,bytes,payload) {
   exact(payload,['runId','requestId','sequence','method','url','headers','byteLength','schema']);
   if(payload.runId!==state.runId||typeof payload.requestId!=='string'||!integer(payload.sequence)||
       typeof payload.method!=='string'||typeof payload.url!=='string'||!Array.isArray(payload.headers)||
-      !integer(payload.byteLength,0)||!['LOGIN_JSON','ABSENT'].includes(payload.schema))fail('IDENTITY_MISMATCH');
+      // integer() throws on an invalid length; 0 (no body) is valid, so its result is not tested for truthiness.
+      integer(payload.byteLength,0)<0||!['LOGIN_JSON','ABSENT'].includes(payload.schema))fail('IDENTITY_MISMATCH');
   const evidence=privateHandle({});browserRequestEvidence.set(evidence,immutable(JSON.parse(canonical(payload))));return evidence;
 }
 function inspectBrowserRequestEvidence(evidence) {
