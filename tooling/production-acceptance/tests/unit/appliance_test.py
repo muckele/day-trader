@@ -26,7 +26,7 @@ FEATURES = ['CONFIG_NAMESPACES', 'CONFIG_PID_NS', 'CONFIG_SECCOMP', 'CONFIG_SECC
 PAYLOAD = ['controller', 'guestBootstrap', 'guestProbes', 'proxy', 'rolePolicy', 'routePolicy', 'seccompPolicy', 'verifier']
 LEGACY_FEATURES = FEATURES[:]
 LEGACY_PAYLOAD = PAYLOAD[:]
-FEATURES = sorted(FEATURES + ['CONFIG_AUDIT', 'CONFIG_AUDITSYSCALL', 'CONFIG_INOTIFY_USER'])
+FEATURES = sorted(FEATURES + ['CONFIG_AUDIT', 'CONFIG_AUDITSYSCALL', 'CONFIG_INOTIFY_USER', 'CONFIG_PROC_CHILDREN'])
 PAYLOAD = sorted(PAYLOAD + ['browserWorker'])
 REFERENCE_DIGEST = 'a2e1be5762976e07f270c6646ce5e4d94c48efcc2c78dacaf29ed3e32471be7d'
 MEMBER_MAPPING = {
@@ -380,6 +380,24 @@ class ApplianceTests(unittest.TestCase):
         changed=members.rows; changed[0]['installedPath']='/wrong'
         self.assertEqual(members.rows[0]['installedPath'],MEMBER_MAPPING[members.rows[0]['componentId']][1])
 
+    def test_archive_member_without_exec_bit_denied(self):
+        # compA M-6: every executable archive member needs an exec bit. A 0o644 member (no group/world write, no
+        # setuid, so it passes every other archive rule) is refused when the inputs are validated: _archive's
+        # REQUIRED_FILES check gives MISSING_RUNTIME before any ApprovedInputs exists. derive_executable_members
+        # accepts only ApprovedInputs from that validation, fingerprint-retained, so its own exec-bit recheck
+        # (ARCHIVE_UNSAFE, assemble.py derive_executable_members) is unreachable defence in depth (Task 9 report).
+        self.f.complete(); members=a.derive_executable_members(self.f.validate())
+        self.assertEqual(sorted(row['memberPath'] for row in members.rows if row['memberPath']),
+                         ['bin/node','bin/python3','chrome'])
+        for id,path in (('node','bin/node'),('python','bin/python3'),('chromium','chrome')):
+            for mode in (0o644,0o600,0o444):
+                with self.subTest(member=path,mode=oct(mode)):
+                    f=Fixture(Path(tempfile.mkdtemp(dir=self.root))); f.complete()
+                    f.replace(id,archive([(path,('SYNTHETIC NONBOOTABLE '+id+'\n').encode(),'file','',mode)]))
+                    self.denied('MISSING_RUNTIME',f.validate)
+                    f.replace(id,archive([(path,('SYNTHETIC NONBOOTABLE '+id+'\n').encode(),'file','',mode|0o100)]))
+                    self.assertIn(path,[row['memberPath'] for row in a.derive_executable_members(f.validate()).rows])
+
     def test_v1_member_snapshot_substitution_denied(self):
         self.assertTrue(callable(getattr(a,'derive_executable_members',None)),'retained member snapshots required')
         self.f.complete(); checked=self.f.validate(); members=a.derive_executable_members(checked)
@@ -418,9 +436,17 @@ class ApplianceTests(unittest.TestCase):
         for key,value in [('referenceDigest','f'*64),('version',True),('eventQueueCount',257)]:
             m=copy.deepcopy(self.f.manifest); m['policy']['bootstrapComposition'][key]=value
             self.denied('INVALID_MANIFEST' if type(value) is bool else 'POLICY',lambda:a.decode_inputs(wire(m)))
-        for feature in ['CONFIG_AUDIT','CONFIG_AUDITSYSCALL','CONFIG_INOTIFY_USER']:
+        for feature in ['CONFIG_AUDIT','CONFIG_AUDITSYSCALL','CONFIG_INOTIFY_USER','CONFIG_PROC_CHILDREN']:
             m=copy.deepcopy(self.f.manifest); m['policy']['kernelFeatures'].remove(feature)
             self.denied('KERNEL_FEATURE',lambda:a.decode_inputs(wire(m)))
+
+    def test_v1_proc_children_required_for_composition_only(self):
+        self.assertIn('CONFIG_PROC_CHILDREN',self.f.manifest['policy']['kernelFeatures'])
+        self.assertEqual(self.f.manifest['policy']['kernelFeatures'],sorted(set(self.f.manifest['policy']['kernelFeatures'])))
+        self.assertEqual(a.decode_inputs(wire(self.f.manifest)),self.f.manifest)
+        self.assertEqual(list(a.LEGACY_FEATURES),['CONFIG_NAMESPACES','CONFIG_PID_NS','CONFIG_SECCOMP','CONFIG_SECCOMP_FILTER','CONFIG_TMPFS','CONFIG_USER_NS','CONFIG_VIRTIO','CONFIG_VIRTIO_BLK','CONFIG_VIRTIO_CONSOLE','CONFIG_VIRTIO_VSOCKETS','CONFIG_VSOCKETS'])
+        self.assertNotIn('CONFIG_PROC_CHILDREN',a.LEGACY_FEATURES)
+        self.assertIn('CONFIG_PROC_CHILDREN',a.FEATURES)
 
     def population_contract_fixture(self):
         """Trusted adapter double over inert files; never a native population."""

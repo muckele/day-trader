@@ -4,9 +4,15 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const api = require('../../guest/session.cjs');
+// Task 16 (T13 I-8): loginOnce accepts only a branded BrowserSession, so every test here
+// uses a real one. Session-layer cases use a real controller with a scripted worker; the
+// T13 m-5 tests (and the UI and context tests) drive the real worker harness.
+const { startHarness, closeHarness, scriptedSession, settled, decodedFrames } = require('./browser.test.cjs');
 
 const FINGERPRINT = 'a'.repeat(64);
 const OWNER = Object.freeze({ id: 'owner-id', username: 'acceptance-owner' });
+// The real worker harness's /api/me answers this owner.
+const HARNESS_OWNER = Object.freeze({ id: 'owner-id', username: 'synthetic-owner' });
 
 function credential(secret = 'synthetic-password') {
   const bytes = Buffer.from(secret);
@@ -22,102 +28,161 @@ function credential(secret = 'synthetic-password') {
   };
 }
 
-function browser(options = {}) {
-  const calls = [], results = new WeakMap();
-  let fillAttemptResolve, releaseResolve;
-  const fillAttempt = new Promise(resolve => { fillAttemptResolve = resolve; });
-  const release = new Promise(resolve => { releaseResolve = resolve; });
-  function result(kind, fingerprint = FINGERPRINT) {
-    const value = Object.freeze(Object.defineProperty({ kind, fingerprint }, 'toJSON', {
-      value() { const error = new Error('PRIVATE_HANDLE'); error.code = 'PRIVATE_HANDLE'; throw error; },
-    }));
-    results.set(value, { kind, fingerprint }); return value;
-  }
+// A real BrowserSession with a scripted worker. `observation(fingerprint)` performs a real
+// SESSION_OBSERVATION whose worker-reported fingerprint is the given one.
+async function browser(options = {}) {
+  let fingerprint = FINGERPRINT;
+  const scripted = await scriptedSession({ hooks: { fingerprint: () => fingerprint, beforeBound: options.beforeBound } });
   return {
-    calls, fillAttempt, release: releaseResolve,
-    observation: fingerprint => result('SESSION_OBSERVED', fingerprint),
-    handle: Object.freeze({
-      async perform(action, payload, onFilled) {
-        calls.push({ action, payload: structuredClone(payload) });
-        if (options.error) { const error = new Error(options.error); error.code = options.error; throw error; }
-        fillAttemptResolve(typeof onFilled);
-        if (typeof onFilled === 'function') onFilled();
-        if (options.defer) await release;
-        return result('SESSION_BOUND', options.fingerprint || FINGERPRINT);
-      },
-      inspectResult(value) { const saved = results.get(value); if (!saved) { const error = new Error('SESSION_INVALID'); error.code = 'SESSION_INVALID'; throw error; } return Object.freeze({ ...saved }); },
-    }),
+    handle: scripted.session,
+    calls: () => scripted.actions().map(({ action, payload }) => ({ action, payload })),
+    async observation(value) { fingerprint = value; return scripted.session.perform('SESSION_OBSERVATION', {}); },
   };
 }
 
 test('Username_Password_Log_In_actual_UI', async () => {
-  const c = credential(), b = browser();
-  const session = await api.loginOnce(b.handle, c.handle, OWNER);
-  assert.equal(b.calls.length, 1);
-  assert.deepEqual(b.calls[0], {
-    action: 'LOGIN_SESSION',
-    payload: { ownerId: OWNER.id, password: 'synthetic-password', username: OWNER.username },
-  });
+  const c = credential(), h = await startHarness();
+  const session = await api.loginOnce(h.session, c.handle, HARNESS_OWNER);
+  const actions = decodedFrames(h.links.logs, 'controller').filter(frame => frame.type === 'ACTION');
+  assert.deepEqual(actions.map(frame => frame.payload), [{
+    actionId: 1, action: 'LOGIN_SESSION',
+    payload: { ownerId: HARNESS_OWNER.id, password: 'synthetic-password', username: HARNESS_OWNER.username },
+  }]);
+  // The real worker filled the Username and Password placeholders and clicked "Log In".
+  assert.deepEqual(JSON.parse(JSON.stringify(h.fake.calls.selectors.slice(-3))), [
+    ['placeholder', 'Username', HARNESS_OWNER.username], ['placeholder', 'Password', 'synthetic-password'],
+    ['role', 'button', { name: 'Log In', exact: true }],
+  ]);
   assert.throws(() => JSON.stringify(session), { code: 'PRIVATE_HANDLE' });
   assert.equal(c.consumes(), 1); assert.equal(c.destroys(), 1);
   assert.equal(c.bytes.every(value => value === 0), true);
+  await closeHarness(h);
+});
+
+test('non_ascii_credential_arrives_byte_exact_at_fill', async () => {
+  // Task 18 F1 (RB-I1): C8 credentials are UTF-8. The action channel carries only printable ASCII: both canonical()
+  // encoders write every UTF-16 unit above 0x7E as a lowercase \uXXXX escape (a surrogate pair as two escapes), and the
+  // real worker types the exact original string. Before the fix `Łodz` was typed as `Aodz` and `ő` as `Q`.
+  const cases = [
+    ['Łodz', '"password":"\\u0141odz"'],
+    ['ő', '"password":"\\u0151"'],
+    ['日本', '"password":"\\u65e5\\u672c"'],
+    ['😀', '"password":"\\ud83d\\ude00"'],
+    ['Lodz-Łódź-kőr-ŝtar-pässwörd-€-日本-😀-\u007f-end', null],
+  ];
+  for (const [secret, escaped] of cases) {
+    const expected = Buffer.from(secret, 'utf8');
+    const c = credential(secret), h = await startHarness();
+    await api.loginOnce(h.session, c.handle, HARNESS_OWNER);
+    const typed = h.fake.calls.selectors.filter(row => row[0] === 'placeholder' && row[1] === 'Password');
+    assert.equal(typed.length, 1, secret);
+    assert.equal(typed[0][2], secret);
+    assert.equal(Buffer.from(typed[0][2], 'utf8').equals(expected), true, secret);
+    // Every frame body, in both directions, is printable ASCII (0x20..0x7E): no raw byte above 0x7E is ever written.
+    for (const row of h.links.logs) {
+      assert.equal(row.bytes.subarray(4).every(value => value >= 0x20 && value <= 0x7e), true, secret + ' ' + row.from);
+    }
+    const action = h.links.logs.filter(row => row.from === 'controller').map(row => row.bytes.subarray(4).toString('ascii'))
+      .filter(text => text.includes('"type":"ACTION"'));
+    assert.equal(action.length, 1, secret);
+    if (escaped) assert.equal(action[0].includes(escaped), true, secret + ': ' + action[0]);
+    assert.equal(c.consumes(), 1); assert.equal(c.destroys(), 1);
+    assert.equal(c.bytes.every(value => value === 0), true, secret);
+    await closeHarness(h);
+  }
 });
 
 test('wrong_owner_fail_before_deeper_read', async () => {
-  const c = credential(), b = browser({ error: 'OWNER_MISMATCH' });
-  await assert.rejects(api.loginOnce(b.handle, c.handle, OWNER), { code: 'OWNER_MISMATCH' });
-  assert.equal(b.calls.length, 1); assert.equal(c.destroys(), 1);
+  // T13 m-5: through the real worker. /api/me names a different owner id, or a different username.
+  for (const fake of [{ ownerId: 'different-owner' }, { ownerUsername: 'different-username' }]) {
+    const c = credential(), h = await startHarness({ fake });
+    await assert.rejects(api.loginOnce(h.session, c.handle, HARNESS_OWNER), { code: 'IDENTITY_MISMATCH', workerCode: 'OWNER_MISMATCH' }, JSON.stringify(fake));
+    assert.equal(c.consumes(), 1); assert.equal(c.destroys(), 1);
+    assert.equal(c.bytes.every(value => value === 0), true);
+    // Nothing deeper was read: no fixed GET, no view navigation, and the session is latched.
+    assert.equal(h.fake.calls.events.some(event => event.startsWith('evaluate:')), false);
+    assert.equal(h.fake.calls.selectors.some(row => row[0] === 'role' && row[1] === 'link'), false);
+    assert.equal(await settled(() => h.session.failureCode() !== null), true);
+    await assert.rejects(h.session.perform('OBSERVE_VIEW', { phase: 'OBSERVE_BEFORE_RESTART', view: 'ROBO' }), { code: 'IDENTITY_MISMATCH' });
+    assert.equal(decodedFrames(h.links.logs, 'controller').filter(frame => frame.type === 'ACTION').length, 1);
+  }
 });
 
 test('daytrader_session_Secure_HttpOnly_SameSite_None_path_root_host_only', async () => {
-  const c = credential(), b = browser({ error: 'COOKIE_INVALID' });
-  await assert.rejects(api.loginOnce(b.handle, c.handle, OWNER), { code: 'COOKIE_INVALID' });
-  assert.equal(b.calls[0].action, 'LOGIN_SESSION');
+  // T13 m-5: through the real worker. Only a Secure, HttpOnly, SameSite=None, path=/, host-only
+  // daytrader_session cookie for the backend host binds the session.
+  const good = await startHarness(), accepted = credential();
+  await api.loginOnce(good.session, accepted.handle, HARNESS_OWNER);
+  await closeHarness(good);
+  for (const cookie of [
+    { secure: false }, { httpOnly: false }, { sameSite: 'Lax' }, { sameSite: 'Strict' }, { path: '/api' },
+    { domain: '.backend.example.test' }, { domain: 'frontend.example.test' }, { name: 'other_session' },
+  ]) {
+    const c = credential(), h = await startHarness({ fake: { cookie } });
+    await assert.rejects(api.loginOnce(h.session, c.handle, HARNESS_OWNER), { code: 'SESSION_MISMATCH', workerCode: 'COOKIE_INVALID' }, JSON.stringify(cookie));
+    assert.equal(c.destroys(), 1, JSON.stringify(cookie));
+  }
 });
 
 test('one_context_no_storageState', async () => {
-  const c = credential(), b = browser();
-  await api.loginOnce(b.handle, c.handle, OWNER);
-  assert.deepEqual(b.calls.map(call => call.action), ['LOGIN_SESSION']);
-  assert.equal(b.calls.some(call => Object.hasOwn(call.payload, 'storageState')), false);
+  const c = credential(), h = await startHarness();
+  await api.loginOnce(h.session, c.handle, HARNESS_OWNER);
+  assert.equal(h.fake.calls.contexts.length, 1);
+  assert.equal(Object.hasOwn(h.fake.calls.contexts[0], 'storageState'), false);
+  assert.equal(h.fake.calls.persistent.length, 0);
+  const actions = decodedFrames(h.links.logs, 'controller').filter(frame => frame.type === 'ACTION').map(frame => frame.payload);
+  assert.deepEqual(actions.map(action => action.action), ['LOGIN_SESSION']);
+  assert.equal(actions.some(action => Object.hasOwn(action.payload, 'storageState')), false);
+  await closeHarness(h);
 });
 
 test('changed_cookie_owner_after_restart_fail', async () => {
-  const c = credential(), b = browser();
+  const c = credential(), b = await browser();
   const before = await api.loginOnce(b.handle, c.handle, OWNER);
-  assert.throws(() => api.assertContinuity(before, b.observation('b'.repeat(64))), { code: 'SESSION_CHANGED' });
-  assert.deepEqual(api.assertContinuity(before, b.observation(FINGERPRINT)), { status: 'CONTINUOUS' });
+  const changed = await b.observation('b'.repeat(64));
+  assert.throws(() => api.assertContinuity(before, changed), { code: 'SESSION_CHANGED' });
+  const same = await b.observation(FINGERPRINT);
+  assert.deepEqual(api.assertContinuity(before, same), { status: 'CONTINUOUS' });
 });
 
 test('second_login_API_login_substitute_denied', async () => {
-  const first = credential(), second = credential(), b = browser();
+  const first = credential(), second = credential(), b = await browser();
   await api.loginOnce(b.handle, first.handle, OWNER);
   await assert.rejects(api.loginOnce(b.handle, second.handle, OWNER), { code: 'LOGIN_ALREADY_ATTEMPTED' });
-  assert.equal(b.calls.length, 1); assert.equal(second.consumes(), 0);
+  assert.equal(b.calls().length, 1); assert.equal(second.consumes(), 0);
   assert.equal(typeof api.loginByApi, 'undefined');
 });
 
 test('password_refs_discard_after_fill_ack', async () => {
-  const c = credential(), b = browser({ defer: true });
-  const login = api.loginOnce(b.handle, c.handle, OWNER);
-  const callbackType = await b.fillAttempt;
-  const releasedAtFill = callbackType === 'function' && c.destroys() === 1 && c.bytes.every(value => value === 0);
-  b.release(); await login;
-  assert.equal(releasedAtFill, true);
+  // The worker's FILLED acknowledgement alone releases the credential, while its result is still held.
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const c = credential(), b = await browser({ beforeBound: () => held });
+  let done = false;
+  const login = api.loginOnce(b.handle, c.handle, OWNER).then(value => { done = true; return value; });
+  assert.equal(await settled(() => c.destroys() === 1), true);
+  assert.equal(c.bytes.every(value => value === 0), true);
+  assert.equal(done, false);
+  release(); await login;
+  assert.equal(c.destroys(), 1);
 });
 
 test('private_value_absent_public_output', async () => {
-  const secret = 'synthetic-private-canary', c = credential(secret), b = browser();
+  const secret = 'synthetic-private-canary', c = credential(secret), b = await browser();
   const session = await api.loginOnce(b.handle, c.handle, OWNER);
   assert.equal(Object.keys(session).length, 0);
   assert.equal(String(session).includes(secret), false);
   assert.throws(() => JSON.stringify(session), { code: 'PRIVATE_HANDLE' });
   api.destroySessionReference(session);
-  assert.throws(() => api.assertContinuity(session, b.observation(FINGERPRINT)), { code: 'SESSION_INVALID' });
+  const observed = await b.observation(FINGERPRINT);
+  assert.throws(() => api.assertContinuity(session, observed), { code: 'SESSION_INVALID' });
 });
 
 test('continuity_observation_is_nominally_bound_to_same_browser', async () => {
-  const c = credential(), beforeBrowser = browser(), foreignBrowser = browser();
+  const c = credential(), beforeBrowser = await browser(), foreignBrowser = await browser();
   const before = await api.loginOnce(beforeBrowser.handle, c.handle, OWNER);
-  assert.throws(() => api.assertContinuity(before, foreignBrowser.observation(FINGERPRINT)), { code: 'SESSION_INVALID' });
+  const foreign = await foreignBrowser.observation(FINGERPRINT);
+  assert.throws(() => api.assertContinuity(before, foreign), { code: 'SESSION_INVALID' });
+  const own = await beforeBrowser.observation(FINGERPRINT);
+  assert.deepEqual(api.assertContinuity(before, own), { status: 'CONTINUOUS' });
 });

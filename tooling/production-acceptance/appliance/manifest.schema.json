@@ -466,6 +466,7 @@
               "CONFIG_INOTIFY_USER",
               "CONFIG_NAMESPACES",
               "CONFIG_PID_NS",
+              "CONFIG_PROC_CHILDREN",
               "CONFIG_SECCOMP",
               "CONFIG_SECCOMP_FILTER",
               "CONFIG_TMPFS",
@@ -478,7 +479,7 @@
             ]
           },
           "min": 11,
-          "max": 14
+          "max": 15
         },
         "compatibility": {
           "type": "object",

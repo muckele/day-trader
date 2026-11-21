@@ -21,11 +21,14 @@ final class OwnedVMChannel: @unchecked Sendable {
     enum Purpose: Equatable, Sendable { case bootstrap, relay(Int, Bool), serialInput, serialOutput, terminal }
     let id:UUID, purpose:Purpose, facts:DescriptorFacts
     private let dispose:@Sendable () -> Void, lock = NSLock()
-    private var closed = false, claimed = false
+    private var closed = false, claimed = false, legacyBootstrapClaimed = false
     init(id:UUID = UUID(),purpose:Purpose,facts:DescriptorFacts,dispose:@escaping @Sendable () -> Void) { self.id = id; self.purpose = purpose; self.facts = facts; self.dispose = dispose }
     func close() { let first = lock.withLock { if closed { return false }; closed = true; return true }; if first { dispose() } }
     fileprivate func claim() -> Bool { lock.withLock { guard !closed, !claimed else { return false }; claimed = true; return true } }
     fileprivate func undoUncommittedClaim() { lock.withLock { claimed = false } }
+    fileprivate func claimLegacyBootstrap() -> Bool {
+        lock.withLock { if legacyBootstrapClaimed { return false }; legacyBootstrapClaimed = true; return true }
+    }
 }
 private enum VMChannelClaim {
     // Serialize group acquisition across differently wrapped sets of the same owners.
@@ -65,6 +68,13 @@ struct VMChannelSet: Sendable {
         }
     }
     func close() { (broker+console).forEach { $0.close() } }
+    // T10-13: a literal-wire (v1) handoff answers no host challenge, so a run
+    // admits at most one sequence-1 legacy handoff. Its bootstrap channel owner
+    // holds that one claim, which a check spends before capture.
+    func claimLegacyBootstrap() -> Bool {
+        guard let owner = broker.first, owner.purpose == .bootstrap else { return false }
+        return owner.claimLegacyBootstrap()
+    }
 }
 public struct RunConfiguration: Sendable {
     let appliance:ArtifactVerifiedAppliance, bootstrap:BootstrapConfiguration, channels:VMChannelSet, capability:Data
@@ -90,7 +100,67 @@ enum BootstrapProbeID: String, CaseIterable, Sendable {
     case proxyVsockControl = "PROXY_VSOCK_CONTROL"
     case verifierIPv4TCP = "VERIFIER_IPV4_TCP"
 }
-protocol BootstrapProbePort: Sendable { func capture(ids:[BootstrapProbeID]) throws -> Data }
+// C2 (E2): host-issued, one-use freshness challenges. Each check gets 16 fresh
+// random host bytes (32 lowercase hex) that the guest answers inside the MAC'd
+// handoff. The deadline runs from the host's issue sample to the host's arrival
+// sample on host monotonic time only (R4: initial 120000 ms, current 2000 ms;
+// Stage 2 may tighten them, never widen them). Guest observedWall and
+// observedMonotonic are guest-local and are never compared with host clocks.
+let BOOTSTRAP_CHALLENGE_INITIAL_MS = 120000
+let BOOTSTRAP_CHALLENGE_CURRENT_MS = 2000
+protocol BootstrapNonceSource: Sendable { func nonce() throws -> Data }  // exactly 16 bytes
+struct SystemBootstrapNonceSource: BootstrapNonceSource {
+    func nonce() throws -> Data {
+        var bytes=[UInt8](repeating:0,count:16); arc4random_buf(&bytes,bytes.count); return Data(bytes)
+    }
+}
+enum BootstrapChallengeKind: Sendable, Equatable { case initial, current }
+// Only an issuer constructs a challenge (fileprivate members).
+struct BootstrapChallenge: Sendable {
+    let kind:BootstrapChallengeKind, value:String
+    fileprivate let id:UUID, issuedAt:Int
+}
+final class BootstrapChallengeIssuer: @unchecked Sendable {
+    private let nonces:any BootstrapNonceSource, lock=NSLock()
+    private var issued:[UUID:BootstrapChallengeKind]=[:], consumed=Set<UUID>()
+    private var initialIssued=false, initialAnswered=false
+    private var issuedValues=Set<String>(), refused=false
+    init(nonces:any BootstrapNonceSource) { self.nonces=nonces }
+    // One initial challenge per issuer; a current challenge exists only after
+    // the initial one was answered, so an initial challenge never serves a current check.
+    func issue(kind:BootstrapChallengeKind,at sample:ClockSample) throws -> BootstrapChallenge {
+        let bytes=try nonces.nonce()
+        guard bytes.count == 16, sample.monotonic >= 0, sample.monotonic <= 9007199254740991
+              else { throw VMFailure.admissionUnavailable }
+        return try lock.withLock {
+            guard !refused else { throw VMFailure.admissionUnavailable }
+            switch kind {
+            case .initial: guard !initialIssued else { throw VMFailure.admissionUnavailable }; initialIssued=true
+            case .current: guard initialAnswered else { throw VMFailure.admissionUnavailable }
+            }
+            let value=bytes.map { String(format:"%02x",$0) }.joined()
+            // A value issued twice in a run would reduce freshness to sequence-only:
+            // refuse it and every later issue or consume (fail closed, terminal).
+            guard issuedValues.insert(value).inserted else { refused=true; throw VMFailure.admissionUnavailable }
+            let challenge=BootstrapChallenge(kind:kind,value:value,id:UUID(),issuedAt:sample.monotonic)
+            issued[challenge.id]=kind
+            return challenge
+        }
+    }
+    // One use: the first consume retires the challenge, whatever its outcome.
+    func consume(_ challenge:BootstrapChallenge,handoffChallenge:String,at sample:ClockSample) throws {
+        try lock.withLock {
+            guard !refused, issued[challenge.id] == challenge.kind, consumed.insert(challenge.id).inserted
+                  else { throw VMFailure.admissionUnavailable }
+            let limit=challenge.kind == .initial ? BOOTSTRAP_CHALLENGE_INITIAL_MS:BOOTSTRAP_CHALLENGE_CURRENT_MS
+            guard Array(handoffChallenge.utf8) == Array(challenge.value.utf8),
+                  sample.monotonic >= challenge.issuedAt, sample.monotonic - challenge.issuedAt <= limit
+                  else { throw VMFailure.admissionUnavailable }
+            if challenge.kind == .initial { initialAnswered=true }
+        }
+    }
+}
+protocol BootstrapProbePort: Sendable { func capture(ids:[BootstrapProbeID],challenge:BootstrapChallenge?) throws -> Data }
 protocol BootstrapOwnedLifecycle: AnyObject, Sendable { func stopOwned(deadline:Int) throws -> BootstrapStopOutcome }
 protocol BootstrapLifecyclePort: Sendable { func begin(handoff:Data,onDrift:@escaping @Sendable () -> Void) throws -> any BootstrapOwnedLifecycle }
 enum BootstrapStopOutcome: Sendable { case stopped, uncertain }
@@ -109,6 +179,9 @@ struct BootstrapExecutableMember: Hashable, Sendable {
 }
 struct BootstrapExecutableAuthority: Sendable {
     let pins:[String:String], manifestIdentity:String?
+    // compA M-4: no memberwise construction. Only qualify (a native inventory)
+    // and offlineLiteral (manifestIdentity nil, never native) mint one.
+    private init(pins:[String:String],manifestIdentity:String?) { self.pins=pins; self.manifestIdentity=manifestIdentity }
     static let requiredPaths = [
         "/opt/acceptance/guest/browser-worker.cjs", "/opt/acceptance/guest/controller.cjs",
         "/opt/acceptance/guest/proxy.py", "/opt/acceptance/guest/verifier.cjs",
@@ -134,27 +207,36 @@ struct BootstrapExecutableAuthority: Sendable {
     }
 }
 
+// One shared host cleanup end (E7, C1). It starts only at the host's own
+// terminal decision (failure, drift, stop, cancel or expiry), never at check
+// start or during routine admission, and a later start never moves it.
 private final class BootstrapCleanupBudget: @unchecked Sendable {
     private let clock:any BrokerClock, lock = NSLock()
     private var end:Int?, last:Int?, realEnd:UInt64?
     init(clock:any BrokerClock) { self.clock=clock }
-    func start(at monotonic:Int) {
+    var terminalEnd:Int? { lock.withLock { end } }
+    func startTerminal(at monotonic:Int) {
         lock.withLock {
-            guard end == nil, monotonic >= 0, monotonic <= 9007199254680991 else { return }
+            guard end == nil else { return }
             let real=DispatchTime.now().uptimeNanoseconds / 1_000_000
+            // An unusable terminal instant permits nonblocking cleanup only.
+            guard monotonic >= 0, monotonic <= 9007199254680991 else { end=0; realEnd=real; return }
             last=monotonic; end=monotonic + 60000; realEnd=real + 60000
         }
     }
+    // The host's terminal decision instant from its own clock.
+    func startTerminalNow() { startTerminal(at:(try? clock.sample())?.monotonic ?? -1) }
     func remaining() -> Int {
         lock.withLock {
+            // Never allocates: before the terminal decision there is no end.
+            guard let current=end else { return 0 }
             let real = DispatchTime.now().uptimeNanoseconds / 1_000_000
             guard let sample = try? clock.sample(), sample.monotonic >= 0,
                   sample.monotonic <= 9007199254680991,
                   last == nil || sample.monotonic >= last! else { end=0; return 0 }
             last=sample.monotonic
-            if end == nil { end=sample.monotonic + 60000; realEnd=real + 60000 }
             guard let realEnd, real < realEnd else { return 0 }
-            return max(0,min(end! - sample.monotonic,Int(realEnd - real)))
+            return max(0,min(current - sample.monotonic,Int(realEnd - real)))
         }
     }
     private final class ResultBox: @unchecked Sendable {
@@ -235,6 +317,7 @@ struct BootstrapCleanupFailure: Error, Sendable {
 public struct AdmissionProof: Sendable {
     public let runID:String, manifestIdentity:String, roleInventoryDigest:String, deviceInventoryDigest:String, topologyDigest:String, expiresAt:Int
     public let sequence:Int, eventCheckpointSequence:Int, observedWall:Int, observedMonotonic:Int
+    public var hostChallenge:String? = nil
 }
 
 struct BootstrapCompositionExpectation: @unchecked Sendable {
@@ -397,10 +480,16 @@ enum BootstrapHandoff {
                     guard role == "PROXY", let limit = limits[kind] else { throw VMFailure.admissionUnavailable }
                     let identity = "\(fd["device"]!):\(fd["inode"]!)"
                     if kind == "PROXY_STOP_SELECTOR" || kind == "PROXY_CONNECT_SELECTOR" {
-                        // Linux epoll files share an anonymous inode. Their original
-                        // acquisitions remain distinct through ownerId, FD and the
-                        // exact current-to-original comparison above. This exception
-                        // cannot alias an inherited pipe or an ordinary socket.
+                        // Distinct epoll selectors may share one anonymous inode, so
+                        // device:inode cannot tell a substituted selector at the same FD
+                        // from the original here; ownerId, FD and the canonical original
+                        // equality above are not selector provenance (compA M-3). That
+                        // provenance is bound in the guest (E4, C5): the bootstrap checks
+                        // each selector's tfd: target set in the PROXY child's /proc
+                        // fdinfo against two MAC'd proxy reports, and any change is
+                        // terminal drift before a row reaches this host. Here a selector
+                        // may share only another selector's identity, never an inherited
+                        // pipe's or a socket's.
                         guard !runtimeIdentities.contains(identity) else { throw VMFailure.admissionUnavailable }
                         selectorIdentities.insert(identity)
                     } else {
@@ -417,9 +506,13 @@ enum BootstrapHandoff {
     }
     private static let maxBytes = 131072
     private static let devices = ["LINUX_BOOT","VIRTIO_BLOCK_READ_ONLY","VIRTIO_ENTROPY","VIRTIO_SERIAL_PRIVATE_PIPE","VIRTIO_VSOCK_CID2_PORT4050"]
-    private static let roles:[(String,Int,String)] = [
+    // Role, UID, sha256 of the role's outer seccomp program (filter_bytes(build_filter(role)) in
+    // guest/confinement.py). Internal so v1_role_filter_digests_match_python can compare it with the
+    // Python producer's export; E1 (C6) gives BROWSER its own program, and Task 8c
+    // (C6) adds its IPPROTO_TCP stream admission.
+    static let roles:[(String,Int,String)] = [
         ("CONTROLLER",10001,"294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3"),
-        ("BROWSER",10002,"294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3"),
+        ("BROWSER",10002,"42216444e1ccb8b7c6af75b7f1b7d59c4f4ac72eb653a890c65b570d62cf25cc"),
         ("VERIFIER",10003,"294f083482eb1caa13cd40ddb98489acd0712b2bd1a6e1d634622a24ed18d7b3"),
         ("PROXY",10004,"01e3ec748fdbadb0a0ac195855506cc19680fcc5aa3c6289d2c15e15ec981d7d"),
     ]
@@ -468,7 +561,8 @@ enum BootstrapHandoff {
             for key in ["uids","gids"] { let values = try array(row[key]); guard values.count == 3 && values.allSatisfy({ integer($0,1,Int(UInt32.max)) == expected.1 }) else { throw VMFailure.admissionUnavailable } }
             guard try array(row["groups"]).isEmpty else { throw VMFailure.admissionUnavailable }
             let capabilities = try array(row["capabilities"]); guard capabilities.count == 5 && capabilities.allSatisfy({ integer($0,0,Int(UInt32.max)) == 0 }) else { throw VMFailure.admissionUnavailable }
-            let fds = try array(row["fds"]), peer = expected.0 == "CONTROLLER" ? "BOOTSTRAP":"CONTROLLER"
+            // T8-10: the bootstrap parent is FD0..4's physical peer for every role.
+            let fds = try array(row["fds"]), peer = "BOOTSTRAP"
             guard fds.count == 5 else { throw VMFailure.admissionUnavailable }
             for (index,rawFD) in fds.enumerated() {
                 let fd = try object(rawFD), purpose = ["stdin","stdout","stderr","command","result"][index]
@@ -495,7 +589,7 @@ enum BootstrapHandoff {
                   try string(row["outcome"]) == (positive ? "ALLOWED":"DENIED"),
                   integer(row["ownedReceiverCount"],0,1) == (positive ? 1:0) else { throw VMFailure.admissionUnavailable } }
     }
-    static func verify(data:Data,expectedRunID:String,manifestIdentity:String,configIdentity:String,expiresAt:Int,capability:Data,executables:BootstrapExecutableAuthority,composition:BootstrapCompositionExpectation? = nil) throws -> AdmissionProof {
+    static func verify(data:Data,expectedRunID:String,manifestIdentity:String,configIdentity:String,expiresAt:Int,capability:Data,executables:BootstrapExecutableAuthority,composition:BootstrapCompositionExpectation? = nil,challenge:BootstrapChallenge?) throws -> AdmissionProof {
         do {
             guard executables.manifestIdentity == nil || executables.manifestIdentity == manifestIdentity else { throw VMFailure.admissionUnavailable }
             let programPins = executables.pins
@@ -506,13 +600,22 @@ enum BootstrapHandoff {
                   try canonical(envelope) == data else { throw VMFailure.admissionUnavailable }
             let payload = try object(envelope["payload"]), supplied = try string(envelope["mac"])
             var payloadKeys:Set<String> = ["configIdentity","devices","expiresAt","manifestIdentity","observedMonotonic","observedWall","probes","proxy","roles","runId","sequence"]
-            if composition != nil { payloadKeys.insert("composition") }
+            if composition != nil { payloadKeys.formUnion(["composition","hostChallenge"]) }
             guard Set(payload.keys) == payloadKeys else { throw VMFailure.admissionUnavailable }
+            // C2: a composition (v2) handoff answers exactly this check's host
+            // challenge; a literal-wire (v1) handoff never carries one.
+            var hostChallenge:String?
+            if composition != nil {
+                guard let challenge, let answered = payload["hostChallenge"] as? String, hex(answered,count:32),
+                      Array(answered.utf8) == Array(challenge.value.utf8) else { throw VMFailure.admissionUnavailable }
+                hostChallenge = answered
+            } else if challenge != nil { throw VMFailure.admissionUnavailable }
             guard hex(supplied,count:64), let suppliedData = Data(hexString:supplied) else { throw VMFailure.admissionUnavailable }
             var bytes = Data()
             if composition != nil { bytes.append(Data("acceptance:bootstrap-composition:v1\0".utf8)) }
             bytes.append(try canonical(payload))
-            let calculated = Data(HMAC<SHA256>.authenticationCode(for:bytes,using:SymmetricKey(data:capability)))
+            let key = try ChannelKeys.derive(capability:capability,label:ChannelKeys.topologyAdmission)  // C3
+            let calculated = Data(HMAC<SHA256>.authenticationCode(for:bytes,using:SymmetricKey(data:key)))
             guard equalMAC(suppliedData,calculated), try string(payload["runId"]) == expectedRunID,
                   try string(payload["manifestIdentity"]) == manifestIdentity,
                   try string(payload["configIdentity"]) == configIdentity,
@@ -561,6 +664,7 @@ enum BootstrapHandoff {
                   integer(proxy["hostCid"],1,Int(UInt32.max)) == 2,
                   integer(proxy["servicePort"],1,65535) == 4050, integer(proxy["uid"],1,Int(UInt32.max)) == 10004 else { throw VMFailure.admissionUnavailable }
             var stable = payload; stable.removeValue(forKey:"sequence"); stable.removeValue(forKey:"observedWall"); stable.removeValue(forKey:"observedMonotonic")
+            stable.removeValue(forKey:"hostChallenge")  // P6: MAC-covered, never in the stable digest
             if var value = stable["composition"] as? [String:Any],
                var checkpoint = value["eventCheckpoint"] as? [String:Any] {
                 checkpoint.removeValue(forKey:"sequence"); value["eventCheckpoint"] = checkpoint
@@ -570,7 +674,8 @@ enum BootstrapHandoff {
                 roleInventoryDigest:try digest(payload["roles"]!),deviceInventoryDigest:try digest(deviceObject),
                 topologyDigest:try digest(stable),expiresAt:expiresAt,sequence:sequence,
                 eventCheckpointSequence:eventCheckpointSequence,
-                observedWall:observedWall,observedMonotonic:observedMonotonic)
+                observedWall:observedWall,observedMonotonic:observedMonotonic,
+                hostChallenge:hostChallenge)
         } catch { throw VMFailure.admissionUnavailable }
     }
 }
@@ -640,6 +745,8 @@ public final class BootstrapQualification: BootstrapCleanupOwner, @unchecked Sen
             (failed && (!inFlight.isEmpty || roles.contains { !retired.contains(ObjectIdentifier($0)) }))
     }
     var cleanupUncertain:Bool { lock.withLock { hasUnresolvedCleanup } }
+    // Read-only observation of the shared host cleanup end (nil until started).
+    var cleanupEnd:Int? { cleanupBudget.terminalEnd }
     private var unresolvedRoles:[any BootstrapActivationTransaction] = []
     private var unresolvedLifecycles:[any BootstrapOwnedLifecycle] = []
     private var unresolvedQualifications:[any BootstrapCleanupOwner] = []
@@ -676,6 +783,8 @@ public final class BootstrapQualification: BootstrapCleanupOwner, @unchecked Sen
         }
     }
     fileprivate func latch() {
+        // Failure, drift, expiry and every terminal path funnel here (C1).
+        cleanupBudget.startTerminalNow()
         let owned = lock.withLock { () -> ([(any BootstrapOwnedLifecycle,BootstrapLifecycleStopSlot)],[any BootstrapActivationTransaction]) in
             failed = true; generation += 1; busy = nil
             let pending=roles.filter { !retired.contains(ObjectIdentifier($0)) && !pendingRoles.contains(ObjectIdentifier($0)) }
@@ -761,23 +870,28 @@ public final class BootstrapQualification: BootstrapCleanupOwner, @unchecked Sen
         }
     }
     private func resample(token:UUID,generation admittedGeneration:Int) throws -> AdmissionProof {
-        let before = try checkedSample(); try run.appliance.recheck(); try composition?.recheck(run); _ = try checkedSample()
-        let data = try probe.capture(ids:BootstrapProbeID.allCases)
+        _ = try checkedSample(); try run.appliance.recheck(); try composition?.recheck(run)
+        // C2: a fresh one-use current challenge, issued at this host sample.
+        let issued = try checkedSample()
+        let challenge = try composition?.challenges.issue(kind:.current,at:issued)
+        let data = try probe.capture(ids:BootstrapProbeID.allCases,challenge:challenge)
         let after = try checkedSample(); try run.appliance.recheck(); try composition?.recheck(run)
         let final = try checkedSample()
         let current = try BootstrapHandoff.verify(data:data,expectedRunID:run.binding.runID,
             manifestIdentity:run.appliance.manifest.digest,configIdentity:run.binding.configIdentity,
             expiresAt:run.binding.expiresAt,capability:run.capability,
-            executables:executables,composition:composition?.expectation)
+            executables:executables,composition:composition?.expectation,challenge:challenge)
+        // Arrival is the host's own `after` sample (E2): no guest timestamp is
+        // compared with a host clock.
+        if let composition, let challenge {
+            try composition.challenges.consume(challenge,handoffChallenge:current.hostChallenge ?? "",at:after)
+        }
         try composition?.acceptEvent(current)
         guard current.sequence == proof.sequence + 1,
               composition == nil || current.eventCheckpointSequence > proof.eventCheckpointSequence,
               current.topologyDigest == proof.topologyDigest,
               current.roleInventoryDigest == proof.roleInventoryDigest,
               current.deviceInventoryDigest == proof.deviceInventoryDigest,
-              before.wall <= current.observedWall, current.observedWall <= after.wall,
-              before.monotonic <= current.observedMonotonic, current.observedMonotonic <= after.monotonic,
-              after.wall-current.observedWall <= 1, after.monotonic-current.observedMonotonic <= 1,
               final.wall >= after.wall, final.monotonic >= after.monotonic else { throw VMFailure.admissionUnavailable }
         _ = try checkedSample()
         try lock.withLock {
@@ -804,6 +918,9 @@ public final class BootstrapQualification: BootstrapCleanupOwner, @unchecked Sen
     public func requireBrowserAdmission() throws -> AdmissionProof {
         let reservation = try reserve(activation:false)
         do {
+            // P7, T10-13: only a composition qualification answers host
+            // challenges; a literal-wire qualification is never operational.
+            guard composition != nil else { throw VMFailure.admissionUnavailable }
             let current = try resample(token:reservation.0,generation:reservation.1)
             try lock.withLock { guard !failed, busy == reservation.0 else { throw VMFailure.terminal }; busy=nil }
             return current
@@ -919,6 +1036,7 @@ private final class BootstrapPendingAcquisition: BootstrapCleanupOwner, @uncheck
         }
     }
     func latch() {
+        budget.startTerminalNow()  // a failed acquisition is terminal (C1)
         let pending=lock.withLock { () -> [any BootstrapOwnedLifecycle] in
             let values=owners.filter { !retired.contains(ObjectIdentifier($0)) }
             values.forEach { retired.insert(ObjectIdentifier($0)) }
@@ -946,23 +1064,25 @@ final class BootstrapCompositionV1: BootstrapProbePort, @unchecked Sendable {
     fileprivate let eventOwner:OfflineBootstrapEventOwner
     private let run:RunConfiguration, population:OfflineBootstrapPopulationAuthority
     private let channelOwners:[ObjectIdentifier]
+    fileprivate let challenges:BootstrapChallengeIssuer
     private let lock=NSLock(); private var claimed=false
 
     fileprivate init(run:RunConfiguration,probe:any BootstrapProbePort,
                      lifecycle:any BootstrapLifecyclePort & BootstrapOwnedLifecycle,
                      population:OfflineBootstrapPopulationAuthority,
                      eventOwner:OfflineBootstrapEventOwner,clock:any BrokerClock,
-                     expectation:BootstrapCompositionExpectation) {
+                     expectation:BootstrapCompositionExpectation,nonces:any BootstrapNonceSource) throws {
         self.run=run; self.probe=probe; self.lifecycle=lifecycle; self.population=population
         self.eventOwner=eventOwner; self.clock=clock; self.expectation=expectation
-        executables=BootstrapExecutableAuthority(pins:population.pins,manifestIdentity:nil)
+        challenges=BootstrapChallengeIssuer(nonces:nonces)
+        executables=try BootstrapExecutableAuthority.offlineLiteral(pins:population.pins)
         channelOwners=(run.channels.broker + run.channels.console).map(ObjectIdentifier.init)
     }
     var eventOwnerOwnsActiveCapture:Bool { eventOwner.ownsActiveCapture }
     fileprivate func claimOffline() -> Bool { lock.withLock { if claimed { return false }; claimed=true; return true } }
-    func capture(ids:[BootstrapProbeID]) throws -> Data {
+    func capture(ids:[BootstrapProbeID],challenge:BootstrapChallenge?) throws -> Data {
         try eventOwner.beginCapture()
-        return try probe.capture(ids:ids)
+        return try probe.capture(ids:ids,challenge:challenge)
     }
     fileprivate func acceptEvent(_ proof:AdmissionProof) throws {
         try eventOwner.finishCapture(checkpoint:proof.eventCheckpointSequence)
@@ -1040,7 +1160,7 @@ enum OfflineVMHost {
         population:OfflineBootstrapPopulationAuthority,eventOwner:OfflineBootstrapEventOwner?,
         clock:any BrokerClock,originalRoleRuntime:[[String:Any]],rolePolicyDigest:String,
         epoch:Int,generation:Int,probeEpochDigest:String,fixtureInventoryDigest:String,
-        proxyRuntimeID:String) throws -> BootstrapCompositionV1 {
+        proxyRuntimeID:String,nonces:any BootstrapNonceSource = SystemBootstrapNonceSource()) throws -> BootstrapCompositionV1 {
         func hex(_ value:String,_ count:Int) -> Bool {
             value.utf8.count == count && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
         }
@@ -1063,8 +1183,8 @@ enum OfflineVMHost {
             epoch:epoch,generation:generation,probeEpochDigest:probeEpochDigest,
             fixtureInventoryDigest:fixtureInventoryDigest,eventSourceID:eventOwner.sourceID,
             proxyRuntimeID:proxyRuntimeID,originalRoleRuntime:retainedRuntime)
-        return BootstrapCompositionV1(run:run,probe:probe,lifecycle:lifecycle,
-            population:population,eventOwner:eventOwner,clock:clock,expectation:expectation)
+        return try BootstrapCompositionV1(run:run,probe:probe,lifecycle:lifecycle,
+            population:population,eventOwner:eventOwner,clock:clock,expectation:expectation,nonces:nonces)
     }
 
     static func bootstrapCheck(run:RunConfiguration,composition:BootstrapCompositionV1) throws -> BootstrapQualification {
@@ -1076,21 +1196,23 @@ enum OfflineVMHost {
             let clock=composition.clock, before=try clock.sample()
             let authority=try RunAuthority(run:run,sample:before)
             _=try authority.check(before); try composition.recheck(run); try run.appliance.plan.validateResources()
-            let budget=BootstrapCleanupBudget(clock:clock); budget.start(at:before.monotonic)
+            // The shared end is not started here: admission is routine (E7, R9).
+            let budget=BootstrapCleanupBudget(clock:clock)
             let pending=BootstrapPendingAcquisition(budget:budget)
             pending.register(composition.eventOwner); pending.register(composition.lifecycle); acquisition=pending
-            let handoff=try composition.capture(ids:BootstrapProbeID.allCases)
+            // C2: the one initial challenge, issued at the host's `before` sample.
+            let challenge=try composition.challenges.issue(kind:.initial,at:before)
+            let handoff=try composition.capture(ids:BootstrapProbeID.allCases,challenge:challenge)
             let after=try clock.sample(); _=try authority.check(after); try composition.recheck(run)
             guard after.wall >= before.wall, after.monotonic >= before.monotonic else { throw VMFailure.clock }
             let proof=try BootstrapHandoff.verify(data:handoff,expectedRunID:run.binding.runID,
                 manifestIdentity:run.appliance.manifest.digest,configIdentity:run.binding.configIdentity,
                 expiresAt:run.binding.expiresAt,capability:run.capability,
-                executables:composition.executables,composition:composition.expectation)
+                executables:composition.executables,composition:composition.expectation,challenge:challenge)
+            // Arrival is the host's own `after` sample; guest times stay guest-local (E2).
+            try composition.challenges.consume(challenge,handoffChallenge:proof.hostChallenge ?? "",at:after)
             try composition.acceptEvent(proof)
-            guard proof.sequence == 1, proof.eventCheckpointSequence > 0,
-                  before.wall <= proof.observedWall, proof.observedWall <= after.wall,
-                  before.monotonic <= proof.observedMonotonic, proof.observedMonotonic <= after.monotonic,
-                  after.wall-proof.observedWall <= 1, after.monotonic-proof.observedMonotonic <= 1 else { throw VMFailure.admissionUnavailable }
+            guard proof.sequence == 1, proof.eventCheckpointSequence > 0 else { throw VMFailure.admissionUnavailable }
             let owner=BootstrapQualification(run:run,authority:authority,clock:clock,
                 probe:composition,executables:composition.executables,proof:proof,
                 lastClock:after,composition:composition,cleanupBudget:budget)
@@ -1143,20 +1265,21 @@ enum OfflineVMHost {
             // This internal model exercises lifecycle with literal wire vectors.
             // No inspector/native provenance is implied or available.
             guard executables.manifestIdentity == nil else { throw VMFailure.admissionUnavailable }
+            // T10-13: one sequence-1 literal-wire handoff per run, claimed before capture.
+            guard run.channels.claimLegacyBootstrap() else { throw VMFailure.admissionUnavailable }
             let before = try clock.sample(), authority = try RunAuthority(run:run,sample:before)
             _ = try authority.check(before)
             try run.appliance.recheck(); try run.appliance.plan.validateResources()
             let ids = BootstrapProbeID.allCases
-            let handoff = try probe.capture(ids:ids)
+            let handoff = try probe.capture(ids:ids,challenge:nil)
             let after = try clock.sample(); _ = try authority.check(after); try run.appliance.recheck()
             guard after.wall >= before.wall, after.monotonic >= before.monotonic else { throw VMFailure.clock }
             let proof = try BootstrapHandoff.verify(data:handoff,expectedRunID:run.binding.runID,
                 manifestIdentity:run.appliance.manifest.digest,configIdentity:run.binding.configIdentity,
                 expiresAt:run.binding.expiresAt,capability:run.capability,
-                executables:executables)
-            guard proof.sequence == 1, before.wall <= proof.observedWall, proof.observedWall <= after.wall,
-                  before.monotonic <= proof.observedMonotonic, proof.observedMonotonic <= after.monotonic,
-                  after.wall-proof.observedWall <= 1, after.monotonic-proof.observedMonotonic <= 1 else { throw VMFailure.admissionUnavailable }
+                executables:executables,challenge:nil)
+            // No host-clock comparison of guest-local observation times (E2).
+            guard proof.sequence == 1 else { throw VMFailure.admissionUnavailable }
             let owner = BootstrapQualification(run:run,authority:authority,clock:clock,
                 probe:probe,executables:executables,proof:proof,lastClock:after)
             qualification=owner

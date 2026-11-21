@@ -4,13 +4,22 @@ const { createHash, createHmac, randomBytes, timingSafeEqual } = require('node:c
 const { chromium } = require('playwright');
 const { validateAssetResponse, importBrowserAssetBundle } = require('./receipts.cjs');
 const { bindBrowserWorkerChannel } = require('./role-ports.cjs');
+// T13 I-4: the single copy of the readiness checks (observation.cjs loads no controller module).
+const { readinessPredicate } = require('./observation.cjs');
 const RUNTIME_PINS = require('../package.json').acceptanceRuntime;
 
 function fail(code, cause) { const error = new Error(code, cause ? { cause } : undefined); error.code = code; throw error; }
+// Task 18 F1 (RB-I1): the same printable-ASCII encoder as browser.cjs. Every UTF-16 unit above 0x7E is a lowercase
+// \uXXXX escape (a surrogate pair as two escapes), so a UTF-8 credential arrives exactly and the action is typed as the
+// operator entered it; the reader below still refuses any raw byte above 127.
+function jsonText(value) {
+  const text = JSON.stringify(value);
+  return typeof text === 'string' ? text.replace(/[\u007f-\uffff]/g, unit => '\\u' + unit.charCodeAt(0).toString(16).padStart(4, '0')) : text;
+}
 function canonical(value) {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
-  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}';
-  return JSON.stringify(value);
+  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(key => jsonText(key) + ':' + canonical(value[key])).join(',') + '}';
+  return jsonText(value);
 }
 function equal(left, right) { return canonical(left) === canonical(right); }
 function exact(value, keys) {
@@ -27,6 +36,11 @@ function sessionAction(action,payload) {
     return;
   }
   if(action==='SESSION_OBSERVATION'&&Reflect.ownKeys(payload).length===0)return;
+  if(action==='SESSION_READINESS'){
+    exact(payload,['phase','sequence']);
+    if(!['OBSERVE_BEFORE_RESTART','OBSERVE_AFTER_RESTART'].includes(payload.phase)||!safe(payload.sequence))fail('ACTION_DENIED');
+    return;
+  }
   if(action==='OBSERVE_VIEW'){
     exact(payload,['phase','view']);
     if(!['OBSERVE_BEFORE_RESTART','OBSERVE_AFTER_RESTART'].includes(payload.phase)||
@@ -42,11 +56,15 @@ function meResponse(response,origin) {
       (!request||typeof request.method!=='function'||request.method()==='GET');}
   catch{return false;}
 }
+// The one owner check, for the login's /api/me and for each SESSION_READINESS /api/me.
+function ownerMatches(body,expectedOwner) {
+  return !!body&&typeof body==='object'&&!Array.isArray(body)&&!!body.user&&typeof body.user==='object'&&!Array.isArray(body.user)&&
+    body.user.id===expectedOwner.id&&body.user.username===expectedOwner.username;
+}
 async function sessionSnapshot(context,response,backend,expectedOwner,key) {
   if(!response||typeof response.status!=='function'||response.status()!==200||typeof response.json!=='function')fail('OWNER_MISMATCH');
   let body;try{body=await response.json();}catch{fail('OWNER_MISMATCH');}
-  if(!body||typeof body!=='object'||Array.isArray(body)||!body.user||typeof body.user!=='object'||Array.isArray(body.user)||
-      body.user.id!==expectedOwner.id||body.user.username!==expectedOwner.username)fail('OWNER_MISMATCH');
+  if(!ownerMatches(body,expectedOwner))fail('OWNER_MISMATCH');
   return sessionFingerprint(context,backend,key);
 }
 async function sessionFingerprint(context,backend,key) {
@@ -71,7 +89,15 @@ const VIEW_SPECS=Object.freeze({
     ['/api/paper-trades/orders',[]],['/api/paper-trades/trades',[]],['/api/robotrader/notifications',[]],
   ])}),
 });
-const READINESS_CHECKS=Object.freeze(['ownerConfiguration','authenticationConfiguration','databaseConnected','ownerIdentity','ownerSettings','persistence','paperMode','automationDisabled','schedulerSuppressed','paperDestination','paperBindingConfiguration','paperCredentialConfiguration']);
+// T13 I-2 (C9): the only request headers withheld from the ROUTE facts. Every
+// other header reaches the controller, where the route policy's allowlist decides.
+const BROWSER_GENERATED_HEADERS=Object.freeze(['user-agent','accept-language','accept-encoding','referer','cookie','sec-ch-ua','sec-ch-ua-mobile','sec-ch-ua-platform','sec-fetch-site','sec-fetch-mode','sec-fetch-dest','sec-fetch-user','upgrade-insecure-requests']);
+// Credential and method-override headers never leave the worker: local abort, no ROUTE frame.
+const LOCAL_ABORT_HEADERS=Object.freeze(['authorization','proxy-authorization','x-http-method-override','x-method-override']);
+// T13 I-3: every SPA document (/, /login and the fixed view paths) carries the
+// index.html bytes, so its response is validated against the /index.html entry.
+const SPA_DOCUMENT_PATHS=Object.freeze(['/','/login',...Object.values(VIEW_SPECS).map(spec=>spec.path)]);
+const INDEX_ENTRY_PATH='/index.html';
 function plain(value){return value!==null&&typeof value==='object'&&!Array.isArray(value);}
 function finite(value){return typeof value==='number'&&Number.isFinite(value);}
 function textValue(value){return typeof value==='string'&&value.length>0;}
@@ -98,13 +124,45 @@ function sourceRows(rows,kind){
     return instant(row.filledAt)&&numeric(row.price)&&optionalNumeric(row.realizedPnl);
   });
 }
-function validReadiness(body){
-  if(!plain(body)||body.contractVersion!==2||body.profile!=='owner-paper-maintenance'||body.runtimeReady!==true||body.maintenanceReady!==true||
-     !plain(body.checks)||Object.keys(body.checks).sort().join(',')!==[...READINESS_CHECKS].sort().join(',')||
-     !plain(body.automation)||Object.keys(body.automation).sort().join(',')!=='activationAuthorized,enabled,isEnabled,liveEnabled,schedulerSuppressed')return false;
-  if(READINESS_CHECKS.some(name=>!plain(body.checks[name])||body.checks[name].status!=='pass'))return false;
-  return body.automation.enabled===false&&body.automation.isEnabled===false&&body.automation.liveEnabled===false&&
-    body.automation.schedulerSuppressed===true&&body.automation.activationAuthorized===false;
+// C9 SESSION_READINESS: a fixed GET's response, matched by origin, path and method only, so that a
+// non-200 readiness answer (503) is observed and classified rather than timed out.
+function fixedResponse(response,backend,path){
+  try{const url=new URL(response.url()),request=typeof response.request==='function'?response.request():null;
+    return url.origin===backend&&url.pathname===path&&!url.search&&!url.hash&&typeof response.status==='function'&&
+      (!request||typeof request.method!=='function'||request.method()==='GET');}
+  catch{return false;}
+}
+// The exact response bytes (bounded) and their strict UTF-8 JSON value; both from the same bytes.
+async function exactBody(response,code){
+  let bytes;try{bytes=typeof response.body==='function'?await response.body():null;}catch{fail(code);}
+  if(!Buffer.isBuffer(bytes)||bytes.length<1||bytes.length>65536)fail(code);
+  const copy=Buffer.from(bytes);let value;
+  try{value=JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(copy));}catch{fail(code);}
+  return {bytes:copy,value};
+}
+function digestHex(bytes){return createHash('sha256').update(bytes).digest('hex');}
+// T13 I-4/I-5 (C9): GET /api/readiness, then GET /api/me. Readiness passes only as HTTP 200 with a
+// body the single readinessPredicate accepts; the owner must be the login's owner and the cookie
+// the login's cookie. The result carries SHA-256 digests of the exact response bytes, never content.
+async function observeReadiness(page,context,backend,phase,sequence,boundSession,sessionKey,clock,runId){
+  const before=await sessionFingerprint(context,backend,sessionKey);
+  if(before.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
+  const readinessPending=page.waitForResponse(response=>fixedResponse(response,backend,'/api/readiness'),{timeout:10000});
+  await fixedGet(page,backend+'/api/readiness');
+  const readinessResponse=await readinessPending;
+  if(readinessResponse.status()!==200)fail('READINESS_FAILED');
+  const readiness=await exactBody(readinessResponse,'READINESS_FAILED');
+  if(readinessPredicate(readiness.value)!==true)fail('READINESS_FAILED');
+  const ownerPending=page.waitForResponse(value=>meResponse(value,backend),{timeout:10000});
+  await fixedGet(page,backend+'/api/me');
+  const owner=await exactBody(await ownerPending,'OWNER_MISMATCH');
+  if(!ownerMatches(owner.value,boundSession.expectedOwner))fail('OWNER_MISMATCH');
+  const after=await sessionFingerprint(context,backend,sessionKey);
+  if(after.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
+  let sample;try{sample=clock.sample();}catch{fail('EXPIRED');}
+  if(!Array.isArray(sample)||sample.length!==2||!safe(sample[1],0))fail('EXPIRED');
+  return Object.freeze({status:'READINESS_OBSERVED',runId,phase,sequence,sessionFingerprint:after.fingerprint,
+    readinessDigest:digestHex(readiness.bytes),ownerDigest:digestHex(owner.bytes),checkedAtMonotonicMs:sample[1]});
 }
 function rowIdentities(rows,field){
   if(!Array.isArray(rows))fail('OBSERVATION_FAILED');
@@ -155,7 +213,14 @@ function validateViewBodies(view,bodies){
     const visibleOrderIndexes=orders.orders.map((row,index)=>({row,index})).filter(({row})=>String(row.status).toLowerCase()!=='rejected').slice(0,8);
     const visibleDecisions=decisions.decisions.slice(0,10),visiblePositions=performance.positions.slice(0,8),visibleAudit=audit.events;
     const visibleReconciliation=reconciliation.orders.slice(0,4);
-    return {sections:[
+    // T13 I-9: source and brokerError are derived from the validated PAPER-health body. The source
+    // is the single connected Alpaca adapter the health body reports (none, or more than one, is
+    // no source); brokerError is any broker fault that body or the performance body reports.
+    const connected=Object.keys(health.alpaca).filter(name=>plain(health.alpaca[name])&&health.alpaca[name].connected===true);
+    const paperHealth=health.alpaca.paper;
+    const paper=Object.freeze({source:connected.length===1?'alpaca-'+connected[0]:null,
+      brokerError:paperHealth.connected!==true||paperHealth.error!==null||paperHealth.tradingBlocked!==false||performance.brokerError!==null});
+    return {paper,sections:[
       {title:'Recent strategy decisions',rows:visibleDecisions,samples:rowIdentities(visibleDecisions,'symbol'),empty:'No decisions saved yet.',selector:'tbody tr'},
       {title:'RoboTrader orders',rows:visibleOrderIndexes,samples:visibleOrderIndexes.map(({index})=>orderLabels[index]),empty:'No RoboTrader orders submitted yet.',selector:'tbody tr'},
       {title:'Current positions',rows:visiblePositions,samples:rowIdentities(visiblePositions,'symbol'),empty:'No positions returned.',selector:'tbody tr'},
@@ -218,23 +283,21 @@ function assertCurveHistory(path,rows){const points=curvePoints(path);if(points.
     const expected=(equities[index]-dataMin)/(dataMax-dataMin),rendered=(pixelMax-ys[index])/(pixelMax-pixelMin);
     if(Math.abs(expected-rendered)>0.02)fail('OBSERVATION_FAILED');
   }}
+// The response status is checked from the observed response (fixedResponse / meResponse), so that a
+// non-200 answer is classified by the action that made the GET.
 async function fixedGet(page,url){if(typeof page.evaluate!=='function')fail('OBSERVATION_FAILED');
   await page.evaluate(async target=>{const response=await fetch(target,{method:'GET',credentials:'include',redirect:'error',headers:{accept:'application/json'}});
-    if(!response.ok)throw new Error('FIXED_GET_FAILED');await response.arrayBuffer();},url);}
-async function observeFixedView(page,context,backend,frontend,phase,view,boundSession,sessionKey){
+    await response.arrayBuffer();},url);}
+// T13 I-9: measured, not assumed. A role=alert or role=status element that does not settle at zero
+// within the same 200 x 25 ms bound waitCount uses is a measured error state.
+async function settlesAtZero(locator){for(let attempt=0;attempt<200;attempt++){if(await locatorCount(locator)===0)return true;
+    await new Promise(resolve=>setTimeout(resolve,25));}return false;}
+// The view runs only after the phase's SESSION_READINESS (the caller checks it); `facts` are the
+// phase's PAPER-health facts (from its ROBO view), or none.
+async function observeFixedView(page,context,backend,frontend,phase,view,sequence,facts,boundSession,sessionKey){
   const spec=VIEW_SPECS[view];if(!spec)fail('ACTION_DENIED');
   const beforeSession=await sessionFingerprint(context,backend,sessionKey);
   if(beforeSession.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
-  let readinessValidation=false;
-  if(view==='ROBO'){
-    const readinessPending=page.waitForResponse(response=>viewResponse(response,backend,'/api/readiness',[]),{timeout:10000});
-    await fixedGet(page,backend+'/api/readiness');
-    const readinessResponse=await readinessPending;let readinessBody;try{readinessBody=await readinessResponse.json();}catch{fail('READINESS_FAILED');}
-    if(!validReadiness(readinessBody))fail('READINESS_FAILED');readinessValidation=true;
-    const ownerPending=page.waitForResponse(value=>meResponse(value,backend),{timeout:10000});await fixedGet(page,backend+'/api/me');
-    const ownerSession=await sessionSnapshot(context,await ownerPending,backend,boundSession.expectedOwner,sessionKey);
-    if(ownerSession.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
-  }
   const pending=spec.routes.map(([path,query])=>page.waitForResponse(response=>viewResponse(response,backend,path,query),{timeout:10000}));
   const links=page.getByRole('link',{name:spec.nav,exact:true}),link=typeof links.first==='function'?links.first():links;
   if(!link||typeof link.click!=='function')fail('OBSERVATION_FAILED');await link.click();
@@ -244,7 +307,7 @@ async function observeFixedView(page,context,backend,frontend,phase,view,boundSe
   for(const response of responses){let body;try{body=await response.json();}catch{fail('OBSERVATION_FAILED');}bodies.push(body);}
   const validated=validateViewBodies(view,bodies);
   const heading=page.getByRole('heading',{name:spec.heading,exact:true});await waitVisible(heading);
-  await waitCount(page.getByRole('alert'),value=>value===0);await waitCount(page.getByRole('status'),value=>value===0);
+  const noError=await settlesAtZero(page.getByRole('alert'))&&await settlesAtZero(page.getByRole('status'));
   let domRows=0;
   for(const section of validated.sections){
     const card=await sectionCard(page,section.title),rows=section.rows,samples=section.samples;
@@ -266,14 +329,42 @@ async function observeFixedView(page,context,backend,frontend,phase,view,boundSe
     await visibleMatches(card.getByText(money(value),{exact:true}),1);}
   const session=await sessionFingerprint(context,backend,sessionKey);
   if(session.fingerprint!==boundSession.fingerprint)fail('SESSION_CHANGED');
-  return Object.freeze({status:'VIEW_OBSERVED',view,phase,schemaValidation:true,renderedData:domRows>0,
-    validEmptyState:domRows===0,noError:true,fresh:true,source:'alpaca-paper',brokerError:false,
-    routeCount:spec.routes.length,renderedCount:domRows,fingerprint:session.fingerprint,readinessValidation});
+  // T13 I-9: no freshness is claimed. ROBO reports the facts derived from its own PAPER-health body;
+  // the phase's later views report the same facts, or none before ROBO.
+  const paper=validated.paper||facts||Object.freeze({source:null,brokerError:null});
+  return Object.freeze({observed:Object.freeze({status:'VIEW_OBSERVED',view,phase,sequence,schemaValidation:true,renderedData:domRows>0,
+    validEmptyState:domRows===0,noError,source:paper.source,brokerError:paper.brokerError,
+    routeCount:spec.routes.length,renderedCount:domRows,fingerprint:session.fingerprint}),paper:validated.paper||null});
 }
 async function bounded(promise,milliseconds) {
   if(!Number.isSafeInteger(milliseconds)||milliseconds<0)fail('CLEANUP_UNCERTAIN');
   let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('CLEANUP_UNCERTAIN'),{code:'CLEANUP_UNCERTAIN'})),milliseconds);timer.unref?.();})]);}
   finally{clearTimeout(timer);}
+}
+// T13 m-6: startup is bounded by the run binding's expiry. The injected clock
+// alone decides expiry (wall ms against expiresAt); the timer only schedules the
+// next clock check, so a stalled step still ends once the clock passes expiry.
+// A failing, malformed or regressing sample counts as expired (fail closed).
+function runExpiry(clock,expiresAt) {
+  let timer=null,cleared=false,expired=false,last=null,reject;
+  const promise=new Promise((_,no)=>{reject=no;});promise.catch(()=>{});
+  function left(){
+    let sample;try{sample=clock.sample();}catch{return 0;}
+    if(!Array.isArray(sample)||sample.length!==2||!sample.every(value=>safe(value,0))||last&&(sample[0]<last[0]||sample[1]<last[1]))return 0;
+    last=sample;return Math.max(0,expiresAt-sample[0]);
+  }
+  function expire(){expired=true;if(timer!==null)clearTimeout(timer);timer=null;reject(Object.assign(new Error('EXPIRED'),{code:'EXPIRED'}));}
+  function check(){
+    timer=null;if(cleared||expired)return;const milliseconds=left();
+    if(milliseconds<1){expire();return;}
+    timer=setTimeout(check,Math.min(milliseconds,2147483647));timer.unref?.();
+  }
+  check();
+  return Object.freeze({
+    race:operation=>Promise.race([operation,promise]),
+    assert(){if(!cleared&&!expired&&left()<1)expire();if(expired)fail('EXPIRED');},
+    clear(){cleared=true;if(timer!==null)clearTimeout(timer);timer=null;},
+  });
 }
 function validateConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config) || Object.keys(config).sort().join(',') !== 'assetBundle,assetEntries,paths,runBinding,runtime' || !equal(config.runtime, RUNTIME_PINS)) fail('CONFIG_INVALID');
@@ -297,22 +388,27 @@ function validateConfig(config) {
     paths.add(entry.path);
   }
 }
-function audit(pipe) {
-  if (!pipe || typeof pipe.audit !== 'function' || typeof pipe.inspectBrowserFamily !== 'function') fail('ROLE_INVALID');
-  const value = pipe.audit();
-  if (!value || value.version !== 1 || value.uid !== 10002 || value.noNewPrivs !== true || value.capabilities !== 'EMPTY' ||
-      value.filterInherited !== true || value.procScope !== 'BROWSER_FAMILY_ONLY' || value.consoleFds !== 0 || value.vsockFds !== 0 ||
-      value.unexpectedFds !== 0 || value.networkDeviceCount !== 0 || value.maxFrameBytes !== 16384 ||
-      !Array.isArray(value.tmpfsPaths) || !equal([...value.tmpfsPaths].sort(), ['/dev/shm', '/run/acceptance/browser/cache', '/run/acceptance/browser/profile', '/run/acceptance/browser/support']) ||
-      !/^[0-9a-f]{32}$/.test(value.runId) || !/^[0-9a-f]{64}$/.test(value.channelKeyHex)) fail('ROLE_INVALID');
-  return value;
+// T13 I-6, m-1: a status is accepted only with all four Uid and all four Gid fields 10002,
+// NoNewPrivs 1, Seccomp exactly 2 (SECCOMP_MODE_FILTER) and Seccomp_filters at least 1
+// (Chromium stacks its own filters on the inherited one). Descriptor facts must all be zero:
+// consoles, unattributed sockets, unreadable descriptors and leaked control pipes.
+const ROLE_ID=10002;
+function roleIds(value){return Array.isArray(value)&&value.length===4&&value.every(id=>id===ROLE_ID);}
+function statusAccepted(value){
+  return roleIds(value.uids)&&roleIds(value.gids)&&value.noNewPrivs===true&&value.seccomp===2&&safe(value.seccompFilters,1);
 }
-function inspectFamily(pipe) {
-  const value = pipe.inspectBrowserFamily();
-  if (!value || !Number.isSafeInteger(value.workerPid) || value.workerPid < 1 || !Number.isSafeInteger(value.browserPid) || value.browserPid < 1 ||
-      value.procScope !== 'BROWSER_FAMILY_ONLY' || !Array.isArray(value.members) || value.members.length < 2) fail('ROLE_INVALID');
-  for (const member of value.members) if (!member || !Number.isSafeInteger(member.pid) || member.pid < 1 || member.uid !== 10002 ||
-      member.filterInherited !== true || member.consoleFds !== 0 || member.vsockFds !== 0 || member.unexpectedFds !== 0) fail('ROLE_INVALID');
+function descriptorsClean(value){
+  return value.consoleFds===0&&value.unknownSocketFds===0&&value.unreadableFds===0&&value.unexpectedFds===0;
+}
+// Task 16c (owner decision 2026-11-20, P79): the startup self-check covers this worker process only. The
+// uid-10002 worker never inspects other processes; the bootstrap inspects the BROWSER family as root.
+function audit(pipe) {
+  if (!pipe || typeof pipe.audit !== 'function') fail('ROLE_INVALID');
+  const value = pipe.audit();
+  if (!value || value.version !== 1 || !statusAccepted(value) || value.capabilities !== 'EMPTY' ||
+      value.procScope !== 'BROWSER_FAMILY_ONLY' || !descriptorsClean(value) || value.networkDeviceCount !== 0 || value.maxFrameBytes !== 16384 ||
+      !Array.isArray(value.tmpfsPaths) || !equal([...value.tmpfsPaths].sort(), ['/dev/shm', '/run/acceptance/browser/cache', '/run/acceptance/browser/profile', '/run/acceptance/browser/support']) ||
+      !/^[0-9a-f]{32}$/.test(value.runId)) fail('ROLE_INVALID');
   return value;
 }
 function auditApplication(pipe,runId) {
@@ -320,16 +416,13 @@ function auditApplication(pipe,runId) {
   if(!value||value.version!==1||value.kind!=='TASK13_BROWSER_APPLICATION'||value.runId!==runId||value.maxFrameBytes!==16384)fail('ROLE_INVALID');
   return value;
 }
+// The application pipe carries only the Task 13 frame form (auditApplication admits no other).
 function rpc(pipe, facts) {
   let outgoing = 0, incoming = 0, sending=Promise.resolve();
-  const outer=facts.kind==='TASK13_BROWSER_APPLICATION';
-  const key = outer?null:Buffer.from(facts.channelKeyHex, 'hex');
-  function mac(frame, direction) { return createHmac('sha256', key).update('acceptance:browser:v1\0' + direction + '\0' + canonical(frame)).digest('hex'); }
   return Object.freeze({
     write(type, payload) {
       const operation=sending.then(async()=>{
-        const bare = { version: 1, runId: facts.runId, sequence: ++outgoing, type, payload };
-        const body = Buffer.from(canonical(outer?bare:{ ...bare, mac: mac(bare, 'WORKER_TO_CONTROLLER') }), 'ascii');
+        const body = Buffer.from(canonical({ version: 1, runId: facts.runId, sequence: ++outgoing, type, payload }), 'ascii');
         if (body.length > facts.maxFrameBytes) fail('FRAME_DENIED');
         const prefix = Buffer.alloc(4); prefix.writeUInt32BE(body.length); await pipe.write(Buffer.concat([prefix, body]));
       });
@@ -341,10 +434,8 @@ function rpc(pipe, facts) {
       const body = bytes.subarray(4); if (body.some(value => value > 127)) fail('FRAME_DENIED');
       const text = body.toString('ascii'); let frame; try { frame = JSON.parse(text); } catch { fail('FRAME_DENIED'); }
       if (canonical(frame) !== text) fail('FRAME_DENIED');
-      exact(frame, outer?['version','runId','sequence','type','payload']:['version', 'runId', 'sequence', 'type', 'payload', 'mac']);
+      exact(frame, ['version', 'runId', 'sequence', 'type', 'payload']);
       if (frame.version !== 1 || frame.runId !== facts.runId || frame.sequence !== incoming + 1 || !safe(frame.sequence) || typeof frame.type !== 'string') fail('FRAME_DENIED');
-      if(!outer){if(typeof frame.mac!=='string')fail('FRAME_DENIED');const bare = { ...frame }; delete bare.mac; const expected = mac(bare, 'CONTROLLER_TO_WORKER');
-        if (!/^[0-9a-f]{64}$/.test(frame.mac) || !timingSafeEqual(Buffer.from(frame.mac, 'hex'), Buffer.from(expected, 'hex'))) fail('FRAME_DENIED');}
       incoming++;
       return frame;
     },
@@ -362,18 +453,20 @@ function loginJSON(bytes) {
   } catch { return false; }
 }
 function bodyProof(runId, requestId, sequence, method, url, headers, bytes) {
+  // Header pairs pass through uncollapsed, so a repeated name reaches the policy.
+  const contentTypes = headers.filter(([name]) => name === 'content-type');
   let schema = 'INVALID';
-  if (method === 'POST' && new URL(url).pathname === '/api/login' && headers['content-type'] === 'application/json' && loginJSON(bytes)) schema = 'LOGIN_JSON';
+  if (method === 'POST' && new URL(url).pathname === '/api/login' && contentTypes.length === 1 && contentTypes[0][1] === 'application/json' && loginJSON(bytes)) schema = 'LOGIN_JSON';
   else if (bytes.length === 0) schema = 'ABSENT';
-  return { runId, requestId, sequence, method, url,
-    headers:Object.entries(headers).sort((a,b)=>a[0].localeCompare(b[0])),byteLength: bytes.length, schema };
+  return { runId, requestId, sequence, method, url, headers: headers.map(pair => [...pair]), byteLength: bytes.length, schema };
 }
+// Returns null when the request carries a header that must be aborted locally.
 function factsFor(request, requestId) {
-  const admittedHeaders = new Set(['origin', 'content-type', 'accept', 'access-control-request-method', 'access-control-request-headers']);
-  const headers = Object.entries(request.headers()).map(([name, value]) => [name.toLowerCase(), String(value)])
-    .filter(([name]) => admittedHeaders.has(name)).sort((a, b) => a[0].localeCompare(b[0]));
+  const headers = Object.entries(request.headers()).map(([name, value]) => [String(name).toLowerCase(), String(value)]);
+  if (headers.some(([name]) => LOCAL_ABORT_HEADERS.includes(name) || name.startsWith('x-'))) return null;
   const method = request.method(), url = request.url();
-  return { requestId, method, url, headers };
+  return { requestId, method, url, headers: headers.filter(([name]) => !BROWSER_GENERATED_HEADERS.includes(name))
+    .sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1])) };
 }
 function launchOptions(config) {
   return {
@@ -422,20 +515,88 @@ function decodeInheritedInit(bytes) {
       !safe(value.binding.epoch)||!safe(value.binding.expiresAtMs))fail('CHANNEL_DENIED');
   return value;
 }
-function procStatus(fs,pid='self') {
-  const text=fs.readFileSync('/proc/'+pid+'/status','utf8'),field=name=>text.match(new RegExp('^'+name+':\\s+(.+)$','m'))?.[1]||'';
-  const uid=Number(field('Uid').split(/\s+/)[0]),noNewPrivs=field('NoNewPrivs')==='1',seccomp=Number(field('Seccomp'));
-  const capabilities=/^0+$/.test(field('CapEff'));
-  return {uid,noNewPrivs,filterInherited:noNewPrivs&&seccomp>0,capabilities:capabilities?'EMPTY':'PRESENT'};
+// T13 I-6: descriptor classification observes the kernel's own tables. Linux 6.8 formats:
+//  - descriptor links: net/socket.c:362 `socket:[%lu]`, fs/pipe.c:881 `pipe:[%lu]`.
+//  - net/unix/af_unix.c:3282-3289: inode is the 7th field; net/ipv4/tcp_ipv4.c:2896 and :2945-2947,
+//    net/ipv6/tcp_ipv6.c:2211 and :2270-2275, net/ipv4/udp.c:3082 and :3098-3100,
+//    net/ipv6/datagram.c:1055 with include/net/transp_v6.h:59-64: inode is the 10th field.
+//    Request and TIME_WAIT rows carry inode 0 (tcp_ipv4.c:2835, :2929) and attribute nothing.
+// A socket is attributed only from these five tables. Any other socket, vsock included (it has
+// no /proc/net table), is UNKNOWN_SOCKET. A readlink error is UNREADABLE. Both are failures.
+const SOCKET_TABLES=Object.freeze([
+  ['unix','UNIX',6,'Num RefCount Protocol Flags Type St Inode Path'],
+  ['tcp','TCP',9,'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode'],
+  ['tcp6','TCP',9,'sl local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode'],
+  ['udp','UDP',9,'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode ref pointer drops'],
+  ['udp6','UDP',9,'sl local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode ref pointer drops'],
+].map(row=>Object.freeze(row)));
+function classifyDescriptor(link,socketInodes) {
+  if(typeof link!=='string'||link.length===0)return 'UNREADABLE';
+  const socket=/^socket:\[([1-9][0-9]*)\]$/.exec(link);
+  if(socket){const family=socketInodes&&typeof socketInodes.get==='function'?socketInodes.get(socket[1]):undefined;
+    return family==='UNIX'||family==='TCP'||family==='UDP'?family:'UNKNOWN_SOCKET';}
+  if(link.startsWith('socket:'))return 'UNKNOWN_SOCKET';
+  if(/^pipe:\[[1-9][0-9]*\]$/.test(link))return 'PIPE';
+  if(link==='/dev/null')return 'NULL';
+  // The virtio console (hvc*, the guest's console=hvc0), virtio ports, /dev/console, every tty and pty.
+  if(/^\/dev\/(?:hvc|vport|console|tty|pts\/)/.test(link))return 'CONSOLE';
+  return 'OTHER';
 }
-function forbiddenDescriptorCounts(fs,pid='self',forbiddenTargets=new Set()) {
-  let consoleFds=0,vsockFds=0,unexpectedFds=0;
-  for(const name of fs.readdirSync('/proc/'+pid+'/fd'))try{const target=fs.readlinkSync('/proc/'+pid+'/fd/'+name);
-    if(/\/dev\/(?:console|tty\d*|pts\/)/.test(target))consoleFds++;
-    if(/vsock/i.test(target))vsockFds++;
-    if(forbiddenTargets.has(target))unexpectedFds++;
-  }catch{}
-  return {consoleFds,vsockFds,unexpectedFds};
+function socketInodeFamilies(fs) {
+  const families=new Map();
+  for(const [table,family,column,header] of SOCKET_TABLES){
+    let text;try{text=fs.readFileSync('/proc/net/'+table,'utf8');}catch(cause){fail('FAMILY_UNREADABLE',cause);}
+    if(typeof text!=='string')fail('FAMILY_UNREADABLE');
+    const rows=text.split('\n');
+    if(rows[0].trim().split(/\s+/).join(' ')!==header)fail('FAMILY_UNREADABLE');
+    for(const row of rows.slice(1)){
+      const fields=row.trim().split(/\s+/);if(fields.length===1&&fields[0]==='')continue;
+      const inode=fields[column];if(typeof inode!=='string'||!/^(?:0|[1-9][0-9]*)$/.test(inode))fail('FAMILY_UNREADABLE');
+      if(inode==='0')continue;
+      const known=families.get(inode);if(known!==undefined&&known!==family)fail('FAMILY_UNREADABLE');
+      families.set(inode,family);
+    }
+  }
+  return families;
+}
+// m-1: fs/proc/array.c:189-196 prints four Uid and four Gid fields; :335-341 prints NoNewPrivs,
+// Seccomp (include/uapi/linux/seccomp.h:12 SECCOMP_MODE_FILTER is 2) and Seccomp_filters.
+// Each row must appear exactly once; a missing or malformed row reads as null.
+function procStatus(fs,pid='self') {
+  const text=fs.readFileSync('/proc/'+pid+'/status','utf8'),lines=String(text).split('\n');
+  const field=name=>{const rows=lines.filter(line=>line.startsWith(name+':'));return rows.length===1?rows[0].slice(name.length+1).trim():null;};
+  const decimal=value=>typeof value==='string'&&/^(?:0|[1-9][0-9]{0,9})$/.test(value)?Number(value):null;
+  const ids=name=>{const value=field(name);if(value===null)return null;const parts=value.split(/\s+/);return parts.length===4?parts.map(decimal):null;};
+  const capEff=field('CapEff');
+  return {uids:ids('Uid'),gids:ids('Gid'),noNewPrivs:field('NoNewPrivs')==='1',seccomp:decimal(field('Seccomp')),
+    seccompFilters:decimal(field('Seccomp_filters')),capabilities:typeof capEff==='string'&&/^0+$/.test(capEff)?'EMPTY':'PRESENT'};
+}
+// The listing stays open while each entry is read, so the reader's own listing descriptor (it
+// appears in its own /proc/<pid>/fd) still resolves instead of reading as unreadable.
+function descriptorLinks(fs,pid) {
+  let directory;try{directory=fs.opendirSync('/proc/'+pid+'/fd');}catch(cause){fail('FAMILY_UNREADABLE',cause);}
+  const links=[];
+  try{
+    for(let entry=directory.readSync();entry!==null;entry=directory.readSync()){
+      if(entry.name==='.'||entry.name==='..')continue;
+      if(!/^(?:0|[1-9][0-9]*)$/.test(entry.name))fail('FAMILY_UNREADABLE');
+      let link=null;try{link=fs.readlinkSync('/proc/'+pid+'/fd/'+entry.name);}catch{link=null;}
+      links.push(link);
+    }
+  }catch(cause){fail('FAMILY_UNREADABLE',cause);}
+  finally{try{directory.closeSync();}catch{}}
+  return links;
+}
+function forbiddenDescriptorCounts(fs,pid='self',forbiddenTargets=new Set(),socketInodes=socketInodeFamilies(fs)) {
+  let consoleFds=0,unknownSocketFds=0,unreadableFds=0,unexpectedFds=0;
+  for(const link of descriptorLinks(fs,pid)){
+    const kind=classifyDescriptor(link,socketInodes);
+    if(kind==='CONSOLE')consoleFds++;
+    if(kind==='UNKNOWN_SOCKET')unknownSocketFds++;
+    if(kind==='UNREADABLE')unreadableFds++;
+    if(typeof link==='string'&&forbiddenTargets.has(link))unexpectedFds++;
+  }
+  return {consoleFds,unknownSocketFds,unreadableFds,unexpectedFds};
 }
 function tmpfsPaths(fs) {
   const required=['/dev/shm','/run/acceptance/browser/cache','/run/acceptance/browser/profile','/run/acceptance/browser/support'],mounts=[];
@@ -444,28 +605,14 @@ function tmpfsPaths(fs) {
   return required.filter(path=>mounts.filter(row=>path===row.path||path.startsWith(row.path.endsWith('/')?row.path:row.path+'/'))
     .sort((a,b)=>b.path.length-a.path.length)[0]?.type==='tmpfs').sort();
 }
-function childPids(fs,pid) {
-  const text=fs.readFileSync('/proc/'+pid+'/task/'+pid+'/children','ascii').trim();return text?text.split(/\s+/).map(Number):[];
-}
-function inspectNativeFamily(fs,controlTargets) {
-  const root=process.pid,seen=new Set([root]),queue=[root],members=[];let browserPid=0;
-  while(queue.length){const pid=queue.shift(),children=childPids(fs,pid);if(pid===root&&children.length&&!browserPid)browserPid=children[0];
-    for(const child of children)if(!seen.has(child)){seen.add(child);queue.push(child);}
-    const status=procStatus(fs,pid),fds=forbiddenDescriptorCounts(fs,pid,pid===root?new Set():controlTargets);
-    members.push(Object.freeze({pid,uid:status.uid,filterInherited:status.filterInherited,...fds}));
-  }
-  return Object.freeze({workerPid:root,browserPid,members:Object.freeze(members),procScope:'BROWSER_FAMILY_ONLY'});
-}
 function nativeTopology(fs,init) {
   const status=procStatus(fs),fds=forbiddenDescriptorCounts(fs),devices=fs.readFileSync('/proc/net/dev','utf8').split('\n').slice(2)
     .map(line=>line.split(':',1)[0].trim()).filter(name=>name&&name!=='lo').length;
-  return Object.freeze({version:1,runId:init.binding.runId,channelKeyHex:init.channelKeyHex,maxFrameBytes:16384,uid:status.uid,
-    noNewPrivs:status.noNewPrivs,capabilities:status.capabilities,filterInherited:status.filterInherited,procScope:'BROWSER_FAMILY_ONLY',
-    ...fds,networkDeviceCount:devices,tmpfsPaths:Object.freeze(tmpfsPaths(fs))});
+  return Object.freeze({version:1,runId:init.binding.runId,maxFrameBytes:16384,...status,
+    procScope:'BROWSER_FAMILY_ONLY',...fds,networkDeviceCount:devices,tmpfsPaths:Object.freeze(tmpfsPaths(fs))});
 }
 function inheritedPipe(fs,reader,init,initBytes,clock) {
   const command=Object.freeze({fd:3}),result=Object.freeze({fd:4}),queue=[initBytes];
-  const controlTargets=new Set([fs.readlinkSync('/proc/self/fd/3'),fs.readlinkSync('/proc/self/fd/4')]);
   const topology=nativeTopology(fs,init),channel={
     audit:()=>Object.freeze({role:'BROWSER',childId:init.childId,pipeId:init.pipeId,channelKeyHex:init.channelKeyHex,
       binding:init.binding,command,result}),
@@ -473,13 +620,19 @@ function inheritedPipe(fs,reader,init,initBytes,clock) {
     async write(bytes){writeExactly(fs,4,bytes);},
     drain(){return reader.drain();},
   };
+  // P56/P5 (C1, E7): the one 60000 ms cleanup end starts only at the worker's
+  // first terminal event (startTerminal, or a terminal clamp). A routine read
+  // never allocates it: remaining() refuses until the terminal start.
   let cleanupEnd=null;
-  const monotonic=()=>Number(process.hrtime.bigint()/1000000n),cleanup={
+  const monotonic=()=>Number(process.hrtime.bigint()/1000000n);
+  function startCleanup(){if(cleanupEnd===null)cleanupEnd=monotonic()+60000;return cleanupEnd;}
+  const cleanup={
     get deadline(){return cleanupEnd;},
-    remaining(){const now=monotonic();if(cleanupEnd===null)cleanupEnd=now+60000;return Math.max(0,cleanupEnd-now);},
-    clamp(end){if(!Number.isSafeInteger(end)||end<0)fail('CLEANUP_UNCERTAIN');const now=monotonic();if(cleanupEnd===null)cleanupEnd=now+60000;cleanupEnd=Math.min(cleanupEnd,end);},
+    startTerminal(){const end=startCleanup();return Math.max(0,end-monotonic());},
+    remaining(){if(cleanupEnd===null)fail('CLEANUP_NOT_STARTED');return Math.max(0,cleanupEnd-monotonic());},
+    clamp(end){if(!Number.isSafeInteger(end)||end<0)fail('CLEANUP_UNCERTAIN');startCleanup();cleanupEnd=Math.min(cleanupEnd,end);},
   };
-  const pipe={audit:()=>topology,inspectBrowserFamily:()=>inspectNativeFamily(fs,controlTargets)};
+  const pipe={audit:()=>topology};
   const launchClock=clock&&typeof clock.sample==='function'?clock:Object.freeze({sample:()=>[Date.now(),Number(process.hrtime.bigint()/1000000n)]});
   pipe.launchContext=Object.freeze({channel,expected:channel.audit(),clock:launchClock,cleanupBudget:cleanup});
   return pipe;
@@ -503,14 +656,18 @@ function systemBindings() {
 async function main(args=process.argv.slice(2)) {return inheritedMain(args,systemBindings());}
 
 async function runBrowserWorker(pipe, config) {
-  let wire, state;
+  let wire, state, startup;
   try {
     const topology = audit(pipe);
     const launch = pipe.launchContext;
     if (!launch || !launch.channel) fail('BOOTSTRAP_REQUIRED');
-    const binding = await bindBrowserWorkerChannel(launch.channel, launch.expected, launch.clock, launch.cleanupBudget);
-    const prepareRecord=Buffer.isBuffer(launch.prepareRecord)?launch.prepareRecord:await launch.channel.read();
-    const reservation = await binding.prepare(prepareRecord);
+    // T13 m-6: startup, through READY, is bounded by the run binding's expiry.
+    const expiresAt = launch.expected?.binding?.expiresAtMs;
+    if (!safe(expiresAt) || typeof launch.clock?.sample !== 'function') fail('BOOTSTRAP_REQUIRED');
+    startup = runExpiry(launch.clock, expiresAt);
+    const binding = await startup.race(bindBrowserWorkerChannel(launch.channel, launch.expected, launch.clock, launch.cleanupBudget));
+    const prepareRecord=Buffer.isBuffer(launch.prepareRecord)?launch.prepareRecord:await startup.race(launch.channel.read());
+    const reservation = await startup.race(binding.prepare(prepareRecord));
     const transported=typeof binding.inspectPreparedBrowserConfig==='function'?binding.inspectPreparedBrowserConfig(reservation):null;
     if(config===undefined||config===null)config=transported;
     else if(transported!==null&&!equal(config,transported))fail('CONFIG_INVALID');
@@ -523,6 +680,9 @@ async function runBrowserWorker(pipe, config) {
         config.runBinding.manifestIdentity!==launch.expected.binding.manifestDigest||
         config.runBinding.expiresAt!==launch.expected.binding.expiresAtMs))fail('RUNTIME_IDENTITY_MISMATCH');
     let launched, primaryPending=true, primary;
+    // The commit is not raced: abandoning it could orphan a browser launched after
+    // the race. It is bounded by its proof deadlines and the controller's P5
+    // activation bound, and expiry is asserted as soon as it returns.
     const outcome = await binding.commitFixedBrowserLaunch(reservation, async () => {
       let browser, context;
       try {
@@ -535,7 +695,9 @@ async function runBrowserWorker(pipe, config) {
       }
       let closed = false,closing;
       const owner = Object.freeze({ async stopOwned(requested) {
-        const remaining=typeof launch.cleanupBudget?.remaining==='function'?launch.cleanupBudget.remaining():0;
+        // Stopping the browser is terminal: it starts the one cleanup end (C1, P56).
+        const budget=launch.cleanupBudget;
+        const remaining=typeof budget?.startTerminal==='function'?budget.startTerminal():typeof budget?.remaining==='function'?budget.remaining():0;
         const allowance=requested===undefined?remaining:Math.min(remaining,requested);
         if(!closing)closing=Promise.allSettled([Promise.resolve().then(()=>context.close()),Promise.resolve().then(()=>browser.close())]);
         const outcomes=await bounded(closing,allowance);
@@ -545,10 +707,10 @@ async function runBrowserWorker(pipe, config) {
       launched = { browser, context, owner, get closed() { return closed; } };
       return owner;
     });
-    if (!outcome || outcome.status !== 'STARTED' || !launched) fail('LAUNCH_FAILED');state=launched;
+    if (!outcome || outcome.status !== 'STARTED' || !launched) fail('LAUNCH_FAILED');state=launched;startup.assert();
     wire=rpc(outcome.applicationPipe,auditApplication(outcome.applicationPipe,topology.runId));
-    inspectFamily(pipe);
     const decisions=new Map();launched.decisions=decisions;let ready=false,commandFailure,loginSpent=false,boundSession=null,activeAction=null;
+    let readinessState=null,paperFacts=null,lastReadinessSequence=0;const readinessPhases=new Set();
     const sessionKey=randomBytes(32);
     let rejectActionFailure;
     const actionFailure=new Promise((_,reject)=>{rejectActionFailure=reject;});actionFailure.catch(()=>{});
@@ -567,9 +729,23 @@ async function runBrowserWorker(pipe, config) {
         await wire.write('RESULT',{actionId,status:'SESSION_BOUND',fingerprint:boundSession.fingerprint});return;
       }
       if(!boundSession)fail('SESSION_INVALID');
+      // T13 I-4/I-5 (C9): one worker readiness per phase (phases only advance, sequences only
+      // increase); a view runs only after its own phase's readiness.
+      if(action==='SESSION_READINESS'){
+        if(readinessPhases.has(payload.phase)||payload.phase==='OBSERVE_BEFORE_RESTART'&&readinessPhases.has('OBSERVE_AFTER_RESTART')||
+           payload.sequence<=lastReadinessSequence)fail('REPLAY');
+        readinessPhases.add(payload.phase);lastReadinessSequence=payload.sequence;readinessState=null;paperFacts=null;
+        const observed=await observeReadiness(state.page,state.context,config.runBinding.origins.BACKEND,payload.phase,payload.sequence,
+          boundSession,sessionKey,launch.clock,topology.runId);
+        readinessState=Object.freeze({phase:payload.phase,sequence:payload.sequence});
+        await wire.write('RESULT',{actionId,...observed});return;
+      }
       if(action==='OBSERVE_VIEW'){
-        const observed=await observeFixedView(state.page,state.context,config.runBinding.origins.BACKEND,
-          config.runBinding.origins.FRONTEND,payload.phase,payload.view,boundSession,sessionKey);
+        if(!readinessState||readinessState.phase!==payload.phase)fail('READINESS_FAILED');
+        const facts=paperFacts&&paperFacts.phase===readinessState.phase&&paperFacts.sequence===readinessState.sequence?paperFacts:null;
+        const {observed,paper}=await observeFixedView(state.page,state.context,config.runBinding.origins.BACKEND,
+          config.runBinding.origins.FRONTEND,payload.phase,payload.view,readinessState.sequence,facts,boundSession,sessionKey);
+        if(paper)paperFacts=Object.freeze({phase:readinessState.phase,sequence:readinessState.sequence,source:paper.source,brokerError:paper.brokerError});
         await wire.write('RESULT',{actionId,...observed});return;
       }
       const observed=await sessionFingerprint(state.context,config.runBinding.origins.BACKEND,sessionKey);
@@ -602,39 +778,80 @@ async function runBrowserWorker(pipe, config) {
     commandLoop.catch(()=>{});
     try {
       const validatedAssets = new Map(), assetTasks = [];
-      let requestSequence = 0, assetFailure;
+      let requestSequence = 0, assetFailure, documentValidated = false;
       const rejectedPages = new WeakSet();
+      // T13 I-3: asset and document integrity holds for the whole run. Any failure,
+      // before or after READY, ends the worker; its terminal ERROR then latches the
+      // controller's session as OBSERVATION_FAILED.
+      function assetFailed(cause) {
+        const error=cause?.code==='OBSERVATION_FAILED'?cause:Object.assign(new Error('OBSERVATION_FAILED',{cause}),{code:'OBSERVATION_FAILED'});
+        if(!assetFailure)assetFailure=error;rejectActionFailure(error);
+      }
+      // P70: Playwright never sends redirect hops through the route handler, so a
+      // hop would reach its target without admission (307/308 keep the method and
+      // body). The acceptance flow never redirects: any redirect ends the worker, and
+      // its terminal ERROR latches the controller's session as ROUTE_DENIED.
+      function redirected() {rejectActionFailure(Object.assign(new Error('ROUTE_DENIED'),{code:'ROUTE_DENIED'}));}
+      launched.context.on('request', request => {
+        let from;try{from=request.redirectedFrom();}catch{from=true;}
+        if(from!==null)redirected();
+      });
       launched.context.on('page', async page => { if (primaryPending) { primaryPending = false; primary = page; } else { rejectedPages.add(page); await page.close(); } });
-      await launched.context.routeWebSocket('**/*', async socket => socket.close());
-      await launched.context.addInitScript(() => { Object.defineProperty(globalThis, 'WebTransport', { configurable: false, value: undefined }); });
-      await launched.context.route('**/*', async route => {
+      await startup.race(launched.context.routeWebSocket('**/*', async socket => socket.close()));
+      await startup.race(launched.context.addInitScript(() => { Object.defineProperty(globalThis, 'WebTransport', { configurable: false, value: undefined }); }));
+      await startup.race(launched.context.route('**/*', async route => {
         const request = route.request();
+        if (typeof request.redirectedFrom === 'function') { let from; try { from = request.redirectedFrom(); } catch { from = true; }
+          if (from !== null) { redirected(); return route.abort(); } }
         if (typeof request.frame === 'function') { let page; try { page=request.frame().page(); } catch { return route.abort(); }
           if(!page||rejectedPages.has(page)||primary&&page!==primary)return route.abort(); }
         const before=Buffer.from(request.postDataBuffer()||Buffer.alloc(0)),sequence=++requestSequence,requestId='browser-'+sequence;
-        const facts=factsFor(request,requestId),proof=bodyProof(topology.runId,requestId,sequence,facts.method,facts.url,Object.fromEntries(facts.headers),before);
-        if(proof.schema==='INVALID'||decisions.size>=16)return route.abort();
+        let facts,proof;
+        try{facts=factsFor(request,requestId);if(facts)proof=bodyProof(topology.runId,requestId,sequence,facts.method,facts.url,facts.headers,before);}
+        catch{return route.abort();}
+        // T13 I-2: a credential or method-override header is aborted here, before any ROUTE frame.
+        if(!facts||proof.schema==='INVALID'||decisions.size>=16)return route.abort();
         const digest=createHash('sha256').update(before).digest(),decision=new Promise((resolve,reject)=>decisions.set(requestId,{resolve,reject}));
-        await wire.write('ROUTE',proof);const selected=await decision,after=Buffer.from(request.postDataBuffer()||Buffer.alloc(0));
+        decision.catch(()=>{});
+        // An unsendable ROUTE frame (for example one over the frame bound) never leaves the request pending.
+        try{await wire.write('ROUTE',proof);}catch(cause){decisions.delete(requestId);await route.abort();rejectActionFailure(cause);return;}
+        let selected;try{selected=await decision;}catch{selected='ABORT';}
+        const after=Buffer.from(request.postDataBuffer()||Buffer.alloc(0));
         if(selected!=='CONTINUE'||before.length!==after.length||!timingSafeEqual(digest,createHash('sha256').update(after).digest()))await route.abort();else await route.continue();
-      });
-      launched.context.on('response',response=>{const task=(async()=>{
-        const url=new URL(response.url()),index=config.assetEntries.findIndex(item=>item.path===url.pathname);if(index<0)return;
-        const entry=imported.assets.entries[index];if(url.origin!==config.runBinding.origins.FRONTEND||url.search||url.hash||validatedAssets.has(entry.path))fail('OBSERVATION_FAILED');
+      }));
+      launched.context.on('response',response=>{
+        // P70: a 3xx answer to a routed request is a redirect (every request is routed).
+        let status;try{status=response.status();}catch{status=null;}
+        if(Number.isSafeInteger(status)&&status>=300&&status<=399){redirected();return;}
+        const task=(async()=>{
+        if(!Number.isSafeInteger(status))fail('OBSERVATION_FAILED');
+        const url=new URL(response.url()),isDocument=SPA_DOCUMENT_PATHS.includes(url.pathname);
+        const index=config.assetEntries.findIndex(item=>item.path===(isDocument?INDEX_ENTRY_PATH:url.pathname));
+        if(index<0){if(isDocument)fail('OBSERVATION_FAILED');return;}
+        const entry=imported.assets.entries[index];if(url.origin!==config.runBinding.origins.FRONTEND||url.search||url.hash)fail('OBSERVATION_FAILED');
         const declared=response.headers()['content-length'];if(declared!==undefined&&(!/^(?:0|[1-9][0-9]*)$/.test(declared)||Number(declared)!==entry.size))fail('OBSERVATION_FAILED');
-        const body=await response.body(),type=String(response.headers()['content-type']||'').split(';',1)[0];validatedAssets.set(entry.path,validateAssetResponse(entry,body,type));
-      })().catch(cause=>{assetFailure=cause;});assetTasks.push(task);});
-      const page=await launched.context.newPage();primary=primary||page;await page.goto(config.runBinding.origins.FRONTEND,{waitUntil:'domcontentloaded'});
-      if(typeof page.waitForLoadState==='function')await page.waitForLoadState('load');await Promise.all(assetTasks);
+        const body=await response.body(),type=String(response.headers()['content-type']||'').split(';',1)[0];
+        const proof=validateAssetResponse(entry,body,type);
+        // Repeats are validated too; the first proof stands for the entry.
+        if(!validatedAssets.has(entry.path))validatedAssets.set(entry.path,proof);
+        if(isDocument)documentValidated=true;
+      })().catch(assetFailed);if(!ready)assetTasks.push(task);});
+      const page=await startup.race(launched.context.newPage());primary=primary||page;
+      // T13 I-1: the first navigation is the login document, which phase P admits.
+      await startup.race(page.goto(config.runBinding.origins.FRONTEND+'/login',{waitUntil:'domcontentloaded'}));
+      if(typeof page.waitForLoadState==='function')await startup.race(page.waitForLoadState('load'));
+      await startup.race(Promise.all(assetTasks));
       if(commandFailure)throw commandFailure;
-      if(assetFailure||validatedAssets.size!==config.assetEntries.length)fail('OBSERVATION_FAILED',assetFailure);
+      if(assetFailure||!documentValidated||validatedAssets.size!==config.assetEntries.length)fail('OBSERVATION_FAILED',assetFailure);
       launched.page=primary;launched.assetProofs=config.assetEntries.map(entry=>validatedAssets.get(entry.path));
     } catch(cause){try{await launched.owner.stopOwned();}catch{}throw cause;}
-    await wire.write('ASSETS', { proofs: state.assetProofs });
+    await startup.race(wire.write('ASSETS', { proofs: state.assetProofs }));
     ready=true;
-    await wire.write('READY', { status: 'READY' });
+    await startup.race(wire.write('READY', { status: 'READY' }));
+    startup.clear();
     return await commandLoop;
   } catch (cause) {
+    startup?.clear();
     const code = cause && cause.code || 'BROWSER_FAILED';
     try { if (state && state.owner) await state.owner.stopOwned(); } catch {}
     try { if (wire) await wire.write('ERROR', { code }); } catch {}
@@ -642,5 +859,7 @@ async function runBrowserWorker(pipe, config) {
   }
 }
 
-module.exports = Object.freeze({ runBrowserWorker, inheritedMain, main });
+// The native self-check readers are exported for the offline fake-/proc tests and the gated guest test.
+module.exports = Object.freeze({ runBrowserWorker, inheritedMain, main,
+  classifyDescriptor, socketInodeFamilies, procStatus, forbiddenDescriptorCounts, nativeTopology });
 if(require.main===module)main().then(code=>{process.exitCode=code;},()=>{process.exitCode=1;});

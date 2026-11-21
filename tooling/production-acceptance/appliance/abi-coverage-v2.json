@@ -1,0 +1,2746 @@
+{
+  "derivedBy": "tooling/production-acceptance/appliance/derive_abi_coverage.py",
+  "records": [
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "declaration": "#define AF_INET\t\t2\t/* Internet IP Protocol \t*/",
+      "firstLine": 192,
+      "id": "AF_INET",
+      "lastLine": 192,
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "memberSHA256": "4afa211fad3850a13fbb7ab4130fcd162e3ac4d3593f7b6c5b6232a498841dc2",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "declaration": "#define AF_INET6\t10\t/* IP version 6\t\t\t*/",
+      "firstLine": 200,
+      "id": "AF_INET6",
+      "lastLine": 200,
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "memberSHA256": "4afa211fad3850a13fbb7ab4130fcd162e3ac4d3593f7b6c5b6232a498841dc2",
+      "signed": true,
+      "value": 10,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "declaration": "#define AF_PACKET\t17\t/* Packet family\t\t*/",
+      "firstLine": 208,
+      "id": "AF_PACKET",
+      "lastLine": 208,
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "memberSHA256": "4afa211fad3850a13fbb7ab4130fcd162e3ac4d3593f7b6c5b6232a498841dc2",
+      "signed": true,
+      "value": 17,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "declaration": "#define AF_UNIX\t\t1\t/* Unix domain sockets \t\t*/",
+      "firstLine": 190,
+      "id": "AF_UNIX",
+      "lastLine": 190,
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "memberSHA256": "4afa211fad3850a13fbb7ab4130fcd162e3ac4d3593f7b6c5b6232a498841dc2",
+      "signed": true,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "declaration": "#define AF_VSOCK\t40\t/* vSockets\t\t\t*/",
+      "firstLine": 231,
+      "id": "AF_VSOCK",
+      "lastLine": 231,
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "memberSHA256": "4afa211fad3850a13fbb7ab4130fcd162e3ac4d3593f7b6c5b6232a498841dc2",
+      "signed": true,
+      "value": 40,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_ALWAYS   2\t/* Generate audit record if rule matches */",
+      "firstLine": 182,
+      "id": "AUDIT_ALWAYS",
+      "lastLine": 182,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_ANOM_ABEND            1701 /* Process ended abnormally */",
+      "firstLine": 150,
+      "id": "AUDIT_ANOM_ABEND",
+      "lastLine": 150,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1701,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_ARCH\t11",
+      "firstLine": 260,
+      "id": "AUDIT_ARCH",
+      "lastLine": 260,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 11,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_ARCH_AARCH64\t(EM_AARCH64|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)",
+      "firstLine": 388,
+      "id": "AUDIT_ARCH_AARCH64",
+      "lastLine": 388,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": false,
+      "value": 3221225655,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_BITMASK_SIZE 64",
+      "firstLine": 188,
+      "id": "AUDIT_BITMASK_SIZE",
+      "lastLine": 188,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 64,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_CONFIG_CHANGE\t1305\t/* Audit system configuration change */",
+      "firstLine": 92,
+      "id": "AUDIT_CONFIG_CHANGE",
+      "lastLine": 92,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1305,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_CWD\t\t1307\t/* Current working directory */",
+      "firstLine": 94,
+      "id": "AUDIT_CWD",
+      "lastLine": 94,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1307,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_EOE\t\t1320\t/* End of multi-record event */",
+      "firstLine": 105,
+      "id": "AUDIT_EOE",
+      "lastLine": 105,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1320,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_EQUAL\t\t\t0x40000000",
+      "firstLine": 322,
+      "id": "AUDIT_EQUAL",
+      "lastLine": 322,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1073741824,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_EXECVE\t\t1309\t/* execve arguments */",
+      "firstLine": 95,
+      "id": "AUDIT_EXECVE",
+      "lastLine": 95,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1309,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_FILTER_EXIT\t0x04\t/* Apply rule at syscall exit */",
+      "firstLine": 169,
+      "id": "AUDIT_FILTER_EXIT",
+      "lastLine": 169,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 4,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_GET\t\t1000\t/* Get status */",
+      "firstLine": 54,
+      "id": "AUDIT_GET",
+      "lastLine": 54,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1000,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_KERNEL\t\t2000\t/* Asynchronous audit record. NOT A REQUEST. */",
+      "firstLine": 162,
+      "id": "AUDIT_KERNEL",
+      "lastLine": 162,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 2000,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_LIST_RULES\t1013\t/* List syscall filtering rules */",
+      "firstLine": 67,
+      "id": "AUDIT_LIST_RULES",
+      "lastLine": 67,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1013,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_MAX_FIELDS   64",
+      "firstLine": 186,
+      "id": "AUDIT_MAX_FIELDS",
+      "lastLine": 186,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 64,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_PATH\t\t1302\t/* Filename path information */",
+      "firstLine": 89,
+      "id": "AUDIT_PATH",
+      "lastLine": 89,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1302,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_PROCTITLE\t\t1327\t/* Proctitle emit event */",
+      "firstLine": 112,
+      "id": "AUDIT_PROCTITLE",
+      "lastLine": 112,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1327,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_SOCKADDR\t\t1306\t/* sockaddr copied as syscall arg */",
+      "firstLine": 93,
+      "id": "AUDIT_SOCKADDR",
+      "lastLine": 93,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1306,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_STATUS_BACKLOG_LIMIT\t\t0x0010",
+      "firstLine": 346,
+      "id": "AUDIT_STATUS_BACKLOG_LIMIT",
+      "lastLine": 346,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 16,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_STATUS_ENABLED\t\t\t0x0001",
+      "firstLine": 342,
+      "id": "AUDIT_STATUS_ENABLED",
+      "lastLine": 342,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_STATUS_FAILURE\t\t\t0x0002",
+      "firstLine": 343,
+      "id": "AUDIT_STATUS_FAILURE",
+      "lastLine": 343,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_STATUS_PID\t\t\t0x0004",
+      "firstLine": 344,
+      "id": "AUDIT_STATUS_PID",
+      "lastLine": 344,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 4,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_STATUS_RATE_LIMIT\t\t0x0008",
+      "firstLine": 345,
+      "id": "AUDIT_STATUS_RATE_LIMIT",
+      "lastLine": 345,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 8,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "declaration": "#define AUDIT_SYSCALL\t\t1300\t/* Syscall event */",
+      "firstLine": 87,
+      "id": "AUDIT_SYSCALL",
+      "lastLine": 87,
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "memberSHA256": "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55",
+      "signed": true,
+      "value": 1300,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "declaration": "#define\t\tBPF_ABS\t\t0x20",
+      "firstLine": 24,
+      "id": "BPF_ABS",
+      "lastLine": 24,
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "memberSHA256": "adc9e87d1a335379ffe3658547635904cae6ccb8b7d1e578d0c25b50aa44db04",
+      "signed": true,
+      "value": 32,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "declaration": "#define\t\tBPF_ALU\t\t0x04",
+      "firstLine": 11,
+      "id": "BPF_ALU",
+      "lastLine": 11,
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "memberSHA256": "adc9e87d1a335379ffe3658547635904cae6ccb8b7d1e578d0c25b50aa44db04",
+      "signed": true,
+      "value": 4,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "declaration": "#define\t\tBPF_AND\t\t0x50",
+      "firstLine": 37,
+      "id": "BPF_AND",
+      "lastLine": 37,
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "memberSHA256": "adc9e87d1a335379ffe3658547635904cae6ccb8b7d1e578d0c25b50aa44db04",
+      "signed": true,
+      "value": 80,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "declaration": "#define\t\tBPF_JEQ\t\t0x10",
+      "firstLine": 45,
+      "id": "BPF_JEQ",
+      "lastLine": 45,
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "memberSHA256": "adc9e87d1a335379ffe3658547635904cae6ccb8b7d1e578d0c25b50aa44db04",
+      "signed": true,
+      "value": 16,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "declaration": "#define\t\tBPF_JMP\t\t0x05",
+      "firstLine": 12,
+      "id": "BPF_JMP",
+      "lastLine": 12,
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "memberSHA256": "adc9e87d1a335379ffe3658547635904cae6ccb8b7d1e578d0c25b50aa44db04",
+      "signed": true,
+      "value": 5,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "declaration": "#define\t\tBPF_K\t\t0x00",
+      "firstLine": 50,
+      "id": "BPF_K",
+      "lastLine": 50,
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "memberSHA256": "adc9e87d1a335379ffe3658547635904cae6ccb8b7d1e578d0c25b50aa44db04",
+      "signed": true,
+      "value": 0,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "declaration": "#define\t\tBPF_LD\t\t0x00",
+      "firstLine": 7,
+      "id": "BPF_LD",
+      "lastLine": 7,
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "memberSHA256": "adc9e87d1a335379ffe3658547635904cae6ccb8b7d1e578d0c25b50aa44db04",
+      "signed": true,
+      "value": 0,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__",
+        "#ifndef BPF_MAXINSNS"
+      ],
+      "declaration": "#define BPF_MAXINSNS 4096",
+      "firstLine": 54,
+      "id": "BPF_MAXINSNS",
+      "lastLine": 54,
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "memberSHA256": "adc9e87d1a335379ffe3658547635904cae6ccb8b7d1e578d0c25b50aa44db04",
+      "signed": true,
+      "value": 4096,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "declaration": "#define\t\tBPF_RET\t\t0x06",
+      "firstLine": 13,
+      "id": "BPF_RET",
+      "lastLine": 13,
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "memberSHA256": "adc9e87d1a335379ffe3658547635904cae6ccb8b7d1e578d0c25b50aa44db04",
+      "signed": true,
+      "value": 6,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "declaration": "#define\t\tBPF_W\t\t0x00 /* 32-bit */",
+      "firstLine": 18,
+      "id": "BPF_W",
+      "lastLine": 18,
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "memberSHA256": "adc9e87d1a335379ffe3658547635904cae6ccb8b7d1e578d0c25b50aa44db04",
+      "signed": true,
+      "value": 0,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_CAPABILITY_H"
+      ],
+      "declaration": "#define CAP_LAST_CAP         CAP_CHECKPOINT_RESTORE",
+      "firstLine": 421,
+      "id": "CAP_LAST_CAP",
+      "lastLine": 421,
+      "memberPath": "linux-6.8/include/uapi/linux/capability.h",
+      "memberSHA256": "ee832adca0d6db0866ddbf1dd3426c5a0df63901bf255bde77e4d8305cf5b5e0",
+      "signed": true,
+      "value": 40,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "declaration": "#define CLONE_NEWIPC\t\t0x08000000\t/* New ipc namespace */",
+      "firstLine": 30,
+      "id": "CLONE_NEWIPC",
+      "lastLine": 30,
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "memberSHA256": "1a4a3cef927a5b620add2879da2d469df4ebce135e033d8fff5264c010de535c",
+      "signed": true,
+      "value": 134217728,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "declaration": "#define CLONE_NEWNET\t\t0x40000000\t/* New network namespace */",
+      "firstLine": 33,
+      "id": "CLONE_NEWNET",
+      "lastLine": 33,
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "memberSHA256": "1a4a3cef927a5b620add2879da2d469df4ebce135e033d8fff5264c010de535c",
+      "signed": true,
+      "value": 1073741824,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "declaration": "#define CLONE_NEWNS\t0x00020000\t/* New mount namespace group */",
+      "firstLine": 20,
+      "id": "CLONE_NEWNS",
+      "lastLine": 20,
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "memberSHA256": "1a4a3cef927a5b620add2879da2d469df4ebce135e033d8fff5264c010de535c",
+      "signed": true,
+      "value": 131072,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "declaration": "#define CLONE_NEWPID\t\t0x20000000\t/* New pid namespace */",
+      "firstLine": 32,
+      "id": "CLONE_NEWPID",
+      "lastLine": 32,
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "memberSHA256": "1a4a3cef927a5b620add2879da2d469df4ebce135e033d8fff5264c010de535c",
+      "signed": true,
+      "value": 536870912,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "declaration": "#define CLONE_NEWUSER\t\t0x10000000\t/* New user namespace */",
+      "firstLine": 31,
+      "id": "CLONE_NEWUSER",
+      "lastLine": 31,
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "memberSHA256": "1a4a3cef927a5b620add2879da2d469df4ebce135e033d8fff5264c010de535c",
+      "signed": true,
+      "value": 268435456,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "declaration": "#define\tEACCES\t\t13\t/* Permission denied */",
+      "firstLine": 17,
+      "id": "EACCES",
+      "lastLine": 17,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "memberSHA256": "2c148e92b8318deeb767fabd60822113e575ee664ff09a1873aed8f7a495793c",
+      "signed": true,
+      "value": 13,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "declaration": "#define\tEBADF\t\t 9\t/* Bad file number */",
+      "firstLine": 13,
+      "id": "EBADF",
+      "lastLine": 13,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "memberSHA256": "2c148e92b8318deeb767fabd60822113e575ee664ff09a1873aed8f7a495793c",
+      "signed": true,
+      "value": 9,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "declaration": "#define\tECONNREFUSED\t111\t/* Connection refused */",
+      "firstLine": 94,
+      "id": "ECONNREFUSED",
+      "lastLine": 94,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "memberSHA256": "fb7b5a504015f3a9074c641e7371b250d867d751d90e4a22a8ac17fced3d50af",
+      "signed": true,
+      "value": 111,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "declaration": "#define\tEHOSTUNREACH\t113\t/* No route to host */",
+      "firstLine": 96,
+      "id": "EHOSTUNREACH",
+      "lastLine": 96,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "memberSHA256": "fb7b5a504015f3a9074c641e7371b250d867d751d90e4a22a8ac17fced3d50af",
+      "signed": true,
+      "value": 113,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ELF_EM_H"
+      ],
+      "declaration": "#define EM_AARCH64\t183\t/* ARM 64 bit */",
+      "firstLine": 46,
+      "id": "EM_AARCH64",
+      "lastLine": 46,
+      "memberPath": "linux-6.8/include/uapi/linux/elf-em.h",
+      "memberSHA256": "e72cca577a97d1fccc7f4e5d37b39b401a527a97f02e589255c247b63cb227d2",
+      "signed": true,
+      "value": 183,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "declaration": "#define\tENETUNREACH\t101\t/* Network is unreachable */",
+      "firstLine": 84,
+      "id": "ENETUNREACH",
+      "lastLine": 84,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "memberSHA256": "fb7b5a504015f3a9074c641e7371b250d867d751d90e4a22a8ac17fced3d50af",
+      "signed": true,
+      "value": 101,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "declaration": "#define\tENOENT\t\t 2\t/* No such file or directory */",
+      "firstLine": 6,
+      "id": "ENOENT",
+      "lastLine": 6,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "memberSHA256": "2c148e92b8318deeb767fabd60822113e575ee664ff09a1873aed8f7a495793c",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "declaration": "#define\tENOEXEC\t\t 8\t/* Exec format error */",
+      "firstLine": 12,
+      "id": "ENOEXEC",
+      "lastLine": 12,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "memberSHA256": "2c148e92b8318deeb767fabd60822113e575ee664ff09a1873aed8f7a495793c",
+      "signed": true,
+      "value": 8,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "declaration": "#define\tENOTSOCK\t88\t/* Socket operation on non-socket */",
+      "firstLine": 71,
+      "id": "ENOTSOCK",
+      "lastLine": 71,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "memberSHA256": "fb7b5a504015f3a9074c641e7371b250d867d751d90e4a22a8ac17fced3d50af",
+      "signed": true,
+      "value": 88,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "declaration": "#define\tEPERM\t\t 1\t/* Operation not permitted */",
+      "firstLine": 5,
+      "id": "EPERM",
+      "lastLine": 5,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "memberSHA256": "2c148e92b8318deeb767fabd60822113e575ee664ff09a1873aed8f7a495793c",
+      "signed": true,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_FCNTL_H"
+      ],
+      "declaration": "#define F_DUPFD_CLOEXEC\t(F_LINUX_SPECIFIC_BASE + 6)",
+      "firstLine": 18,
+      "id": "F_DUPFD_CLOEXEC",
+      "lastLine": 18,
+      "memberPath": "linux-6.8/include/uapi/linux/fcntl.h",
+      "memberSHA256": "cd29391a24dec667584a34cbb5740e166de08df3acb9a507d519af539aa0ede5",
+      "signed": true,
+      "value": 1030,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "declaration": "#define F_LINUX_SPECIFIC_BASE\t1024",
+      "firstLine": 192,
+      "id": "F_LINUX_SPECIFIC_BASE",
+      "lastLine": 192,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "memberSHA256": "0908276bc4c3da9314d4986bd07c19f9ce8f403f602d40a8be0599249db95515",
+      "signed": true,
+      "value": 1024,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_IF_H",
+        "#if __UAPI_DEF_IF_IFNAMSIZ"
+      ],
+      "declaration": "#define\tIFNAMSIZ\t16",
+      "firstLine": 33,
+      "id": "IFNAMSIZ",
+      "lastLine": 33,
+      "memberPath": "linux-6.8/include/uapi/linux/if.h",
+      "memberSHA256": "7fb6b621b61c3e9794dfe0a3295df700c04ddaf2d2aaab4753a2426646a7b307",
+      "signed": true,
+      "value": 16,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_ATTRIB\t\t0x00000004\t/* Metadata changed */",
+      "firstLine": 32,
+      "id": "IN_ATTRIB",
+      "lastLine": 32,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 4,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_CLOSE_WRITE\t\t0x00000008\t/* Writtable file was closed */",
+      "firstLine": 33,
+      "id": "IN_CLOSE_WRITE",
+      "lastLine": 33,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 8,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_CREATE\t\t0x00000100\t/* Subfile was created */",
+      "firstLine": 38,
+      "id": "IN_CREATE",
+      "lastLine": 38,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 256,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_DELETE\t\t0x00000200\t/* Subfile was deleted */",
+      "firstLine": 39,
+      "id": "IN_DELETE",
+      "lastLine": 39,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 512,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_DELETE_SELF\t\t0x00000400\t/* Self was deleted */",
+      "firstLine": 40,
+      "id": "IN_DELETE_SELF",
+      "lastLine": 40,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 1024,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_DONT_FOLLOW\t\t0x02000000\t/* don't follow a sym link */",
+      "firstLine": 54,
+      "id": "IN_DONT_FOLLOW",
+      "lastLine": 54,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 33554432,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_IGNORED\t\t0x00008000\t/* File was ignored */",
+      "firstLine": 46,
+      "id": "IN_IGNORED",
+      "lastLine": 46,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 32768,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_MASK_CREATE\t\t0x10000000\t/* only create watches */",
+      "firstLine": 56,
+      "id": "IN_MASK_CREATE",
+      "lastLine": 56,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 268435456,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_MODIFY\t\t0x00000002\t/* File was modified */",
+      "firstLine": 31,
+      "id": "IN_MODIFY",
+      "lastLine": 31,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_MOVED_FROM\t\t0x00000040\t/* File was moved from X */",
+      "firstLine": 36,
+      "id": "IN_MOVED_FROM",
+      "lastLine": 36,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 64,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_MOVED_TO\t\t0x00000080\t/* File was moved to Y */",
+      "firstLine": 37,
+      "id": "IN_MOVED_TO",
+      "lastLine": 37,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 128,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_MOVE_SELF\t\t0x00000800\t/* Self was moved */",
+      "firstLine": 41,
+      "id": "IN_MOVE_SELF",
+      "lastLine": 41,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 2048,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_Q_OVERFLOW\t\t0x00004000\t/* Event queued overflowed */",
+      "firstLine": 45,
+      "id": "IN_Q_OVERFLOW",
+      "lastLine": 45,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 16384,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "declaration": "#define IN_UNMOUNT\t\t0x00002000\t/* Backing fs was unmounted */",
+      "firstLine": 44,
+      "id": "IN_UNMOUNT",
+      "lastLine": 44,
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "memberSHA256": "f54df66782a118525ebb64fd1d8cd679fc74a10dc4dcf3729ebf352e1c552e67",
+      "signed": true,
+      "value": 8192,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IN_H",
+        "#if __UAPI_DEF_IN_IPPROTO"
+      ],
+      "declaration": "  IPPROTO_TCP = 6,\t\t/* Transmission Control Protocol\t*/",
+      "firstLine": 38,
+      "id": "IPPROTO_TCP",
+      "lastLine": 38,
+      "memberPath": "linux-6.8/include/uapi/linux/in.h",
+      "memberSHA256": "b05f12366262c2df458f8ec8e4300f5254007d0976d75126aa035d0d0491b58f",
+      "signed": true,
+      "value": 6,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IN_H",
+        "#if __UAPI_DEF_IN_IPPROTO"
+      ],
+      "declaration": "  IPPROTO_UDP = 17,\t\t/* User Datagram Protocol\t\t*/",
+      "firstLine": 44,
+      "id": "IPPROTO_UDP",
+      "lastLine": 44,
+      "memberPath": "linux-6.8/include/uapi/linux/in.h",
+      "memberSHA256": "b05f12366262c2df458f8ec8e4300f5254007d0976d75126aa035d0d0491b58f",
+      "signed": true,
+      "value": 17,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_FS_H"
+      ],
+      "declaration": "#define MNT_DETACH\t0x00000002\t/* Just detach from the tree */",
+      "firstLine": 1156,
+      "id": "MNT_DETACH",
+      "lastLine": 1156,
+      "memberPath": "linux-6.8/include/linux/fs.h",
+      "memberSHA256": "8526ac1acaf5534946e98d64a8b448ccf45a7925e5661b388f285d7153b794ee",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "declaration": "#define MSG_CMSG_CLOEXEC 0x40000000\t/* Set close_on_exec for file",
+      "firstLine": 332,
+      "id": "MSG_CMSG_CLOEXEC",
+      "lastLine": 332,
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "memberSHA256": "4afa211fad3850a13fbb7ab4130fcd162e3ac4d3593f7b6c5b6232a498841dc2",
+      "signed": false,
+      "value": 1073741824,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "declaration": "#define MS_BIND\t\t4096",
+      "firstLine": 24,
+      "id": "MS_BIND",
+      "lastLine": 24,
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "memberSHA256": "f22c85857d8268bf7550174b59472e71d8ad2acef141d8fa2a7d02b6c2d01506",
+      "signed": true,
+      "value": 4096,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "declaration": "#define MS_NODEV\t 4\t/* Disallow access to device special files */",
+      "firstLine": 15,
+      "id": "MS_NODEV",
+      "lastLine": 15,
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "memberSHA256": "f22c85857d8268bf7550174b59472e71d8ad2acef141d8fa2a7d02b6c2d01506",
+      "signed": true,
+      "value": 4,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "declaration": "#define MS_NOEXEC\t 8\t/* Disallow program execution */",
+      "firstLine": 16,
+      "id": "MS_NOEXEC",
+      "lastLine": 16,
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "memberSHA256": "f22c85857d8268bf7550174b59472e71d8ad2acef141d8fa2a7d02b6c2d01506",
+      "signed": true,
+      "value": 8,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "declaration": "#define MS_NOSUID\t 2\t/* Ignore suid and sgid bits */",
+      "firstLine": 14,
+      "id": "MS_NOSUID",
+      "lastLine": 14,
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "memberSHA256": "f22c85857d8268bf7550174b59472e71d8ad2acef141d8fa2a7d02b6c2d01506",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "declaration": "#define MS_PRIVATE\t(1<<18)\t/* change to private */",
+      "firstLine": 32,
+      "id": "MS_PRIVATE",
+      "lastLine": 32,
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "memberSHA256": "f22c85857d8268bf7550174b59472e71d8ad2acef141d8fa2a7d02b6c2d01506",
+      "signed": true,
+      "value": 262144,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "declaration": "#define MS_RDONLY\t 1\t/* Mount read-only */",
+      "firstLine": 13,
+      "id": "MS_RDONLY",
+      "lastLine": 13,
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "memberSHA256": "f22c85857d8268bf7550174b59472e71d8ad2acef141d8fa2a7d02b6c2d01506",
+      "signed": true,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "declaration": "#define MS_REC\t\t16384",
+      "firstLine": 26,
+      "id": "MS_REC",
+      "lastLine": 26,
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "memberSHA256": "f22c85857d8268bf7550174b59472e71d8ad2acef141d8fa2a7d02b6c2d01506",
+      "signed": true,
+      "value": 16384,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "declaration": "#define MS_REMOUNT\t32\t/* Alter flags of a mounted FS */",
+      "firstLine": 18,
+      "id": "MS_REMOUNT",
+      "lastLine": 18,
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "memberSHA256": "f22c85857d8268bf7550174b59472e71d8ad2acef141d8fa2a7d02b6c2d01506",
+      "signed": true,
+      "value": 32,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_LIMITS_H"
+      ],
+      "declaration": "#define NAME_MAX         255\t/* # chars in a file name */",
+      "firstLine": 12,
+      "id": "NAME_MAX",
+      "lastLine": 12,
+      "memberPath": "linux-6.8/include/uapi/linux/limits.h",
+      "memberSHA256": "5c047eb319a61e211442af30493b420eb9e721a1eceee552258dce0d5a26dede",
+      "signed": true,
+      "value": 255,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "declaration": "#define NLMSG_DONE\t\t0x3\t/* End of a dump\t*/",
+      "firstLine": 114,
+      "id": "NLMSG_DONE",
+      "lastLine": 114,
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "memberSHA256": "f2b9dec9eb74c84239d345a9bb3aceb187caeab761579b7b58e6834a5ec64070",
+      "signed": true,
+      "value": 3,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "declaration": "#define NLMSG_ERROR\t\t0x2\t/* Error\t\t*/",
+      "firstLine": 113,
+      "id": "NLMSG_ERROR",
+      "lastLine": 113,
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "memberSHA256": "f2b9dec9eb74c84239d345a9bb3aceb187caeab761579b7b58e6834a5ec64070",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "declaration": "#define NLM_F_ACK\t\t0x04\t/* Reply with ack, with zero or error code */",
+      "firstLine": 64,
+      "id": "NLM_F_ACK",
+      "lastLine": 64,
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "memberSHA256": "f2b9dec9eb74c84239d345a9bb3aceb187caeab761579b7b58e6834a5ec64070",
+      "signed": true,
+      "value": 4,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "declaration": "#define NLM_F_DUMP_INTR\t\t0x10\t/* Dump was inconsistent due to sequence change */",
+      "firstLine": 66,
+      "id": "NLM_F_DUMP_INTR",
+      "lastLine": 66,
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "memberSHA256": "f2b9dec9eb74c84239d345a9bb3aceb187caeab761579b7b58e6834a5ec64070",
+      "signed": true,
+      "value": 16,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "declaration": "#define NLM_F_MULTI\t\t0x02\t/* Multipart message, terminated by NLMSG_DONE */",
+      "firstLine": 63,
+      "id": "NLM_F_MULTI",
+      "lastLine": 63,
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "memberSHA256": "f2b9dec9eb74c84239d345a9bb3aceb187caeab761579b7b58e6834a5ec64070",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "declaration": "#define O_ACCMODE\t00000003",
+      "firstLine": 19,
+      "id": "O_ACCMODE",
+      "lastLine": 19,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "memberSHA256": "0908276bc4c3da9314d4986bd07c19f9ce8f403f602d40a8be0599249db95515",
+      "signed": true,
+      "value": 3,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H",
+        "#ifndef O_CLOEXEC"
+      ],
+      "declaration": "#define O_CLOEXEC\t02000000\t/* set close_on_exec */",
+      "firstLine": 63,
+      "id": "O_CLOEXEC",
+      "lastLine": 63,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "memberSHA256": "0908276bc4c3da9314d4986bd07c19f9ce8f403f602d40a8be0599249db95515",
+      "signed": true,
+      "value": 524288,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H",
+        "#ifndef O_CREAT"
+      ],
+      "declaration": "#define O_CREAT\t\t00000100\t/* not fcntl */",
+      "firstLine": 24,
+      "id": "O_CREAT",
+      "lastLine": 24,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "memberSHA256": "0908276bc4c3da9314d4986bd07c19f9ce8f403f602d40a8be0599249db95515",
+      "signed": true,
+      "value": 64,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H",
+        "#ifndef O_EXCL"
+      ],
+      "declaration": "#define O_EXCL\t\t00000200\t/* not fcntl */",
+      "firstLine": 27,
+      "id": "O_EXCL",
+      "lastLine": 27,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "memberSHA256": "0908276bc4c3da9314d4986bd07c19f9ce8f403f602d40a8be0599249db95515",
+      "signed": true,
+      "value": 128,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef __ASM_FCNTL_H"
+      ],
+      "declaration": "#define O_NOFOLLOW\t0100000\t/* don't follow links */",
+      "firstLine": 24,
+      "id": "O_NOFOLLOW",
+      "lastLine": 24,
+      "memberPath": "linux-6.8/arch/arm64/include/uapi/asm/fcntl.h",
+      "memberSHA256": "6d43602d5db08d4f4acda256ba09009c43b9d93b9283ad9dd75ce7c9dd2b6864",
+      "signed": true,
+      "value": 32768,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H",
+        "#ifndef O_NONBLOCK"
+      ],
+      "declaration": "#define O_NONBLOCK\t00004000",
+      "firstLine": 39,
+      "id": "O_NONBLOCK",
+      "lastLine": 39,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "memberSHA256": "0908276bc4c3da9314d4986bd07c19f9ce8f403f602d40a8be0599249db95515",
+      "signed": true,
+      "value": 2048,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "declaration": "#define O_RDONLY\t00000000",
+      "firstLine": 20,
+      "id": "O_RDONLY",
+      "lastLine": 20,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "memberSHA256": "0908276bc4c3da9314d4986bd07c19f9ce8f403f602d40a8be0599249db95515",
+      "signed": true,
+      "value": 0,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "declaration": "#define O_RDWR\t\t00000002",
+      "firstLine": 22,
+      "id": "O_RDWR",
+      "lastLine": 22,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "memberSHA256": "0908276bc4c3da9314d4986bd07c19f9ce8f403f602d40a8be0599249db95515",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "declaration": "#define O_WRONLY\t00000001",
+      "firstLine": 21,
+      "id": "O_WRONLY",
+      "lastLine": 21,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "memberSHA256": "0908276bc4c3da9314d4986bd07c19f9ce8f403f602d40a8be0599249db95515",
+      "signed": true,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "declaration": "#define PR_CAPBSET_DROP 24",
+      "firstLine": 72,
+      "id": "PR_CAPBSET_DROP",
+      "lastLine": 72,
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "memberSHA256": "6feff68eef81225d5885ed3dd6e0644b6ec4881591e219041fcec87a67040e42",
+      "signed": true,
+      "value": 24,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "declaration": "#define PR_CAP_AMBIENT\t\t\t47",
+      "firstLine": 195,
+      "id": "PR_CAP_AMBIENT",
+      "lastLine": 195,
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "memberSHA256": "6feff68eef81225d5885ed3dd6e0644b6ec4881591e219041fcec87a67040e42",
+      "signed": true,
+      "value": 47,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "declaration": "# define PR_CAP_AMBIENT_CLEAR_ALL\t4",
+      "firstLine": 199,
+      "id": "PR_CAP_AMBIENT_CLEAR_ALL",
+      "lastLine": 199,
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "memberSHA256": "6feff68eef81225d5885ed3dd6e0644b6ec4881591e219041fcec87a67040e42",
+      "signed": true,
+      "value": 4,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "declaration": "# define PR_CAP_AMBIENT_RAISE\t\t2",
+      "firstLine": 197,
+      "id": "PR_CAP_AMBIENT_RAISE",
+      "lastLine": 197,
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "memberSHA256": "6feff68eef81225d5885ed3dd6e0644b6ec4881591e219041fcec87a67040e42",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "declaration": "#define PR_SET_DUMPABLE   4",
+      "firstLine": 14,
+      "id": "PR_SET_DUMPABLE",
+      "lastLine": 14,
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "memberSHA256": "6feff68eef81225d5885ed3dd6e0644b6ec4881591e219041fcec87a67040e42",
+      "signed": true,
+      "value": 4,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "declaration": "#define PR_SET_KEEPCAPS   8",
+      "firstLine": 25,
+      "id": "PR_SET_KEEPCAPS",
+      "lastLine": 25,
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "memberSHA256": "6feff68eef81225d5885ed3dd6e0644b6ec4881591e219041fcec87a67040e42",
+      "signed": true,
+      "value": 8,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "declaration": "#define PR_SET_NO_NEW_PRIVS\t38",
+      "firstLine": 175,
+      "id": "PR_SET_NO_NEW_PRIVS",
+      "lastLine": 175,
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "memberSHA256": "6feff68eef81225d5885ed3dd6e0644b6ec4881591e219041fcec87a67040e42",
+      "signed": true,
+      "value": 38,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "declaration": "#define PR_SET_SECCOMP\t22",
+      "firstLine": 68,
+      "id": "PR_SET_SECCOMP",
+      "lastLine": 68,
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "memberSHA256": "6feff68eef81225d5885ed3dd6e0644b6ec4881591e219041fcec87a67040e42",
+      "signed": true,
+      "value": 22,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "declaration": "#define PR_SET_SECUREBITS 28",
+      "firstLine": 82,
+      "id": "PR_SET_SECUREBITS",
+      "lastLine": 82,
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "memberSHA256": "6feff68eef81225d5885ed3dd6e0644b6ec4881591e219041fcec87a67040e42",
+      "signed": true,
+      "value": 28,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_PTRACE_H"
+      ],
+      "declaration": "#define PTRACE_ATTACH\t\t  16",
+      "firstLine": 22,
+      "id": "PTRACE_ATTACH",
+      "lastLine": 22,
+      "memberPath": "linux-6.8/include/uapi/linux/ptrace.h",
+      "memberSHA256": "e0a5a2bac8fc8c287342daccaaa484d22d9332c75013d454c54bf51b646b53b3",
+      "signed": true,
+      "value": 16,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_PTRACE_H"
+      ],
+      "declaration": "#define PTRACE_SEIZE\t\t0x4206",
+      "firstLine": 53,
+      "id": "PTRACE_SEIZE",
+      "lastLine": 53,
+      "memberPath": "linux-6.8/include/uapi/linux/ptrace.h",
+      "memberSHA256": "e0a5a2bac8fc8c287342daccaaa484d22d9332c75013d454c54bf51b646b53b3",
+      "signed": true,
+      "value": 16902,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ROUTE_H"
+      ],
+      "declaration": "#define\tRTF_GATEWAY\t0x0002\t\t/* destination is a gateway\t*/",
+      "firstLine": 52,
+      "id": "RTF_GATEWAY",
+      "lastLine": 52,
+      "memberPath": "linux-6.8/include/uapi/linux/route.h",
+      "memberSHA256": "26101b575b648585c1a6f34e20eca000e6ae4c869e632b987e9e3f9345b13eab",
+      "signed": false,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IPV6_ROUTE_H"
+      ],
+      "declaration": "#define RTF_LOCAL\t0x80000000",
+      "firstLine": 40,
+      "id": "RTF_LOCAL",
+      "lastLine": 40,
+      "memberPath": "linux-6.8/include/uapi/linux/ipv6_route.h",
+      "memberSHA256": "99c6a6699a60879445f20a6037f0db734deb9ffb968f4d78f36f9658d01be963",
+      "signed": false,
+      "value": 2147483648,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IPV6_ROUTE_H"
+      ],
+      "declaration": "#define RTF_NONEXTHOP\t0x00200000\t/* route with no nexthop\t*/",
+      "firstLine": 27,
+      "id": "RTF_NONEXTHOP",
+      "lastLine": 27,
+      "memberPath": "linux-6.8/include/uapi/linux/ipv6_route.h",
+      "memberSHA256": "99c6a6699a60879445f20a6037f0db734deb9ffb968f4d78f36f9658d01be963",
+      "signed": false,
+      "value": 2097152,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ROUTE_H"
+      ],
+      "declaration": "#define RTF_REJECT\t0x0200\t\t/* Reject route\t\t\t*/",
+      "firstLine": 61,
+      "id": "RTF_REJECT",
+      "lastLine": 61,
+      "memberPath": "linux-6.8/include/uapi/linux/route.h",
+      "memberSHA256": "26101b575b648585c1a6f34e20eca000e6ae4c869e632b987e9e3f9345b13eab",
+      "signed": false,
+      "value": 512,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ROUTE_H"
+      ],
+      "declaration": "#define\tRTF_UP\t\t0x0001\t\t/* route usable\t\t  \t*/",
+      "firstLine": 51,
+      "id": "RTF_UP",
+      "lastLine": 51,
+      "memberPath": "linux-6.8/include/uapi/linux/route.h",
+      "memberSHA256": "26101b575b648585c1a6f34e20eca000e6ae4c869e632b987e9e3f9345b13eab",
+      "signed": false,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "declaration": "#define RTMGRP_IPV4_IFADDR\t0x10",
+      "firstLine": 687,
+      "id": "RTMGRP_IPV4_IFADDR",
+      "lastLine": 687,
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "memberSHA256": "4861c2b8196e8dcb6c0fea03fedf8710cd99bc7edf785195bec2513fb8e5d77d",
+      "signed": true,
+      "value": 16,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "declaration": "#define RTMGRP_IPV4_ROUTE\t0x40",
+      "firstLine": 689,
+      "id": "RTMGRP_IPV4_ROUTE",
+      "lastLine": 689,
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "memberSHA256": "4861c2b8196e8dcb6c0fea03fedf8710cd99bc7edf785195bec2513fb8e5d77d",
+      "signed": true,
+      "value": 64,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "declaration": "#define RTMGRP_IPV6_IFADDR\t0x100",
+      "firstLine": 692,
+      "id": "RTMGRP_IPV6_IFADDR",
+      "lastLine": 692,
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "memberSHA256": "4861c2b8196e8dcb6c0fea03fedf8710cd99bc7edf785195bec2513fb8e5d77d",
+      "signed": true,
+      "value": 256,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "declaration": "#define RTMGRP_IPV6_ROUTE\t0x400",
+      "firstLine": 694,
+      "id": "RTMGRP_IPV6_ROUTE",
+      "lastLine": 694,
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "memberSHA256": "4861c2b8196e8dcb6c0fea03fedf8710cd99bc7edf785195bec2513fb8e5d77d",
+      "signed": true,
+      "value": 1024,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "declaration": "#define RTMGRP_LINK\t\t1",
+      "firstLine": 682,
+      "id": "RTMGRP_LINK",
+      "lastLine": 682,
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "memberSHA256": "4861c2b8196e8dcb6c0fea03fedf8710cd99bc7edf785195bec2513fb8e5d77d",
+      "signed": true,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H"
+      ],
+      "declaration": "\tRTM_NEWADDR\t= 20,",
+      "firstLine": 37,
+      "id": "RTM_NEWADDR",
+      "lastLine": 37,
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "memberSHA256": "4861c2b8196e8dcb6c0fea03fedf8710cd99bc7edf785195bec2513fb8e5d77d",
+      "signed": true,
+      "value": 20,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H"
+      ],
+      "declaration": "\tRTM_NEWLINK\t= 16,",
+      "firstLine": 28,
+      "id": "RTM_NEWLINK",
+      "lastLine": 28,
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "memberSHA256": "4861c2b8196e8dcb6c0fea03fedf8710cd99bc7edf785195bec2513fb8e5d77d",
+      "signed": true,
+      "value": 16,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H"
+      ],
+      "declaration": "\tRTM_NEWROUTE\t= 24,",
+      "firstLine": 44,
+      "id": "RTM_NEWROUTE",
+      "lastLine": 44,
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "memberSHA256": "4861c2b8196e8dcb6c0fea03fedf8710cd99bc7edf785195bec2513fb8e5d77d",
+      "signed": true,
+      "value": 24,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "declaration": "#define\tSCM_RIGHTS\t0x01\t\t/* rw: access rights (array of int) */",
+      "firstLine": 177,
+      "id": "SCM_RIGHTS",
+      "lastLine": 177,
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "memberSHA256": "4afa211fad3850a13fbb7ab4130fcd162e3ac4d3593f7b6c5b6232a498841dc2",
+      "signed": true,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_FILTER_FLAG_LOG\t\t\t(1UL << 1)",
+      "firstLine": 22,
+      "id": "SECCOMP_FILTER_FLAG_LOG",
+      "lastLine": 22,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 2,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_FILTER_FLAG_NEW_LISTENER\t(1UL << 3)",
+      "firstLine": 24,
+      "id": "SECCOMP_FILTER_FLAG_NEW_LISTENER",
+      "lastLine": 24,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 8,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_FILTER_FLAG_SPEC_ALLOW\t\t(1UL << 2)",
+      "firstLine": 23,
+      "id": "SECCOMP_FILTER_FLAG_SPEC_ALLOW",
+      "lastLine": 23,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 4,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_FILTER_FLAG_TSYNC\t\t(1UL << 0)",
+      "firstLine": 21,
+      "id": "SECCOMP_FILTER_FLAG_TSYNC",
+      "lastLine": 21,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 1,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_FILTER_FLAG_TSYNC_ESRCH\t\t(1UL << 4)",
+      "firstLine": 25,
+      "id": "SECCOMP_FILTER_FLAG_TSYNC_ESRCH",
+      "lastLine": 25,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 16,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_MODE_FILTER\t2 /* uses user-supplied filter. */",
+      "firstLine": 12,
+      "id": "SECCOMP_MODE_FILTER",
+      "lastLine": 12,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_RET_ALLOW\t 0x7fff0000U /* allow */",
+      "firstLine": 46,
+      "id": "SECCOMP_RET_ALLOW",
+      "lastLine": 46,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 2147418112,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_RET_ERRNO\t 0x00050000U /* returns an errno */",
+      "firstLine": 42,
+      "id": "SECCOMP_RET_ERRNO",
+      "lastLine": 42,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 327680,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_RET_KILL_PROCESS 0x80000000U /* kill the process */",
+      "firstLine": 38,
+      "id": "SECCOMP_RET_KILL_PROCESS",
+      "lastLine": 38,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 2147483648,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "#define SECCOMP_SET_MODE_FILTER\t\t1",
+      "firstLine": 16,
+      "id": "SECCOMP_SET_MODE_FILTER",
+      "lastLine": 16,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": true,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__ASM_GENERIC_SIGNAL_H"
+      ],
+      "declaration": "#define SIGSYS\t\t31",
+      "firstLine": 46,
+      "id": "SIGSYS",
+      "lastLine": 46,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/signal.h",
+      "memberSHA256": "936247c76acb82e5c82c58c2cddfe45fcb71230465f6c137966a8a285a3dc04c",
+      "signed": true,
+      "value": 31,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES"
+      ],
+      "declaration": "#define SOCK_CLOEXEC\tO_CLOEXEC",
+      "firstLine": 80,
+      "id": "SOCK_CLOEXEC",
+      "lastLine": 80,
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "memberSHA256": "db0aa1e0b6fbf6f3f36e9dcfc39193b7542637a62ecf1fb7e364a028df3d031f",
+      "signed": true,
+      "value": 524288,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES"
+      ],
+      "declaration": "\tSOCK_DGRAM\t= 2,",
+      "firstLine": 66,
+      "id": "SOCK_DGRAM",
+      "lastLine": 66,
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "memberSHA256": "db0aa1e0b6fbf6f3f36e9dcfc39193b7542637a62ecf1fb7e364a028df3d031f",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES",
+        "#ifndef SOCK_NONBLOCK"
+      ],
+      "declaration": "#define SOCK_NONBLOCK\tO_NONBLOCK",
+      "firstLine": 82,
+      "id": "SOCK_NONBLOCK",
+      "lastLine": 82,
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "memberSHA256": "db0aa1e0b6fbf6f3f36e9dcfc39193b7542637a62ecf1fb7e364a028df3d031f",
+      "signed": true,
+      "value": 2048,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES"
+      ],
+      "declaration": "\tSOCK_RAW\t= 3,",
+      "firstLine": 67,
+      "id": "SOCK_RAW",
+      "lastLine": 67,
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "memberSHA256": "db0aa1e0b6fbf6f3f36e9dcfc39193b7542637a62ecf1fb7e364a028df3d031f",
+      "signed": true,
+      "value": 3,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES"
+      ],
+      "declaration": "\tSOCK_SEQPACKET\t= 5,",
+      "firstLine": 69,
+      "id": "SOCK_SEQPACKET",
+      "lastLine": 69,
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "memberSHA256": "db0aa1e0b6fbf6f3f36e9dcfc39193b7542637a62ecf1fb7e364a028df3d031f",
+      "signed": true,
+      "value": 5,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES"
+      ],
+      "declaration": "\tSOCK_STREAM\t= 1,",
+      "firstLine": 65,
+      "id": "SOCK_STREAM",
+      "lastLine": 65,
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "memberSHA256": "db0aa1e0b6fbf6f3f36e9dcfc39193b7542637a62ecf1fb7e364a028df3d031f",
+      "signed": true,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef __ASM_GENERIC_SOCKET_H"
+      ],
+      "declaration": "#define SOL_SOCKET\t1",
+      "firstLine": 9,
+      "id": "SOL_SOCKET",
+      "lastLine": 9,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/socket.h",
+      "memberSHA256": "795c17350dcd328870890fcfa9c96ae4751687f348d340f9a760679e19d59527",
+      "signed": true,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SCHED_COREDUMP_H"
+      ],
+      "declaration": "#define SUID_DUMP_DISABLE\t0\t/* No setuid dumping */",
+      "firstLine": 7,
+      "id": "SUID_DUMP_DISABLE",
+      "lastLine": 7,
+      "memberPath": "linux-6.8/include/linux/sched/coredump.h",
+      "memberSHA256": "d521e2c63149239d95eb7f86fdca812b2dd8dc177447c07f461450444a1c0346",
+      "signed": true,
+      "value": 0,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_TCP_STATES_H"
+      ],
+      "declaration": "\tTCP_ESTABLISHED = 1,",
+      "firstLine": 13,
+      "id": "TCP_ESTABLISHED",
+      "lastLine": 13,
+      "memberPath": "linux-6.8/include/net/tcp_states.h",
+      "memberSHA256": "8a41dab66aa79bd0b185da5bbb9b4c72ad7f3efb11bf75d894a80f4273f9766c",
+      "signed": true,
+      "value": 1,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_VM_SOCKETS_H"
+      ],
+      "declaration": "#define VMADDR_CID_HOST 2",
+      "firstLine": 127,
+      "id": "VMADDR_CID_HOST",
+      "lastLine": 127,
+      "memberPath": "linux-6.8/include/uapi/linux/vm_sockets.h",
+      "memberSHA256": "e8153fea6dbd275937f670a63e8b7d2ef3070e9a553687f04d19f00a1c569b91",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_CAPABILITY_H"
+      ],
+      "declaration": "#define _LINUX_CAPABILITY_U32S_3     2",
+      "firstLine": 37,
+      "id": "_LINUX_CAPABILITY_U32S_3",
+      "lastLine": 37,
+      "memberPath": "linux-6.8/include/uapi/linux/capability.h",
+      "memberSHA256": "ee832adca0d6db0866ddbf1dd3426c5a0df63901bf255bde77e4d8305cf5b5e0",
+      "signed": true,
+      "value": 2,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_CAPABILITY_H"
+      ],
+      "declaration": "#define _LINUX_CAPABILITY_VERSION_3  0x20080522",
+      "firstLine": 36,
+      "id": "_LINUX_CAPABILITY_VERSION_3",
+      "lastLine": 36,
+      "memberPath": "linux-6.8/include/uapi/linux/capability.h",
+      "memberSHA256": "ee832adca0d6db0866ddbf1dd3426c5a0df63901bf255bde77e4d8305cf5b5e0",
+      "signed": true,
+      "value": 537396514,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_bind 200",
+      "firstLine": 526,
+      "id": "__NR_bind",
+      "lastLine": 526,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 200,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_capset 91",
+      "firstLine": 254,
+      "id": "__NR_capset",
+      "lastLine": 254,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 91,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_chroot 51",
+      "firstLine": 148,
+      "id": "__NR_chroot",
+      "lastLine": 148,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 51,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_clone 220",
+      "firstLine": 566,
+      "id": "__NR_clone",
+      "lastLine": 566,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 220,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifdef __ARCH_WANT_SYS_CLONE3"
+      ],
+      "declaration": "#define __NR_clone3 435",
+      "firstLine": 781,
+      "id": "__NR_clone3",
+      "lastLine": 781,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 435,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_close_range 436",
+      "firstLine": 785,
+      "id": "__NR_close_range",
+      "lastLine": 785,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 436,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_connect 203",
+      "firstLine": 532,
+      "id": "__NR_connect",
+      "lastLine": 532,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 203,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_execve 221",
+      "firstLine": 568,
+      "id": "__NR_execve",
+      "lastLine": 568,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 221,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_execveat 281",
+      "firstLine": 679,
+      "id": "__NR_execveat",
+      "lastLine": 679,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 281,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_exit 93",
+      "firstLine": 258,
+      "id": "__NR_exit",
+      "lastLine": 258,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 93,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_exit_group 94",
+      "firstLine": 260,
+      "id": "__NR_exit_group",
+      "lastLine": 260,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 94,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#if __BITS_PER_LONG == 64 && !defined(__SYSCALL_COMPAT)"
+      ],
+      "declaration": "#define __NR_fcntl __NR3264_fcntl",
+      "firstLine": 859,
+      "id": "__NR_fcntl",
+      "lastLine": 859,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 25,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_io_uring_enter 426",
+      "firstLine": 761,
+      "id": "__NR_io_uring_enter",
+      "lastLine": 761,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 426,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_io_uring_register 427",
+      "firstLine": 763,
+      "id": "__NR_io_uring_register",
+      "lastLine": 763,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 427,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_io_uring_setup 425",
+      "firstLine": 759,
+      "id": "__NR_io_uring_setup",
+      "lastLine": 759,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 425,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_listen 201",
+      "firstLine": 528,
+      "id": "__NR_listen",
+      "lastLine": 528,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 201,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_mknodat 33",
+      "firstLine": 103,
+      "id": "__NR_mknodat",
+      "lastLine": 103,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 33,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_mount 40",
+      "firstLine": 122,
+      "id": "__NR_mount",
+      "lastLine": 122,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 40,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_pidfd_getfd 438",
+      "firstLine": 789,
+      "id": "__NR_pidfd_getfd",
+      "lastLine": 789,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 438,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_pidfd_open 434",
+      "firstLine": 777,
+      "id": "__NR_pidfd_open",
+      "lastLine": 777,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 434,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_pivot_root 41",
+      "firstLine": 124,
+      "id": "__NR_pivot_root",
+      "lastLine": 124,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 41,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_prctl 167",
+      "firstLine": 447,
+      "id": "__NR_prctl",
+      "lastLine": 447,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 167,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_process_vm_readv 270",
+      "firstLine": 657,
+      "id": "__NR_process_vm_readv",
+      "lastLine": 657,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 270,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_process_vm_writev 271",
+      "firstLine": 659,
+      "id": "__NR_process_vm_writev",
+      "lastLine": 659,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 271,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_ptrace 117",
+      "firstLine": 329,
+      "id": "__NR_ptrace",
+      "lastLine": 329,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 117,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_recvmsg 212",
+      "firstLine": 550,
+      "id": "__NR_recvmsg",
+      "lastLine": 550,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 212,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_seccomp 277",
+      "firstLine": 671,
+      "id": "__NR_seccomp",
+      "lastLine": 671,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 277,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_sendto 206",
+      "firstLine": 538,
+      "id": "__NR_sendto",
+      "lastLine": 538,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 206,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_setfsgid 152",
+      "firstLine": 412,
+      "id": "__NR_setfsgid",
+      "lastLine": 412,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 152,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_setfsuid 151",
+      "firstLine": 410,
+      "id": "__NR_setfsuid",
+      "lastLine": 410,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 151,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_setgid 144",
+      "firstLine": 396,
+      "id": "__NR_setgid",
+      "lastLine": 396,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 144,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_setgroups 159",
+      "firstLine": 426,
+      "id": "__NR_setgroups",
+      "lastLine": 426,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 159,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_setns 268",
+      "firstLine": 653,
+      "id": "__NR_setns",
+      "lastLine": 653,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 268,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_setregid 143",
+      "firstLine": 394,
+      "id": "__NR_setregid",
+      "lastLine": 394,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 143,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_setresgid 149",
+      "firstLine": 406,
+      "id": "__NR_setresgid",
+      "lastLine": 406,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 149,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_setresuid 147",
+      "firstLine": 402,
+      "id": "__NR_setresuid",
+      "lastLine": 402,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 147,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_setreuid 145",
+      "firstLine": 398,
+      "id": "__NR_setreuid",
+      "lastLine": 398,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 145,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_setuid 146",
+      "firstLine": 400,
+      "id": "__NR_setuid",
+      "lastLine": 400,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 146,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_socket 198",
+      "firstLine": 522,
+      "id": "__NR_socket",
+      "lastLine": 522,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 198,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_socketpair 199",
+      "firstLine": 524,
+      "id": "__NR_socketpair",
+      "lastLine": 524,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 199,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_umount2 39",
+      "firstLine": 120,
+      "id": "__NR_umount2",
+      "lastLine": 120,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 39,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_unshare 97",
+      "firstLine": 266,
+      "id": "__NR_unshare",
+      "lastLine": 266,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 97,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "declaration": "#define __NR_write 64",
+      "firstLine": 174,
+      "id": "__NR_write",
+      "lastLine": 174,
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "memberSHA256": "2807c5c2e1ad8128b37438f81cf9776b52fb664b48d93e2ea8edb06846eda90d",
+      "signed": true,
+      "value": 64,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_NET_H"
+      ],
+      "declaration": "#define __SO_ACCEPTCON\t(1 << 16)\t/* performed a listen\t\t*/",
+      "firstLine": 56,
+      "id": "__SO_ACCEPTCON",
+      "lastLine": 56,
+      "memberPath": "linux-6.8/include/uapi/linux/net.h",
+      "memberSHA256": "7a3044c1910301b969d43b181208e702d6c6174f2aa07fbc0789020078fcd3de",
+      "signed": true,
+      "value": 65536,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "struct seccomp_data {\n\tint nr;\n\t__u32 arch;\n\t__u64 instruction_pointer;\n\t__u64 args[6];\n};",
+      "firstLine": 62,
+      "id": "seccomp_data.arch",
+      "lastLine": 67,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 4,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "struct seccomp_data {\n\tint nr;\n\t__u32 arch;\n\t__u64 instruction_pointer;\n\t__u64 args[6];\n};",
+      "firstLine": 62,
+      "id": "seccomp_data.args",
+      "lastLine": 67,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 16,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "struct seccomp_data {\n\tint nr;\n\t__u32 arch;\n\t__u64 instruction_pointer;\n\t__u64 args[6];\n};",
+      "firstLine": 62,
+      "id": "seccomp_data.nr",
+      "lastLine": 67,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 0,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "declaration": "struct seccomp_data {\n\tint nr;\n\t__u32 arch;\n\t__u64 instruction_pointer;\n\t__u64 args[6];\n};",
+      "firstLine": 62,
+      "id": "seccomp_data.sizeof",
+      "lastLine": 67,
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "memberSHA256": "38a129b0b1e0c5cbae3b01bb159810a5cc290d7823d4c386f71d70b16e93d8dd",
+      "signed": false,
+      "value": 64,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_FILTER_H__"
+      ],
+      "declaration": "struct sock_filter {\t/* Filter block */\n\t__u16\tcode;   /* Actual filter code */\n\t__u8\tjt;\t/* Jump true */\n\t__u8\tjf;\t/* Jump false */\n\t__u32\tk;      /* Generic multiuse field */\n};",
+      "firstLine": 24,
+      "id": "sock_filter.code",
+      "lastLine": 29,
+      "memberPath": "linux-6.8/include/uapi/linux/filter.h",
+      "memberSHA256": "8b07bc3c8bcaa4b43318c43e588e36258bdc6a80848efce51158a274b664be7b",
+      "signed": false,
+      "value": 0,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_FILTER_H__"
+      ],
+      "declaration": "struct sock_filter {\t/* Filter block */\n\t__u16\tcode;   /* Actual filter code */\n\t__u8\tjt;\t/* Jump true */\n\t__u8\tjf;\t/* Jump false */\n\t__u32\tk;      /* Generic multiuse field */\n};",
+      "firstLine": 24,
+      "id": "sock_filter.jf",
+      "lastLine": 29,
+      "memberPath": "linux-6.8/include/uapi/linux/filter.h",
+      "memberSHA256": "8b07bc3c8bcaa4b43318c43e588e36258bdc6a80848efce51158a274b664be7b",
+      "signed": false,
+      "value": 3,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_FILTER_H__"
+      ],
+      "declaration": "struct sock_filter {\t/* Filter block */\n\t__u16\tcode;   /* Actual filter code */\n\t__u8\tjt;\t/* Jump true */\n\t__u8\tjf;\t/* Jump false */\n\t__u32\tk;      /* Generic multiuse field */\n};",
+      "firstLine": 24,
+      "id": "sock_filter.jt",
+      "lastLine": 29,
+      "memberPath": "linux-6.8/include/uapi/linux/filter.h",
+      "memberSHA256": "8b07bc3c8bcaa4b43318c43e588e36258bdc6a80848efce51158a274b664be7b",
+      "signed": false,
+      "value": 2,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_FILTER_H__"
+      ],
+      "declaration": "struct sock_filter {\t/* Filter block */\n\t__u16\tcode;   /* Actual filter code */\n\t__u8\tjt;\t/* Jump true */\n\t__u8\tjf;\t/* Jump false */\n\t__u32\tk;      /* Generic multiuse field */\n};",
+      "firstLine": 24,
+      "id": "sock_filter.k",
+      "lastLine": 29,
+      "memberPath": "linux-6.8/include/uapi/linux/filter.h",
+      "memberSHA256": "8b07bc3c8bcaa4b43318c43e588e36258bdc6a80848efce51158a274b664be7b",
+      "signed": false,
+      "value": 4,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_FILTER_H__"
+      ],
+      "declaration": "struct sock_filter {\t/* Filter block */\n\t__u16\tcode;   /* Actual filter code */\n\t__u8\tjt;\t/* Jump true */\n\t__u8\tjf;\t/* Jump false */\n\t__u32\tk;      /* Generic multiuse field */\n};",
+      "firstLine": 24,
+      "id": "sock_filter.sizeof",
+      "lastLine": 29,
+      "memberPath": "linux-6.8/include/uapi/linux/filter.h",
+      "memberSHA256": "8b07bc3c8bcaa4b43318c43e588e36258bdc6a80848efce51158a274b664be7b",
+      "signed": false,
+      "value": 8,
+      "width": 64
+    }
+  ],
+  "sourceArchiveSHA256": "c969dea4e8bb6be991bbf7c010ba0e0a5643a3a8d8fb0a2aaa053406f1e965f3",
+  "supersedesLostCoverageSHA256": "7c8714c95a67d8a2e6c1b4c8b8481525a61976c81dfe2037c251add071ac9898",
+  "version": 1
+}

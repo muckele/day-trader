@@ -23,7 +23,7 @@ function deferred() {
 // Only journal/ledger durability and observed browser facts are private fake boundaries.
 function fixture({ phase = B, journal, ledgerMutation, expiries = {}, configIdentity,
   runId = crypto.randomBytes(16).toString('hex'), assetPath = '/static/app.js',
-  assetBody: suppliedAssetBody, inspectBrowserEvidence } = {}) {
+  assetBody: suppliedAssetBody, extraAssets = [], inspectBrowserEvidence } = {}) {
   const pair = crypto.generateKeyPairSync('ed25519');
   const raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32);
   const frames = Object.fromEntries(kinds.map(kind => [kind, JSON.parse(vectors.accepted.find(v => v.kind === kind).json)]));
@@ -32,7 +32,9 @@ function fixture({ phase = B, journal, ledgerMutation, expiries = {}, configIden
   const time = { monotonicMs: 1000, wallMs: 160 };
   const assetBody = suppliedAssetBody ? Buffer.from(suppliedAssetBody) : Buffer.from('offline synthetic asset');
   const assetFrame = JSON.parse(vectors.accepted.find(v => v.name === 'asset_manifest').json); assetFrame.runId = runId;
-  assetFrame.payload.entries = [{ path: assetPath, hash: hash(assetBody), size: assetBody.length, mime: 'application/javascript' }];
+  assetFrame.payload.entries = [{ path: assetPath, hash: hash(assetBody), size: assetBody.length, mime: 'application/javascript' },
+    // Optional further signed entries (e.g. the browser harness's /index.html document entry).
+    ...extraAssets.map(({ path: entryPath, body, mime }) => ({ path: entryPath, hash: hash(body), size: body.length, mime }))];
   const assetBytes = contracts.canonicalBytes(contracts.decodeFrame(Buffer.from(JSON.stringify(assetFrame)), 'ASSET_MANIFEST'));
   frames.RELEASE_RECEIPT.payload.assetManifestDigest = hash(assetBytes);
   // Independent historical values are intentionally different from imported hosted 6/19.

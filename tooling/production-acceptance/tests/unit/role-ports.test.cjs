@@ -6,6 +6,8 @@ const path = require('node:path');
 const modulePath = path.join(__dirname, '../../guest/role-ports.cjs');
 const roles = fs.existsSync(modulePath) ? require(modulePath) : null;
 const RUN = 'a'.repeat(32);
+// Task 16c (P76): the bootstrap's clean answer to the controller's BROWSER family request.
+function cleanFamily(point) { return { point, ordinal: point === 'POST_LOAD' ? 2 : 3, status: 'CLEAN', members: 5 }; }
 test('v1_shared_budget_clamps_existing_activate_once_compensation',async()=>{
   const f=fixture();let allowance;
   f.authority.cleanupBudget={remaining:()=>37};
@@ -27,19 +29,24 @@ function fixture(kind = 'BROWSER', overrides = {}) {
   const handoff = Object.freeze({}), grant = Object.freeze({});
   let activations = 0;
   let stops = 0;
+  const received = [];
   const facts = { kind, runId: RUN, uid: kind === 'BROWSER' ? 10002 : 10003,
     child, privatePipe: pipe, waiting: true, confined: true, ...overrides };
   const authority = {
     inspectHandoff: h => h === handoff ? { ...facts } : null,
     inspectGrant: g => g === grant ? { kind, runId: RUN, child,
-      purpose: kind === 'BROWSER' ? 'CONFINEMENT_PROVED' : 'PRIOR_SESSION', session: kind === 'VERIFIER' ? Object.freeze({}) : null } : null,
-    activate: async (owned, value) => { assert.equal(owned, child); assert.equal(value, grant); activations++; facts.waiting=false; },
+      purpose: kind === 'BROWSER' ? 'CONFINEMENT_PROVED' : 'PRIOR_SESSION', session: kind === 'VERIFIER' ? Object.freeze({}) : null,
+      remainingMs: 60000 } : null,
+    // T8-11: record exactly what reaches activate (a frozen projection, never the caller's object).
+    activate: async (owned, value) => { assert.equal(owned, child); received.push(value); activations++; facts.waiting=false; },
     waitExit: async (owned, deadline) => ({ status: 'EXITED', runId: RUN, child: owned }),
     stopOwned: async (owned, deadline) => { stops++; return { status: 'STOPPED', runId: RUN, child: owned }; },
+    // Task 16c (P14): the bootstrap's clean answer to a BROWSER family request.
+    inspectFamily: async (owned, point) => cleanFamily(point),
   };
   const boundary = roles.bindRoleBootstrap(authority, RUN);
   boundary.audit(handoff);
-  return { child, pipe, handoff, grant, facts, authority, boundary, count: () => activations, stops: () => stops };
+  return { child, pipe, handoff, grant, facts, authority, boundary, received, count: () => activations, stops: () => stops };
 }
 
 // Breaks caught: accepting fabricated/cross-run handoffs, replayed grants,
@@ -56,10 +63,75 @@ test('activation_second_consume_reject', async () => {
 });
 test('arbitrary_role_program_argv_fd_request_reject', async () => {
   for (const extra of [{ program: '/bin/sh' }, { argv: ['-c','echo'] }, { fd: 9 }, { uid: 0 }, { spawn: true }]) {
+    // An identity authority: a copy carrying a request is not the grant, and nothing reaches activate.
     const f = fixture(); const p = roles.adoptRole('BROWSER', f.handoff);
     await assert.rejects(p.activateOnce({ ...f.grant, ...extra }), /ACTIVATION_DENIED/);
-    assert.equal(f.count(), 0);
+    assert.equal(f.count(), 0); assert.deepEqual(f.received, []);
+    // T8-11 variant V1: an authority that recognises the copy structurally. Only a frozen projection of the
+    // authority's own verified facts reaches activate; the requested program/argv/fd/uid/spawn never does.
+    const g = fixture(); const q = roles.adoptRole('BROWSER', g.handoff), copy = { ...g.grant, ...extra };
+    g.authority.inspectGrant = value => value === copy ? { kind: 'BROWSER', runId: RUN, child: g.child,
+      purpose: 'CONFINEMENT_PROVED', session: null, remainingMs: 60000 } : null;
+    await q.activateOnce(copy);
+    assert.equal(g.count(), 1); assert.equal(g.received.length, 1);
+    const value = g.received[0];
+    assert.notEqual(value, copy); assert.ok(Object.isFrozen(value));
+    assert.deepEqual(Reflect.ownKeys(value).sort(), ['child', 'kind', 'purpose', 'runId', 'session']);
+    assert.equal(value.child, g.child); assert.equal(value.kind, 'BROWSER'); assert.equal(value.runId, RUN);
+    assert.equal(value.purpose, 'CONFINEMENT_PROVED'); assert.equal(value.session, null);
+    for (const key of Reflect.ownKeys(extra)) assert.equal(key in value, false, key);
   }
+});
+test('used_grant_replay_rejected', async () => {
+  // J1: two original children under one authority that accepts the grant for whichever child it was last asked
+  // about. Only the role ports' own used-grant record can refuse the replay on the second child.
+  const grant = Object.freeze({}), children = [Object.freeze({}), Object.freeze({})], activated = [];
+  const facts = children.map(child => ({ kind: 'BROWSER', runId: RUN, uid: 10002, child,
+    privatePipe: Object.freeze({}), waiting: true, confined: true }));
+  const handoffs = facts.map(() => Object.freeze({}));
+  let asked = null;
+  const authority = {
+    inspectHandoff: h => { const i = handoffs.indexOf(h); if (i < 0) return null; asked = facts[i].child; return { ...facts[i] }; },
+    inspectGrant: g => g === grant ? { kind: 'BROWSER', runId: RUN, child: asked, purpose: 'CONFINEMENT_PROVED',
+      session: null, remainingMs: 60000 } : null,
+    activate: async owned => { activated.push(owned); facts.find(x => x.child === owned).waiting = false; },
+    waitExit: async owned => ({ status: 'EXITED', runId: RUN, child: owned }),
+    stopOwned: async owned => ({ status: 'STOPPED', runId: RUN, child: owned }),
+    inspectFamily: async (owned, point) => cleanFamily(point),
+  };
+  const boundary = roles.bindRoleBootstrap(authority, RUN);
+  for (const handoff of handoffs) boundary.audit(handoff);
+  const first = roles.adoptRole('BROWSER', handoffs[0]), second = roles.adoptRole('BROWSER', handoffs[1]);
+  await first.activateOnce(grant);
+  await assert.rejects(second.activateOnce(grant), /ACTIVATION_DENIED/);
+  assert.equal(activated.length, 1); assert.equal(activated[0], children[0]);
+});
+test('activate_once_bounded_by_remaining_budget', async () => {
+  // P5: an activation that never settles ends at the remaining activation time the authority reports. Only the
+  // stop path that follows uses the shared cleanup budget, and a routine activation never starts it (C1).
+  const f = fixture(); let allowance, starts = 0, reads = 0, guard;
+  f.authority.inspectGrant = g => g === f.grant ? { kind: 'BROWSER', runId: RUN, child: f.child,
+    purpose: 'CONFINEMENT_PROVED', session: null, remainingMs: 25 } : null;
+  f.authority.activate = () => new Promise(() => {});
+  f.authority.cleanupBudget = { remaining: () => { reads++; return 41; }, startTerminal: () => { starts++; return 41; } };
+  f.authority.stopOwned = async (child, ms) => { allowance = ms; return { status: 'STOPPED', runId: RUN, child }; };
+  const outcome = await Promise.race([
+    roles.adoptRole('BROWSER', f.handoff).activateOnce(f.grant).then(() => 'activated', e => e.code),
+    new Promise(resolve => { guard = setTimeout(() => resolve('unbounded'), 1000); })]);
+  clearTimeout(guard);
+  assert.equal(outcome, 'ACTIVATION_DENIED');
+  assert.equal(allowance, 41); assert.ok(starts >= 1, 'only the stop path starts the shared end');
+  for (const remainingMs of [undefined, 0, -1, 1.5, 2147483648, '25']) {
+    const g = fixture();
+    g.authority.inspectGrant = x => x === g.grant ? { kind: 'BROWSER', runId: RUN, child: g.child,
+      purpose: 'CONFINEMENT_PROVED', session: null, ...(remainingMs === undefined ? {} : { remainingMs }) } : null;
+    await assert.rejects(roles.adoptRole('BROWSER', g.handoff).activateOnce(g.grant), /ACTIVATION_DENIED/);
+    assert.equal(g.count(), 0, String(remainingMs));
+  }
+  const h = fixture(); let hStarts = 0, hReads = 0;
+  h.authority.cleanupBudget = { remaining: () => { hReads++; return 41; }, startTerminal: () => { hStarts++; return 41; } };
+  await roles.adoptRole('BROWSER', h.handoff).activateOnce(h.grant);
+  assert.equal(h.count(), 1); assert.equal(hStarts, 0); assert.equal(hReads, 0);
 });
 test('exit_handle_bound_to_run_and_owned_child', async () => {
   const f = fixture(); const p = roles.adoptRole('BROWSER', f.handoff); const h = await p.activateOnce(f.grant);
@@ -94,7 +166,7 @@ test('verifier_requires_prior_session_one_use_grant', async () => {
   assert.equal(p.kind,'VERIFIER');
   await p.activateOnce(f.grant);
   await assert.rejects(p.activateOnce(f.grant),/ACTIVATION_DENIED/);
-  const g=fixture('VERIFIER');g.authority.inspectGrant=()=>({kind:'VERIFIER',runId:RUN,child:g.child,purpose:'CONFINEMENT_PROVED',session:null});
+  const g=fixture('VERIFIER');g.authority.inspectGrant=()=>({kind:'VERIFIER',runId:RUN,child:g.child,purpose:'CONFINEMENT_PROVED',session:null,remainingMs:60000});
   await assert.rejects(roles.adoptRole('VERIFIER',g.handoff).activateOnce(g.grant),/ACTIVATION_DENIED/);
 });
 test('invalid_grant_latches_before_any_await', async () => {
@@ -213,3 +285,112 @@ for(const failure of ['invalid-grant','inspectGrant-throw','early-drift']) {
     }
   });
 }
+
+// Task 16c (owner decision 2026-11-20, P76): the bootstrap inspects the BROWSER family; the controller asks for
+// POST_LOAD and FINAL through the BROWSER activation handle, and accepts only the bootstrap's exact clean result.
+test('browser_family_result_shape_bound', async () => {
+  const f = fixture(), h = await roles.adoptRole('BROWSER', f.handoff).activateOnce(f.grant), asked = [];
+  assert.equal(typeof h.inspectFamily, 'function');
+  f.authority.inspectFamily = async (child, point, ...rest) => { asked.push([child, point, rest.length]); return cleanFamily(point); };
+  for (const point of ['POST_LOAD', 'FINAL']) {
+    const value = await h.inspectFamily(point);
+    assert.deepEqual({ ...value }, { point, ordinal: cleanFamily(point).ordinal, members: 5 });
+    assert.ok(Object.isFrozen(value));
+  }
+  assert.deepEqual(asked, [[f.child, 'POST_LOAD', 0], [f.child, 'FINAL', 0]]);
+  for (const members of [2, 256]) {
+    f.authority.inspectFamily = async (child, point) => ({ ...cleanFamily(point), members });
+    assert.equal((await h.inspectFamily('POST_LOAD')).members, members);
+  }
+  for (const [name, point, answer] of [
+    ['status DIRTY', 'POST_LOAD', () => ({ ...cleanFamily('POST_LOAD'), status: 'DIRTY' })],
+    ['point mismatch', 'POST_LOAD', () => ({ ...cleanFamily('POST_LOAD'), point: 'FINAL' })],
+    ['POST_LOAD with ordinal 3', 'POST_LOAD', () => ({ ...cleanFamily('POST_LOAD'), ordinal: 3 })],
+    ['FINAL with ordinal 2', 'FINAL', () => ({ ...cleanFamily('FINAL'), ordinal: 2 })],
+    ['extra key', 'POST_LOAD', () => ({ ...cleanFamily('POST_LOAD'), attempts: 1 })],
+    ['missing key', 'POST_LOAD', () => ({ point: 'POST_LOAD', ordinal: 2, status: 'CLEAN' })],
+    ['members 1', 'POST_LOAD', () => ({ ...cleanFamily('POST_LOAD'), members: 1 })],
+    ['members 257', 'POST_LOAD', () => ({ ...cleanFamily('POST_LOAD'), members: 257 })],
+    ['members 2.5', 'POST_LOAD', () => ({ ...cleanFamily('POST_LOAD'), members: 2.5 })],
+    ['members text', 'POST_LOAD', () => ({ ...cleanFamily('POST_LOAD'), members: '5' })],
+    ['null', 'POST_LOAD', () => null],
+    ['array', 'POST_LOAD', () => []],
+    ['rejection', 'POST_LOAD', () => { throw Object.assign(new Error('FAMILY_DENIED'), { code: 'FAMILY_DENIED' }); }],
+  ]) {
+    const g = fixture(), q = await roles.adoptRole('BROWSER', g.handoff).activateOnce(g.grant);
+    g.authority.inspectFamily = async () => answer();
+    await assert.rejects(q.inspectFamily(point), { code: 'ROLE_INVALID' }, name);
+  }
+  // Only the two controller points, one argument each; the authority is never asked otherwise.
+  for (const args of [['LAUNCH'], ['PERIODIC'], [], ['POST_LOAD', {}]]) {
+    const g = fixture(), q = await roles.adoptRole('BROWSER', g.handoff).activateOnce(g.grant);
+    let calls = 0; g.authority.inspectFamily = async (child, point) => { calls++; return cleanFamily(point); };
+    await assert.rejects(q.inspectFamily(...args), { code: 'ROLE_INVALID' }, JSON.stringify(args));
+    assert.equal(calls, 0, JSON.stringify(args));
+  }
+  // The VERIFIER handle has none.
+  const v = fixture('VERIFIER'), vh = await roles.adoptRole('VERIFIER', v.handoff).activateOnce(v.grant);
+  assert.equal('inspectFamily' in vh, false);
+  // An authority without it is not a bootstrap authority.
+  const { inspectFamily, ...partial } = fixture().authority;
+  assert.equal(typeof inspectFamily, 'function');
+  assert.throws(() => roles.bindRoleBootstrap(partial, RUN), /HANDOFF_DENIED/);
+  assert.throws(() => roles.bindRoleBootstrap({ ...partial, inspectFamily: true }, RUN), /HANDOFF_DENIED/);
+});
+
+// A composition controller channel over the real bindBootstrapComposition. APP_POLL requests are held until the
+// test answers them; ADOPT, PREPARE_BROWSER, COMMIT_BROWSER and BROWSER_FAMILY are answered at once.
+function compositionChannel() {
+  const crypto = require('node:crypto');
+  const binding = { version: 1, runId: RUN, manifestDigest: 'b'.repeat(64), configIdentity: 'c'.repeat(64), rolePolicyDigest: 'd'.repeat(64), epoch: 1, expiresAtMs: 10000 };
+  const map = ['CONTROLLER', 'BROWSER', 'VERIFIER', 'PROXY'].map((role, i) => ({ role, childId: String(i + 1).repeat(32), pipeId: String(i + 5).repeat(32) }));
+  const key = 'c3'.repeat(32), command = {}, result = {}, queue = [], readers = [], sent = [], held = [], timeline = [];
+  const canon = v => Array.isArray(v) ? '[' + v.map(canon).join(',') + ']' : v && typeof v === 'object' ? '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}' : JSON.stringify(v);
+  const frame = v => { const bytes = Buffer.from(canon(v)), n = Buffer.alloc(4); n.writeUInt32BE(bytes.length); return Buffer.concat([n, bytes]); };
+  const deliver = bytes => { const reader = readers.shift(); if (reader) reader(bytes); else queue.push(bytes); };
+  let sequence = 0;
+  function reply(request, value) {
+    const bare = { version: 1, binding, sequence: ++sequence, role: request.role, childId: request.childId, pipeId: request.pipeId, action: 'RESULT',
+      payload: { requestSequence: request.sequence, result: value } };
+    const mac = crypto.createHmac('sha256', Buffer.from(key, 'hex')).update('acceptance:bootstrap-composition:v1\0CONTROLLER:FROM_BOOTSTRAP\0' + canon(bare)).digest('hex');
+    timeline.push('RESULT:' + request.action); deliver(frame({ ...bare, mac }));
+  }
+  const proof = { proofDigest: 'e'.repeat(64), generation: 1, expiresAtMs: 9000, monotonicDeadlineMs: 9000 };
+  queue.push(frame({ version: 1, kind: 'BOOTSTRAP_INIT', binding, channelKeyHex: key, roles: map }));
+  const channel = {
+    audit: () => ({ role: 'CONTROLLER', childId: map[0].childId, pipeId: map[0].pipeId, channelKeyHex: key, binding, roles: map, command, result }),
+    read: async () => queue.length ? queue.shift() : new Promise(resolve => readers.push(resolve)),
+    async write(bytes) {
+      const v = JSON.parse(bytes.subarray(4)); sent.push(v); timeline.push(v.action);
+      if (v.action === 'ADOPT') reply(v, { kind: v.role, runId: RUN, uid: 10002, childId: v.childId, pipeId: v.pipeId, waiting: true, confined: true, attestationDigest: '9'.repeat(64) });
+      if (v.action === 'PREPARE_BROWSER') reply(v, { grantId: 'a1'.repeat(16), ...proof });
+      if (v.action === 'COMMIT_BROWSER') reply(v, { status: 'ACTIVE', generation: 1 });
+      if (v.action === 'BROWSER_FAMILY') reply(v, { members: 5, ordinal: 2, point: v.payload.point, status: 'CLEAN' });
+      if (v.action === 'APP_POLL') held.push(v);
+    } };
+  const clock = { wall: 100, mono: 100, sample() { return [this.wall, this.mono]; } };
+  const budget = { deadline: null, remaining() { if (this.deadline === null) this.deadline = clock.mono + 60000; return Math.max(0, this.deadline - clock.mono); },
+    clamp(end) { this.deadline = Math.min(this.deadline ?? end, end); } };
+  return { channel, binding, clock, budget, proof, sent, held, timeline, reply };
+}
+
+test('browser_family_request_is_serialized_with_application_pipe', async () => {
+  const c = compositionChannel();
+  const bound = await roles.bindBootstrapComposition(c.channel, c.binding, c.clock, c.budget);
+  const tx = await bound.prepareBrowser(c.proof), handle = await tx.port.activateOnce(tx.grant);
+  assert.equal(typeof handle.inspectFamily, 'function', 'the BROWSER handle has no bootstrap family inspection');
+  const reading = handle.privatePipe.read();
+  for (let turn = 0; turn < 20 && !c.held.length; turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(c.held.length, 1, 'an APP_POLL is in flight');
+  const family = handle.inspectFamily('POST_LOAD');
+  for (let turn = 0; turn < 20; turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(c.sent.some(v => v.action === 'BROWSER_FAMILY'), false, 'no BROWSER_FAMILY while the poll is in flight');
+  c.reply(c.held.shift(), { status: 'CHUNK', chunk: { streamSequence: 1, messageSequence: 1, chunkIndex: 0, final: true, bytesHex: '41' } });
+  assert.deepEqual(await reading, Buffer.from('A'));
+  assert.deepEqual({ ...(await family) }, { point: 'POST_LOAD', ordinal: 2, members: 5 });
+  const at = c.timeline.indexOf('BROWSER_FAMILY');
+  assert.ok(at > c.timeline.indexOf('RESULT:APP_POLL'), c.timeline.join(','));
+  const request = c.sent.find(v => v.action === 'BROWSER_FAMILY');
+  assert.equal(request.role, 'BROWSER'); assert.deepEqual(request.payload, { generation: 1, point: 'POST_LOAD' });
+  assert.equal(c.budget.deadline, null, 'a routine inspection never starts the shared cleanup end');
+});

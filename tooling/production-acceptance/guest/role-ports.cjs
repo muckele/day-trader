@@ -3,8 +3,21 @@
 // API exists. The injected bootstrap authority is trusted same-process code;
 // worker-authored booleans or copied handles cannot establish provenance.
 const handoffs = new WeakMap(), usedGrants = new WeakSet(), ownedChildren = new WeakSet(), ownedPipes = new WeakSet();
+// T8-11: authority.activate receives only a frozen projection of the facts the
+// authority itself verified; the caller's grant object never reaches it. Only
+// this module can map a projection back to the grant it verified.
+const projectedGrants = new WeakMap();
+const GRANT_FACTS = Object.freeze(['kind','runId','child','purpose','session','remainingMs']);
 const browserApplicationPipes = new WeakMap(), browserRequestEvidence = new WeakMap();
+// T13 I-8: the provenance brand. It holds the activateOnce handles adoptRole returns and
+// the application pipes this module adopted (from a trusted authority's BROWSER handoff, or
+// built by browserApplicationPipe). Nothing outside this module can add to it.
+const adoptedRolePorts = new WeakSet();
+function inspectAdoptedRolePort(value) { return adoptedRolePorts.has(value); }
 const kinds = Object.freeze({ BROWSER: 10002, VERIFIER: 10003 });
+// Task 16c (owner decision 2026-11-20, P76): the controller's two BROWSER family points and the ordinal each
+// returns; the bootstrap's internal LAUNCH inspection is ordinal 1. The bootstrap inspects; the worker never does.
+const FAMILY_ORDINALS = Object.freeze({ POST_LOAD: 2, FINAL: 3 });
 function fail(code) { const e = new Error(code); e.code = code; throw e; }
 function object(v) { return v !== null && (typeof v === 'object' || typeof v === 'function'); }
 function privateHandle(value) {
@@ -21,10 +34,11 @@ function same(f, expected, waiting) {
 }
 function bindRoleBootstrap(authority, runId) {
   if (typeof runId !== 'string' || !/^[0-9a-f]{32}$/.test(runId) || !authority ||
-      ['inspectHandoff','inspectGrant','activate','waitExit','stopOwned'].some(n=>typeof authority[n] !== 'function')) fail('HANDOFF_DENIED');
+      ['inspectHandoff','inspectGrant','activate','waitExit','stopOwned','inspectFamily'].some(n=>typeof authority[n] !== 'function')) fail('HANDOFF_DENIED');
   // This is a trusted embedding API, not a generic bootstrap RPC or verifier
-  // installed from incoming worker data. Capture the authority object so its
-  // current independent observations can be rechecked before/after each await.
+  // installed from incoming worker data. Capture the authority object; the
+  // facts it reports are rechecked before and after each await. Role ports do
+  // not observe the child themselves: the authority's facts are the evidence.
   return Object.freeze({audit(handoff) {
     if (!object(handoff) || handoffs.has(handoff)) fail('HANDOFF_DENIED');
     let f;
@@ -36,11 +50,17 @@ function bindRoleBootstrap(authority, runId) {
       const app=f.privatePipe.audit();
       if(!app||app.kind!=='TASK13_BROWSER_APPLICATION'||app.version!==1||app.runId!==runId||app.maxFrameBytes!==16384)fail('HANDOFF_DENIED');
       if(!browserApplicationPipes.has(f.privatePipe))browserApplicationPipes.set(f.privatePipe,{runId});
+      adoptedRolePorts.add(f.privatePipe);
     }
     ownedChildren.add(f.child); ownedPipes.add(f.privatePipe);
     handoffs.set(handoff,{authority,expected,adopted:false});
     return handoff;
   }});
+}
+// Terminal-path allowance from an embedder budget: start its shared end first
+// when it supports the terminal-start rule (C1).
+function terminalRemaining(budget) {
+  return typeof budget.startTerminal==='function'?budget.startTerminal():budget.remaining();
 }
 function adoptRole(kind, handoff) {
   if (arguments.length !== 2 || !Object.hasOwn(kinds,kind) || !object(handoff)) fail('HANDOFF_DENIED');
@@ -54,7 +74,7 @@ function adoptRole(kind, handoff) {
   async function exit(operation, deadline, count) {
     const budget=r.authority.cleanupBudget;
     if (count !== 1 || !Number.isSafeInteger(deadline) || deadline < (budget ? 0 : 1) || deadline > 1200000) fail('EXIT_DENIED');
-    if (budget) deadline=Math.min(deadline,budget.remaining());
+    if (budget) deadline=Math.min(deadline,terminalRemaining(budget));
     let result;
     try { result=await r.authority[operation](r.expected.child,deadline); } catch { fail('EXIT_DENIED'); }
     if (!result || typeof result !== 'object' || Reflect.ownKeys(result).length !== 3 ||
@@ -66,7 +86,7 @@ function adoptRole(kind, handoff) {
     async waitExit(deadline) { return exit('waitExit',deadline,arguments.length); },
     async stopOwned(deadline) { return exit('stopOwned',deadline,arguments.length); }});
   let consumed=false;
-  return privateHandle({kind, async activateOnce(grant) {
+  const port=privateHandle({kind, async activateOnce(grant) {
     if (consumed) fail('ACTIVATION_DENIED');
     consumed=true; // Consume synchronously before any callback or await.
     try {
@@ -76,23 +96,50 @@ function adoptRole(kind, handoff) {
       usedGrants.add(grant);
       current('ACTIVATION_DENIED');
       const g=r.authority.inspectGrant(grant);
-      if (!g || g.kind !== kind || g.runId !== r.expected.runId || g.child !== r.expected.child ||
+      if (!object(g) || Reflect.ownKeys(g).length !== GRANT_FACTS.length || GRANT_FACTS.some(k=>!Object.hasOwn(g,k)) ||
+          g.kind !== kind || g.runId !== r.expected.runId || g.child !== r.expected.child ||
           g.purpose !== (kind === 'BROWSER' ? 'CONFINEMENT_PROVED' : 'PRIOR_SESSION') ||
-          (kind === 'VERIFIER' ? !object(g.session) : g.session !== null)) fail('ACTIVATION_DENIED');
-      await r.authority.activate(r.expected.child,grant);
+          (kind === 'VERIFIER' ? !object(g.session) : g.session !== null) ||
+          !Number.isSafeInteger(g.remainingMs) || g.remainingMs < 1 || g.remainingMs > 2147483647) fail('ACTIVATION_DENIED');
+      const projection=Object.freeze({kind:g.kind,runId:g.runId,child:g.child,purpose:g.purpose,session:g.session});
+      projectedGrants.set(projection,grant);
+      // P5 (C1): bounded by the activation/run deadline the authority reports,
+      // never by the shared cleanup budget, which only the stop path below uses.
+      let timer;
+      try {
+        await Promise.race([Promise.resolve().then(()=>r.authority.activate(r.expected.child,projection)),
+          new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('ACTIVATION_DENIED'),{code:'ACTIVATION_DENIED'})),g.remainingMs);})]);
+      } finally { clearTimeout(timer); }
       current('ACTIVATION_DENIED',false);
     } catch (cause) {
       let stopped;
-      try { stopped=await cleanup.stopOwned(r.authority.cleanupBudget ? r.authority.cleanupBudget.remaining() : 120000); } catch { /* explicitly uncertain below */ }
+      try { stopped=await cleanup.stopOwned(r.authority.cleanupBudget ? terminalRemaining(r.authority.cleanupBudget) : 120000); } catch { /* explicitly uncertain below */ }
       if (!stopped || !['STOPPED','EXITED'].includes(stopped.status)) {
         const e=new Error('CLEANUP_UNCERTAIN',{cause}); e.code='CLEANUP_UNCERTAIN'; e.cleanup=cleanup; throw e;
       }
       const e=new Error('ACTIVATION_DENIED',{cause});e.code='ACTIVATION_DENIED';throw e;
     }
-    return privateHandle({privatePipe:r.expected.privatePipe,
-      cleanupRemaining(){const budget=r.authority.cleanupBudget;return budget?budget.remaining():120000;},
-      waitExit:cleanup.waitExit, stopOwned:cleanup.stopOwned});
+    const activated={privatePipe:r.expected.privatePipe,
+      // Called only on browser close/stop paths (terminal).
+      cleanupRemaining(){const budget=r.authority.cleanupBudget;return budget?terminalRemaining(budget):120000;},
+      waitExit:cleanup.waitExit, stopOwned:cleanup.stopOwned};
+    // Task 16c (P76, C9): the BROWSER handle asks the bootstrap to inspect the family at POST_LOAD or FINAL and
+    // accepts only its exact clean result {point, ordinal, status:'CLEAN', members}. Anything else is ROLE_INVALID.
+    if(kind==='BROWSER')activated.inspectFamily=async function(point){
+      if(arguments.length!==1||!Object.hasOwn(FAMILY_ORDINALS,point))fail('ROLE_INVALID');
+      let value;
+      try{current('ROLE_INVALID',false);value=await r.authority.inspectFamily(r.expected.child,point);current('ROLE_INVALID',false);}
+      catch(cause){const e=new Error('ROLE_INVALID',{cause});e.code='ROLE_INVALID';throw e;}
+      if(!value||typeof value!=='object'||Array.isArray(value)||Reflect.ownKeys(value).length!==4||
+          !['point','ordinal','status','members'].every(key=>Object.hasOwn(value,key))||value.point!==point||
+          value.ordinal!==FAMILY_ORDINALS[point]||value.status!=='CLEAN'||!Number.isSafeInteger(value.members)||
+          value.members<2||value.members>256)fail('ROLE_INVALID');
+      return Object.freeze({point,ordinal:value.ordinal,members:value.members});
+    };
+    return privateHandle(activated);
   }});
+  adoptedRolePorts.add(port);
+  return port;
 }
 // Composition v1 is a finite original-pipe protocol. These constructors are
 // trusted embedding boundaries; no wire record can install an authority, pipe,
@@ -170,38 +217,54 @@ function clockReader(clock) {
     catch{failed=true;fail('CLOCK');}
   };
 }
+// One shared cleanup end per side (C1). It is allocated only by startTerminal()
+// at the first terminal event (stop, cancel, failure, drift or expiry); routine
+// work never reads or starts it, and a later start never moves it.
 function cleanupBoundary(budget,sample) {
   if(!budget||typeof budget.remaining!=='function'||typeof budget.clamp!=='function')fail('CLEANUP_UNCERTAIN');
-  let end=null,realEnd=null,nonblocking=false;const busy=new Map();
+  let end=null,realEnd=null,nonblocking=false,started=false;const busy=new Map();
   function revokeWait() {
-    nonblocking=true;end=0;realEnd=0;
+    started=true;nonblocking=true;end=0;realEnd=0;
     // Admission clock loss must never disable the retained cleanup capability.
     // Zero is absolute, so even a later clock recovery cannot renew this end.
     try{budget.clamp(0);}catch{}
     return 0;
   }
+  function startTerminal() {
+    if(started)return remaining();
+    started=true;
+    const real=Number(process.hrtime.bigint()/1000000n);
+    try{
+      const now=sample()[1];
+      const allowance=integer(typeof budget.startTerminal==='function'?budget.startTerminal():budget.remaining(),0);
+      end=Math.min(now+Math.min(60000,allowance),integer(budget.deadline,0));
+      realEnd=real+Math.max(0,end-now);
+      return Math.max(0,Math.min(end-now,realEnd-real,allowance));
+    }catch{return revokeWait();}
+  }
   function remaining(delivered) {
+    if(!started)fail('CLEANUP_NOT_STARTED');
     if(delivered!==undefined)integer(delivered,0);
     if(nonblocking)return 0;
     const real=Number(process.hrtime.bigint()/1000000n);
     try{
       const now=sample()[1];
-      if(delivered!==undefined){budget.clamp(delivered);end=Math.min(end??delivered,delivered);}
+      if(delivered!==undefined){budget.clamp(delivered);end=Math.min(end,delivered);}
       const allowance=integer(budget.remaining(),0);
-      if(end===null)end=now+Math.min(60000,allowance);
       end=Math.min(end,integer(budget.deadline,0));
-      realEnd=Math.min(realEnd??Infinity,real+Math.max(0,end-now));
+      realEnd=Math.min(realEnd,real+Math.max(0,end-now));
       return Math.max(0,Math.min(end-now,realEnd-real,allowance));
     }catch{return revokeWait();}
   }
   async function call(owner,fn,requested=60000) {
+    startTerminal();
     if(busy.has(owner))fail('CLEANUP_UNCERTAIN');const ms=Math.min(integer(requested,0),remaining());
     let timer;const pending=Promise.resolve().then(()=>fn(ms));busy.set(owner,pending);
     pending.finally(()=>{if(busy.get(owner)===pending)busy.delete(owner);}).catch(()=>{});
     try {return await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('CLEANUP_UNCERTAIN'),{code:'CLEANUP_UNCERTAIN'})),ms);})]);}
     finally{clearTimeout(timer);}
   }
-  return {remaining,call,revokeWait,get deadline(){remaining();return end;}};
+  return {startTerminal,remaining,call,revokeWait,get deadline(){remaining();return end;}};
 }
 function browserApplicationPipe(runId,sendChunk,receiveChunk,isCurrent) {
   let outgoingStream=0,outgoingMessage=0,incomingStream=0,incomingMessage=0,writing=false,reading=false;
@@ -232,18 +295,20 @@ function browserApplicationPipe(runId,sendChunk,receiveChunk,isCurrent) {
         incomingStream++;index++;parts.push(bytes);if(value.final){incomingMessage++;return Buffer.concat(parts,size);}
       }}finally{reading=false;}
     }};
-  const handle=privateHandle(pipe);browserApplicationPipes.set(handle,{runId});return handle;
+  const handle=privateHandle(pipe);browserApplicationPipes.set(handle,{runId});adoptedRolePorts.add(handle);return handle;
 }
 function claimBrowserRequestEvidence(pipe,bytes,payload) {
   const state=browserApplicationPipes.get(pipe);
   if(!state||!Buffer.isBuffer(bytes)||!payload||typeof payload!=='object')fail('IDENTITY_MISMATCH');
   const frame=decode(bytes),keys=Reflect.ownKeys(frame).sort().join(',');
-  if(!['mac,payload,runId,sequence,type,version','payload,runId,sequence,type,version'].includes(keys)||
+  // Only the Task 13 application frame form; the MAC'd form left with browser.cjs's MAC path (P28).
+  if(keys!=='payload,runId,sequence,type,version'||
       frame.version!==1||frame.runId!==state.runId||frame.type!=='ROUTE'||canonical(frame.payload)!==canonical(payload))fail('IDENTITY_MISMATCH');
   exact(payload,['runId','requestId','sequence','method','url','headers','byteLength','schema']);
   if(payload.runId!==state.runId||typeof payload.requestId!=='string'||!integer(payload.sequence)||
       typeof payload.method!=='string'||typeof payload.url!=='string'||!Array.isArray(payload.headers)||
-      !integer(payload.byteLength,0)||!['LOGIN_JSON','ABSENT'].includes(payload.schema))fail('IDENTITY_MISMATCH');
+      // integer() throws on an invalid length; 0 (no body) is valid, so its result is not tested for truthiness.
+      integer(payload.byteLength,0)<0||!['LOGIN_JSON','ABSENT'].includes(payload.schema))fail('IDENTITY_MISMATCH');
   const evidence=privateHandle({});browserRequestEvidence.set(evidence,immutable(JSON.parse(canonical(payload))));return evidence;
 }
 function inspectBrowserRequestEvidence(evidence) {
@@ -295,7 +360,7 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
     if(reading)return;reading=true;
     try{while(pending.size){const f=await wire.receive();exact(f.payload,['requestSequence','result']);const slot=pending.get(f.payload.requestSequence);
       if(!slot||f.action!=='RESULT'||f.role!==slot.role)fail('FRAME_DENIED');pending.delete(f.payload.requestSequence);slot.resolve(f.payload.result);}}
-    catch(e){terminal=true;if(e.code==='CHANNEL_EOF')cleanup.revokeWait();else cleanup.remaining();for(const slot of pending.values())slot.reject(e);pending.clear();}
+    catch(e){terminal=true;if(e.code==='CHANNEL_EOF')cleanup.revokeWait();else cleanup.startTerminal();for(const slot of pending.values())slot.reject(e);pending.clear();}
     finally{reading=false;}
   }
   async function request(role,action,payload,cleaning=false) {
@@ -315,9 +380,18 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
   }
   const authority={cleanupBudget:cleanup,
     inspectHandoff(h){current();const r=local.get(h);return r?{kind:r.kind,runId:binding.runId,uid:kinds[r.kind],child:r.child,privatePipe:r.pipe,waiting:!r.active,confined:true}:null;},
-    inspectGrant(g){const r=grants.get(g);if(!r)return null;current(r.proof);return {kind:'BROWSER',runId:binding.runId,child:r.child,purpose:'CONFINEMENT_PROVED',session:null};},
-    async activate(child,g){const r=grants.get(g);if(!r||r.child!==child||r.used)fail('ACTIVATION_DENIED');r.used=true;current(r.proof);const result=await request('BROWSER','COMMIT_BROWSER',{grantId:r.grantId,generation:r.proof.generation});current(r.proof);exact(result,['status','generation']);if(result.status!=='ACTIVE'||result.generation!==1)fail('ACTIVATION_DENIED');r.active=true;},
+    inspectGrant(g){const r=grants.get(g);if(!r)return null;current(r.proof);const [wall,mono]=sample();
+      // P5: the remaining activation time is the earliest of the proof's guest
+      // monotonic deadline, its wall expiry and the run binding's expiry.
+      const remainingMs=Math.min(r.proof.monotonicDeadlineMs-mono,r.proof.expiresAtMs-wall,binding.expiresAtMs-wall);
+      return {kind:'BROWSER',runId:binding.runId,child:r.child,purpose:'CONFINEMENT_PROVED',session:null,remainingMs};},
+    async activate(child,p){const g=projectedGrants.get(p),r=g&&grants.get(g);if(!r||r.child!==child||r.used)fail('ACTIVATION_DENIED');r.used=true;current(r.proof);const result=await request('BROWSER','COMMIT_BROWSER',{grantId:r.grantId,generation:r.proof.generation});current(r.proof);exact(result,['status','generation']);if(result.status!=='ACTIVE'||result.generation!==1)fail('ACTIVATION_DENIED');r.active=true;},
     async stopOwned(child,ms){const r=[...local.values()].find(r=>r.child===child);if(!r)fail('EXIT_DENIED');return {...await stop(r.kind,ms),child};},
+    // Task 16c (P76): the fixed BROWSER_FAMILY request on the controller channel, through appOperation so it never
+    // overlaps APP_POLL or APP_WRITE (request admits one in flight). Only for the local, active BROWSER record.
+    async inspectFamily(child,point){const r=[...local.values()].find(r=>r.child===child);
+      if(!r||r.kind!=='BROWSER'||!r.active)fail('AUTHORITY_LOST');if(!Object.hasOwn(FAMILY_ORDINALS,point))fail('FRAME_DENIED');
+      return appOperation(()=>request('BROWSER','BROWSER_FAMILY',{generation:1,point}));},
     async waitExit(child,ms){const r=[...local.values()].find(r=>r.child===child);if(!r)fail('EXIT_DENIED');return {...await stop(r.kind,ms,'WAIT_EXIT'),child};}};
   const bootstrap=bindRoleBootstrap(authority,binding.runId), adopted=new Map();
   const applicationPipe=browserApplicationPipe(binding.runId,
@@ -342,8 +416,8 @@ async function bindBootstrapComposition(channel,input,clock,cleanupBudget) {
       if(['proofDigest','generation','expiresAtMs','monotonicDeadlineMs'].some(k=>result[k]!==p[k]))fail('AUTHORITY_LOST');
       const grant=privateHandle({});Object.assign(entry.r,{proof:p,grantId:result.grantId,used:false});grants.set(grant,entry.r);
       const tx=new ControllerBrowserTransaction(entry.port,grant,ms=>stop('BROWSER',ms),CONTROLLER_TRANSACTION_SEAL);transactions.set(tx,entry.r);return tx;
-    }catch(e){terminal=true;try{const receipt=await stop('BROWSER',cleanup.remaining());if(!['STOPPED','EXITED'].includes(receipt.status))fail('CLEANUP_UNCERTAIN');}catch{e.cleanup=privateHandle({stopOwned:ms=>stop('BROWSER',ms)});}throw e;}
-  },async cancel(){terminal=true;const result=await request('BROWSER','CANCEL',{generation:1,cleanupEndsAtMonotonicMs:cleanup.deadline},true);exact(result,['status','generation']);if(result.status!=='CANCELLED'||result.generation!==1)fail('FRAME_DENIED');return result;},stopOwned:ms=>stop('BROWSER',ms)});
+    }catch(e){terminal=true;try{const receipt=await stop('BROWSER',cleanup.startTerminal());if(!['STOPPED','EXITED'].includes(receipt.status))fail('CLEANUP_UNCERTAIN');}catch{e.cleanup=privateHandle({stopOwned:ms=>stop('BROWSER',ms)});}throw e;}
+  },async cancel(){terminal=true;cleanup.startTerminal();const result=await request('BROWSER','CANCEL',{generation:1,cleanupEndsAtMonotonicMs:cleanup.deadline},true);exact(result,['status','generation']);if(result.status!=='CANCELLED'||result.generation!==1)fail('FRAME_DENIED');return result;},stopOwned:ms=>stop('BROWSER',ms)});
 }
 
 async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
@@ -360,7 +434,7 @@ async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
       terminalRecorded=true;
       // The reported terminal instant also fixes the local absolute end. A
       // later cleanup sample can spend this budget, never start it again.
-      try{firstTerminalAt=sample()[1];cleanup.remaining(firstTerminalAt+60000);}
+      try{firstTerminalAt=sample()[1];cleanup.startTerminal();cleanup.remaining(firstTerminalAt+60000);}
       catch{cleanup.revokeWait();}
     }
   }
@@ -432,4 +506,4 @@ async function bindBrowserWorkerChannel(channel,expected,clock,cleanupBudget) {
     }catch(e){return failed(e,requestSequence);}
   },async cancel(record){try{cancel(wire.read(record));await cleanup.call(wire,acknowledgeCancel);return await stop(cleanup.remaining());}catch(e){return failed(e);}},stopOwned:stop});
 }
-module.exports = Object.freeze({bindRoleBootstrap,adoptRole,bindBootstrapComposition,bindBrowserWorkerChannel,claimBrowserRequestEvidence,inspectBrowserRequestEvidence});
+module.exports = Object.freeze({bindRoleBootstrap,adoptRole,inspectAdoptedRolePort,bindBootstrapComposition,bindBrowserWorkerChannel,claimBrowserRequestEvidence,inspectBrowserRequestEvidence,cleanupBoundary});

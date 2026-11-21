@@ -25,7 +25,7 @@ function pythonTranscript(){
   const expected=['controllerInit','workerInit','controllerAdopt','controllerAdoptResult',
     'controllerPrepare','browserPrepare','browserPrepared','controllerPrepareResult',
     'controllerCommit','browserCommit','browserRefresh','browserCurrent','browserStarted',
-    'controllerCommitResult'];
+    'controllerCommitResult','controllerFamily','controllerFamilyResult'];
   const cancelled=['controllerInit','workerInit','controllerAdopt','controllerAdoptResult',
     'controllerPrepare','browserPrepare','browserPrepared','controllerPrepareResult',
     'controllerCancel','browserCancel','browserCancelled','controllerCancelResult'];
@@ -56,7 +56,7 @@ function fixture(options={}) {
   const proof=transcript?Object.fromEntries(Object.entries(preparePayload).filter(([key])=>key!=='grantId')):
     {proofDigest:'e'.repeat(64),generation:1,expiresAtMs:9000,monotonicDeadlineMs:9000};
   const checkpoint=transcript&&transcript.frames.browserCurrent?decoded('browserCurrent').payload.eventCheckpoint:
-    {binding:runBinding,generation:1,sequence:1,sourceIdentity:'f'.repeat(32),lostCount:0};
+    {binding:runBinding,generation:1,sequence:options.checkpointSequence??1,sourceIdentity:'f'.repeat(32),lostCount:0};
   const grantId=transcript?preparePayload.grantId:'a1'.repeat(16);
   const commitId=transcript&&transcript.frames.browserCommit?decoded('browserCommit').payload.commitId:'b2'.repeat(16);
   const keyC=transcript?initC.channelKeyHex:'c3'.repeat(32),keyW=transcript?initW.channelKeyHex:'d4'.repeat(32);
@@ -76,19 +76,19 @@ function fixture(options={}) {
     async write(bytes){const v=JSON.parse(bytes.subarray(4));const unsigned={...v};delete unsigned.mac;assert.equal(v.mac,mac(unsigned,keyW,'BROWSER','TO_BOOTSTRAP'));
       if(transcript){const names={PREPARED:'browserPrepared',REFRESH:'browserRefresh',STARTED:'browserStarted',CANCELLED:'browserCancelled'};assert.deepEqual(bytes,recorded(names[v.action]));}
       if(v.action==='PREPARED'){reservationId=v.payload.reservationId;hooks.prepared?.(f);}
-      if(v.action==='REFRESH'){hooks.refresh?.(f);if(transcript){if(options.cancelAt==='REFRESH')await f.cancelFromController();else if(transcript.frames.browserCurrent)queue.push(recorded('browserCurrent'));hooks.current?.(f);}else{deliver('CURRENT',{requestSequence:v.sequence,grantId,reservationId,commitId,...proof,eventCheckpoint:checkpoint});hooks.current?.(f);}}
+      if(v.action==='REFRESH'){hooks.refresh?.(f);if(transcript){if(options.cancelAt==='REFRESH')await f.cancelFromController();else if(transcript.frames.browserCurrent)queue.push(recorded('browserCurrent'));hooks.current?.(f);}else{const current={requestSequence:v.sequence,grantId,reservationId,commitId,...proof,eventCheckpoint:checkpoint};deliver('CURRENT',options.current?options.current(current):current);hooks.current?.(f);}}
       if(v.action==='STARTED')hooks.started?.(f);
       if(v.action==='APP_CHUNK')workerAppChunks.push(v.payload);
     },
     drain(){hooks.drain?.(f);return pending.splice(0);},
-    effectFence(value){assert.equal(value.sourceIdentity,checkpoint.sourceIdentity);hooks.fence?.(f);return options.fence===false?null:checkpoint;},
+    effectFence(value){assert.equal(value.sourceIdentity,checkpoint.sourceIdentity);hooks.fence?.(f);return options.fence===false?null:options.fenceValue?options.fenceValue(checkpoint):checkpoint;},
     stopOwned:async remaining=>{stops.push(['worker-family',remaining]);return {status:'STOPPED',runId:runBinding.runId};}};
   queue.push(transcript?recorded('workerInit'):frame({version:1,kind:'BROWSER_WORKER_INIT',binding:runBinding,...roleMap[1],channelKeyHex:keyW}));
   const controllerQueue=[transcript?recorded('controllerInit'):frame({version:1,kind:'BOOTSTRAP_INIT',binding:runBinding,channelKeyHex:keyC,roles:roleMap})];
   const controllerChannel={audit:()=>controllerFacts,read:async()=>controllerQueue.shift(),
     async write(bytes){const v=JSON.parse(bytes.subarray(4));const unsigned={...v};delete unsigned.mac;assert.equal(v.mac,mac(unsigned,keyC,'CONTROLLER','TO_BOOTSTRAP'));
       let result,recorded;
-      if(transcript){const names={ADOPT:'controllerAdopt',PREPARE_BROWSER:'controllerPrepare',COMMIT_BROWSER:'controllerCommit',CANCEL:'controllerCancel'};assert.deepEqual(bytes,Buffer.from(transcript.frames[names[v.action]],'hex'));}
+      if(transcript){const names={ADOPT:'controllerAdopt',PREPARE_BROWSER:'controllerPrepare',COMMIT_BROWSER:'controllerCommit',CANCEL:'controllerCancel',BROWSER_FAMILY:'controllerFamily'};assert.deepEqual(bytes,Buffer.from(transcript.frames[names[v.action]],'hex'));}
       if(v.action==='ADOPT') {result={kind:v.role,runId:runBinding.runId,uid:v.role==='BROWSER'?10002:10003,childId:v.childId,pipeId:v.pipeId,waiting:true,confined:true,attestationDigest:'9'.repeat(64)};if(transcript)recorded=Buffer.from(transcript.frames.controllerAdoptResult,'hex');}
       if(v.action==='PREPARE_BROWSER') {const browserConfig=v.payload.browserConfig;prepareBytes=transcript?Buffer.from(transcript.frames.browserPrepare,'hex'):deliver('PREPARE',{grantId,...proof,...(browserConfig===undefined?{}:{browserConfig})});if(transcript)workerSeq=1;reservation=await workerBinding.prepare(prepareBytes);if(!transcript)queue.shift();result={grantId,...proof};hooks.result?.(result,f);if(transcript)recorded=Buffer.from(transcript.frames.controllerPrepareResult,'hex');}
       if(v.action==='COMMIT_BROWSER') {if(transcript)queue.push(Buffer.from(transcript.frames.browserCommit,'hex'));else deliver('COMMIT',{grantId,reservationId,commitId,generation:1});workerOutcome=await workerBinding.commitFixedBrowserLaunch(reservation,()=>{launches.push(1);const owner={stopOwned:async remaining=>{stops.push(['browser',remaining]);return {status:'STOPPED',runId:runBinding.runId};}};return hooks.launch?hooks.launch(f,owner):owner;});result={status:'ACTIVE',generation:1};if(transcript?.frames.controllerCommitResult)recorded=Buffer.from(transcript.frames.controllerCommitResult,'hex');}
@@ -96,6 +96,8 @@ function fixture(options={}) {
       if(v.action==='CANCEL'){if(transcript){await workerBinding.cancel(Buffer.from(transcript.frames.browserCancel,'hex'));recorded=Buffer.from(transcript.frames.controllerCancelResult,'hex');}else f.cancel();result={status:'CANCELLED',generation:1};}
       if(v.action==='APP_WRITE'){deliver('APP_CHUNK',v.payload);result={acceptedStreamSequence:v.payload.streamSequence};}
       if(v.action==='APP_POLL')result=workerAppChunks.length?{status:'CHUNK',chunk:workerAppChunks.shift()}:{status:'EMPTY'};
+      // Task 16c (P76): the bootstrap's fixed BROWSER_FAMILY result (Python-built in a transcript).
+      if(v.action==='BROWSER_FAMILY'){result={members:5,ordinal:v.payload.point==='POST_LOAD'?2:3,point:v.payload.point,status:'CLEAN'};if(transcript)recorded=Buffer.from(transcript.frames.controllerFamilyResult,'hex');}
       if(recorded){controllerSeq=JSON.parse(recorded.subarray(4)).sequence;controllerQueue.push(recorded);}
       else controllerQueue.push(make('CONTROLLER',keyC,++controllerSeq,'RESULT',{requestSequence:v.sequence,result},roleMap.find(r=>r.role===v.role)));
     }};
@@ -105,6 +107,7 @@ function fixture(options={}) {
   }
   const f={controller,worker,clock,proof,checkpoint,stops,launches,workerFacts,controllerFacts,workerChannel,controllerChannel,
     cancelRecord(){return cancellationRecord();},
+    deliverCommit(){return deliver('COMMIT',{grantId,reservationId,commitId,generation:1});},
     cancel(){pending.push(cancellationRecord());},
     async cancelFromController(){
       if(!controllerCancellation)controllerCancellation=this.bound.cancel();
@@ -112,7 +115,7 @@ function fixture(options={}) {
     },
     expire(){clock.mono=9000;},
     get reservation(){return reservation;},get outcome(){return workerOutcome;},get prepareBytes(){return prepareBytes;},
-    async init(){assert.equal(typeof worker.bindBrowserWorkerChannel,'function','separate worker launch authority is absent');workerBinding=await worker.bindBrowserWorkerChannel(workerChannel,workerFacts,clock,budget(clock));this.workerBinding=workerBinding;this.bound=await controller.bindBootstrapComposition(controllerChannel,runBinding,clock,budget(clock));return this;}};
+    async init(){assert.equal(typeof worker.bindBrowserWorkerChannel,'function','separate worker launch authority is absent');this.workerBudget=budget(clock);this.controllerBudget=budget(clock);workerBinding=await worker.bindBrowserWorkerChannel(workerChannel,workerFacts,clock,this.workerBudget);this.workerBinding=workerBinding;this.bound=await controller.bindBootstrapComposition(controllerChannel,runBinding,clock,this.controllerBudget);return this;}};
   return f;
 }
 
@@ -120,6 +123,51 @@ test('v1_controller_and_worker_nominal_stores_are_disjoint',async()=>{
   const f=await fixture().init(), tx=await f.bound.prepareBrowser(f.proof);
   await assert.rejects(f.workerBinding.commitFixedBrowserLaunch(tx,()=>{throw Error('foreign launch');}));
   assert.equal(f.launches.length,0);
+  // compB M-6: two module instances with two stores. A nominal object minted in one is unknown to the other.
+  assert.notEqual(f.controller,f.worker);
+  const g=await fixture().init(),granted=await g.bound.prepareBrowser(g.proof),handle=await granted.port.activateOnce(granted.grant);
+  const payload={runId:binding.runId,requestId:'r1',sequence:1,method:'GET',url:'https://frontend.example/',headers:[],byteLength:2,schema:'ABSENT'};
+  const bytes=frame({version:1,runId:binding.runId,sequence:1,type:'ROUTE',payload});
+  const evidence=g.controller.claimBrowserRequestEvidence(handle.privatePipe,bytes,payload);
+  assert.equal(g.controller.inspectBrowserRequestEvidence(evidence).requestId,'r1');
+  assert.equal(g.worker.inspectBrowserRequestEvidence(evidence),null,'controller evidence is unknown to the worker store');
+  assert.throws(()=>g.controller.claimBrowserRequestEvidence(g.outcome.applicationPipe,bytes,payload),/IDENTITY_MISMATCH/);
+  assert.equal(g.worker.claimBrowserRequestEvidence(g.outcome.applicationPipe,bytes,payload)!==null,true);
+});
+test('v1_second_commit_on_one_reservation_launches_nothing',async()=>{
+  // CB-I6 (J1+J6): the worker reservation and the final guard's effect latch are each one-use. A second commit on
+  // one reservation records zero launches, whether or not a second COMMIT frame arrives.
+  for(const second of ['without-frame','with-frame']){
+    const f=await fixture().init(),tx=await f.bound.prepareBrowser(f.proof);
+    await tx.port.activateOnce(tx.grant);assert.equal(f.launches.length,1,second);
+    if(second==='with-frame')f.deliverCommit();
+    let launches=0,guard;
+    const attempt=f.workerBinding.commitFixedBrowserLaunch(f.reservation,()=>{launches++;
+      return {stopOwned:async()=>({status:'STOPPED',runId:binding.runId})};});
+    const outcome=await Promise.race([attempt.then(()=>'launched',()=>'rejected'),
+      new Promise(resolve=>{guard=setTimeout(()=>resolve('pending'),200);})]);
+    clearTimeout(guard);
+    assert.equal(outcome,'rejected',second);assert.equal(launches,0,second);assert.equal(f.launches.length,1,second);
+  }
+});
+test('v1_fence_from_foreign_source_launches_nothing',async()=>{
+  // CB-I6 (J3): the final effect fence must come from the CURRENT checkpoint's own event source.
+  const f=await fixture({fenceValue:c=>({...c,sourceIdentity:'0'.repeat(32)})}).init(),tx=await f.bound.prepareBrowser(f.proof);
+  await assert.rejects(tx.port.activateOnce(tx.grant));assert.equal(f.launches.length,0);
+});
+test('v1_fence_with_lower_sequence_or_changed_lost_count_launches_nothing',async()=>{
+  for(const [name,change] of [['lower-sequence',c=>({...c,sequence:c.sequence-1})],['lost-count',c=>({...c,lostCount:1})]]){
+    const f=await fixture({checkpointSequence:5,fenceValue:change}).init(),tx=await f.bound.prepareBrowser(f.proof);
+    await assert.rejects(tx.port.activateOnce(tx.grant));assert.equal(f.launches.length,0,name);
+  }
+  // Control: a later fence from the same source, with no loss, launches once.
+  const f=await fixture({checkpointSequence:5,fenceValue:c=>({...c,sequence:c.sequence+1})}).init(),tx=await f.bound.prepareBrowser(f.proof);
+  await tx.port.activateOnce(tx.grant);assert.equal(f.launches.length,1);
+});
+test('v1_current_with_foreign_proof_digest_launches_nothing',async()=>{
+  // CB-I6 (J9): the worker compares the CURRENT proofDigest with its own reservation's proof.
+  const f=await fixture({current:c=>({...c,proofDigest:'0'.repeat(64)})}).init(),tx=await f.bound.prepareBrowser(f.proof);
+  await assert.rejects(tx.port.activateOnce(tx.grant));assert.equal(f.launches.length,0);
 });
 test('v1_original_child_pipe_required_for_nominal_adoption',async()=>{
   const f=await fixture().init();f.controllerFacts.command={};
@@ -352,6 +400,22 @@ test('v1_unrepresentable_terminal_end_only_allows_nonblocking_cleanup',async()=>
   assert.equal(f.stops.find(v=>v[0]==='worker-family')[1],0,'an unsafe absolute end must not allocate a fresh window');
 });
 
+test('v1_cleanup_end_starts_at_first_terminal_event_only',async()=>{
+  const roles=context(),clock={wall:100,mono:100,sample(){return [this.wall,this.mono];}},inner=budget(clock);
+  assert.equal(typeof roles.cleanupBoundary,'function');
+  const boundary=roles.cleanupBoundary(inner,()=>clock.sample());
+  assert.throws(()=>boundary.remaining(),/CLEANUP_NOT_STARTED/);
+  assert.equal(inner.deadline,null,'a routine read must not arm the embedder budget');
+  const t0=clock.mono;assert.equal(boundary.startTerminal(),60000);
+  assert.equal(boundary.deadline,t0+60000);
+  clock.mono=t0+61000;assert.equal(boundary.remaining(),0);
+  boundary.startTerminal();assert.equal(boundary.deadline,t0+60000,'a second start never moves the end');
+  // A complete routine prepare/activate never starts either side's shared end.
+  const f=await fixture().init(),tx=await f.bound.prepareBrowser(f.proof);await tx.port.activateOnce(tx.grant);
+  assert.equal(f.launches.length,1);
+  assert.equal(f.controllerBudget.deadline,null);assert.equal(f.workerBudget.deadline,null);
+});
+
 test('v1_python_frames_adopt_original_role_and_guard_launch_once',async()=>{
   const transcript=pythonTranscript();
   if(transcript){
@@ -382,8 +446,8 @@ test('v1_python_expiry_between_worker_hops_denies_launch',async()=>{
   }
 });
 
-test('v1_python_authenticated_cancel_at_each_forwarder_window_is_terminal',async()=>{
-  const transcript=pythonTranscript();if(!transcript)return;
+test('v1_python_authenticated_cancel_at_each_forwarder_window_is_terminal',async t=>{
+  const transcript=pythonTranscript();if(!transcript){t.skip('BOOTSTRAP_V1_INPUT absent');return;}
   for(const hop of ['PREPARED','REFRESH','CURRENT']){
     const f=await fixture({transcript:transcript.cancelVariants[hop],
                            cancelAt:hop==='PREPARED'?undefined:hop}).init();
@@ -395,8 +459,8 @@ test('v1_python_authenticated_cancel_at_each_forwarder_window_is_terminal',async
   }
 });
 
-test('v1_python_transcript_each_hop_substitution_and_replay_are_denied',async()=>{
-  const transcript=pythonTranscript();if(!transcript)return;
+test('v1_python_transcript_each_hop_substitution_and_replay_are_denied',async t=>{
+  const transcript=pythonTranscript();if(!transcript){t.skip('BOOTSTRAP_V1_INPUT absent');return;}
   for(const variant of ['success','PREPARED','REFRESH','CURRENT']){
     const base=variant==='success'?transcript:transcript.cancelVariants[variant];
     for(const name of base.order){
@@ -408,7 +472,7 @@ test('v1_python_transcript_each_hop_substitution_and_replay_are_denied',async()=
         const f=fixture({transcript:changed,
           cancelAt:['REFRESH','CURRENT'].includes(variant)?variant:undefined});await f.init();
         const tx=await f.bound.prepareBrowser(f.proof);
-        if(variant==='success')await tx.port.activateOnce(tx.grant);
+        if(variant==='success'){const handle=await tx.port.activateOnce(tx.grant);await handle.inspectFamily('POST_LOAD');}
         else if(variant==='PREPARED')await f.bound.cancel();
         else await tx.port.activateOnce(tx.grant);
         launches=f.launches.length;
@@ -419,4 +483,25 @@ test('v1_python_transcript_each_hop_substitution_and_replay_are_denied',async()=
   const f=await fixture({transcript}).init(),tx=await f.bound.prepareBrowser(f.proof);
   await assert.rejects(f.workerBinding.prepare(f.prepareBytes));
   await assert.rejects(tx.port.activateOnce(tx.grant));assert.equal(f.launches.length,0);
+});
+
+test('v1_python_browser_family_result_accepted_and_bound',async t=>{
+  // Task 16c (owner decision 2026-11-20, P76): the controller's POST_LOAD request and the bootstrap's fixed RESULT.
+  // Without a transcript the JS fixture answers; with one, the Python-built pair must be the exact bytes.
+  const transcript=pythonTranscript();
+  const f=await fixture({transcript}).init(),tx=await f.bound.prepareBrowser(f.proof),handle=await tx.port.activateOnce(tx.grant);
+  assert.equal(typeof handle.inspectFamily,'function','the BROWSER handle has no bootstrap family inspection');
+  assert.deepEqual({...await handle.inspectFamily('POST_LOAD')},{point:'POST_LOAD',ordinal:2,members:5});
+  if(!transcript){t.diagnostic('BOOTSTRAP_V1_INPUT absent: the Python pair is not checked');return;}
+  assert.deepEqual(JSON.parse(Buffer.from(transcript.frames.controllerFamily,'hex').subarray(4)).payload,{generation:1,point:'POST_LOAD'});
+  assert.deepEqual(JSON.parse(Buffer.from(transcript.frames.controllerFamilyResult,'hex').subarray(4)).payload.result,
+    {members:5,ordinal:2,point:'POST_LOAD',status:'CLEAN'});
+  // One flipped byte in either frame is rejected by the real role-ports.
+  for(const name of ['controllerFamily','controllerFamilyResult']){
+    const changed=JSON.parse(JSON.stringify(transcript)),bytes=Buffer.from(changed.frames[name],'hex');
+    bytes[bytes.length-2]^=1;changed.frames[name]=bytes.toString('hex');
+    changed.frameSHA256[name]=crypto.createHash('sha256').update(bytes).digest('hex');
+    const g=await fixture({transcript:changed}).init(),gx=await g.bound.prepareBrowser(g.proof),gh=await gx.port.activateOnce(gx.grant);
+    await assert.rejects(gh.inspectFamily('POST_LOAD'),{code:'ROLE_INVALID'},name);
+  }
 });

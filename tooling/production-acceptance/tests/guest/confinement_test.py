@@ -4,6 +4,8 @@ A reviewed Linux guest harness must inject an actual native ProbePort as
 ConfinementGuestTests.probe_port under separate VM/kernel execution approval.
 Default discovery fails unavailable; no fake factory, skip, automatic syscall,
 platform-dependent adapter, or caller bool creates native qualification.
+One test per catalogue case (Task 10: the theft family's real foreign targets,
+AArch32 SIGSYS or observed ENOEXEC, the parent-observed inventory, and P49).
 """
 import unittest
 from confinement_probe import run_case, RuntimeGateUnavailable, select_native_probe, qualify_probe_epoch
@@ -77,6 +79,10 @@ class ConfinementGuestTests(unittest.TestCase):
 
     def test_exact_fd_inventory(self):
         run_case('exact_fd_inventory',self.probe_port)
+
+    def test_browser_user_namespace_available(self):
+        # P49: unshare(CLONE_NEWUSER) succeeds in a fresh BROWSER family after seccomp.
+        run_case('browser_user_namespace_available',self.probe_port)
 
 
 if __name__ == '__main__': unittest.main()

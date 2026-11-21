@@ -1,0 +1,1961 @@
+{
+  "entries": [
+    {
+      "conditions": [],
+      "id": "__NR_mknodat",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_umount2",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_mount",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_pivot_root",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_chroot",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_write",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_capset",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_unshare",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_ptrace",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_setregid",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_setgid",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_setreuid",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_setuid",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_setresuid",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_setresgid",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_setfsuid",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_setfsgid",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_setgroups",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_prctl",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_socket",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_socketpair",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_connect",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_sendto",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_setns",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_process_vm_readv",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_process_vm_writev",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_seccomp",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_io_uring_setup",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_io_uring_enter",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_io_uring_register",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_pidfd_open",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_close_range",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_pidfd_getfd",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#if __BITS_PER_LONG == 64 && !defined(__SYSCALL_COMPAT)"
+      ],
+      "id": "__NR_fcntl",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_exit",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_exit_group",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_bind",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_listen",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_clone",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_execve",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_execveat",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifdef __ARCH_WANT_SYS_CLONE3"
+      ],
+      "id": "__NR_clone3",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_MODE_FILTER",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_SET_MODE_FILTER",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_FILTER_FLAG_TSYNC",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_RET_KILL_PROCESS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_RET_ERRNO",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_RET_ALLOW",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "field": "nr",
+      "id": "seccomp_data.nr",
+      "kind": "layout",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "struct": "seccomp_data",
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "field": "arch",
+      "id": "seccomp_data.arch",
+      "kind": "layout",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "struct": "seccomp_data",
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "field": "args",
+      "id": "seccomp_data.args",
+      "kind": "layout",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "struct": "seccomp_data",
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "field": null,
+      "id": "seccomp_data.sizeof",
+      "kind": "layout",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "struct": "seccomp_data",
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "id": "EPERM",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "id": "EACCES",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "id": "ENETUNREACH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "id": "EHOSTUNREACH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_ARCH_AARCH64",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ELF_EM_H"
+      ],
+      "id": "EM_AARCH64",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/elf-em.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "id": "BPF_LD",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "id": "BPF_ALU",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "id": "BPF_JMP",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "id": "BPF_RET",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "id": "BPF_W",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "id": "BPF_ABS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "id": "BPF_AND",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "id": "BPF_JEQ",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__"
+      ],
+      "id": "BPF_K",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_FILTER_H__"
+      ],
+      "field": null,
+      "id": "sock_filter.sizeof",
+      "kind": "layout",
+      "memberPath": "linux-6.8/include/uapi/linux/filter.h",
+      "signed": false,
+      "struct": "sock_filter",
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_FILTER_H__"
+      ],
+      "field": "code",
+      "id": "sock_filter.code",
+      "kind": "layout",
+      "memberPath": "linux-6.8/include/uapi/linux/filter.h",
+      "signed": false,
+      "struct": "sock_filter",
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_FILTER_H__"
+      ],
+      "field": "jt",
+      "id": "sock_filter.jt",
+      "kind": "layout",
+      "memberPath": "linux-6.8/include/uapi/linux/filter.h",
+      "signed": false,
+      "struct": "sock_filter",
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_FILTER_H__"
+      ],
+      "field": "jf",
+      "id": "sock_filter.jf",
+      "kind": "layout",
+      "memberPath": "linux-6.8/include/uapi/linux/filter.h",
+      "signed": false,
+      "struct": "sock_filter",
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_FILTER_H__"
+      ],
+      "field": "k",
+      "id": "sock_filter.k",
+      "kind": "layout",
+      "memberPath": "linux-6.8/include/uapi/linux/filter.h",
+      "signed": false,
+      "struct": "sock_filter",
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_BPF_COMMON_H__",
+        "#ifndef BPF_MAXINSNS"
+      ],
+      "id": "BPF_MAXINSNS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/bpf_common.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "id": "PR_SET_DUMPABLE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "id": "PR_SET_KEEPCAPS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "id": "PR_SET_SECCOMP",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "id": "PR_CAPBSET_DROP",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "id": "PR_SET_SECUREBITS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "id": "PR_SET_NO_NEW_PRIVS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "id": "PR_CAP_AMBIENT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "id": "PR_CAP_AMBIENT_RAISE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_PRCTL_H"
+      ],
+      "id": "PR_CAP_AMBIENT_CLEAR_ALL",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/prctl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SCHED_COREDUMP_H"
+      ],
+      "id": "SUID_DUMP_DISABLE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/sched/coredump.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_CAPABILITY_H"
+      ],
+      "id": "_LINUX_CAPABILITY_VERSION_3",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/capability.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_CAPABILITY_H"
+      ],
+      "id": "CAP_LAST_CAP",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/capability.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_CAPABILITY_H"
+      ],
+      "id": "_LINUX_CAPABILITY_U32S_3",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/capability.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "id": "MS_RDONLY",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "id": "MS_NOSUID",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "id": "MS_NODEV",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "id": "MS_NOEXEC",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "id": "MS_REMOUNT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "id": "MS_BIND",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "id": "MS_REC",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_MOUNT_H"
+      ],
+      "id": "MS_PRIVATE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/mount.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "id": "CLONE_NEWNS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "id": "CLONE_NEWIPC",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "id": "CLONE_NEWPID",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_FCNTL_H"
+      ],
+      "id": "F_DUPFD_CLOEXEC",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "id": "F_LINUX_SPECIFIC_BASE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "id": "AF_UNIX",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "id": "AF_INET",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "id": "AF_INET6",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "id": "AF_VSOCK",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_VM_SOCKETS_H"
+      ],
+      "id": "VMADDR_CID_HOST",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/vm_sockets.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES"
+      ],
+      "id": "SOCK_STREAM",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES"
+      ],
+      "id": "SOCK_DGRAM",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES"
+      ],
+      "id": "SOCK_SEQPACKET",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES"
+      ],
+      "id": "SOCK_CLOEXEC",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES",
+        "#ifndef SOCK_NONBLOCK"
+      ],
+      "id": "SOCK_NONBLOCK",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_NET_H"
+      ],
+      "id": "__SO_ACCEPTCON",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/net.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H",
+        "#ifndef O_NONBLOCK"
+      ],
+      "id": "O_NONBLOCK",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H",
+        "#ifndef O_CLOEXEC"
+      ],
+      "id": "O_CLOEXEC",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "id": "O_ACCMODE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "id": "O_RDONLY",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "id": "O_WRONLY",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H"
+      ],
+      "id": "O_RDWR",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H",
+        "#ifndef O_CREAT"
+      ],
+      "id": "O_CREAT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_FCNTL_H",
+        "#ifndef O_EXCL"
+      ],
+      "id": "O_EXCL",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef __ASM_FCNTL_H"
+      ],
+      "id": "O_NOFOLLOW",
+      "kind": "define",
+      "memberPath": "linux-6.8/arch/arm64/include/uapi/asm/fcntl.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_LIMITS_H"
+      ],
+      "id": "NAME_MAX",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/limits.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_IF_H",
+        "#if __UAPI_DEF_IF_IFNAMSIZ"
+      ],
+      "id": "IFNAMSIZ",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/if.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ROUTE_H"
+      ],
+      "id": "RTF_UP",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/route.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ROUTE_H"
+      ],
+      "id": "RTF_GATEWAY",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/route.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_ROUTE_H"
+      ],
+      "id": "RTF_REJECT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/route.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IPV6_ROUTE_H"
+      ],
+      "id": "RTF_NONEXTHOP",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/ipv6_route.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IPV6_ROUTE_H"
+      ],
+      "id": "RTF_LOCAL",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/ipv6_route.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_TCP_STATES_H"
+      ],
+      "id": "TCP_ESTABLISHED",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/net/tcp_states.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_FILTER_FLAG_SPEC_ALLOW",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_FILTER_FLAG_NEW_LISTENER",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_FILTER_FLAG_LOG",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SECCOMP_H"
+      ],
+      "id": "SECCOMP_FILTER_FLAG_TSYNC_ESRCH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/seccomp.h",
+      "signed": false,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "id": "CLONE_NEWUSER",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_SCHED_H"
+      ],
+      "id": "CLONE_NEWNET",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/sched.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "id": "AF_PACKET",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_NET_H",
+        "#ifndef ARCH_HAS_SOCKET_TYPES"
+      ],
+      "id": "SOCK_RAW",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/linux/net.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_FS_H"
+      ],
+      "id": "MNT_DETACH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/fs.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [],
+      "id": "__NR_recvmsg",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/unistd.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "id": "MSG_CMSG_CLOEXEC",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "signed": false,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _LINUX_SOCKET_H"
+      ],
+      "id": "SCM_RIGHTS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/linux/socket.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef __ASM_GENERIC_SOCKET_H"
+      ],
+      "id": "SOL_SOCKET",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/socket.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "id": "ENOTSOCK",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "id": "EBADF",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_H"
+      ],
+      "id": "ECONNREFUSED",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "id": "ENOENT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _ASM_GENERIC_ERRNO_BASE_H"
+      ],
+      "id": "ENOEXEC",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/errno-base.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_PTRACE_H"
+      ],
+      "id": "PTRACE_ATTACH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/ptrace.h",
+      "signed": true,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_PTRACE_H"
+      ],
+      "id": "PTRACE_SEIZE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/ptrace.h",
+      "signed": true,
+      "width": 64
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__ASM_GENERIC_SIGNAL_H"
+      ],
+      "id": "SIGSYS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/asm-generic/signal.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_FILTER_EXIT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_ALWAYS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_ARCH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_EQUAL",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_GET",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_LIST_RULES",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_SYSCALL",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_PATH",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_CONFIG_CHANGE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_SOCKADDR",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_CWD",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_EXECVE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_EOE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_PROCTITLE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_STATUS_ENABLED",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_STATUS_FAILURE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_STATUS_PID",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_STATUS_RATE_LIMIT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_STATUS_BACKLOG_LIMIT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_BITMASK_SIZE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_MAX_FIELDS",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "id": "RTMGRP_LINK",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "id": "RTMGRP_IPV4_IFADDR",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "id": "RTMGRP_IPV4_ROUTE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "id": "RTMGRP_IPV6_IFADDR",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H",
+        "#ifndef __KERNEL__"
+      ],
+      "id": "RTMGRP_IPV6_ROUTE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H"
+      ],
+      "id": "RTM_NEWLINK",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H"
+      ],
+      "id": "RTM_NEWADDR",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_RTNETLINK_H"
+      ],
+      "id": "RTM_NEWROUTE",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/uapi/linux/rtnetlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "id": "NLM_F_MULTI",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "id": "NLM_F_ACK",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "id": "NLM_F_DUMP_INTR",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "id": "NLMSG_ERROR",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI__LINUX_NETLINK_H"
+      ],
+      "id": "NLMSG_DONE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/netlink.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_MODIFY",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_ATTRIB",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_CLOSE_WRITE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_MOVED_FROM",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_MOVED_TO",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_CREATE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_DELETE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_DELETE_SELF",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_MOVE_SELF",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_UNMOUNT",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_Q_OVERFLOW",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_IGNORED",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_DONT_FOLLOW",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_INOTIFY_H"
+      ],
+      "id": "IN_MASK_CREATE",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/inotify.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IN_H",
+        "#if __UAPI_DEF_IN_IPPROTO"
+      ],
+      "id": "IPPROTO_TCP",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/uapi/linux/in.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_IN_H",
+        "#if __UAPI_DEF_IN_IPPROTO"
+      ],
+      "id": "IPPROTO_UDP",
+      "kind": "enum",
+      "memberPath": "linux-6.8/include/uapi/linux/in.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_KERNEL",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    },
+    {
+      "conditions": [
+        "#ifndef _UAPI_LINUX_AUDIT_H_"
+      ],
+      "id": "AUDIT_ANOM_ABEND",
+      "kind": "define",
+      "memberPath": "linux-6.8/include/uapi/linux/audit.h",
+      "signed": true,
+      "width": 32
+    }
+  ],
+  "version": 1
+}

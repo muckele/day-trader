@@ -2,8 +2,10 @@
 
 The native adapter is selected only by trusted bootstrap-check embedding with
 a caller-validated pinned guest runtime. Import and the default CLI do nothing
-native. Offline tests inject inert bindings and never qualify a guest.
-KernelPort is trusted process code; fake observations never qualify a guest.
+native. Only select_native_kernel constructs the sealed NativeKernelPort, over
+its own LinuxBindings. Offline tests and offline composition use the distinct,
+unsealed OfflineKernelPort over inert bindings; it never qualifies a guest
+(T8-05). KernelPort is trusted process code; fake observations never qualify.
 
 Reference binding: corrected Linux 6.8 / glibc 2.39 / AAPCS64 map SHA256
 7c8714c95a67d8a2e6c1b4c8b8481525a61976c81dfe2037c251add071ac9898;
@@ -16,14 +18,38 @@ trusted contracts. Additional native compatibility and qualification are gated.
 from dataclasses import dataclass, field
 import hashlib
 import hmac
+import importlib.util
 import json
+import pathlib
 import re
 import secrets
+import stat as _statmod
 import struct
+import sys
 import threading
 import time
 from types import MappingProxyType
 from typing import NoReturn, Protocol
+
+
+def _storage_module():
+    """C7: the per-role storage module beside this file, one instance per process. It never imports this (P17)."""
+    name, target = '_acceptance_confinement_storage', pathlib.Path(__file__).resolve().with_name('storage.py')
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(name, target)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try: spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(name, None)
+            raise
+    elif pathlib.Path(getattr(module, '__file__', '')).resolve() != target:
+        raise ImportError('storage module identity mismatch')
+    return module
+
+
+storage = _storage_module()
 
 
 class ConfinementError(ValueError):
@@ -41,6 +67,25 @@ def _fail(code): raise ConfinementError(code)
 def _run(value): return type(value) is str and re.fullmatch('[0-9a-f]{32}', value) is not None
 def _deadline(value):
     if type(value) is not int or not 0 < value <= 1200000: _fail('EXIT_DENIED')
+
+
+_KEY_DERIVATION_DOMAIN = b'acceptance:key-derivation:v1\0'
+CHANNEL_KEY_LABELS = ('vsock-stream', 'topology-admission')
+
+
+def derive_channel_key(capability, label):
+    """C3 (E3, T10-10): one key per channel from the 32-byte run capability.
+
+    derive(capability, label) = HMAC-SHA256(key=capability,
+    msg="acceptance:key-derivation:v1\\0" || label || "\\0"), for the two fixed
+    labels only. The PROXY receives only the vsock-stream key (R6); the
+    topology-admission key, like the capability, stays with the bootstrap and host.
+    """
+    if (type(capability) is not bytes or len(capability) != 32
+            or type(label) is not str or label not in CHANNEL_KEY_LABELS):
+        _fail('KEY_DERIVATION_DENIED')
+    return hmac.new(capability, _KEY_DERIVATION_DOMAIN + label.encode('ascii') + b'\0',
+                    hashlib.sha256).digest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +197,10 @@ class RoleAttestation:
     views: RoleViews
     waiting: bool
     programs: tuple
+    # Observed, never echoed from the launch (T8-09): /proc/<pid>/status
+    # Seccomp_filters and /proc/<pid>/stat tty_nr.
+    seccomp_filters: int
+    tty_nr: int
 
 
 class KernelPort(Protocol):
@@ -161,7 +210,9 @@ class KernelPort(Protocol):
     only private inherited pipe capabilities. On failure it raises
     RoleStartFailure(owned); it never loses an unreaped child. entry runs on a
     single-threaded child-bound port. establish_views establishes separate
-    PID/mount/proc/device views and role-only 0700 tmpfs before UID drop.
+    PID/mount/proc/device views and role-only 0700 tmpfs before UID drop; it
+    enters the view by pivot_root inside the role's private mount namespace
+    and detaches the old root; no chroot.
     close_unaudited_fds closes every nonlisted descriptor and audits endpoints,
     direction and CLOEXEC inheritance, not merely integer FD names.
     drop_credentials clears supplementary groups, ambient/bounding caps while
@@ -174,6 +225,10 @@ class KernelPort(Protocol):
     separate one-use confinement grant; no --no-sandbox/second spawn RPC.
     inspect independently observes credentials, caps, no_new_privs, filter,
     descriptor endpoints and views. A caller-supplied bool is not observation.
+    C7 (E5, R8): each role view holds its own 64 MiB /dev/shm tmpfs and a bind
+    of its own crash directory. Before exec the child port admits the role's own
+    storage (storage_ports, uid, observe) as the role UID inside its view, and the
+    ready frame carries the proof's fixed 32-byte digest (P17).
     wait/stop reap or stop only the exact owned process, never a recycled PID.
     Trusted intake/export is separately isolated controller-UID authority;
     none of these automation worker ports receives its serial capability.
@@ -198,9 +253,10 @@ PROGRAM_PATHS = frozenset((NODE, PYTHON, CHROME, *(argv[1] for argv in ARGV.valu
 
 
 def role_fds(role, run_id):
+    # T8-10: the physical peer of FD0..4 is the bootstrap parent for every role
+    # (it relays the browser's frames itself, OriginalRoleSet). VMHost agrees.
     if role not in UIDS or not _run(run_id): _fail('ROLE_DENIED')
-    peer = 'BOOTSTRAP' if role == 'CONTROLLER' else 'CONTROLLER'
-    return tuple(Descriptor(fd, kind, purpose, peer, run_id) for fd, kind, purpose in (
+    return tuple(Descriptor(fd, kind, purpose, 'BOOTSTRAP', run_id) for fd, kind, purpose in (
         (0, 'null', 'stdin'), (1, 'null', 'stdout'), (2, 'null', 'stderr'),
         (3, 'pipe', 'command'), (4, 'pipe', 'result')))
 
@@ -218,15 +274,43 @@ def filter_bytes(program):
     return b''.join(struct.pack('<HBBI', *i) for i in program)
 
 
+# Linux 6.8 native arm64 syscall numbers: no compat/multiplexed ABI. In order:
+# io_uring_setup, io_uring_enter, io_uring_register, ptrace, process_vm_readv,
+# process_vm_writev, pidfd_getfd, pidfd_open, capset, setregid, setgid,
+# setreuid, setuid, setresuid, setresgid, setfsuid, setfsgid, setgroups, setns,
+# mknodat, umount2, mount, pivot_root, chroot.
+BASE_DENY_SYSCALLS = (425, 426, 427, 117, 270, 271, 438, 434,
+                      91, 143, 144, 145, 146, 147, 149, 151, 152, 159,
+                      268, 33, 39, 40, 41, 51)
+# E1 (contract C6, ruling R1): Chromium's namespace sandbox calls these inside
+# its own user namespace, so they leave the BROWSER deny list only: chroot,
+# capset, setregid, setgid, setreuid, setuid, setresuid, setresgid, setfsuid,
+# setfsgid, setgroups. mount, umount2, pivot_root, setns, mknodat and
+# pidfd_open stay denied for BROWSER. unshare, clone and clone3 were never
+# filtered (R2). Roles hold no capability in the initial user namespace.
+BROWSER_SANDBOX_SYSCALLS = (51, 91, 143, 144, 145, 146, 147, 149, 151, 152, 159)
+# seccomp(2) filter flags each role may pass: 0 and TSYNC; BROWSER also
+# SPEC_ALLOW and TSYNC|SPEC_ALLOW (C6). Never LOG, NEW_LISTENER or TSYNC_ESRCH.
+SECCOMP_FLAGS_BY_ROLE = MappingProxyType({
+    'CONTROLLER': (0, 1), 'BROWSER': (0, 1, 4, 5), 'VERIFIER': (0, 1), 'PROXY': (0, 1)})
+# IPPROTO_TCP (Task 8c, contract C6, owner decision 2026-11-20). Chromium opens
+# socket(AF_INET/AF_INET6, SOCK_STREAM|..., IPPROTO_TCP); for SOCK_STREAM it
+# selects the same protocol as 0. BROWSER alone may name it, and only with
+# SOCK_STREAM. No other protocol value is admitted; IPPROTO_UDP is not.
+BROWSER_TCP_PROTOCOL = 6
+
+
 def build_filter(role):
     """Deterministic, inspectable classic-BPF outer policy; no external generator.
 
     Loads match pinned little-endian seccomp_data nr0/arch4/args16; both words
     of every constrained scalar are checked. Only ALLOW, EPERM, KILL_PROCESS
     exits exist. No TRACE/USER_NOTIF or listener flags. New restriction filters
-    can only tighten this one. No AF_NETLINK exception is selected.
+    can only tighten this one. No AF_NETLINK exception is selected. BROWSER
+    differs only in its deny list and seccomp flag set (E1) and in admitting
+    IPPROTO_TCP for AF_INET/AF_INET6 SOCK_STREAM (Task 8c), contract C6.
     """
-    if role not in UIDS: _fail('ROLE_DENIED')
+    if role not in UIDS or role not in SECCOMP_FLAGS_BY_ROLE: _fail('ROLE_DENIED')
     code, labels, jumps = [], {}, []
     def load(offset): code.append((0x20, 0, 0, offset))
     def ret(value): code.append((0x06, 0, 0, value))
@@ -238,10 +322,9 @@ def build_filter(role):
     label('native')
     load(0); code.append((0x54, 0, 0, 0xc0000000)); eq(0, yes='syscall'); ret(0x80000000)
     label('syscall'); load(0)
-    # Linux 6.8 native arm64 syscall numbers: no compat/multiplexed ABI.
-    for nr in (425, 426, 427, 117, 270, 271, 438, 434,
-               91, 143, 144, 145, 146, 147, 149, 151, 152, 159,
-               268, 33, 39, 40, 41, 51): eq(nr, yes='deny')
+    deny = BASE_DENY_SYSCALLS if role != 'BROWSER' else tuple(
+        nr for nr in BASE_DENY_SYSCALLS if nr not in BROWSER_SANDBOX_SYSCALLS)
+    for nr in deny: eq(nr, yes='deny')
     eq(198, yes='socket'); eq(199, yes='socket'); eq(167, yes='prctl'); eq(277, yes='seccomp')
     ret(0x7fff0000)
     label('prctl')
@@ -253,10 +336,13 @@ def build_filter(role):
     label('dumpable'); load(28); require(0); load(24); require(0); ret(0x7fff0000)
     label('ambient'); load(28); require(0); load(24); eq(2, yes='deny'); ret(0x7fff0000)
     # Chromium may tighten its inherited policy via prctl or seccomp; only
-    # filter mode and 0/TSYNC flags are allowed, never a NEW_LISTENER escape.
+    # filter mode and the role's flags are allowed (0/TSYNC; BROWSER also
+    # SPEC_ALLOW), never a NEW_LISTENER escape.
     label('inner-filter'); load(28); require(0); load(24); require(2); ret(0x7fff0000)
     label('seccomp'); load(20); require(0); load(16); require(1)
-    load(28); require(0); load(24); eq(0, yes='allow'); eq(1, yes='allow'); ret(0x00050001)
+    load(28); require(0); load(24)
+    for flags in SECCOMP_FLAGS_BY_ROLE[role]: eq(flags, yes='allow')
+    ret(0x00050001)
     label('socket')
     for offset in (20, 28, 36): load(offset); require(0)
     load(16); eq(1, yes='unix'); eq(2, yes='ip'); eq(10, yes='ip')
@@ -266,11 +352,17 @@ def build_filter(role):
     load(24); code.append((0x54, 0, 0, 0xfff7f7ff))
     for kind in (1, 2, 5): eq(kind, yes='allow')
     ret(0x00050001)
-    # Fail closed to the default protocol scalar 0. No unreviewed IPPROTO_*
-    # constants are consumed. Explicit protocol compatibility remains gated.
-    label('ip'); load(32); require(0)
+    # Fail closed to the default protocol scalar 0. The one reviewed nonzero
+    # scalar is BROWSER's IPPROTO_TCP, for SOCK_STREAM only (Task 8c, C6); no
+    # other IPPROTO_* constant is consumed. The high words were checked above.
+    label('ip'); load(32)
+    if role == 'BROWSER': eq(BROWSER_TCP_PROTOCOL, yes='ip-tcp')
+    require(0)
     load(24); code.append((0x54, 0, 0, 0xfff7f7ff))
     eq(1, yes='allow'); eq(2, yes='allow'); ret(0x00050001)
+    if role == 'BROWSER':
+        label('ip-tcp'); load(24); code.append((0x54, 0, 0, 0xfff7f7ff))
+        eq(1, yes='allow'); ret(0x00050001)
     if role == 'PROXY':
         label('vsock'); load(0); require(198)
         load(24); code.append((0x54, 0, 0, 0xfff7f7ff)); require(1)
@@ -285,22 +377,6 @@ def build_filter(role):
         code[index] = (instruction[0], jt, jf, instruction[3])
     if len(code) > 4096: _fail('FILTER_INVALID')
     return tuple(code)
-
-
-def proxy_endpoint():
-    """Trusted proxy code must use this one endpoint; BPF cannot inspect sockaddr."""
-    return (2, 4050)
-
-
-def validate_channel_message(data, ancillary, flags):
-    """Only bounded bytes on private role pipes; reject all ancillary/truncation.
-
-    Actual fixed command decoding/authentication belongs to the consuming role.
-    This never accepts a SCM_RIGHTS pretense or a generic FD donation message.
-    """
-    if type(data) is not bytes or not 0 < len(data) <= 4096 or type(ancillary) is not tuple or ancillary or type(flags) is not int or flags != 0:
-        _fail('CHANNEL_DENIED')
-    return data
 
 
 def prepare_role(role, config):
@@ -323,6 +399,7 @@ def _attestation(facts):
             if type(vector) is not tuple or any(type(x) is not int or x < 0 for x in vector): _fail('ATTESTATION_FAILED')
         if len(a.uids) != 3 or len(a.gids) != 3 or len(a.capabilities) != 5: _fail('ATTESTATION_FAILED')
         if type(a.no_new_privs) is not int or type(a.seccomp) is not int or type(a.waiting) is not bool: _fail('ATTESTATION_FAILED')
+        if any(type(x) is not int or x < 0 for x in (a.seccomp_filters, a.tty_nr)): _fail('ATTESTATION_FAILED')
         if type(a.fds) is not tuple or any(type(d) is not Descriptor or type(d.fd) is not int for d in a.fds) or type(a.views) is not RoleViews or type(a.filter_digest) is not str: _fail('ATTESTATION_FAILED')
         if any(type(getattr(a.views,n)) is not bool for n in ('console','separate_pid','separate_mount','initial_user_namespace','controlling_tty','read_only_base','private_tmpfs','no_external_ip_interface','no_fd_donor')): _fail('ATTESTATION_FAILED')
         if type(a.views.private_mode) is not int or type(a.views.visible_roles) is not tuple or type(a.views.device_nodes) is not tuple: _fail('ATTESTATION_FAILED')
@@ -332,9 +409,12 @@ def _attestation(facts):
 
 
 def _check(a, launch, *, waiting):
+    # T8-09: while waiting exactly one filter (ours, no inner filter yet);
+    # otherwise at least one (Chromium may stack its own). No controlling tty.
     if (a.run_id != launch.run_id or a.role != launch.role or a.uids != (launch.uid,)*3 or
         a.gids != (launch.uid,)*3 or a.groups != () or a.capabilities != (0,)*5 or
         a.no_new_privs != 1 or a.seccomp != 2 or a.filter_digest != hashlib.sha256(filter_bytes(launch.filter)).hexdigest() or
+        (a.seccomp_filters != 1 if waiting else a.seccomp_filters < 1) or a.tty_nr != 0 or
         a.fds != launch.fds or a.views != launch.views or a.waiting is not waiting or _programs(a.programs) != launch.programs):
         _fail('ATTESTATION_FAILED')
 
@@ -355,10 +435,25 @@ def exec_role(launch, *, kernel) -> NoReturn:
         if type(result) is not int or result != 0: _fail('TSYNC_FAILED')
         if _programs(kernel.inspect_programs()) != launch.programs: _fail('PROGRAM_DENIED')
         _check(_attestation(kernel.inspect()), launch, waiting=False)
-        kernel.exec_pinned(launch.argv, launch.programs)
+        # C7 (E5, R8): the pre-exec helper admits this role's own private storage as the role UID, inside its
+        # view, after the filter and before exec. Only the proof's fixed 32-byte digest reaches exec (P17).
+        policy, filesystem = kernel.storage_ports()
+        kernel.exec_pinned(launch.argv, launch.programs, _admitted_digest(launch.role, policy, filesystem, kernel))
     except ConfinementError: raise
     except Exception: _fail('ROLE_START_FAILED')
     _fail('EXEC_RETURNED')
+
+
+def _admitted_digest(role, policy, filesystem, kernel):
+    """Admit ROLE's storage through the child port KERNEL (uid, observe), release every descriptor admission
+    opened, and keep only the digest. STORAGE_INVALID on any refusal."""
+    digest = None
+    try:
+        proof = storage.admit_role_storage(role, policy, filesystem, kernel)
+        if storage.release_role_storage(proof) is True: digest = proof.digest
+    except storage.StorageFailure: pass
+    if digest is None: _fail('STORAGE_INVALID')
+    return digest
 
 
 def inspect_role(pid, *, kernel):
@@ -437,6 +532,10 @@ def start_roles(config, *, cleanup_budget=None, acquisition_owner=None):
             if _ownership_facts(handoff._owned)!=ownership[id(handoff._owned)][0]: _fail('HANDOFF_DENIED')
             _check(inspect_role(handoff.attestation.pid,kernel=k),handoff.launch,waiting=True)
     except Exception:
+        # A failed acquisition is a terminal event: start the shared end (C1).
+        if cleanup_budget is not None:
+            try: cleanup_budget.start_terminal()
+            except Exception: pass
         cleanup_failed = False
         cleaned, cleanup_pids, distinct = set(), set(), []
         for owned in owned_children:
@@ -455,7 +554,7 @@ def start_roles(config, *, cleanup_budget=None, acquisition_owner=None):
         for owned in reversed(distinct):
             try:
                 if acquisition_owner is not None:
-                    result=acquisition_owner._stop_one(owned,cleanup_budget.remaining())
+                    result=acquisition_owner._stop_one(owned,acquisition_owner._cleanup_remaining())
                     if result['status'] not in ('STOPPED','EXITED'):cleanup_failed=True
                 else:
                     result = (cleanup_budget.call(lambda ms,original=owned: k.stop_owned(original,ms))
@@ -548,6 +647,8 @@ class OriginalRoleSet:
         self._cleanup_lock=threading.RLock();self._stop_tokens={};self._clock_failed=False
         self._application={name:dict(stream=0,message=0,index=0,size=0,open=False)
                            for name in ('CONTROLLER','BROWSER')}
+        # Task 16c (P76): clean BROWSER family inspections so far (LAUNCH 1, POST_LOAD 2, FINAL 3).
+        self._family_ordinal=0
 
     @property
     def originals(self): return tuple(self._originals)
@@ -565,10 +666,16 @@ class OriginalRoleSet:
             self._clock_failed=True;_fail('CLOCK')
 
     def _cleanup_remaining(self):
+        # Every caller is terminal (failure, cancel, stop, wait-exit, clamp):
+        # the first one starts the one shared end (C1). No direct deadline write.
         with self._cleanup_lock:
-            if self._clock_failed:self._budget.deadline=0
-            try:return _v1_int(self._budget.remaining(),0)
-            except Exception:self._budget.deadline=0;return 0
+            try:
+                if self._clock_failed:self._budget.clamp_end(0)
+                return _v1_int(self._budget.start_terminal(),0)
+            except Exception:
+                try:self._budget.clamp_end(0)
+                except Exception:pass
+                return 0
 
     def _failed(self,error):
         self._terminal=True
@@ -708,19 +815,39 @@ class OriginalRoleSet:
             response=self._worker()
             _v1_exact(response['payload'],('requestSequence',*p));_v1_int(response['payload']['requestSequence']);_v1_int(response['payload']['generation'])
             if response['action']!='STARTED' or response['payload']!=dict(requestSequence=seq,**p): _fail('AUTHORITY_LOST')
-            self._check(owner._proof);owner._committed=True
-            if isinstance(self._config.kernel,NativeKernelPort):self._config.kernel._commit_browser_runtime(owner)
+            self._check(owner._proof)
+            # Task 16c (P76, C9): the uid-10002 worker never inspects other processes; the bootstrap does (owner
+            # decision 2026-11-20). LAUNCH: the family on the worker's STARTED, before ACTIVE and before the committed
+            # transition, bounded by 1000 ms and the activation proof (never the cleanup budget, C1). No kernel-type
+            # gate: a kernel without the method fails closed.
+            wall,mono=self._sample()
+            self._inspect_family('LAUNCH',min(owner._proof['monotonicDeadlineMs']-mono,owner._proof['expiresAtMs']-wall))
+            self._check(owner._proof);self._family_ordinal=1
+            owner._committed=True
+            if type(self._config.kernel) in (NativeKernelPort,OfflineKernelPort):self._config.kernel._commit_browser_runtime(owner)
             return {'status':'ACTIVE','generation':1}
         except Exception as error:
             self._failed(error);raise
 
+    def _inspect_family(self,point,bound_ms):
+        """One bootstrap BROWSER family inspection (Task 16c), bounded by min(1000 ms, BOUND_MS); a bound <= 0 is
+        EXPIRED. Only the kernel port's exact clean result counts; any failure raises."""
+        limit=min(_FAMILY_LIMIT_MS,bound_ms)
+        if limit<=0: _fail('EXPIRED')
+        inspect=getattr(self._config.kernel,'inspect_browser_family',None)
+        if not callable(inspect): _fail('AUTHORITY_LOST')
+        result=inspect(self._handoffs['BROWSER'],point,limit_ms=limit)
+        if (type(result) is not MappingProxyType or set(result)!={'point','members','attempts'} or result['point']!=point
+                or type(result['members']) is not int or not 2<=result['members']<=_FAMILY_MAX_MEMBERS
+                or type(result['attempts']) is not int or not 1<=result['attempts']<=_FAMILY_ATTEMPTS):
+            _fail('AUTHORITY_LOST')
+        return result['members']
+
     def _clamp(self,end):
         _v1_int(end,0)
         with self._cleanup_lock:
-            if end==0:self._budget.deadline=0
-            else:
-                self._cleanup_remaining()
-                self._budget.deadline=min(self._budget.deadline,end)
+            self._cleanup_remaining()
+            self._budget.clamp_end(end)
 
     def cancel(self,cleanup_ends_at=None):
         self._terminal=True
@@ -800,6 +927,21 @@ class OriginalRoleSet:
                 _v1_int(p['generation'])
                 if p['generation']!=1 or self._preparation is None:_fail('AUTHORITY_LOST')
                 result=dict(proofDigest=self._preparation._proof['proofDigest'],eventCheckpoint=self._current(self._preparation._proof))
+            elif action=='BROWSER_FAMILY' and role=='BROWSER':
+                # Task 16c (P76, C9): the controller's fixed request, after READY (POST_LOAD) and before CLOSE (FINAL),
+                # each once and in order after LAUNCH. Only CLEAN is ever answered; any failure is terminal through
+                # _failed with no RESULT. No topology current check runs here (C5 unaffected).
+                _v1_exact(p,('generation','point'))
+                if type(p['generation']) is not int or p['generation']!=1 or p['point'] not in _FAMILY_REQUESTS:
+                    _fail('FRAME_DENIED')
+                ordinal=_FAMILY_REQUESTS[p['point']]
+                if self._preparation is None or not self._preparation._committed or self._family_ordinal!=ordinal-1:
+                    _fail('AUTHORITY_LOST')
+                self._check(self._preparation._proof)
+                wall,_=self._sample()
+                members=self._inspect_family(p['point'],self.binding.expiresAtMs-wall)
+                self._check(self._preparation._proof);self._family_ordinal=ordinal
+                result=dict(members=members,ordinal=ordinal,point=p['point'],status='CLEAN')
             elif action=='PROXY_CURRENT' and role=='PROXY':_fail('NATIVE_PROXY_RUNTIME_UNAVAILABLE')
             elif action=='APP_WRITE' and role=='BROWSER':
                 if self._preparation is None or not self._preparation._committed:_fail('AUTHORITY_LOST')
@@ -825,7 +967,7 @@ class OriginalRoleSet:
 
 
 def bind_original_roles(config,binding,cleanup_budget):
-    if type(binding) is not CompositionBinding or type(config) is not BootstrapConfig or config.run_id!=binding.runId or not callable(getattr(cleanup_budget,'remaining',None)) or not callable(getattr(cleanup_budget,'call',None)): _fail('COMPOSITION_BINDING_DENIED')
+    if type(binding) is not CompositionBinding or type(config) is not BootstrapConfig or config.run_id!=binding.runId or any(not callable(getattr(cleanup_budget,name,None)) for name in ('remaining','call','start_terminal','clamp_end')): _fail('COMPOSITION_BINDING_DENIED')
     if id(config) in _BOUND_ROLE_CONFIGS:_fail('AUTHORITY_LOST')
     # Retain the exact configuration through the whole run, including failure;
     # a second call cannot respawn its four original children or recycle IDs.
@@ -880,11 +1022,12 @@ class _ValidatedRuntime:
     seal: object
 
 
-def select_native_kernel(mode, *, runtime_identity, validate_runtime, bindings_factory=None):
+def select_native_kernel(mode, *, runtime_identity, validate_runtime):
     """No ambient env/CLI boolean grants native authority. The trusted caller
     must validate its pinned image/Python/libc/runtime identity and return that
     same nominal identity. A missing/failed validation precedes ALL effects.
-    Injecting a factory is only a unit boundary, never qualification evidence.
+    The only constructor of the sealed NativeKernelPort, over its own
+    LinuxBindings loader; no injected factory exists (T8-05).
     """
     if (mode != 'bootstrap-check' or type(runtime_identity) is not GuestRuntimeIdentity or
         type(runtime_identity.python) is not ProgramPin or runtime_identity.python.path!=PYTHON or
@@ -898,13 +1041,13 @@ def select_native_kernel(mode, *, runtime_identity, validate_runtime, bindings_f
     try:
         if validate_runtime(runtime_identity) is not runtime_identity: _fail('NATIVE_GATE_DENIED')
     except Exception: _fail('NATIVE_GATE_DENIED')
-    return NativeKernelPort((bindings_factory or LinuxBindings)(_ValidatedRuntime(runtime_identity,_NATIVE_SEAL)))
+    return NativeKernelPort(LinuxBindings(_ValidatedRuntime(runtime_identity,_NATIVE_SEAL)),seal=_NATIVE_KERNEL_SEAL)
 
 
 def _native_apis(os_api,signal_api,resource_api):
     names=('fork','execve','pipe2','waitpid','waitstatus_to_exitcode','setsid','kill','open','read','write','close','dup2','dup',
            'set_inheritable','set_blocking','readlink','listdir','stat','fstat','makedirs','chown',
-           'chroot','chdir','getpid','getppid','rmdir','unlink','_exit')
+           'chdir','getpid','getppid','rmdir','unlink','_exit')
     if (any(not callable(getattr(os_api,name,None)) for name in names) or
         not hasattr(os_api,'WNOHANG') or not hasattr(signal_api,'SIGKILL') or
         not callable(getattr(getattr(os_api,'path',None),'isfile',None)) or
@@ -986,11 +1129,18 @@ class LinuxBindings:
         # hypervisor device-list/image authority supplied at selection.
         mounts=self.read_file('/proc/self/mountinfo').decode('ascii').splitlines()
         parsed=[(r.split(' - ')[0].split(),r.split(' - ')[1].split()) for r in mounts]
-        if (not any(a[4]=='/' and 'ro' in a[5].split(',') for a,b in parsed) or
-            not any(a[4]=='/run' and b[0]=='tmpfs' for a,b in parsed) or
+        # T8-12: path lookup reaches only the last mount on a mount point
+        # (mountinfo lists mounts in mount order); an earlier row proves nothing.
+        top={a[4]:(a,b) for a,b in parsed}
+        if ('/' not in top or 'ro' not in top['/'][0][5].split(',') or
+            '/run' not in top or top['/run'][1][0]!='tmpfs' or
+            '/run/acceptance/crash' not in top or top['/run/acceptance/crash'][1][0]!='tmpfs' or
             len(self.read_file('/proc/swaps').splitlines()) != 1 or
             set(self.os.listdir('/sys/class/net')) != {'lo'}): _fail('APPLIANCE_DENIED')
         self.run_device=self.os.stat('/run').st_dev
+        # C7 (E5): the bootstrap's 1 MiB crash tmpfs, on which establish_views makes each role's crash directory;
+        # every role's crash bind must be on this device (_native_observe).
+        self.crash_device=self.os.stat('/run/acceptance/crash').st_dev
         self.initial_namespaces={name:self.os.readlink('/proc/self/ns/'+name) for name in ('pid','mnt','user')}
 
     def pin_programs(self,pins):
@@ -1044,12 +1194,18 @@ class NativeChildPort:
         self.b,self.launch,self.pins,self.ready_fd=bindings,launch,pins,ready_fd
         self.digest=None
 
-    def establish_views(self,views):
-        if views != self.launch.views: _fail('VIEW_DENIED')
-        b=self.b; root=views.root+'/.root'
+    def establish_views(self,views,*,reuse_state=False):
+        # reuse_state is the storage cleanup child's only (C7): it re-binds the state a stopped child of this role
+        # left (its .state and crash directories) instead of requiring them fresh. The view root is always fresh.
+        if views != self.launch.views or type(reuse_state) is not bool: _fail('VIEW_DENIED')
+        b=self.b; root=views.root+'/.root'; uid=self.launch.uid
         b.os.setsid() # detach inherited controlling terminal before any worker
         b.syscall(40,None,b'/',None,262144|16384,None) # recursive private propagation
         b.os.makedirs(root,mode=0o755,exist_ok=False)
+        # pivot_root needs the new root to be a mount root: bind it onto itself
+        # (Linux 6.8 fs/namespace.c:4174-4177, 4235-4238).
+        try: b.syscall(40,root.encode(),root.encode(),None,4096,None)
+        except OSError: _fail('VIEW_ROOT_BIND_FAILED')
         # Read-only base is never copied to a writable overlay. Role mutable
         # state remains on the already bounded guest-private /run tmpfs.
         for directory in ('opt','usr','lib','lib64','etc'):
@@ -1057,16 +1213,40 @@ class NativeChildPort:
             b.syscall(40,('/'+directory).encode(),target.encode(),None,4096,None)
             b.syscall(40,None,target.encode(),None,4096|32|1,None)
         state=views.root+'/.state'
-        b.os.makedirs(state,mode=0o700,exist_ok=False); b.os.chown(state,self.launch.uid,self.launch.uid)
-        for directory in ('tmp','var','run/acceptance/'+views.role.lower(),'dev/shm'):
+        b.os.makedirs(state,mode=0o700,exist_ok=reuse_state); b.os.chown(state,uid,uid)
+        for directory in ('tmp','var','run/acceptance/'+views.role.lower()):
             source=state+'/'+directory; target=root+'/'+directory
-            b.os.makedirs(source,mode=0o700,exist_ok=False); b.os.chown(source,self.launch.uid,self.launch.uid)
+            b.os.makedirs(source,mode=0o700,exist_ok=reuse_state); b.os.chown(source,uid,uid)
             b.os.makedirs(target,mode=0o755,exist_ok=True)
             b.syscall(40,source.encode(),target.encode(),None,4096,None)
+        # C7 (E5, P50): /dev/shm is the role's own 64 MiB tmpfs, mounted in place of a state bind (never stacked
+        # on one). No parent ever unmounts it: the role's mount namespace teardown reclaims it (P16).
+        shm=root+'/dev/shm'; b.os.makedirs(shm,mode=0o755,exist_ok=False)
+        b.syscall(40,b'tmpfs',shm.encode(),b'tmpfs',2|4|8,
+                  ('size=%d,mode=0700,uid=%d,gid=%d'%(storage.SHM_BYTES,uid,uid)).encode('ascii'))
+        # The role's own 0700 crash directory on the bootstrap-mounted 1 MiB crash tmpfs, bound here, before the
+        # detach: after it the pre-pivot tree, the crash source included, is unreachable (K6).
+        crash='/run/acceptance/crash/'+views.role.lower()
+        b.os.makedirs(crash,mode=0o700,exist_ok=reuse_state); b.os.chown(crash,uid,uid)
+        target=root+'/run/acceptance/crash'; b.os.makedirs(target,mode=0o755,exist_ok=False)
+        b.syscall(40,crash.encode(),target.encode(),None,4096,None)
         b.os.makedirs(root+'/proc',mode=0o755,exist_ok=False)
         null=b.os.open(root+'/dev/null',64|128|524288|32768,0o600); b.os.close(null)
         b.syscall(40,b'/dev/null',(root+'/dev/null').encode(),None,4096,None)
-        b.os.chroot(root); b.os.chdir('/')
+        # E-1 (C6): enter the view by pivot_root inside this role's private
+        # mount namespace, never chroot: Linux 6.8 refuses a user namespace to
+        # a chrooted caller (kernel/user_namespace.c:104-106), which would stop
+        # Chromium's namespace sandbox. pivot_root(".", ".") stacks the old
+        # root on "."; umount2(".", MNT_DETACH) detaches that whole old tree.
+        # Runs before seccomp. No fallback after any failure.
+        try: b.os.chdir(root)
+        except OSError: _fail('VIEW_PIVOT_FAILED')
+        try: b.syscall(41,b'.',b'.')
+        except OSError: _fail('VIEW_PIVOT_FAILED')
+        try: b.syscall(39,b'.',2)
+        except OSError: _fail('VIEW_OLD_ROOT_DETACH_FAILED')
+        try: b.os.chdir('/')
+        except OSError: _fail('VIEW_PIVOT_FAILED')
         b.syscall(40,b'proc',b'/proc',b'proc',2|4|8,None)
         b.resource.setrlimit(b.resource.RLIMIT_CORE,(0,0))
         b.resource.setrlimit(b.resource.RLIMIT_NOFILE,(4096,4096))
@@ -1115,25 +1295,152 @@ class NativeChildPort:
     def inspect(self):
         return _native_observe(self.b,self.b.os.getpid(),self.launch,self.digest,self.pins,False,local=True)
 
-    def exec_pinned(self,argv,programs):
+    def uid(self):
+        """P17: the UID this child runs as, as Linux reports it (/proc/self/status Uid: real, effective, saved and
+        filesystem all equal), never the launch's own value."""
+        try:
+            line=next(row for row in self.b.read_file('/proc/self/status').decode('ascii').splitlines()
+                      if row.startswith('Uid:'))
+            uids=line[len('Uid:'):].split()
+        except Exception: uids=()
+        if len(uids)!=4 or len(set(uids))!=1 or re.fullmatch('0|[1-9][0-9]{0,9}',uids[0]) is None: _fail('UID_DENIED')
+        return int(uids[0])
+
+    def storage_ports(self):
+        # C7: no native descriptor-relative storage port or in-view kernel storage observer is qualified yet
+        # (tests/guest/storage_test.py stays gated). Until Stage 2 supplies one, pre-exec admission fails closed.
+        _fail('NATIVE_STORAGE_PORT_UNAVAILABLE')
+
+    def observe(self): _fail('NATIVE_STORAGE_PORT_UNAVAILABLE')
+
+    def scope_digest(self):
+        """P17 for a probe family, which runs no role program and admits nothing: the same fixed 32-byte binding of
+        its own five scope roots, from its own stats inside the view, that the bootstrap recomputes."""
+        role=self.launch.role
+        return storage.scope_digest(role,self.launch.uid,tuple(
+            (path,)+_stat_identity(self.b.os.stat(path)) for path in storage.ROLE_SCOPES[role]))
+
+    def write_ready(self,storage_digest):
+        """P17: the one helper-to-bootstrap record after admission, one write of _READY_FRAME_BYTES: the 64 hex
+        filter digest, then the fixed 32-byte storage digest."""
+        if type(storage_digest) is not bytes or len(storage_digest)!=32: _fail('STORAGE_INVALID')
+        if self.ready_fd is None or type(self.digest) is not str or re.fullmatch('[0-9a-f]{64}',self.digest) is None:
+            _fail('ROLE_START_FAILED')
+        frame=self.digest.encode('ascii')+storage_digest
+        if len(frame)!=_READY_FRAME_BYTES or self.b.os.write(self.ready_fd,frame)!=_READY_FRAME_BYTES:
+            _fail('ROLE_START_FAILED')
+
+    def exec_pinned(self,argv,programs,storage_digest):
         if argv!=self.launch.argv or programs!=self.launch.programs or argv[0] not in self.pins: _fail('PROGRAM_DENIED')
-        if self.ready_fd is not None:
-            frame=self.digest.encode('ascii')
-            if self.b.os.write(self.ready_fd,frame)!=64: _fail('ROLE_START_FAILED')
+        if type(storage_digest) is not bytes or len(storage_digest)!=32: _fail('STORAGE_INVALID')
+        if self.ready_fd is not None: self.write_ready(storage_digest)
         # Executable is the same held verified FD; script path is on the pinned
         # read-only base, rechecked immediately before exec. No shell/environment.
         self.b.os.execve(self.pins[argv[0]],argv,{})
         _fail('EXEC_RETURNED')
 
 
+def _view_mount_points(role):
+    """P47: the role's whole mount table after pivot_root (Task 8b view), each once.
+
+    Mount points are relative to the role's own root (Linux 6.8
+    fs/proc_namespace.c show_mountinfo, root taken at open). Task 14 adds
+    /run/acceptance/crash (P50); /dev/shm is now the role's own tmpfs.
+    """
+    return ('/','/opt','/usr','/lib','/lib64','/etc','/tmp','/var',
+            '/run/acceptance/'+role.lower(),'/dev/shm','/run/acceptance/crash','/dev/null','/proc')
+
+
+# P17: the ready frame, the one fixed helper-to-bootstrap record written after admission: the 64 hex filter
+# digest, then the fixed 32-byte storage digest.
+_READY_FRAME_BYTES=64+32
+
+
+def _stat_identity(value):
+    return (value.st_dev,value.st_ino)
+
+
+def _view_skeleton(views):
+    """The root-owned view skeleton establish_views leaves on the /run tmpfs, children before parents; it holds no
+    role data, and its dev/null node is unlinked first. Removed only after that view's mount namespace is gone."""
+    root,name=views.root+'/.root',views.role.lower()
+    return tuple(root+suffix for suffix in (
+        '/run/acceptance/'+name,'/run/acceptance/crash','/run/acceptance','/run','/dev/shm','/dev','/proc',
+        '/tmp','/var','/etc','/lib64','/lib','/usr','/opt',''))
+
+
+def _view_backing(views):
+    """The role-owned directories behind a view's state binds and its crash bind, children before parents."""
+    state,name=views.root+'/.state',views.role.lower()
+    return tuple(state+suffix for suffix in ('/run/acceptance/'+name,'/run/acceptance','/run','/var','/tmp',''))+(
+        '/run/acceptance/crash/'+name,)
+
+
+def _storage_cleanup_child(launch,port):
+    """C7 (R8): the storage cleanup child's one fixed operation; never an exec, a caller entry or a caller path.
+
+    The role's own view (re-binding the state its stopped children left; a fresh /dev/shm, since the old one went
+    with its namespace, P16), descriptors, UID and filter; its own scope-root verification (P66: the roots exactly
+    as admitted, never the pre-exec strictness on the content the role created); the ready frame; then (P67) the
+    metadata-only crash aggregate and the removal, both inside the parent's result-frame wait, which the shared
+    cleanup end clamps; one fixed result frame; then it waits for the parent's EXIT and exits.
+    """
+    code=78
+    try:
+        port.establish_views(launch.views,reuse_state=True)
+        port.close_unaudited_fds(launch.fds)
+        port.drop_credentials(launch.uid,launch.uid); port.clear_capabilities(); port.no_new_privs()
+        result=port.install_seccomp(launch.filter,1)
+        if type(result) is not int or result!=0: _fail('TSYNC_FAILED')
+        _check(_attestation(port.inspect()),launch,waiting=False)
+        policy,filesystem=port.storage_ports()
+        proof=storage.verify_role_scopes(launch.role,policy,filesystem,port)
+        port.write_ready(proof.digest)
+        if port.b.os.write(4,b'WAITING\n')!=8: _fail('ROLE_START_FAILED')
+        aggregate=storage.crash_aggregate(proof.crash_root_fd,proof=proof)
+        cleanup=storage.remove_role_state(proof)
+        frame=_v1_encode(dict(version=1,kind='STORAGE_CLEANUP',role=launch.role,
+                              removed=cleanup.guest_private_state_removed,code=cleanup.code,
+                              policyDigest=aggregate.policy_digest,fileCount=aggregate.file_count,
+                              directoryCount=aggregate.directory_count,logicalBytes=aggregate.logical_bytes,
+                              allocatedBytes=aggregate.allocated_bytes))
+        if port.b.os.write(4,frame)!=len(frame): _fail('ROLE_START_FAILED')
+        if port.b.os.read(3,4)!=b'EXIT': _fail('CHANNEL_DENIED')
+        code=0
+    except BaseException: code=78
+    port.b.os._exit(code)
+
+
+def _proc_decimal(value):
+    """One canonical /proc decimal field (signed, as seq_put_decimal_ll prints)."""
+    if type(value) is not str or re.fullmatch('0|-?[1-9][0-9]{0,18}',value) is None: _fail('ATTESTATION_FAILED')
+    return int(value)
+
+
 def _native_observe(b,pid,launch,digest,pins,waiting,local=False,current_fds=None):
-    """Read kernel facts, never a self-authored `confined: true` receipt."""
+    """Read kernel facts, never a self-authored `confined: true` receipt.
+
+    uids, gids, groups, capabilities, no_new_privs, seccomp, seccomp_filters
+    and tty_nr are observed here. fds, views and programs are the launch
+    contract, returned only after the checks below observed each of them;
+    filter_digest is the installed program's digest (T8-09). waiting None is
+    an unbound runtime's: it is observed as exactly one seccomp filter over
+    the exact inherited descriptor set checked below, never a caller's bool.
+    """
     base='/proc/'+str(pid)
     fields={}
     for line in b.read_file(base+'/status').decode('ascii').splitlines():
         key,_,value=line.partition(':'); fields[key]=value.strip()
     uid=tuple(map(int,fields['Uid'].split()[:3])); gid=tuple(map(int,fields['Gid'].split()[:3]))
     caps=tuple(int(fields[k],16) for k in ('CapEff','CapPrm','CapInh','CapAmb','CapBnd'))
+    filters=_proc_decimal(fields.get('Seccomp_filters'))
+    # /proc/<pid>/stat: comm sits in parentheses and may itself hold ')' and
+    # spaces; tty_nr is the fifth field after the last ')' (fs/proc/array.c
+    # do_task_stat: state, ppid, pgid, sid, tty_nr).
+    stat=b.read_file(base+'/stat',4096)
+    after=stat[stat.rfind(b')')+1:].decode('ascii').split() if b')' in stat else []
+    if len(after)<5: _fail('ATTESTATION_FAILED')
+    tty_nr=_proc_decimal(after[4])
     listed=set(b.os.listdir(base+'/fd'))
     expected={str(fd) for fd in range(5)}
     if local:
@@ -1166,29 +1473,51 @@ def _native_observe(b,pid,launch,digest,pins,waiting,local=False,current_fds=Non
         for namespace in ('pid','mnt'):
             if b.os.readlink(base+'/ns/'+namespace)==b.os.readlink('/proc/self/ns/'+namespace): _fail('VIEW_DENIED')
         if b.os.readlink(base+'/ns/user')!=b.os.readlink('/proc/self/ns/user'): _fail('VIEW_DENIED')
-        if b.os.stat(base+'/root').st_ino!=b.os.stat(launch.views.root+'/.root').st_ino: _fail('VIEW_DENIED')
+        root,view=b.os.stat(base+'/root'),b.os.stat(launch.views.root+'/.root')
+        if (root.st_dev,root.st_ino)!=(view.st_dev,view.st_ino): _fail('VIEW_DENIED')
     devices=set(b.os.listdir(('/' if local else base+'/root/')+'dev'))
     if devices!={'null','shm'}: _fail('VIEW_DENIED')
     prefix='' if local else base+'/root'
-    mounts={}
+    mounts={};points=[]
     for line in b.read_file(base+'/mountinfo').decode('ascii').splitlines():
-        left,right=line.split(' - ',1); mount_fields=left.split(); mounts[mount_fields[4]]=(set(mount_fields[5].split(',')),right.split()[0])
+        left,right=line.split(' - ',1); mount_fields=left.split(); points.append(mount_fields[4])
+        super_fields=right.split()
+        mounts[mount_fields[4]]=(set(mount_fields[5].split(',')),super_fields[0],
+                                 set(super_fields[2].split(',')) if len(super_fields)>2 else set())
+    # P47: a missing, stacked (duplicate) or extra row, such as an old-root
+    # /run, /dev or /sys left attached, is a view other than the pivoted one.
+    if sorted(points)!=sorted(_view_mount_points(launch.role)): _fail('VIEW_DENIED')
     if any('ro' not in mounts.get('/'+directory,(set(),None))[0] for directory in ('opt','usr','lib','lib64','etc')): _fail('VIEW_DENIED')
-    for path in ('/tmp','/var','/run/acceptance/'+launch.role.lower(),'/dev/shm'):
+    for path in ('/tmp','/var','/run/acceptance/'+launch.role.lower()):
         if mounts.get(path,(None,None))[1]!='tmpfs': _fail('VIEW_DENIED')
         metadata=b.os.stat(prefix+path)
         if (metadata.st_mode&0o777!=0o700 or metadata.st_uid!=launch.uid or metadata.st_gid!=launch.uid or
             metadata.st_dev!=getattr(b,'run_device',None)): _fail('VIEW_DENIED')
-    if set(b.os.listdir(prefix+'/run/acceptance'))!={launch.role.lower()}: _fail('VIEW_DENIED')
+    # C7 (E5, P50): /dev/shm is the role's own 64 MiB tmpfs (Linux 6.8 mm/shmem.c:4223-4224 shows its size as
+    # K(max_blocks), size=65536k), rw, nosuid, nodev and noexec, on neither the run nor the crash device;
+    # /run/acceptance/crash is the role's 0700 directory of the bootstrap's 1 MiB crash tmpfs (size=1024k), whose
+    # device check_appliance records. Both roots are the role's own 0700 directories.
+    run_device,crash_device=getattr(b,'run_device',None),getattr(b,'crash_device',None)
+    shm_options,shm_type,shm_super=mounts.get('/dev/shm',(set(),None,set()))
+    _,crash_type,crash_super=mounts.get('/run/acceptance/crash',(set(),None,set()))
+    shm,crash=b.os.stat(prefix+'/dev/shm'),b.os.stat(prefix+'/run/acceptance/crash')
+    if (shm_type!='tmpfs' or not {'rw','nosuid','nodev','noexec'}<=shm_options or 'size=65536k' not in shm_super or
+        crash_type!='tmpfs' or 'size=1024k' not in crash_super or crash_device is None or
+        crash.st_dev!=crash_device or shm.st_dev in (run_device,crash_device) or
+        any(m.st_mode&0o777!=0o700 or m.st_uid!=launch.uid or m.st_gid!=launch.uid for m in (shm,crash))):
+        _fail('VIEW_DENIED')
+    if set(b.os.listdir(prefix+'/run/acceptance'))!={launch.role.lower(),'crash'}: _fail('VIEW_DENIED')
     if local:
         initial=getattr(b,'initial_namespaces',{})
         if (any(b.os.readlink('/proc/self/ns/'+name)==initial.get(name) for name in ('pid','mnt')) or
             b.os.readlink('/proc/self/ns/user')!=initial.get('user')): _fail('VIEW_DENIED')
     if digest is None: _fail('ATTESTATION_FAILED')
+    if waiting is None: waiting=filters==1
     return dict(pid=pid,run_id=launch.run_id,role=launch.role,uids=uid,gids=gid,
         groups=tuple(map(int,fields['Groups'].split())),capabilities=caps,
         no_new_privs=int(fields['NoNewPrivs']),seccomp=int(fields['Seccomp']),filter_digest=digest,
-        fds=launch.fds,views=launch.views,waiting=waiting,programs=launch.programs)
+        fds=launch.fds,views=launch.views,waiting=waiting,programs=launch.programs,
+        seccomp_filters=filters,tty_nr=tty_nr)
 
 
 def _native_fd_exists(b,base,fd):
@@ -1200,15 +1529,52 @@ _RUNTIME_FD_KINDS={
     'NULL','COMMAND','RESULT','PROXY_LISTENER','PROXY_STOP_SELECTOR',
     'PROXY_ACCEPTED_STREAM','PROXY_VSOCK_STREAM','PROXY_CONNECT_SELECTOR',
 }
+# The only kinds above FD4, and only in PROXY's inventory (compB M-2).
+_PROXY_RUNTIME_KINDS=frozenset(kind for kind in _RUNTIME_FD_KINDS if kind.startswith('PROXY_'))
+_SELECTOR_KINDS=frozenset(('PROXY_STOP_SELECTOR','PROXY_CONNECT_SELECTOR'))
+_DECIMAL=re.compile('0|[1-9][0-9]{0,19}')
+_FD_NAME=re.compile('0|[1-9][0-9]{0,3}')
+_U64_MAX=18446744073709551615
 
 
-def validate_runtime_observation(value,handoff,lifecycle,*,_allow_proxy_pre_listener=False):
-    """Strictly retain inherited authority separately from current inventory."""
+def _decimal(value):
+    """Canonical unsigned decimal of at most 20 digits that fits a u64 (Swift twin)."""
+    return type(value) is str and _DECIMAL.fullmatch(value) is not None and int(value)<=_U64_MAX
+
+
+def fdinfo_facts(data):
+    """(flags, tfd targets) from one Linux /proc/<pid>/fdinfo/<fd> text.
+
+    `flags:` is the octal open-file flags line, exactly once. `tfd:` lines exist
+    only for an epoll instance (one per registered target); their sorted target
+    FD numbers bind a selector's identity beyond its shared anonymous inode
+    (E4/C5, compA M-3). A procfs text format, like `flags:` (ABI ruling R13).
+    """
+    if type(data) is not bytes or len(data)>4096: _fail('FD_DENIED')
+    try: lines=data.decode('ascii').splitlines()
+    except UnicodeError: _fail('FD_DENIED')
+    flags=[line.split() for line in lines if line.startswith('flags:')]
+    if len(flags)!=1 or len(flags[0])!=2 or re.fullmatch('[0-7]{1,22}',flags[0][1]) is None: _fail('FD_DENIED')
+    targets=[]
+    for line in lines:
+        if line.startswith('tfd:'):
+            fields=line.split()
+            if len(fields)<2 or _FD_NAME.fullmatch(fields[1]) is None or int(fields[1])>4095: _fail('FD_DENIED')
+            targets.append(int(fields[1]))
+    if len(set(targets))!=len(targets): _fail('FD_DENIED')
+    return int(flags[0][1],8),tuple(sorted(targets))
+
+
+def runtime_rows(value,role,lifecycle,*,_allow_proxy_pre_listener=False):
+    """Pure RoleRuntimeObservation wire checks for one fixed role (amendment 4.1).
+
+    Shared by the bootstrap observer, the composition consumer and, through the
+    exported divergence vectors, the Swift twin `validateRoleRuntimeV1`.
+    """
     if (type(value) is not dict
             or set(value)!=set(('role','childId','pipeId','lifecycle',
                                 'inheritedFDs','currentFDs'))
-            or type(handoff) is not RoleHandoff
-            or value['role']!=handoff.launch.role
+            or role not in UIDS or value['role']!=role
             or value['lifecycle']!=lifecycle
             or lifecycle not in ('WAITING','SERVICE','BROWSER_ACTIVE')
             or not _run(value['childId']) or not _run(value['pipeId'])
@@ -1216,23 +1582,20 @@ def validate_runtime_observation(value,handoff,lifecycle,*,_allow_proxy_pre_list
             or type(value['currentFDs']) is not list
             or not 5<=len(value['currentFDs'])<=55):
         _fail('FD_DENIED')
-    seen=[]
+    seen=[];owners=set()
     for row in value['currentFDs']:
         if (type(row) is not dict
                 or set(row)!=set(('fd','kind','device','inode','flags','ownerId',
                                   'acquiredGeneration'))
                 or type(row['fd']) is not int or not 0<=row['fd']<=4095
                 or row['kind'] not in _RUNTIME_FD_KINDS
-                or type(row['device']) is not str or not row['device'].isdecimal()
-                or not 1<=len(row['device'])<=20
-                or type(row['inode']) is not str or not row['inode'].isdecimal()
-                or not 1<=len(row['inode'])<=20
+                or not _decimal(row['device']) or not _decimal(row['inode'])
                 or type(row['flags']) is not int or not 0<=row['flags']<=9007199254740991
-                or not _run(row['ownerId'])
+                or not _run(row['ownerId']) or row['ownerId'] in owners
                 or type(row['acquiredGeneration']) is not int
                 or row['acquiredGeneration']!=1):
             _fail('FD_DENIED')
-        seen.append(row['fd'])
+        seen.append(row['fd']);owners.add(row['ownerId'])
     if seen!=sorted(set(seen)) or seen[:5]!=[0,1,2,3,4]: _fail('FD_DENIED')
     if [row['kind'] for row in value['currentFDs'][:5]]!=[
             'NULL','NULL','NULL','COMMAND','RESULT']:
@@ -1242,10 +1605,15 @@ def validate_runtime_observation(value,handoff,lifecycle,*,_allow_proxy_pre_list
         _fail('FD_DENIED')
     if lifecycle=='WAITING' and len(value['currentFDs'])!=5:
         _fail('NATIVE_CURRENT_INVENTORY_UNAVAILABLE')
-    if handoff.launch.role!='PROXY' and any(
+    if role!='PROXY' and any(
             row['kind'].startswith('PROXY_') for row in value['currentFDs']):
         _fail('FD_DENIED')
-    if handoff.launch.role=='PROXY':
+    # compB M-2, T10 divergences: above FD4 only PROXY's own runtime kinds, never
+    # a NULL/COMMAND/RESULT row and never another role's extra descriptor.
+    if any(row['fd']>=5 and (role!='PROXY' or row['kind'] not in _PROXY_RUNTIME_KINDS)
+           for row in value['currentFDs']):
+        _fail('FD_DENIED')
+    if role=='PROXY':
         counts={kind:sum(row['kind']==kind for row in value['currentFDs'])
                 for kind in _RUNTIME_FD_KINDS}
         if (lifecycle!='SERVICE'
@@ -1253,29 +1621,192 @@ def validate_runtime_observation(value,handoff,lifecycle,*,_allow_proxy_pre_list
                 or counts['PROXY_STOP_SELECTOR']>1
                 or counts['PROXY_ACCEPTED_STREAM']>16
                 or counts['PROXY_VSOCK_STREAM']>16
-                or counts['PROXY_CONNECT_SELECTOR']>16):
+                or counts['PROXY_CONNECT_SELECTOR']>16
+                or counts['PROXY_VSOCK_STREAM']>counts['PROXY_ACCEPTED_STREAM']
+                or counts['PROXY_CONNECT_SELECTOR']>counts['PROXY_ACCEPTED_STREAM']):
             _fail('FD_DENIED')
+    # From FD3 on, pipe and socket identities are unique and an epoll selector
+    # (whose anonymous inode distinct selectors may share) never aliases one.
+    plain=[(row['device'],row['inode']) for row in value['currentFDs'][3:]
+           if row['kind'] not in _SELECTOR_KINDS]
+    selectors={(row['device'],row['inode']) for row in value['currentFDs'][3:]
+               if row['kind'] in _SELECTOR_KINDS}
+    if len(set(plain))!=len(plain) or selectors&set(plain): _fail('FD_DENIED')
     return {key:([dict(row) for row in value[key]] if key=='currentFDs'
                  else list(value[key]) if key=='inheritedFDs' else value[key])
             for key in ('role','childId','pipeId','lifecycle','inheritedFDs','currentFDs')}
 
 
-class NativeKernelPort:
+def validate_runtime_observation(value,handoff,lifecycle,*,originals=None,_allow_proxy_pre_listener=False):
+    """Strictly retain inherited authority separately from current inventory.
+
+    With `originals`, the row must also equal that retained original record
+    exactly (the Swift twin's canonical original equality).
+    """
+    if type(handoff) is not RoleHandoff: _fail('FD_DENIED')
+    row=runtime_rows(value,handoff.launch.role,lifecycle,
+                     _allow_proxy_pre_listener=_allow_proxy_pre_listener)
+    if originals is not None and row!=originals: _fail('FD_DENIED')
+    return row
+
+
+# Task 16c (owner decision 2026-11-20, "Move check to the bootstrap"; P73-P80, C9): the BROWSER family's descriptor
+# and status inventory, taken by this root bootstrap, never by the uid-10002 worker (a non-dumpable Chromium child's
+# 0500 /proc/<pid>/fd belongs to root: fs/proc/base.c:1845-1861, :3250). Plan-chosen bounds (P75; Stage 2 may
+# tighten them, widening needs a decision); RLIMIT_NOFILE 4096 bounds a member's descriptor names, as for PROXY.
+_FAMILY_ATTEMPTS=5
+_FAMILY_RETRY_MS=50
+_FAMILY_LIMIT_MS=1000
+_FAMILY_MAX_MEMBERS=256
+_FAMILY_MAX_PIDS=4096
+_FAMILY_STATUS_BYTES=8192
+_FAMILY_TABLE_BYTES=1048576
+_FAMILY_POINTS=('LAUNCH','POST_LOAD','FINAL')
+# The controller's two requested points and the ordinal each returns (LAUNCH, bootstrap-internal, is ordinal 1).
+_FAMILY_REQUESTS=MappingProxyType({'POST_LOAD':2,'FINAL':3})
+_FAMILY_PID=re.compile('[1-9][0-9]{0,9}')
+_FAMILY_DECIMAL=re.compile('0|[1-9][0-9]*')
+_FAMILY_SOCKET=re.compile(r'socket:\[(0|[1-9][0-9]*)\]')
+# fs/proc/array.c:126-140 task_state_array, as task_state prints it (:181-182). A zombie or dead task has already
+# run exit_files and exit_task_namespaces (kernel/exit.c:866, :870): no descriptors, no net directory (K6). That is
+# per task: a zombie group leader whose other threads still run, or a thread with its own descriptor table, can hold
+# descriptors /proc/<tgid>/fd does not show (C10 residual, review E-2/M-2).
+_FAMILY_STATES=frozenset(('R (running)','S (sleeping)','D (disk sleep)','T (stopped)','t (tracing stop)','X (dead)',
+                          'Z (zombie)','P (parked)','I (idle)'))
+_FAMILY_EXITED=frozenset(('X (dead)','Z (zombie)'))
+# fs/proc/array.c:160-161 and :187 (PPid, the real parent's tgid in the reader's pid namespace), :189-196 (four Uid
+# and four Gid fields, tab separated), :335-340 (NoNewPrivs, Seccomp, Seccomp_filters): each `Key:\t` exactly once.
+_FAMILY_STATUS_ROWS=(b'Uid',b'Gid',b'NoNewPrivs',b'Seccomp',b'Seccomp_filters',b'PPid',b'State')
+# The five socket tables a member's own /proc/<pid>/net shows (its own netns, fs/proc/proc_net.c:267-300), with the
+# Linux 6.8 header texts compared after whitespace normalization: net/unix/af_unix.c:3282-3283; net/ipv4/
+# tcp_ipv4.c:2945-2947; net/ipv6/tcp_ipv6.c:2271-2273; net/ipv4/udp.c:3098-3100; include/net/transp_v6.h:60-64.
+# Rows: af_unix.c:3289-3318 (`%pK: %08X %08X %08X %04X %02X %5lu`, then a space and the raw path); tcp_ipv4.c:2896,
+# tcp_ipv6.c:2212, udp.c:3082 and net/ipv6/datagram.c:1056 (the inode is the tenth field). Request and TIME_WAIT
+# rows carry inode 0 (tcp_ipv4.c:2835, :2929), which attributes nothing. Socket inodes come from get_next_ino
+# (net/socket.c:640), unique across network namespaces. These are procfs text formats, not ABI values (R13).
+_FAMILY_TABLES=(
+    ('unix','UNIX',b'Num RefCount Protocol Flags Type St Inode Path'),
+    ('tcp','TCP',b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode'),
+    ('tcp6','TCP',b'sl local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode'),
+    ('udp','UDP',b'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode ref '
+                 b'pointer drops'),
+    ('udp6','UDP',b'sl local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode ref '
+                  b'pointer drops'))
+# P80 (folds Task 16 m-4): the strict 6.8 unix row. A lowercase-hex %pK token (16 digits on LP64) and ':', five
+# uppercase-hex fields of widths 8, 8, 8, 4 and 2, the %5lu inode (padded to five columns), then optionally a space
+# and the raw path. A row a newline in a path split off fails this grammar.
+_FAMILY_UNIX_ROW=re.compile(rb'[0-9a-f]{16}: [0-9A-F]{8} [0-9A-F]{8} [0-9A-F]{8} [0-9A-F]{4} [0-9A-F]{2} ( *)'
+                            rb'(0|[1-9][0-9]*)(?: [^\n]*)?')
+_FAMILY_TABLE_INODE=re.compile(rb'0|[1-9][0-9]*')
+
+
+class _FamilyStop(Exception):
+    """A terminal family outcome; its code is the inspection's ConfinementError."""
+    def __init__(self,code): super().__init__(code); self.code=code
+
+
+class _FamilyRetry(Exception):
+    """A transient attempt (P75): discarded and retried. unattributed: it failed on an UNATTRIBUTED socket."""
+    def __init__(self,unattributed): super().__init__('FAMILY_RETRY'); self.unattributed=unattributed
+
+
+def _family_rows(data,keys):
+    """Exactly one `Key:\\tvalue` row for each of KEYS in one /proc/<pid>/status text; any other row is ignored
+    unread (Name's comm has its newlines escaped, fs/proc/array.c:115, so no row can be injected through it)."""
+    if type(data) is not bytes: raise _FamilyStop('FAMILY_UNREADABLE')
+    rows={}
+    for line in data.split(b'\n'):
+        key,separator,value=line.partition(b':')
+        if not separator or key not in keys: continue
+        if key in rows or value[:1]!=b'\t': raise _FamilyStop('FAMILY_UNREADABLE')
+        rows[key]=value[1:].decode('ascii')
+    if set(rows)!=set(keys): raise _FamilyStop('FAMILY_UNREADABLE')
+    if b'PPid' in rows and _FAMILY_DECIMAL.fullmatch(rows[b'PPid']) is None: raise _FamilyStop('FAMILY_UNREADABLE')
+    if b'State' in rows and rows[b'State'] not in _FAMILY_STATES: raise _FamilyStop('FAMILY_UNREADABLE')
+    return rows
+
+
+def _family_member_status(data):
+    """A member's status rules (C9): all four Uid and all four Gid fields 10002, NoNewPrivs 1, Seccomp exactly
+    SECCOMP_MODE_FILTER, Seccomp_filters at least 1. A violation is FAMILY_DENIED; a missing, duplicate or
+    non-canonical row is FAMILY_UNREADABLE. Capabilities are not checked (Chromium's zygote holds them in its own
+    user namespace)."""
+    rows=_family_rows(data,_FAMILY_STATUS_ROWS)
+    def decimal(text):
+        if _FAMILY_DECIMAL.fullmatch(text) is None: raise _FamilyStop('FAMILY_UNREADABLE')
+        return int(text)
+    ids=[]
+    for key in (b'Uid',b'Gid'):
+        fields=rows[key].split('\t')
+        if len(fields)!=4: raise _FamilyStop('FAMILY_UNREADABLE')
+        ids.extend(decimal(field) for field in fields)
+    facts={'seccomp':decimal(rows[b'Seccomp']),'filters':decimal(rows[b'Seccomp_filters']),
+           'no_new_privs':decimal(rows[b'NoNewPrivs']),'state':rows[b'State']}
+    if facts['seccomp']!=2: raise _FamilyStop('FAMILY_DENIED')
+    if any(value!=UIDS['BROWSER'] for value in ids) or facts['no_new_privs']!=1 or facts['filters']<1:
+        raise _FamilyStop('FAMILY_DENIED')
+    return facts
+
+
+def _family_fd_names(names):
+    """A member's /proc/<pid>/fd listing: unique canonical names 0..4095, at most 4096 of them."""
+    if (type(names) is not list or len(names)>4096
+            or any(type(name) is not str or _FD_NAME.fullmatch(name) is None or int(name)>4095 for name in names)
+            or len(set(names))!=len(names)):
+        raise _FamilyStop('FAMILY_UNREADABLE')
+    return sorted(int(name) for name in names)
+
+
+def _family_table_inodes(data,table,header):
+    """The non-zero socket inodes of one member table, rows checked (P80 for unix)."""
+    if type(data) is not bytes or not data.endswith(b'\n'): raise _FamilyStop('FAMILY_UNREADABLE')
+    lines=data[:-1].split(b'\n')
+    if b' '.join(lines[0].split())!=header: raise _FamilyStop('FAMILY_UNREADABLE')
+    inodes=[]
+    for line in lines[1:]:
+        if table=='unix':
+            match=_FAMILY_UNIX_ROW.fullmatch(line)
+            if match is None or len(match.group(1))!=max(0,5-len(match.group(2))): raise _FamilyStop('FAMILY_UNREADABLE')
+            inode=match.group(2)
+        else:
+            fields=line.split()
+            if len(fields)<10 or _FAMILY_TABLE_INODE.fullmatch(fields[9]) is None: raise _FamilyStop('FAMILY_UNREADABLE')
+            inode=fields[9]
+        if inode!=b'0': inodes.append(int(inode))
+    return inodes
+
+
+_FAMILY_GONE=object()
+_FAMILY_CLOSED=object()
+
+
+class _KernelPortCore:
     """Root bootstrap parent + fixed per-role direct-parent reaper.
+
+    The shared logic of both kernel ports (T8-05): NativeKernelPort is this over
+    the sealed LinuxBindings, OfflineKernelPort this over injected inert
+    bindings. Consumers tell them apart by exact type, never isinstance.
 
     The helper owns its unreaped inner child in the new PID namespace. A STOP
     frame has no PID/argv fields; only that direct child can be signalled. Parent
     waits only its original unreaped helper; terminal receipts are cached. Lost
     helper/control channel is cleanup uncertainty, never arbitrary kill fallback.
     """
-    def __init__(self,bindings): self.b,self._owned,self._runtime_owners=bindings,{},{}
+    def __init__(self,bindings):
+        self.b,self._owned,self._runtime_owners=bindings,{},{}
+        # C7: roles whose storage cleanup ran (one use each) and their metadata-only crash aggregates.
+        self._storage_cleaned,self._crash_aggregates=set(),{}
 
     def bind_runtime_owner(self,handoff,lifecycle,runtime_owner,child_id,pipe_id,generation):
         """Trusted acquisition handoff; never populated from a runtime report.
 
         Capture inherited identities while the original child is still waiting.
-        The serving owner then registers each endpoint at acquisition and keeps
-        it until proven close. Unknown Node/Chromium internals remain unavailable.
+        That check is observed (exactly one filter over exactly FD0..4, T8-09).
+        PROXY is bound before its initializer; CONTROLLER after its BOOTSTRAP_INIT,
+        which holds because a non-PROXY SERVICE inventory is exactly FD0..4 too.
+        PROXY runtime descriptors are never registered: each bracketed observation
+        of the child (`_adopt_child_inventory`) carries its complete inventory.
+        Unknown Node/Chromium internals remain unavailable.
         """
         if type(handoff) is not RoleHandoff or handoff._kernel is not self or handoff._owned not in self._owned or id(handoff) in self._runtime_owners or runtime_owner is None or not _run(child_id) or not _run(pipe_id): _fail('AUTHORITY_LOST')
         expected='SERVICE' if handoff.launch.role in ('CONTROLLER','PROXY') else 'WAITING'
@@ -1287,40 +1818,91 @@ class NativeKernelPort:
             info=self.b.read_file('/proc/'+str(handoff.attestation.pid)+'/fdinfo/'+str(fd)).decode('ascii')
             flags=int(next(x.split()[1] for x in info.splitlines() if x.startswith('flags:')),8)
             rows.append(dict(fd=fd,kind='NULL' if fd<3 else 'COMMAND' if fd==3 else 'RESULT',device=str(metadata.st_dev),inode=str(metadata.st_ino),flags=flags,ownerId=secrets.token_hex(16),acquiredGeneration=1))
-        self._runtime_owners[id(handoff)]=dict(handoff=handoff,owner=runtime_owner,lifecycle=lifecycle,childId=child_id,pipeId=pipe_id,rows=rows,endpoints={},facts=_ownership_facts(handoff._owned))
+        self._runtime_owners[id(handoff)]=dict(handoff=handoff,owner=runtime_owner,lifecycle=lifecycle,childId=child_id,pipeId=pipe_id,rows=rows,targets={},facts=_ownership_facts(handoff._owned))
 
-    def register_runtime_descriptor(self,handoff,runtime_owner,endpoint,kind,generation):
-        state=self._runtime_owners.get(id(handoff))
-        limits={'PROXY_LISTENER':1,'PROXY_STOP_SELECTOR':1,'PROXY_ACCEPTED_STREAM':16,'PROXY_VSOCK_STREAM':16,'PROXY_CONNECT_SELECTOR':16}
-        if not state or state['handoff'] is not handoff or state['owner'] is not runtime_owner or handoff.launch.role!='PROXY' or kind not in limits or _v1_int(generation)!=1: _fail('AUTHORITY_LOST')
-        fd=endpoint.fileno();_v1_int(fd,5)
-        if fd>4095 or any(row['fd']==fd for row in state['rows']) or sum(row['kind']==kind for row in state['rows'])>=limits[kind]: _fail('FD_DENIED')
-        metadata=self.b.os.fstat(fd)
-        # Capture original acquisition kernel identity before configuration.
-        # Current flags are sampled at observation and must match this capture.
-        info=self.b.read_file('/proc/'+str(handoff.attestation.pid)+'/fdinfo/'+str(fd)).decode('ascii')
-        flags=int(next(x.split()[1] for x in info.splitlines() if x.startswith('flags:')),8)
-        row=dict(fd=fd,kind=kind,device=str(metadata.st_dev),inode=str(metadata.st_ino),flags=flags,ownerId=secrets.token_hex(16),acquiredGeneration=generation)
-        state['rows'].append(row);state['endpoints'][fd]=endpoint
+    def observe_child_descriptors(self,handoff):
+        """The PROXY child's complete descriptor table, read from /proc/<pid> (E4, C5).
 
-    def retire_runtime_descriptor(self,handoff,runtime_owner,endpoint):
+        Identity is os.stat('/proc/<pid>/fd/N'), never fstat of the same number in
+        this bootstrap process, whose own descriptor table is unrelated. Flags and an
+        epoll selector's tfd: targets come from /proc/<pid>/fdinfo/N; the link names
+        the object class. Kinds are not observable here: the caller binds them to
+        the two MAC'd reports that bracket this read. Read-only; it holds nothing.
+        """
+        if type(handoff) is not RoleHandoff or handoff._kernel is not self or handoff.launch.role!='PROXY': _fail('AUTHORITY_LOST')
+        state=self._owned.get(handoff._owned)
+        if not state or state['terminal'] is not None or state['child']!=handoff.attestation.pid: _fail('AUTHORITY_LOST')
+        base='/proc/'+str(handoff.attestation.pid)
+        listed=self.b.os.listdir(base+'/fd')
+        if (type(listed) is not list or len(listed)>4096
+                or any(type(name) is not str or _FD_NAME.fullmatch(name) is None or int(name)>4095 for name in listed)
+                or len(set(listed))!=len(listed)):
+            _fail('FD_DENIED')
+        rows=[]
+        for fd in sorted(int(name) for name in listed):
+            path=base+'/fd/'+str(fd)
+            metadata=self.b.os.stat(path)
+            flags,targets=fdinfo_facts(self.b.read_file(base+'/fdinfo/'+str(fd),4096))
+            link=self.b.os.readlink(path)
+            if (type(link) is not str or not link.isascii() or not 0<len(link)<=256
+                    or type(metadata.st_dev) is not int or type(metadata.st_ino) is not int
+                    or not 0<=metadata.st_dev<=_U64_MAX or not 0<=metadata.st_ino<=_U64_MAX
+                    or (targets and link!='anon_inode:[eventpoll]')):
+                _fail('FD_DENIED')
+            rows.append(dict(fd=fd,device=str(metadata.st_dev),inode=str(metadata.st_ino),
+                             flags=flags,tfds=list(targets),link=link))
+        return tuple(rows)
+
+    def _adopt_child_inventory(self,handoff,runtime_owner,report):
+        """The bootstrap's PROXY ledger after one accepted report-A, /proc, report-B bracket.
+
+        Every observation carries the complete inventory; nothing is registered or
+        retired by call. FD0..4 must still be the inherited originals captured while
+        the child waited. A runtime descriptor whose (fd, kind, device, inode) is
+        unchanged keeps its ownerId and must keep its flags and tfd: targets; a new
+        identity is an observed acquisition with a new ownerId, and one absent from
+        /proc is retired by that absence.
+        """
         state=self._runtime_owners.get(id(handoff))
-        if not state or state['owner'] is not runtime_owner: _fail('AUTHORITY_LOST')
-        matches=[fd for fd,original in state['endpoints'].items() if original is endpoint]
-        if len(matches)!=1 or endpoint.fileno()!=-1: _fail('CLEANUP_UNCERTAIN')
-        fd=matches[0]
-        if _native_fd_exists(self.b,'/proc/'+str(handoff.attestation.pid),str(fd)): _fail('CLEANUP_UNCERTAIN')
-        del state['endpoints'][fd];state['rows'][:]=[row for row in state['rows'] if row['fd']!=fd]
+        if (not state or state['handoff'] is not handoff or state['owner'] is not runtime_owner
+                or handoff.launch.role!='PROXY' or state['lifecycle']!='SERVICE'
+                or _ownership_facts(handoff._owned)!=state['facts']): _fail('AUTHORITY_LOST')
+        if type(report) is not tuple or not 5<=len(report)<=55: _fail('FD_DENIED')
+        rows=[dict(row) for row in state['rows'][:5]];adopted={}
+        previous={(row['fd'],row['kind'],row['device'],row['inode']):row for row in state['rows'][5:]}
+        for index,row in enumerate(report):
+            if type(row) is not dict or set(row)!={'fd','kind','device','inode','flags','tfds'} or type(row['tfds']) is not list: _fail('FD_DENIED')
+            key=(row['fd'],row['kind'],row['device'],row['inode'])
+            if index<5:
+                inherited=rows[index]
+                if key+(row['flags'],tuple(row['tfds']))!=(inherited['fd'],inherited['kind'],inherited['device'],inherited['inode'],inherited['flags'],()): _fail('FD_DENIED')
+                continue
+            old=previous.get(key)
+            if old is not None and (old['flags']!=row['flags'] or state['targets'].get(key)!=tuple(row['tfds'])): _fail('FD_DENIED')
+            rows.append(dict(fd=row['fd'],kind=row['kind'],device=row['device'],inode=row['inode'],flags=row['flags'],
+                             ownerId=old['ownerId'] if old is not None else secrets.token_hex(16),acquiredGeneration=1))
+            adopted[key]=tuple(row['tfds'])
+        runtime_rows(dict(role='PROXY',childId=state['childId'],pipeId=state['pipeId'],lifecycle='SERVICE',
+                          inheritedFDs=[0,1,2,3,4],currentFDs=rows),'PROXY','SERVICE')
+        state['rows'][:]=rows;state['targets']=adopted
+        return tuple(dict(row) for row in rows)
+
+    def runtime_record(self,handoff):
+        """The retained current record for one bound original child; no /proc read."""
+        state=self._runtime_owners.get(id(handoff))
+        if not state or state['handoff'] is not handoff or handoff._kernel is not self: _fail('AUTHORITY_LOST')
+        return dict(role=handoff.launch.role,childId=state['childId'],pipeId=state['pipeId'],
+                    lifecycle=state['lifecycle'],inheritedFDs=[0,1,2,3,4],
+                    currentFDs=[dict(row) for row in sorted(state['rows'],key=lambda row:row['fd'])])
 
     def inspect_runtime(self,original_handoff,lifecycle,runtime_owner):
         state=self._runtime_owners.get(id(original_handoff))
         if not state or state['handoff'] is not original_handoff or state['owner'] is not runtime_owner or state['lifecycle']!=lifecycle or _ownership_facts(original_handoff._owned)!=state['facts']: _fail('AUTHORITY_LOST')
         h=original_handoff;s=self._owned.get(h._owned)
         if not s or s['terminal'] is not None or s['child']!=h.attestation.pid: _fail('AUTHORITY_LOST')
-        for fd,endpoint in state['endpoints'].items():
-            if endpoint.fileno()!=fd: _fail('CLEANUP_UNCERTAIN')
-            actual=self.b.os.fstat(fd);row=next(r for r in state['rows'] if r['fd']==fd)
-            if (str(actual.st_dev),str(actual.st_ino))!=(row['device'],row['inode']): _fail('FD_DENIED')
+        # No bootstrap-side fstat: the rows are the inherited capture plus the last
+        # bracketed PROXY observation, and _native_observe re-reads every one of
+        # them from the child's own /proc/<pid>/fd and fdinfo.
         rows=tuple(sorted(state['rows'],key=lambda row:row['fd']))
         facts=_native_observe(self.b,h.attestation.pid,s['launch'],s['digest'],{},lifecycle=='WAITING',current_fds=rows)
         _check(_attestation(facts),h.launch,waiting=lifecycle=='WAITING')
@@ -1349,6 +1931,188 @@ class NativeKernelPort:
         if not state or state['handoff'] is not handoff or handoff._kernel is not self or state['lifecycle']!='WAITING': _fail('AUTHORITY_LOST')
         state['lifecycle']='BROWSER_ACTIVE'
 
+    def inspect_browser_family(self,handoff,point,*,limit_ms):
+        """Task 16c (owner decision 2026-11-20; P73-P80; C9): the BROWSER family's descriptor and status inventory,
+        read by this root bootstrap at LAUNCH, POST_LOAD or FINAL. The uid-10002 worker never inspects other processes.
+
+        One bounded snapshot. The family is the PPid closure of the worker root over two full /proc scans (P73; K8:
+        a `children` read can skip living children). Every member's descriptors are read before any member's socket
+        tables (concern 3), and each socket is attributed from the union of every member's own /proc/<pid>/net tables
+        (concern 1; K5, K9). A character or block device other than /dev/null is denied by st_rdev, whatever its path
+        (P74). At most _FAMILY_ATTEMPTS attempts, _FAMILY_RETRY_MS apart, never sleeping past LIMIT_MS on
+        self.b.monotonic, and a result counts only if its attempt ended within LIMIT_MS (P75). Only a vanished member
+        or descriptor, an unattributed socket or family churn between the scans is retried; a PermissionError on a
+        member that still exists is terminal (P77). Errors are told apart by exception class and file types by stat
+        predicates, with no errno number (P78).
+
+        It uses only self.b.os.listdir, readlink and stat, self.b.read_file, self.b.monotonic and self.b.sleep. It
+        never opens a member's descriptor, signals, attaches, writes /proc, reads /proc/self or /proc/net, or touches
+        the cleanup budget (C1). Returns {'point', 'members', 'attempts'}; otherwise ConfinementError FAMILY_DENIED,
+        FAMILY_UNREADABLE or AUTHORITY_LOST.
+        """
+        if (type(handoff) is not RoleHandoff or handoff._kernel is not self or handoff.launch.role!='BROWSER'
+                or point not in _FAMILY_POINTS or type(limit_ms) is not int or not 1<=limit_ms<=_FAMILY_LIMIT_MS):
+            _fail('AUTHORITY_LOST')
+        state=self._owned.get(handoff._owned)
+        if not state or state['terminal'] is not None or state['child']!=handoff.attestation.pid: _fail('AUTHORITY_LOST')
+        code='FAMILY_UNREADABLE'
+        try:
+            b=self.b;end=b.monotonic()+limit_ms/1000
+            null=b.os.stat('/dev/null')   # once per inspection: the one character device a member may hold
+            if not _statmod.S_ISCHR(null.st_mode): raise _FamilyStop('FAMILY_UNREADABLE')
+            attempts=0
+            while True:
+                attempts+=1;unattributed=False
+                try:
+                    members=self._family_attempt(handoff,state,null.st_rdev)
+                    if b.monotonic()<=end:
+                        return MappingProxyType({'point':point,'members':members,'attempts':attempts})
+                except _FamilyRetry as retry: unattributed=retry.unattributed
+                if attempts>=_FAMILY_ATTEMPTS or b.monotonic()+_FAMILY_RETRY_MS/1000>=end:
+                    code='FAMILY_DENIED' if unattributed else 'FAMILY_UNREADABLE'
+                    break
+                b.sleep(_FAMILY_RETRY_MS/1000)
+        except _FamilyStop as error: code=error.code
+        except Exception: code='FAMILY_UNREADABLE'
+        _fail(code)
+
+    def _family_attempt(self,handoff,state,null_rdev):
+        """One attempt (P73): root identity, scan A, descriptors, tables, scan B, sockets. Returns |B|."""
+        b=self.b;root=handoff.attestation.pid;base='/proc/'+str(root)
+        # 1. Root identity: the two control links and the pinned executable retained at spawn. The links are the
+        #    control targets no other member may hold.
+        try:
+            links=tuple(b.os.readlink(base+'/fd/'+str(fd)) for fd in (3,4))
+            executable=b.os.stat(base+'/exe');identity=(executable.st_dev,executable.st_ino)
+        except Exception: raise _FamilyStop('FAMILY_UNREADABLE') from None
+        if links!=state['links'] or identity!=state['exec_identity']: raise _FamilyStop('AUTHORITY_LOST')
+        # 2. Scan A: the PPid closure from the root, and every member's status rules.
+        family,statuses=self._family_scan(root,state['outer'])
+        facts={pid:_family_member_status(statuses[pid]) for pid in family}
+        # 3. Every member's descriptors, in ascending pid order, before any table is read (concern 3).
+        gone,sockets,controls=set(),{},frozenset(links)
+        for pid in sorted(family):
+            inodes=self._family_descriptors(pid,root,controls,null_rdev)
+            if inodes is _FAMILY_GONE: gone.add(pid)
+            else: sockets[pid]=inodes
+        # 4. Each member's own five tables, unless it is gone or already exited (no net directory, K6).
+        union={}
+        for pid in sorted(family-gone):
+            if facts[pid]['state'] not in _FAMILY_EXITED and not self._family_tables(pid,root,union): gone.add(pid)
+        # 5. Scan B: complete only if every member of B was in A and fully read. A member of A absent from B is
+        #    dropped only when a fresh status proves it gone or exited (fix round 1, review M-1): a live one, missing
+        #    from B because its parent was reaped mid-scan (a pid wrap), would leave its sockets unattributed.
+        later,_=self._family_scan(root,state['outer'])
+        if not later<=family-gone: raise _FamilyRetry(False)
+        for pid in sorted(family-gone-later):
+            if self._family_present(pid)=='LIVE': raise _FamilyRetry(False)
+        # 6. The worker root plus Chromium at least, and every socket of B attributed.
+        if len(later)<2: raise _FamilyStop('FAMILY_DENIED')
+        for pid in sorted(later):
+            if any(inode not in union for inode in sockets[pid]): raise _FamilyRetry(True)
+        return len(later)
+
+    def _family_scan(self,root,outer):
+        """One full /proc scan (P73): the PPid closure of ROOT and every listed pid's status text. /proc lists tgids in
+        ascending order, so a process alive across the scan is listed (fs/proc/base.c:3486-3507, K8)."""
+        names=self.b.os.listdir('/proc')
+        if type(names) is not list: raise _FamilyStop('FAMILY_UNREADABLE')
+        pids=[int(name) for name in names if type(name) is str and _FAMILY_PID.fullmatch(name) is not None]
+        if len(pids)>_FAMILY_MAX_PIDS or len(set(pids))!=len(pids): raise _FamilyStop('FAMILY_UNREADABLE')
+        statuses,children={},{}
+        for pid in pids:
+            try: data=self.b.read_file('/proc/'+str(pid)+'/status',_FAMILY_STATUS_BYTES)
+            except (FileNotFoundError,ProcessLookupError):
+                if pid==root: raise _FamilyStop('FAMILY_UNREADABLE') from None
+                continue   # exited after the listing
+            statuses[pid]=data
+            children.setdefault(int(_family_rows(data,(b'PPid',))[b'PPid']),[]).append(pid)
+        if root not in statuses: raise _FamilyStop('FAMILY_UNREADABLE')
+        if int(_family_rows(statuses[root],(b'PPid',))[b'PPid'])!=outer: raise _FamilyStop('AUTHORITY_LOST')
+        family,queue={root},[root]
+        while queue:
+            for child in children.get(queue.pop(),()):
+                if child not in family:
+                    family.add(child);queue.append(child)
+                    if len(family)>_FAMILY_MAX_MEMBERS: raise _FamilyStop('FAMILY_UNREADABLE')
+        return frozenset(family),statuses
+
+    def _family_present(self,pid):
+        """A fresh status read: 'GONE' (reaped), 'EXITED' (zombie or dead) or 'LIVE'."""
+        try: data=self.b.read_file('/proc/'+str(pid)+'/status',_FAMILY_STATUS_BYTES)
+        except (FileNotFoundError,ProcessLookupError): return 'GONE'
+        return 'EXITED' if _family_rows(data,(b'State',))[b'State'] in _FAMILY_EXITED else 'LIVE'
+
+    def _family_read(self,pid,root,read):
+        """One read of a member's /proc entry; _FAMILY_GONE when the member is gone (dropped from this attempt).
+
+        FileNotFoundError or ProcessLookupError: a member that is gone or already exited is dropped, which is not
+        itself a retry; one still shown and not a zombie is exiting (K6), which retries the attempt. PermissionError:
+        a vanished task reads EACCES too (K3), so the member is dropped only when its status proves it gone; on a
+        member that still exists it is terminal, never a skip (P77, the E1 class). The root is never dropped.
+        """
+        try: return read()
+        except (FileNotFoundError,ProcessLookupError):
+            if pid==root: raise _FamilyStop('FAMILY_UNREADABLE') from None
+            if self._family_present(pid)!='LIVE': return _FAMILY_GONE
+            raise _FamilyRetry(False) from None
+        except PermissionError:
+            if pid!=root and self._family_present(pid)=='GONE': return _FAMILY_GONE
+            raise _FamilyStop('FAMILY_UNREADABLE') from None
+
+    def _family_entry(self,pid,root,base,fd):
+        """(link, stat) of one descriptor, the stat following the link. On FileNotFoundError the member's fds are
+        listed again: an absent number closed (_FAMILY_CLOSED); a present one is read once more, and a second failure
+        retries the attempt. _FAMILY_GONE when the member is gone."""
+        b=self.b;path=base+'/fd/'+str(fd)
+        for again in (False,True):
+            try: return b.os.readlink(path),b.os.stat(path)
+            except FileNotFoundError:
+                if again: raise _FamilyRetry(False) from None
+            except PermissionError:
+                if pid!=root and self._family_present(pid)=='GONE': return _FAMILY_GONE
+                raise _FamilyStop('FAMILY_UNREADABLE') from None
+            names=self._family_read(pid,root,lambda:b.os.listdir(base+'/fd'))
+            if names is _FAMILY_GONE: return _FAMILY_GONE
+            if fd not in _family_fd_names(names): return _FAMILY_CLOSED
+
+    def _family_descriptors(self,pid,root,controls,null_rdev):
+        """Step 3 for one member: every descriptor classified; its socket inodes, or _FAMILY_GONE."""
+        b=self.b;base='/proc/'+str(pid)
+        names=self._family_read(pid,root,lambda:b.os.listdir(base+'/fd'))
+        if names is _FAMILY_GONE: return _FAMILY_GONE
+        inodes=[]
+        for fd in _family_fd_names(names):
+            entry=self._family_entry(pid,root,base,fd)
+            if entry is _FAMILY_GONE: return _FAMILY_GONE
+            if entry is _FAMILY_CLOSED: continue
+            link,metadata=entry
+            if type(link) is not str or not link: raise _FamilyStop('FAMILY_UNREADABLE')
+            if link.startswith('socket:'):
+                # net/socket.c:362 `socket:[%lu]`; attributed in step 6. Any other socket: form is unreadable.
+                match=_FAMILY_SOCKET.fullmatch(link)
+                if match is None: raise _FamilyStop('FAMILY_UNREADABLE')
+                inodes.append(int(match.group(1)))
+                continue
+            if pid!=root and link in controls: raise _FamilyStop('FAMILY_DENIED')
+            mode=metadata.st_mode
+            if type(mode) is not int: raise _FamilyStop('FAMILY_UNREADABLE')
+            # C9 (fix round 1, review I-1): every block device is denied; a character device only when it is not
+            # /dev/null's number (a block device may share it: brd's /dev/ram3 is b 1:3).
+            if _statmod.S_ISBLK(mode) or (_statmod.S_ISCHR(mode) and metadata.st_rdev!=null_rdev):
+                raise _FamilyStop('FAMILY_DENIED')
+        return inodes
+
+    def _family_tables(self,pid,root,union):
+        """Step 4 for one member: its own five tables into UNION (inode -> family); False when it is gone."""
+        for table,family,header in _FAMILY_TABLES:
+            data=self._family_read(pid,root,lambda table=table:self.b.read_file(
+                '/proc/'+str(pid)+'/net/'+table,_FAMILY_TABLE_BYTES))
+            if data is _FAMILY_GONE: return False
+            for inode in _family_table_inodes(data,table,header):
+                if union.setdefault(inode,family)!=family: raise _FamilyStop('FAMILY_UNREADABLE')
+        return True
+
     def write_role(self,owned,data):
         state=self._owned.get(owned)
         if state is None or state['terminal'] is not None or type(data) is not bytes or not 0<len(data)<=16388: _fail('CHANNEL_DENIED')
@@ -1372,6 +2136,31 @@ class NativeKernelPort:
         if not 0<count<=16384: _fail('FRAME_DENIED')
         return header+self._read_exact(owned.result,count,max(0,int((end-self.b.monotonic())*1000)),eof_code='CHANNEL_EOF')
 
+    def write_proxy_frame(self,owned,data):
+        """One PROXY v2 FD3 frame (two-byte length, 1..4096 bytes) or the bare STOP.
+
+        The class writer, never a per-instance replacement: only the retained
+        original physical command end of the original PROXY child.
+        """
+        if (type(data) is not bytes or getattr(owned,'role',None)!='PROXY'
+                or not (data==b'STOP' or (len(data)>=3 and int.from_bytes(data[:2],'big')==len(data)-2<=4096))):
+            _fail('CHANNEL_DENIED')
+        _KernelPortCore.write_role(self,owned,data)
+
+    def read_proxy_frame(self,owned,remaining_ms):
+        """One PROXY v2 FD4 frame: a two-byte length, then 1..16384 bytes (amendment 6.1).
+
+        Only the retained original result end; same bounds as read_role otherwise.
+        """
+        state=self._owned.get(owned)
+        if state is None or state['terminal'] is not None or owned.role!='PROXY': _fail('CHANNEL_DENIED')
+        remaining_ms=min(_v1_int(remaining_ms,0),1000)
+        end=self.b.monotonic()+remaining_ms/1000
+        header=self._read_exact(owned.result,2,remaining_ms,eof_code='CHANNEL_EOF')
+        count=int.from_bytes(header,'big')
+        if not 0<count<=16384: _fail('FRAME_DENIED')
+        return header+self._read_exact(owned.result,count,max(0,int((end-self.b.monotonic())*1000)),eof_code='CHANNEL_EOF')
+
     def poll_role(self,owned):
         if type(owned) is not NativeOwned or owned.result is None:_fail('HANDOFF_DENIED')
         try:ready,_,_=self.b.select([owned.result],[],[],0)
@@ -1379,8 +2168,16 @@ class NativeKernelPort:
         if type(ready) is not list or any(endpoint is not owned.result and endpoint!=owned.result for endpoint in ready):_fail('CHANNEL_EOF')
         return bool(ready)
 
-    def spawn_waiting(self,launch,entry):
+    @staticmethod
+    def _start_step(limit_ms):
+        """One fixed 2000 ms start-up wait. A terminal caller's shared cleanup end (P67, C1) can only shorten it."""
+        if limit_ms is None: return 2000
+        value=limit_ms()
+        return min(2000,value) if type(value) is int and value>=0 else 0
+
+    def spawn_waiting(self,launch,entry,*,limit_ms=None):
         if type(launch) is not RoleLaunch or launch._seal is not _SEAL: _fail('ROLE_DENIED')
+        if limit_ms is not None and not callable(limit_ms): _fail('ROLE_DENIED')
         runtime=getattr(self.b,'_runtime',None)
         if runtime is not None and runtime.identity.python not in launch.programs: _fail('NATIVE_RUNTIME_MISMATCH')
         b=self.b; b.check_appliance(); pins=b.pin_programs(launch.programs)
@@ -1472,12 +2269,19 @@ class NativeKernelPort:
             for fd in pins.values(): b.os.close(fd)
             for fd in (command[0],result[1],stop[0],ready[1]): b.os.close(fd)
             b.os.set_blocking(stop[1],False)
-            digest=self._read_exact(ready[0],64,2000).decode('ascii')
+            frame=self._read_exact(ready[0],_READY_FRAME_BYTES,self._start_step(limit_ms))
+            digest=frame[:64].decode('ascii')
             if not re.fullmatch('[0-9a-f]{64}',digest): _fail('ROLE_START_FAILED')
             # A worker-owned fixed waiting frame is necessary, never infer
             # readiness from a successful fork or an empty pipe.
-            if self._read_exact(result[0],8,2000)!=b'WAITING\n': _fail('ROLE_START_FAILED')
+            if self._read_exact(result[0],8,self._start_step(limit_ms))!=b'WAITING\n': _fail('ROLE_START_FAILED')
             child=self._child_pid(outer)
+            # P17 (C7): the frame's last 32 bytes must bind this child's own five scope roots exactly as this
+            # bootstrap observes them through /proc/<child>/root. A role launch sends its admission proof's digest.
+            identities=tuple((path,)+_stat_identity(b.os.stat('/proc/'+str(child)+'/root'+path))
+                             for path in storage.ROLE_SCOPES[launch.role])
+            if not hmac.compare_digest(frame[64:],storage.scope_digest(launch.role,launch.uid,identities)):
+                _fail('STORAGE_PROOF_DENIED')
             state.update(child=child,digest=digest)
             state['links']=tuple(b.os.readlink('/proc/'+str(child)+'/fd/'+str(fd)) for fd in (3,4))
             # Public PID is the inner process identity; parent reaps the stable
@@ -1526,7 +2330,7 @@ class NativeKernelPort:
             runtime=runtimes[0]
             observed=self.inspect_runtime(runtime['handoff'],runtime['lifecycle'],runtime['owner'])
             a=_native_observe(self.b,pid,s['launch'],s['digest'],{},runtime['lifecycle']=='WAITING',current_fds=observed['currentFDs'])
-        else:a=_native_observe(self.b,pid,s['launch'],s['digest'],{},True)
+        else:a=_native_observe(self.b,pid,s['launch'],s['digest'],{},None)  # waiting observed (T8-09)
         executable=self.b.os.stat('/proc/'+str(pid)+'/exe')
         if (executable.st_dev,executable.st_ino)!=s.get('exec_identity'): _fail('PROGRAM_DENIED')
         links=tuple(self.b.os.readlink('/proc/'+str(pid)+'/fd/'+str(fd)) for fd in (3,4))
@@ -1569,8 +2373,134 @@ class NativeKernelPort:
             if self.b.monotonic()<until:self.b.sleep(min(0.01,max(0,until-self.b.monotonic())))
         return {'status':'TIMEOUT','pid':owned.pid,'run_id':owned.run_id}
 
+    def terminal_receipt(self,owned):
+        """The cached terminal receipt of one original child, or None. Read-only; no wait."""
+        state=self._owned.get(owned)
+        if state is None: _fail('EXIT_DENIED')
+        return None if state['terminal'] is None else dict(state['terminal'])
+
     def wait_owned(self,owned,deadline): return self._exit(owned,deadline,False)
     def stop_owned(self,owned,deadline): return self._exit(owned,deadline,True)
+
+    def _remove_view(self,views,backing):
+        """Bootstrap side, only after every child of that view has its terminal receipt: unlink the view's dev/null
+        node and rmdir its root-owned skeleton, then BACKING. A missing node is already gone; any other refusal
+        (a non-empty directory, say) is incomplete. Never an unmount: namespace teardown took the mounts (P16)."""
+        complete=True
+        steps=((self.b.os.unlink,views.root+'/.root/dev/null'),)+tuple(
+            (self.b.os.rmdir,path) for path in _view_skeleton(views)+tuple(backing))
+        for remove,path in steps:
+            try: remove(path)
+            except FileNotFoundError: pass
+            except Exception: complete=False
+        return complete
+
+    def run_storage_cleanup(self,role,launch,*,budget):
+        """C7 (E5, R8, P11): clean one role's private storage as that role, inside its own view; one use per role.
+
+        A fixed operation in a fresh confined child (_storage_cleanup_child) with the role's views, UID and filter:
+        its own scope-root verification (P66), a metadata-only crash aggregate, removal of whatever the role created
+        there (never through a symlink, across a device or into another UID's entry), one fixed result frame. Never
+        an exec, a caller entry, path or operation. It runs only once every child this port spawned in that role's
+        view has its terminal receipt, so each such view's mount namespace, its /dev/shm tmpfs included, is gone
+        (P16). The bootstrap removes only its own root-owned skeleton and, after the child, the emptied backing
+        directories; it records the role's crash aggregate for crash_summary. Uses only core state (P11).
+
+        P67 (C1): BUDGET is the run's one terminal-start cleanup budget, shared by all four roles' cleanups. Cleanup
+        is terminal work, so it starts that shared end if no earlier terminal event did, and never allocates another.
+        Every wait (the child's start and ready frame, its crash walk and removal, its result frame and exit) is
+        clamped to budget.remaining(). On exhaustion the child is stopped (its helper kills it) and the result is
+        sticky-incomplete with code CLEANUP_TIMEOUT.
+        """
+        incomplete=storage.CleanupResult(False,False,'CLEANUP_INCOMPLETE')
+        timeout=storage.CleanupResult(False,False,'CLEANUP_TIMEOUT')
+        try:
+            if (role not in UIDS or type(launch) is not RoleLaunch or launch._seal is not _SEAL or launch.role!=role
+                    or launch!=prepare_role(role,RoleConfig(BootstrapConfig(self,launch.run_id,launch.programs),launch.fds))
+                    or any(not callable(getattr(budget,name,None)) for name in ('start_terminal','remaining'))):
+                return incomplete
+        except Exception: return incomplete
+        if (role in self._storage_cleaned or
+                any(state.get('terminal') is None for state in self._owned.values()
+                    if getattr(state.get('launch'),'role',None)==role)):
+            return incomplete
+        self._storage_cleaned.add(role)
+        def left():
+            # The shared end only; 0 once it has passed or the budget cannot answer.
+            try: value=budget.remaining()
+            except Exception: return 0
+            return value if type(value) is int and value>0 else 0
+        try: budget.start_terminal()
+        except Exception: return timeout
+        if not left(): return timeout
+        if not self._remove_view(launch.views,()): return incomplete
+        owned=None
+        try:
+            try: owned=self.spawn_waiting(launch,lambda port,launch=launch: _storage_cleanup_child(launch,port),
+                                          limit_ms=left)
+            except RoleStartFailure as error:
+                owned=error.owned
+                raise
+            header=self._read_exact(owned.result,4,left())
+            count=struct.unpack('>I',header)[0]
+            if not 0<count<=16384: _fail('FRAME_DENIED')
+            value=_v1_decode(header+self._read_exact(owned.result,count,left()))
+            _v1_exact(value,('version','kind','role','removed','code','policyDigest','fileCount','directoryCount',
+                             'logicalBytes','allocatedBytes'))
+            if (type(value['version']) is not int or value['version']!=1 or value['kind']!='STORAGE_CLEANUP'
+                    or value['role']!=role or type(value['removed']) is not bool
+                    or value['code']!=('COMPLETE' if value['removed'] else 'CLEANUP_INCOMPLETE')
+                    or type(value['policyDigest']) is not str
+                    or re.fullmatch('[0-9a-f]{64}',value['policyDigest']) is None): _fail('FRAME_DENIED')
+            aggregate=storage.CrashAggregate(value['policyDigest'],*(_v1_int(value[name],0) for name in (
+                'fileCount','directoryCount','logicalBytes','allocatedBytes')),False)
+            if self.b.os.write(owned.command,b'EXIT')!=4: _fail('CHANNEL_DENIED')
+            receipt=self.wait_owned(owned,min(2000,left()))
+            if type(receipt) is not dict or receipt.get('status')!='EXITED' or receipt.get('pid')!=owned.pid:
+                _fail('CLEANUP_UNCERTAIN')
+        except Exception:
+            if owned is not None:
+                # Stop the original child: its helper kills it; no wait beyond the shared end.
+                try: self.stop_owned(owned,min(2000,left()))
+                except Exception: pass
+            return incomplete if left() else timeout
+        self._crash_aggregates[role]=aggregate
+        complete=self._remove_view(launch.views,_view_backing(launch.views)) and value['removed']
+        return storage.CleanupResult(complete,False,'COMPLETE' if complete else 'CLEANUP_INCOMPLETE')
+
+    def crash_summary(self):
+        """The bootstrap's only view of crash state (C7): the four roles' metadata aggregates, summed."""
+        if set(self._crash_aggregates)!=set(UIDS): _fail('CLEANUP_INCOMPLETE')
+        summary=None
+        try: summary=storage.combine_crash_aggregates(tuple(self._crash_aggregates[role] for role in UIDS))
+        except storage.StorageFailure: pass
+        if summary is None: _fail('CLEANUP_INCOMPLETE')
+        return summary
+
+
+_NATIVE_KERNEL_SEAL=object()
+
+
+class NativeKernelPort(_KernelPortCore):
+    """The sealed native port (T8-05, D5): only select_native_kernel builds it.
+
+    It holds the LinuxBindings that select_native_kernel loaded over a validated
+    runtime identity, never injected bindings, and it has no subclasses.
+    Consumers count a kernel as native only when `type(k) is NativeKernelPort`.
+    """
+    def __init_subclass__(cls,**kwargs): raise TypeError('NativeKernelPort is final')
+
+    def __init__(self,bindings,*,seal=None):
+        runtime=getattr(bindings,'_runtime',None)
+        if (seal is not _NATIVE_KERNEL_SEAL or type(bindings) is not LinuxBindings
+                or type(runtime) is not _ValidatedRuntime or runtime.seal is not _NATIVE_SEAL):
+            _fail('NATIVE_GATE_DENIED')
+        super().__init__(bindings)
+
+
+class OfflineKernelPort(_KernelPortCore):
+    """The unsealed port over injected inert bindings: offline tests and offline
+    composition only. Never native evidence; no consumer counts it as native."""
 
 
 if __name__ == '__main__':

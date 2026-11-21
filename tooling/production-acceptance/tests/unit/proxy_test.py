@@ -25,6 +25,26 @@ ORIGINS = tuple((key, 'https://' + value) for key, value in HOSTS.items())
 REQUEST = b'CONNECT frontend.example.test:443 HTTP/1.1\r\nHost: frontend.example.test:443\r\n\r\n'
 OK = b'HTTP/1.1 200 Connection Established\r\n\r\n'
 CONTROL = next(v['canonical'].encode() for v in VECTORS['accepted'] if v['name'] == 'control')
+# C3/C4 (E3, R6, P10). The run capability bytes([7])*32 stays with the bootstrap and the host; the
+# proxy holds only k_vsock = derive(capability, 'vsock-stream'), the Task 3 vector 5814c714...4d00.
+CAPABILITY = bytes([7]) * 32
+VSOCK_KEY = hmac.new(CAPABILITY, b'acceptance:key-derivation:v1\0vsock-stream\0', hashlib.sha256).digest()
+TOPOLOGY_KEY = hmac.new(CAPABILITY, b'acceptance:key-derivation:v1\0topology-admission\0', hashlib.sha256).digest()
+# The host's per-stream challenge frame: a 2-byte big-endian length (16), then 16 bytes (00..0f here).
+NONCE = bytes(range(16))
+
+
+def challenge(nonce=NONCE):
+    return len(nonce).to_bytes(2, 'big') + nonce
+
+
+CHALLENGE = challenge()
+
+
+def proof(sequence=1, nonce=NONCE, run_id='1' * 32, key=VSOCK_KEY):
+    """Independent C4 oracle: HMAC-SHA256(k_vsock, domain || nonce || runId || sequence (8-byte BE))."""
+    message = b'acceptance:vsock-stream:v1\0' + nonce + run_id.encode('ascii') + sequence.to_bytes(8, 'big')
+    return hmac.new(key, message, hashlib.sha256).digest()
 
 
 class Clock:
@@ -86,14 +106,15 @@ class Sockets:
 
 
 class Transport:
-    def __init__(self, streams=(), *, binding=None, loss_at=None):
-        self.streams, self.binding = list(streams), binding
+    """One-use fake transport. By default every opened stream first delivers the host's
+    challenge frame (C4); challenge=None leaves each stream exactly as the test built it."""
+    def __init__(self, streams=(), *, loss_at=None, challenge=CHALLENGE):
+        self.streams = list(streams)
         self.calls, self.closes, self.claims, self.checks = [], 0, 0, 0
-        self.loss_at = loss_at
-    def authenticate(self, binding):
+        self.loss_at, self.challenge = loss_at, challenge
+    def claim(self):
         self.claims += 1
         if self.claims > 1: raise OSError('one use')
-        return self.binding if self.binding is not None else binding
     def check(self):
         self.checks += 1
         if self.loss_at is not None and self.checks >= self.loss_at: raise OSError('lost')
@@ -102,18 +123,130 @@ class Transport:
         if not self.streams: raise OSError('no stream')
         result = self.streams.pop(0)
         if isinstance(result, Exception): raise result
+        if self.challenge is not None and isinstance(result, Stream):
+            result.parts.insert(0, self.challenge)
         return result
     def close(self): self.closes += 1
 
 
 def config(sockets, clock=None, **changes):
-    binding = proxy.RunBinding('1' * 32, b'\x07' * 32, 190, 1,
+    binding = proxy.RunBinding('1' * 32, VSOCK_KEY, 190, 1,
                                'b' * 64, 'a' * 64, ORIGINS)
     values = dict(destinations=HOSTS.copy(), binding=binding,
                   aggregate_bytes=10000, idle_timeout_ms=20, run_timeout_ms=50,
                   clock=clock or Clock(), sockets=sockets)
     values.update(changes)
     return proxy.ProxyConfig(**values)
+
+
+BACKEND_REQUEST = REQUEST.replace(b'frontend', b'backend')
+# T9-1: the CONNECT shape Chromium's proxy client sends (brief literal; test-only hosts).
+CHROMIUM_HOSTS = {'FRONTEND': 'fe.example.test', 'BACKEND': 'be.example.test'}
+CHROMIUM_CONNECT = (b'CONNECT fe.example.test:443 HTTP/1.1\r\nHost: fe.example.test:443\r\n'
+                    b'Proxy-Connection: keep-alive\r\nUser-Agent: Mozilla/5.0 (X11; Linux aarch64)\r\n\r\n')
+# One schema-valid denial per pinned inherited-frame field (T9-4).
+FRAME_FIELD_DENIALS = (
+    ('runId', '2' * 32), ('vsockKey', '08' * 32), ('expiresAt', 191), ('firstSequence', 2),
+    ('manifestIdentity', 'e' * 64), ('configIdentity', 'e' * 64),
+    ('origins', {'BACKEND': 'https://backend.example.test', 'FRONTEND': 'https://other.example.test'}),
+    ('aggregateBytes', 9999), ('idleTimeoutMs', 21), ('runTimeoutMs', 51))
+
+
+def control(destination='FRONTEND', sequence=1):
+    """The literal Task 1 control vector, re-targeted; length-prefixed as on the wire."""
+    value = CONTROL.replace(b'FRONTEND', destination.encode()).replace(
+        b'"sequence":1', b'"sequence":' + str(sequence).encode())
+    return len(value).to_bytes(2, 'big') + value
+
+
+def setup(destination='FRONTEND', sequence=1, nonce=NONCE):
+    """C4 stream setup as written after the host's challenge: the control frame, then the
+    proof frame (2-byte length 32, then the 32-byte proof)."""
+    return control(destination, sequence) + b'\x00\x20' + proof(sequence, nonce)
+
+
+def connect_result(wire, hosts):
+    """parse_connect's destination, or its rejection code, so a rejection is an assertion failure."""
+    try:
+        return proxy.parse_connect(wire, hosts)
+    except proxy.ProxyError as error:
+        return 'REJECTED:' + str(error)
+
+
+def oserror(code):
+    """Inert OSError carrying exactly one errno (Python maps it to its subclass)."""
+    return OSError(code, 'inert ' + errno.errorcode[code])
+
+
+class FaultStream(Stream):
+    """Raises a chosen inert error on the nth call of one operation; optional failing close."""
+    def __init__(self, data=(), *, faults=None, close_error=None, **kwargs):
+        super().__init__(data, **kwargs)
+        self.faults, self.counts, self.close_error = dict(faults or {}), {}, close_error
+    def _fault(self, operation):
+        self.counts[operation] = self.counts.get(operation, 0) + 1
+        error = self.faults.get((operation, self.counts[operation]))
+        if error is not None: raise error
+    def read(self, max_bytes):
+        self._fault('read'); return super().read(max_bytes)
+    def write(self, data):
+        self._fault('write'); return super().write(data)
+    def end_write(self):
+        self._fault('end'); return super().end_write()
+    def close(self):
+        super().close()
+        if self.close_error is not None: raise self.close_error
+
+
+class TickClock(Clock):
+    """Calls on_tick(n) after the nth 1 ms loop wait; the loop's only sleep."""
+    def __init__(self, on_tick=None):
+        super().__init__(); self.ticks = 0; self.on_tick = on_tick
+    def wait(self, milliseconds):
+        super().wait(milliseconds); self.ticks += 1
+        if self.on_tick: self.on_tick(self.ticks)
+
+
+class CountingListener(Listener):
+    def __init__(self, clients, endpoint):
+        super().__init__(clients, endpoint); self.accepts = 0
+    def accept(self):
+        self.accepts += 1; return super().accept()
+
+
+class CountingSockets(Sockets):
+    """Counts accept() calls; stop_requested() is supplied by the test."""
+    def __init__(self, clients, stop):
+        super().__init__(clients, complete=False); self.stop = stop
+    def listen(self, address, port, backlog):
+        self.calls.append((address, port, backlog))
+        self.listener = CountingListener(self.clients, self.endpoint)
+        return self.listener
+    def stop_requested(self): return self.stop()
+
+
+class LateAncillary(Stream):
+    """Carries ancillary data from its third read on (after the challenge and one empty read)."""
+    def read(self, max_bytes):
+        message = super().read(max_bytes)
+        if message is None or len(self.read_bounds) < 3: return message
+        return proxy.ChannelMessage(message.data, ((1, 1, b'fd'),), message.flags)
+
+
+class AfterListener(Listener):
+    """Hands out the next client only after every client handed out before has closed."""
+    def __init__(self, clients, endpoint):
+        super().__init__(clients, endpoint); self.given = []
+    def accept(self):
+        if not self.clients or any(c.closes == 0 for c in self.given): return None
+        self.given.append(self.clients.pop(0)); return self.given[-1]
+
+
+class AfterSockets(Sockets):
+    def listen(self, address, port, backlog):
+        self.calls.append((address, port, backlog))
+        self.listener = AfterListener(self.clients, self.endpoint)
+        return self.listener
 
 
 class ProxyTests(unittest.TestCase):
@@ -168,7 +301,7 @@ class ProxyTests(unittest.TestCase):
         broker = Stream([b'\x00\x03\x80\xff\x01\x00\x00'])
         outcome, cfg, sockets, transport = self.run_case([client], [broker])
         self.assertEqual(outcome.code, 'COMPLETE')
-        self.assertEqual(bytes(broker.written), len(CONTROL).to_bytes(2, 'big') + CONTROL + b'\x00\x09\x16\x03\x01secret\x00\x00')
+        self.assertEqual(bytes(broker.written), setup() + b'\x00\x09\x16\x03\x01secret\x00\x00')
         self.assertEqual(bytes(client.written), OK + b'\x80\xff\x01')
         self.assertEqual((client.ends, client.closes, broker.closes), (1, 1, 1))
         self.assertEqual([(cid, port) for cid, port, _ in transport.calls], [(2, 4050)])
@@ -180,7 +313,7 @@ class ProxyTests(unittest.TestCase):
         outcome, _, _, _ = self.run_case([client], [broker], idle_timeout_ms=120000, run_timeout_ms=1000)
         self.assertEqual(outcome.code, 'COMPLETE')
         self.assertEqual(bytes(client.written), OK + b'\x00\xff')
-        self.assertEqual(bytes(broker.written), len(CONTROL).to_bytes(2, 'big') + CONTROL + b'\x00\x03abc\x00\x00')
+        self.assertEqual(bytes(broker.written), setup() + b'\x00\x03abc\x00\x00')
         self.assertLessEqual(max(client.read_bounds + broker.read_bounds + client.write_bounds + broker.write_bounds), 4096)
 
     def test_listens_127001_only(self):
@@ -236,32 +369,49 @@ class ProxyTests(unittest.TestCase):
             outcome, _, _, _ = self.run_case([Stream([REQUEST], flags=flags)], [Stream()])
             self.assertEqual(outcome.code, 'CHANNEL_DENIED')
 
-    def test_capability_run_and_release_binding_mismatch_stops_before_listener(self):
-        for field, value in [('capability', b'\x08' * 32), ('run_id', '2' * 32),
-                             ('config_identity', 'c' * 64), ('manifest_identity', 'c' * 64),
-                             ('first_sequence', 2), ('expires_at', 180),
-                             ('origins', (('FRONTEND', 'https://evil.example.test'), ORIGINS[1]))]:
-            sockets = Sockets()
-            cfg = config(sockets)
-            transport = Transport(binding=dataclasses.replace(cfg.binding, **{field: value}))
-            self.assertEqual(proxy.serve_proxy(cfg, transport).code, 'IDENTITY_MISMATCH')
-            self.assertEqual(sockets.calls, [])
+    def test_forged_or_replayed_stream_proof_rejected_by_real_verifier(self):
+        # T9-3 (replaces the fake-binding mismatch test): the proofs the proxy actually wrote are
+        # checked against their recorded challenges with the real stream_proof, compared in
+        # constant time as the host does (BrokerTests binds the host verifier to the same vector).
+        n1, n2 = bytes(range(16)), bytes(range(16, 32))
+        clients = [Stream([REQUEST, b'']), Stream([BACKEND_REQUEST, b''])]
+        brokers = [Stream([challenge(n1), b'\x00\x00']), Stream([challenge(n2), b'\x00\x00'])]
+        sockets, transport = Sockets(clients), Transport(brokers, challenge=None)
+        self.assertEqual(proxy.serve_proxy(config(sockets), transport).code, 'COMPLETE')
+
+        def recorded(stream):
+            data = bytes(stream.written)
+            size = int.from_bytes(data[:2], 'big')
+            self.assertEqual(data[2 + size:4 + size], b'\x00\x20')
+            return json.loads(data[2:2 + size]), data[4 + size:36 + size]
+
+        def verify(nonce, frame, candidate):
+            expected = proxy.stream_proof(VSOCK_KEY, nonce, frame['runId'], frame['sequence'])
+            return hmac.compare_digest(candidate, expected)
+
+        (c1, p1), (c2, p2) = recorded(brokers[0]), recorded(brokers[1])
+        self.assertEqual((c1['sequence'], c2['sequence']), (1, 2))
+        self.assertTrue(verify(n1, c1, p1))
+        self.assertTrue(verify(n2, c2, p2))
+        # Replays: a recorded proof never answers another challenge, sequence or run.
+        self.assertFalse(verify(n2, c1, p1), 'replayed for another challenge')
+        self.assertFalse(verify(n1, c2, p1), 'replayed for another sequence')
+        self.assertFalse(verify(n1, dict(c1, runId='2' * 32), p1), 'replayed for another run')
+        # Forgeries: the raw capability or the topology key in place of k_vsock, a flipped bit.
+        for key in (CAPABILITY, TOPOLOGY_KEY):
+            self.assertFalse(verify(n1, c1, proxy.stream_proof(key, n1, '1' * 32, 1)))
+        self.assertFalse(verify(n1, c1, bytes([p1[0] ^ 1]) + p1[1:]))
+        # Neither key nor capability ever reaches a stream.
+        for stream in brokers:
+            self.assertNotIn(VSOCK_KEY, bytes(stream.written))
+            self.assertNotIn(CAPABILITY, bytes(stream.written))
 
     def test_sequence_controls_do_not_reset_across_tunnels(self):
         clients = [Stream([REQUEST, b'']), Stream([REQUEST.replace(b'frontend', b'backend'), b''])]
         brokers = [Stream([b'\x00\x00']), Stream([b'\x00\x00'])]
         outcome, _, _, _ = self.run_case(clients, brokers)
         self.assertEqual(outcome.code, 'COMPLETE')
-        expected = CONTROL.replace(b'FRONTEND', b'BACKEND').replace(b'"sequence":1', b'"sequence":2')
-        self.assertEqual(bytes(brokers[1].written), len(expected).to_bytes(2, 'big') + expected + b'\x00\x00')
-
-    def test_seventeenth_live_tunnel_fails_without_opening_bridge(self):
-        clients, brokers = [Stream([REQUEST]) for _ in range(17)], [Stream() for _ in range(16)]
-        outcome, _, sockets, transport = self.run_case(clients, brokers, idle_timeout_ms=100)
-        self.assertEqual(outcome.code, 'CAPACITY')
-        self.assertEqual(len(transport.calls), 16)
-        self.assertEqual([s.closes for s in clients + brokers], [1] * 33)
-        self.assertEqual(sockets.listener.closes, 1)
+        self.assertEqual(bytes(brokers[1].written), setup('BACKEND', 2) + b'\x00\x00')
 
     def test_aggregate_bytes_counts_both_directions_before_forwarding(self):
         client, broker = Stream([REQUEST + b'abcd']), Stream([b'\x00\x03xyz'])
@@ -269,7 +419,7 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(outcome.code, 'BYTE_LIMIT')
         self.assertEqual(outcome.used_bytes, 4)
         self.assertEqual(bytes(client.written), OK)
-        self.assertEqual(bytes(broker.written), len(CONTROL).to_bytes(2, 'big') + CONTROL + b'\x00\x04abcd')
+        self.assertEqual(bytes(broker.written), setup() + b'\x00\x04abcd')
 
     def test_aggregate_bytes_never_reset_between_completed_tunnels(self):
         # Hold the second CONNECT until the first has completed; common ceiling persists.
@@ -280,13 +430,17 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(outcome.used_bytes, 4)
         self.assertNotIn(b'xyz', bytes(brokers[1].written))
 
-    def test_idle_timeout_incomplete_header_and_pending_write(self):
-        for client, broker in [(Stream([b'CON']), Stream()), (Stream([REQUEST]), Stream(partial=None)),
-                               (Stream([REQUEST]), Stream([b'\x00']))]:
-            outcome, _, sockets, _ = self.run_case([client], [broker], idle_timeout_ms=3)
-            self.assertEqual(outcome.code, 'IDLE_TIMEOUT')
-            self.assertEqual(client.closes, 1)
-            self.assertEqual(sockets.listener.closes, 1)
+    def test_idle_incomplete_header_and_pending_write_close_only_that_tunnel(self):
+        for name, client, broker, opened in [
+                ('header', Stream([b'CON']), Stream(), 0),
+                ('pending-write', Stream([REQUEST]), Stream(partial=None), 1),
+                ('partial-record', Stream([REQUEST]), Stream([b'\x00']), 1)]:
+            with self.subTest(path=name):
+                outcome, _, sockets, transport = self.run_case([client], [broker], idle_timeout_ms=3)
+                self.assertNotEqual(outcome.code, 'IDLE_TIMEOUT')
+                self.assertEqual(outcome.code, 'COMPLETE')
+                self.assertEqual((client.closes, broker.closes, len(transport.calls)), (1, opened, opened))
+                self.assertEqual((sockets.listener.closes, transport.closes), (1, 1))
 
     def test_run_lifetime_expiry_without_tunnels(self):
         clock, sockets = Clock(), Sockets(complete=False)
@@ -337,7 +491,7 @@ class ProxyTests(unittest.TestCase):
             self.assertEqual(sockets.calls, [])
 
     def test_binding_invalid_fields_are_denied(self):
-        for field, value in [('run_id', 'owner'), ('capability', b'x'), ('capability', bytearray(32)),
+        for field, value in [('run_id', 'owner'), ('vsock_key', b'x'), ('vsock_key', bytearray(32)),
                              ('first_sequence', True), ('first_sequence', 0), ('first_sequence', 9007199254740992),
                              ('manifest_identity', 'z' * 64), ('expires_at', True), ('expires_at', 100)]:
             sockets = Sockets()
@@ -372,7 +526,8 @@ class ProxyTests(unittest.TestCase):
             with self.subTest(path=name):
                 sockets, transport = Sockets([client]), Transport([broker])
                 outcome = proxy.serve_proxy(config(sockets, DeadlineClock(20)), transport)
-                self.assertEqual(outcome.code, 'IDLE_TIMEOUT')
+                # T9-2: the idle deadline closes only this tunnel; the run then stops normally.
+                self.assertEqual(outcome.code, 'COMPLETE')
                 self.assertNotIn(b'late', bytes(client.written) + bytes(broker.written))
                 self.assertEqual((client.closes, broker.closes,
                                   sockets.listener.closes, transport.closes),
@@ -398,7 +553,7 @@ class ProxyTests(unittest.TestCase):
                 return message
 
         for code, change in [
-            ('IDLE_TIMEOUT', lambda clock: setattr(clock, 'mono', 30)),
+            ('COMPLETE', lambda clock: setattr(clock, 'mono', 30)),   # idle: per-tunnel close (T9-2)
             ('CLOCK', lambda clock: setattr(clock, 'wall', 99)),
         ]:
             with self.subTest(code=code):
@@ -418,11 +573,11 @@ class ProxyTests(unittest.TestCase):
         class DeadlineTransport(Transport):
             def __init__(self, clock, path, streams=()):
                 super().__init__(streams); self.clock, self.path = clock, path
-            def authenticate(self, binding):
-                if self.path == 'authenticate':
+            def claim(self):
+                if self.path == 'claim':
                     self.clock.mono = 30
-                    raise OSError('late authenticate failure')
-                return super().authenticate(binding)
+                    raise OSError('late claim failure')
+                return super().claim()
             def check(self):
                 if self.path == 'check':
                     self.clock.mono = 30
@@ -453,7 +608,7 @@ class ProxyTests(unittest.TestCase):
                     raise OSError('late end failure')
                 return super().end_write()
 
-        for path in ('authenticate', 'check'):
+        for path in ('claim', 'check'):
             with self.subTest(path=path):
                 clock, sockets = Clock(), Sockets(complete=False)
                 outcome = proxy.serve_proxy(
@@ -462,17 +617,19 @@ class ProxyTests(unittest.TestCase):
                 self.assertEqual(outcome.code, 'EXPIRED')
 
         for path in ('read', 'write', 'open', 'end'):
-            with self.subTest(path=path):
-                clock = Clock()
-                client = DeadlineStream(clock, path, [REQUEST, b''])
-                broker = DeadlineStream(clock, path, [None])
-                sockets = Sockets([client])
-                transport = DeadlineTransport(clock, path, [broker])
-                outcome = proxy.serve_proxy(config(sockets, clock), transport)
-                self.assertEqual(outcome.code, 'IDLE_TIMEOUT')
-                self.assertEqual((client.closes, broker.closes if path != 'open' else 0,
-                                  sockets.listener.closes, transport.closes),
-                                 (1, 1 if path != 'open' else 0, 1, 1))
+            # mono 30: idle (20) has elapsed; the run (50) has not, unless run_timeout_ms is 20.
+            for run_timeout, code in ((50, 'TRANSPORT_LOST'), (20, 'EXPIRED')):
+                with self.subTest(path=path, run_timeout=run_timeout):
+                    clock = Clock()
+                    client = DeadlineStream(clock, path, [REQUEST, b''])
+                    broker = DeadlineStream(clock, path, [None])
+                    sockets = Sockets([client])
+                    transport = DeadlineTransport(clock, path, [broker])
+                    outcome = proxy.serve_proxy(config(sockets, clock, run_timeout_ms=run_timeout), transport)
+                    self.assertEqual(outcome.code, code)
+                    self.assertEqual((client.closes, broker.closes if path != 'open' else 0,
+                                      sockets.listener.closes, transport.closes),
+                                     (1, 1 if path != 'open' else 0, 1, 1))
 
         class DeadlineListener(Listener):
             def __init__(self, clock): super().__init__((), ('127.0.0.1', 3128)); self.clock = clock
@@ -521,10 +678,821 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual((client.closes, broker.closes,
                           sockets.listener.closes, transport.closes), (1, 1, 1, 1))
 
+    # ---- Task 5: T9-1 Chromium CONNECT shape.
+    def chromium_config(self, sockets, clock=None, **changes):
+        binding = dataclasses.replace(config(Sockets()).binding, origins=tuple(
+            (name, 'https://' + host) for name, host in CHROMIUM_HOSTS.items()))
+        return config(sockets, clock, destinations=CHROMIUM_HOSTS.copy(), binding=binding, **changes)
+
+    def test_chromium_connect_with_proxy_connection_keep_alive_accepted(self):
+        self.assertEqual(connect_result(CHROMIUM_CONNECT, CHROMIUM_HOSTS), 'FRONTEND')
+        backend = CHROMIUM_CONNECT.replace(b'fe.example.test', b'be.example.test')
+        self.assertEqual(connect_result(backend, CHROMIUM_HOSTS), 'BACKEND')
+        # Optional and order-independent, like Host and User-Agent.
+        reordered = (b'CONNECT fe.example.test:443 HTTP/1.1\r\nProxy-Connection: keep-alive\r\n'
+                     b'Host: fe.example.test:443\r\n\r\n')
+        self.assertEqual(connect_result(reordered, CHROMIUM_HOSTS), 'FRONTEND')
+        # The serving loop admits it end to end: one control, the 200, opaque bytes, logical EOF.
+        client, broker = Stream([CHROMIUM_CONNECT + b'\x16\x03\x01', b'']), Stream([b'\x00\x01\x17\x00\x00'])
+        sockets, transport = Sockets([client]), Transport([broker])
+        outcome = proxy.serve_proxy(self.chromium_config(sockets), transport)
+        self.assertEqual(outcome.code, 'COMPLETE')
+        self.assertEqual(bytes(broker.written), setup() + b'\x00\x03\x16\x03\x01\x00\x00')
+        self.assertEqual(bytes(client.written), OK + b'\x17')
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_proxy_connection_variants_rejected(self):
+        self.assertEqual(connect_result(CHROMIUM_CONNECT, CHROMIUM_HOSTS), 'FRONTEND')
+        line = b'Proxy-Connection: keep-alive\r\n'
+        variants = {
+            'duplicate': CHROMIUM_CONNECT.replace(line, line + line),
+            'close': CHROMIUM_CONNECT.replace(line, b'Proxy-Connection: close\r\n'),
+            'lowercase-name': CHROMIUM_CONNECT.replace(line, b'proxy-connection: keep-alive\r\n'),
+            'proxy-authorization': CHROMIUM_CONNECT.replace(line, b'Proxy-Authorization: Basic AAAA\r\n'),
+            'connection': CHROMIUM_CONNECT.replace(line, b'Connection: keep-alive\r\n'),
+            'value-case': CHROMIUM_CONNECT.replace(line, b'Proxy-Connection: Keep-Alive\r\n'),
+            'trailing-space': CHROMIUM_CONNECT.replace(line, b'Proxy-Connection: keep-alive \r\n'),
+            'no-space': CHROMIUM_CONNECT.replace(line, b'Proxy-Connection:keep-alive\r\n'),
+            'plus-connection': CHROMIUM_CONNECT.replace(line, line + b'Connection: keep-alive\r\n'),
+        }
+        for name, wire in variants.items():
+            with self.subTest(variant=name), self.assertRaisesRegex(proxy.ProxyError, '^INVALID_CONNECT$'):
+                proxy.parse_connect(wire, CHROMIUM_HOSTS)
+        # In the serving loop a rejected variant is a protocol violation: the whole run latches.
+        client, broker = Stream([variants['duplicate']]), Stream()
+        sockets, transport = Sockets([client]), Transport([broker])
+        outcome = proxy.serve_proxy(self.chromium_config(sockets), transport)
+        self.assertEqual(outcome.code, 'CHANNEL_DENIED')
+        self.assertEqual((transport.calls, client.closes), ([], 1))
+
+    # ---- Task 5: T9-2 per-tunnel events stay local.
+    def test_idle_tunnel_closes_only_itself_and_run_continues(self):
+        clock, closed_at = Clock(), {}
+        class Recorded(Stream):
+            def __init__(self, name, data): super().__init__(data); self.name = name
+            def close(self): super().close(); closed_at.setdefault(self.name, clock.mono)
+        idle, idle_broker = Recorded('idle', [REQUEST + b'abc']), Recorded('idle-broker', [])
+        active = Recorded('active', [BACKEND_REQUEST] + [b'x'] * 60 + [b''])
+        active_broker = Recorded('active-broker', [b'\x00\x01y'] * 60 + [b'\x00\x00'])
+        sockets, transport = Sockets([idle, active]), Transport([idle_broker, active_broker])
+        outcome = proxy.serve_proxy(config(sockets, clock, run_timeout_ms=1000), transport)
+        self.assertEqual(outcome.code, 'COMPLETE')
+        self.assertEqual([s.closes for s in (idle, idle_broker, active, active_broker)], [1, 1, 1, 1])
+        # A (last progress at mono 10, idle 20) closed at its own deadline, client and vsock
+        # together, while B kept exchanging bytes and finished much later.
+        self.assertEqual((closed_at['idle'], closed_at['idle-broker']), (30, 30))
+        self.assertGreater(closed_at['active'], 60)
+        self.assertEqual(bytes(idle_broker.written), setup() + b'\x00\x03abc')
+        self.assertEqual(bytes(active.written), OK + b'y' * 60)
+        self.assertEqual(bytes(active_broker.written), setup('BACKEND', 2) + b'\x00\x01x' * 60 + b'\x00\x00')
+        # Bytes stay charged: A's 3 bytes count with B's 120.
+        self.assertEqual(outcome.used_bytes, 3 + 60 + 60)
+        self.assertEqual((sockets.listener.closes, transport.closes, len(transport.calls)), (1, 1, 2))
+
+    def test_client_eof_before_header_closes_only_that_client(self):
+        other, broker = Stream([REQUEST, None, None, b'']), Stream([None, None, b'\x00\x01z\x00\x00'])
+        quiet, partial = Stream([b'']), Stream([REQUEST[:10], b''])
+        outcome, _, sockets, transport = self.run_case([other, quiet, partial], [broker],
+                                                       idle_timeout_ms=1000, run_timeout_ms=1000)
+        self.assertEqual(outcome.code, 'COMPLETE')
+        self.assertEqual([s.closes for s in (other, quiet, partial, broker)], [1, 1, 1, 1])
+        self.assertEqual(len(transport.calls), 1, 'no vsock for a client that never sent a header')
+        self.assertEqual(bytes(quiet.written) + bytes(partial.written), b'')
+        self.assertEqual(bytes(other.written), OK + b'z')
+        self.assertEqual(bytes(broker.written), setup() + b'\x00\x00')
+        self.assertEqual(outcome.used_bytes, 1)
+
+    def test_write_after_client_close_closes_only_that_tunnel(self):
+        # Reviewer probe2: the browser closed a pooled tunnel; the server's late record
+        # (TLS close_notify) is written after the client's EOF and gets EPIPE.
+        class ClosedPeer(Stream):
+            eof = False
+            def read(self, max_bytes):
+                message = super().read(max_bytes)
+                if message is not None and message.data == b'': self.eof = True
+                return message
+            def write(self, data):
+                if self.eof: raise BrokenPipeError(errno.EPIPE, 'inert EPIPE')
+                return super().write(data)
+        closing = ClosedPeer([REQUEST, None, None, b''])
+        closing_broker = Stream([None] * 6 + [b'\x00\x05\x15\x03\x03\x00\x02', b'\x00\x00'])
+        other = Stream([BACKEND_REQUEST] + [None] * 10 + [b''])
+        other_broker = Stream([None] * 10 + [b'\x00\x01w\x00\x00'])
+        outcome, _, sockets, transport = self.run_case(
+            [closing, other], [closing_broker, other_broker], idle_timeout_ms=1000, run_timeout_ms=1000)
+        self.assertEqual(outcome.code, 'COMPLETE')
+        self.assertEqual([s.closes for s in (closing, closing_broker, other, other_broker)], [1, 1, 1, 1])
+        self.assertEqual(bytes(closing.written), OK)
+        self.assertEqual(bytes(closing_broker.written), setup() + b'\x00\x00')
+        self.assertEqual(bytes(other.written), OK + b'w')
+        self.assertEqual(outcome.used_bytes, 5 + 1, 'the undelivered late record stays charged')
+
+    def p36_case(self, op, code):
+        """Tunnel A fails on the client socket with errno CODE at OP; tunnel B completes."""
+        error = oserror(code)
+        if op == 'read-header':
+            a, a_broker, charged = Stream([REQUEST[:7], error]), None, 0
+        elif op == 'read-tunnel':
+            a, a_broker, charged = Stream([REQUEST + b'ab', error]), Stream(), 2
+        elif op == 'write-ok':
+            a, a_broker, charged = FaultStream([REQUEST], faults={('write', 1): error}), Stream(), 0
+        elif op == 'write-data':
+            a, a_broker, charged = FaultStream([REQUEST], faults={('write', 2): error}), Stream([b'\x00\x03xyz']), 3
+        else:  # shutdown of the client write side after the broker's logical EOF
+            a, a_broker, charged = FaultStream([REQUEST], faults={('end', 1): error}), Stream([b'\x00\x02xy\x00\x00']), 2
+        b, b_broker = Stream([BACKEND_REQUEST + b'q', None, b'']), Stream([None, b'\x00\x01r\x00\x00'])
+        return a, a_broker, b, b_broker, charged
+
+    def test_client_reset_pipe_or_notconn_closes_only_that_tunnel(self):
+        for code in (errno.ECONNRESET, errno.EPIPE, errno.ENOTCONN):
+            for op in ('read-header', 'read-tunnel', 'write-ok', 'write-data', 'shutdown'):
+                with self.subTest(errno=errno.errorcode[code], op=op):
+                    a, a_broker, b, b_broker, charged = self.p36_case(op, code)
+                    brokers = [s for s in (a_broker, b_broker) if s is not None]
+                    outcome, _, sockets, transport = self.run_case(
+                        [a, b], brokers, idle_timeout_ms=1000, run_timeout_ms=1000)
+                    self.assertEqual(outcome.code, 'COMPLETE')
+                    self.assertEqual([s.closes for s in [a] + brokers + [b]], [1] * (len(brokers) + 2))
+                    sequence = len(brokers)
+                    self.assertEqual(bytes(b_broker.written),
+                                     setup('BACKEND', sequence) + b'\x00\x01q\x00\x00')
+                    self.assertEqual(bytes(b.written), OK + b'r')
+                    self.assertEqual(outcome.used_bytes, charged + 2, 'bytes stay charged')
+                    self.assertEqual((sockets.listener.closes, transport.closes), (1, 1))
+        # The tunnel's vsock stream needs a proven close; a failed one is whole-run uncertainty.
+        b, b_broker = Stream([BACKEND_REQUEST] + [None] * 5), Stream()
+        a = Stream([REQUEST + b'ab', oserror(errno.ECONNRESET)])
+        a_broker = FaultStream(close_error=OSError('inert unresolved vsock close'))
+        outcome, _, sockets, _ = self.run_case([b, a], [b_broker, a_broker],
+                                               idle_timeout_ms=1000, run_timeout_ms=1000)
+        self.assertEqual(outcome.code, 'CLEANUP_UNCERTAIN')
+        self.assertEqual((a.closes, b.closes, b_broker.closes, sockets.listener.closes), (1, 1, 1, 1))
+        self.assertEqual(a_broker.closes, 2, 'only the unresolved vsock close is retried, once')
+
+    def test_other_client_errno_still_latches(self):
+        for code in (errno.EBADF, errno.EINVAL, None):
+            for op in ('read-header', 'read-tunnel', 'write-ok', 'write-data', 'shutdown'):
+                with self.subTest(errno=errno.errorcode.get(code), op=op):
+                    a, a_broker, b, b_broker, _ = self.p36_case(op, errno.ECONNRESET)
+                    error = oserror(code) if code is not None else OSError('inert, no errno')
+                    if isinstance(a, FaultStream):
+                        a.faults = {key: error for key in a.faults}
+                    else:
+                        a.parts = [error if isinstance(part, Exception) else part for part in a.parts]
+                    # The bystander opens first, so a whole-run latch must close its vsock too.
+                    bystander, bystander_broker = Stream([BACKEND_REQUEST] + [None] * 5), Stream()
+                    brokers = [s for s in (bystander_broker, a_broker) if s is not None]
+                    outcome, _, sockets, _ = self.run_case(
+                        [bystander, a], brokers, idle_timeout_ms=1000, run_timeout_ms=1000)
+                    self.assertEqual(outcome.code, 'TRANSPORT_LOST')
+                    self.assertEqual([s.closes for s in [a, bystander] + brokers], [1] * (2 + len(brokers)))
+        # The vsock side never uses the client set: these errnos on the broker stream are loss.
+        for name, broker in [
+                ('read-ECONNRESET', Stream([None, oserror(errno.ECONNRESET)])),
+                ('write-EPIPE', FaultStream(faults={('write', 1): oserror(errno.EPIPE)})),
+                ('shutdown-ENOTCONN', FaultStream([None, None], faults={('end', 1): oserror(errno.ENOTCONN)}))]:
+            with self.subTest(vsock=name):
+                client = Stream([REQUEST, None, b''])
+                outcome, _, _, _ = self.run_case([client], [broker], idle_timeout_ms=1000, run_timeout_ms=1000)
+                self.assertEqual(outcome.code, 'TRANSPORT_LOST')
+                self.assertEqual((client.closes, broker.closes), (1, 1))
+
+    def test_whole_run_latch_kept_for_transport_protocol_caps_and_clock(self):
+        class BackwardAt3(Clock):
+            waits = 0
+            def wait(self, milliseconds):
+                super().wait(milliseconds); self.waits += 1
+                if self.waits == 3: self.mono -= 2
+        cases = [
+            ('vsock-loss:check', dict(loss_at=3), [REQUEST], Stream(), {}, 'TRANSPORT_LOST'),
+            ('vsock-loss:physical-eof', {}, [REQUEST], Stream([None, b'']), {}, 'TRANSPORT_LOST'),
+            ('vsock-loss:read-error', {}, [REQUEST], Stream([None, OSError('inert vsock loss')]), {}, 'TRANSPORT_LOST'),
+            ('protocol:oversized-record', {}, [REQUEST], Stream([None, b'\x10\x01x']), {}, 'CHANNEL_DENIED'),
+            # Ancillary data on a data read (the challenge read is the stream's first and clean).
+            ('protocol:ancillary', {}, [REQUEST], LateAncillary([None, b'x']), {}, 'CHANNEL_DENIED'),
+            ('protocol:connect', {}, [None, None, b'GET / HTTP/1.1\r\n\r\n'], None, {}, 'CHANNEL_DENIED'),
+            ('aggregate-cap', {}, [REQUEST, None, b'abcd'], Stream(), dict(aggregate_bytes=3), 'BYTE_LIMIT'),
+            ('run-expiry', {}, [REQUEST], Stream(), dict(run_timeout_ms=5), 'EXPIRED'),
+            ('clock-fault', {}, [REQUEST], Stream(), dict(clock=BackwardAt3()), 'CLOCK'),
+        ]
+        for name, transport_options, a_parts, a_broker, changes, code in cases:
+            with self.subTest(cause=name):
+                a = Stream(a_parts)
+                b, b_broker = Stream([BACKEND_REQUEST] + [None] * 10), Stream()
+                brokers = [s for s in (a_broker, b_broker) if s is not None]
+                sockets, transport = Sockets([a, b], complete=False), Transport(brokers, **transport_options)
+                settings = dict(idle_timeout_ms=1000, run_timeout_ms=1000); settings.update(changes)
+                cfg = config(sockets, **settings)
+                outcome = proxy.serve_proxy(cfg, transport)
+                self.assertEqual(outcome.code, code)
+                # Whole run: the healthy bystander tunnel B is closed with it.
+                self.assertEqual([s.closes for s in [a, b] + brokers], [1] * (2 + len(brokers)))
+                self.assertEqual((sockets.listener.closes, transport.closes), (1, 1))
+                self.assertEqual(proxy.serve_proxy(cfg, transport).code, 'TERMINAL')
+
+    def test_per_tunnel_close_rechecks_transport_first(self):
+        # P37: a transport fault visible when a tunnel would close on its own is whole-run.
+        class ArmedTransport(Transport):
+            armed = False
+            def check(self):
+                super().check()
+                if self.armed: raise OSError('inert vsock loss seen at the per-tunnel close')
+        class DisarmingClock(Clock):
+            transport = None
+            def wait(self, milliseconds):
+                super().wait(milliseconds); self.transport.armed = False
+        class Arming(Stream):
+            """On read number AT: optionally make the transport fault visible, and advance the clock."""
+            def __init__(self, data, transport, clock, at, advance, arm):
+                super().__init__(data)
+                self.transport, self.clock, self.at, self.advance, self.arm = transport, clock, at, advance, arm
+            def read(self, max_bytes):
+                if len(self.read_bounds) + 1 == self.at:
+                    if self.arm: self.transport.armed = True
+                    self.clock.mono += self.advance
+                return super().read(max_bytes)
+        for name, parts, at, advance in [('eof-before-header', [b''], 1, 0),
+                                         ('client-reset', [REQUEST, oserror(errno.ECONNRESET)], 2, 0),
+                                         ('idle', [REQUEST[:7], None], 2, 20)]:
+            for arm in (True, False):
+                with self.subTest(close=name, armed=arm):
+                    clock, transport = DisarmingClock(), ArmedTransport([Stream()])
+                    clock.transport = transport
+                    client = Arming(parts, transport, clock, at, advance, arm)
+                    sockets = Sockets([client])
+                    outcome = proxy.serve_proxy(config(sockets, clock, run_timeout_ms=1000), transport)
+                    # Armed: the fault is visible at the close itself (the loop-top check had passed).
+                    self.assertEqual(outcome.code, 'TRANSPORT_LOST' if arm else 'COMPLETE')
+                    self.assertEqual(client.closes, 1)
+
+    def test_vsock_failure_after_idle_deadline_latches_not_absorbed(self):
+        # P37: a vsock-side failure observed after the tunnel's idle deadline is loss; the idle
+        # deadline only discards late *data*. Client-socket failures follow P36.
+        def late(stream_type, clock, before=1, **kwargs):
+            class Late(stream_type):
+                def read(self, max_bytes):
+                    if len(self.read_bounds) == before: clock.mono += 25
+                    return super().read(max_bytes)
+            return Late(**kwargs)
+        cases = [
+            ('vsock-read-error', 'broker', [None, OSError('inert vsock loss')], 'TRANSPORT_LOST'),
+            ('vsock-physical-eof', 'broker', [None, b''], 'TRANSPORT_LOST'),
+            ('client-other-errno', 'client', [REQUEST, oserror(errno.EBADF)], 'TRANSPORT_LOST'),
+            ('client-reset', 'client', [REQUEST, oserror(errno.ECONNRESET)], 'COMPLETE'),
+            ('vsock-late-data', 'broker', [None, b'\x00\x04late'], 'COMPLETE'),
+        ]
+        for name, side, parts, code in cases:
+            with self.subTest(case=name):
+                clock = Clock()
+                if side == 'broker':
+                    # The host's challenge is the stream's first read (C4).
+                    a, a_broker = Stream([REQUEST, None, None]), late(Stream, clock, 2, data=parts)
+                else:
+                    a, a_broker = late(Stream, clock, data=parts), Stream()
+                sockets, transport = Sockets([a]), Transport([a_broker])
+                outcome = proxy.serve_proxy(config(sockets, clock, run_timeout_ms=1000), transport)
+                self.assertEqual(outcome.code, code)
+                self.assertNotIn(b'late', bytes(a.written))
+                self.assertEqual((a.closes, a_broker.closes, transport.closes), (1, 1, 1))
+        # A vsock write failure after the idle deadline is loss as well.
+        clock = Clock()
+        class LateFailingWrite(Stream):
+            def write(self, data):
+                clock.mono += 25; raise OSError('inert vsock write loss')
+        a, a_broker = Stream([REQUEST]), LateFailingWrite()
+        outcome = proxy.serve_proxy(config(Sockets([a]), clock, run_timeout_ms=1000), Transport([a_broker]))
+        self.assertEqual(outcome.code, 'TRANSPORT_LOST')
+
+    def test_protocol_violation_read_across_idle_deadline_latches_whole_run(self):
+        # Fix round 1 (review I-1): bytes read across a tunnel's idle deadline are discarded,
+        # never forwarded or charged, but a protocol violation in them (with the bytes already
+        # buffered) is still a whole-run cause. Valid late bytes stay a per-tunnel idle close.
+        def late(clock, parts, at):
+            class Late(Stream):
+                def read(self, max_bytes):
+                    if len(self.read_bounds) + 1 == at: clock.mono += 25   # straddles idle (20)
+                    return super().read(max_bytes)
+            return Late(parts)
+        # (name, late side, parts, expected outcome, client bytes, vsock opened, used bytes)
+        cases = [
+            # The reviewer's four probe cases.
+            ('broker:oversized-record', 'broker', [None, b'\x10\x01x'], 'CHANNEL_DENIED', OK, 1, 0),
+            ('broker:bytes-after-logical-eof', 'broker', [None, b'\x00\x00x'], 'CHANNEL_DENIED', OK, 1, 0),
+            ('client:non-connect', 'client', [None, b'GET / HTTP/1.1\r\n\r\n'], 'CHANNEL_DENIED', b'', 0, 0),
+            ('client:header-over-4096', 'client', [None, b'C' * 4096], 'CHANNEL_DENIED', b'', 0, 0),
+            # The violation needs the bytes buffered before the deadline as well.
+            ('broker:oversized-split', 'broker', [b'\x10', b'\x01x'], 'CHANNEL_DENIED', OK, 1, 0),
+            ('broker:after-eof-split', 'broker', [b'\x00\x01y\x00', b'\x00x'], 'CHANNEL_DENIED', OK + b'y', 1, 1),
+            ('client:non-connect-split', 'client', [b'GET / HTTP/1.1\r\n', b'\r\n'], 'CHANNEL_DENIED', b'', 0, 0),
+            ('client:over-4096-split', 'client', [b'C' * 4000, b'C' * 96], 'CHANNEL_DENIED', b'', 0, 0),
+            # Controls: valid late bytes are discarded by a per-tunnel close; the run continues.
+            ('control:broker-record', 'broker', [None, b'\x00\x04late'], 'COMPLETE', OK, 1, 0),
+            ('control:broker-logical-eof', 'broker', [None, b'\x00\x02la\x00\x00'], 'COMPLETE', OK, 1, 0),
+            ('control:client-connect', 'client', [None, REQUEST], 'COMPLETE', b'', 0, 0),
+            ('control:client-partial-header', 'client', [REQUEST[:7], REQUEST[7:20]], 'COMPLETE', b'', 0, 0),
+            ('control:client-tunnel-data', 'client', [REQUEST, b'late'], 'COMPLETE', OK, 1, 0),
+        ]
+        for name, side, parts, code, client_bytes, opened, used in cases:
+            with self.subTest(case=name):
+                clock = Clock()
+                if side == 'broker':
+                    # The host's challenge is the stream's first read (C4): parts[1] is read 3.
+                    client, broker = Stream([REQUEST, None, None]), late(clock, parts, 3)
+                else:
+                    client, broker = late(clock, parts, 2), Stream()
+                sockets, transport = Sockets([client]), Transport([broker])
+                outcome = proxy.serve_proxy(config(sockets, clock, run_timeout_ms=1000), transport)
+                self.assertEqual(outcome.code, code)
+                self.assertEqual(bytes(client.written), client_bytes)
+                self.assertEqual(len(transport.calls), opened)
+                if opened:
+                    self.assertEqual(bytes(broker.written), setup(), 'late bytes never forwarded')
+                self.assertEqual(outcome.used_bytes, used, 'late bytes never charged')
+                self.assertEqual((client.closes, broker.closes, sockets.listener.closes, transport.closes),
+                                 (1, opened, 1, 1))
+
+    # ---- Task 5: capacity (P35 deferral, 1024 per-run cap).
+    def test_seventeenth_concurrent_connection_deferred_not_latched(self):
+        self.assertEqual(proxy._MAX_TUNNELS, 16)
+        # (1) Fake loop: one live tunnel frees its slot after the 17th has waited.
+        slot = Stream([None] * 20 + [b''])               # header phase; EOF at its 21st read
+        live = [Stream([REQUEST]) for _ in range(15)]
+        seventeenth, seventeenth_broker = Stream([REQUEST, b'']), Stream([b'\x00\x00'])
+        brokers = [Stream() for _ in range(15)] + [seventeenth_broker]
+        snapshots = []
+        sockets = CountingSockets([slot] + live + [seventeenth], stop=lambda: seventeenth.closes == 1)
+        clock = TickClock(lambda tick: snapshots.append(
+            (tick, sockets.listener.accepts, len(sockets.listener.clients), slot.closes)))
+        transport = Transport(brokers)
+        outcome = proxy.serve_proxy(config(sockets, clock, idle_timeout_ms=1000, run_timeout_ms=1000), transport)
+        self.assertEqual(outcome.code, 'COMPLETE')
+        at_capacity = [s for s in snapshots if s[1] == 16 and s[3] == 0]
+        self.assertGreaterEqual(len(at_capacity), 4)
+        # Deferred: while 16 are live, accept() is never called (no spin on a readable
+        # listener; the loop still sleeps once per iteration) and the 17th stays queued.
+        self.assertTrue(all(s[2] == 1 for s in at_capacity))
+        self.assertEqual([s[1] for s in snapshots[:16]], list(range(1, 17)))
+        first_after = next(s for s in snapshots if s[3] == 1)
+        self.assertEqual(first_after[1], 16, 'no accept in the iteration that freed the slot')
+        self.assertEqual(sockets.listener.accepts, 17)
+        self.assertEqual(len(transport.calls), 16)
+        self.assertEqual(bytes(seventeenth_broker.written), setup('FRONTEND', 16) + b'\x00\x00')
+        self.assertEqual([s.closes for s in [slot] + live + [seventeenth] + brokers], [1] * 33)
+        self.assertEqual((sockets.listener.closes, transport.closes), (1, 1))
+
+        # (2) STOP while at capacity is serviced at once; the deferred client is never accepted.
+        live = [Stream([REQUEST]) for _ in range(16)]
+        deferred, brokers = Stream([REQUEST]), [Stream() for _ in range(16)]
+        clock = TickClock()
+        sockets = CountingSockets(live + [deferred], stop=lambda: clock.ticks >= 20)
+        outcome = proxy.serve_proxy(config(sockets, clock, idle_timeout_ms=1000, run_timeout_ms=1000),
+                                    Transport(brokers))
+        self.assertEqual(outcome.code, 'COMPLETE')
+        self.assertEqual((sockets.listener.accepts, deferred.read_bounds, deferred.closes), (16, [], 0))
+        self.assertEqual([s.closes for s in live + brokers], [1] * 32)
+        self.assertEqual(sockets.listener.closes, 1)
+
+        # (3) Production path: the actual composition loop, FD ledger and native adapters.
+        state = dict(iteration=0, stop=False, accepts=[], snapshots=[])
+        slot, seventeenth = [], [REQUEST]
+        def sink(h, owner):
+            h.clients.extend([slot] + [[REQUEST] for _ in range(15)] + [seventeenth])
+            rows = owner._context._inventory.rows
+            endpoint, selector = owner._listener.socket, owner._sockets.stop_selector
+            original_accept, original_select = endpoint.accept, selector.select
+            def accept():
+                state['accepts'].append((state['iteration'],
+                    sum(row['kind'] == 'PROXY_ACCEPTED_STREAM' for row in rows.values())))
+                return original_accept()
+            endpoint.accept = accept
+            # FD3 stays quiet until the test asks for STOP.
+            selector.select = lambda timeout: [row for row in original_select(timeout)
+                                               if state['stop'] or row[0].fd != 3]
+        h = CompositionHarness(self, commands=[b'STOP'], sink=sink, limits=(1000, 1000))
+        def tick():
+            state['iteration'] += 1; i = state['iteration']
+            state['snapshots'].append((i, len(h.clients), h.budget.deadline))
+            if i == 20: slot.append(b'')                 # EOF before header frees one slot
+            if i == 23: state['stop'] = True
+        h.on_sleep = tick
+        h.run(); self.assertEqual(len(h.owners), 1)
+        self.assertEqual([i for i, _ in state['accepts']], list(range(16)) + [21])
+        self.assertTrue(all(live < 16 for _, live in state['accepts']), 'accept() called at capacity')
+        self.assertEqual([n for i, n, _ in state['snapshots'] if 16 <= i <= 21], [1] * 6)
+        self.assertEqual(state['snapshots'][21][1], 0)
+        self.assertEqual({deadline for _, _, deadline in state['snapshots']}, {None},
+                         'a per-tunnel close never starts the shared cleanup budget')
+        self.assertEqual((h.exit, h.frames[-1]['payload']['code'], h.frames[-1]['payload']['cleanupStatus']),
+                         (0, 'COMPLETE', 'PROVEN'))
+        self.assertEqual(sum(e.family == 40 for e in h.endpoints), 16)
+        self.assertTrue(all(e.closes == 1 for e in h.endpoints))
+
+    def test_total_tunnels_per_run_bounded_at_1024(self):
+        self.assertEqual(getattr(proxy, '_MAX_TUNNELS_PER_RUN', None), 1024)
+        ceiling = proxy._MAX_SAFE_INTEGER - (1024 - 1)
+        class Sequential(Listener):
+            """Hands out the next client only after every earlier one has closed."""
+            def __init__(self, clients): super().__init__(clients, ('127.0.0.1', 3128)); self.given = []
+            def accept(self):
+                if not self.clients or any(c.closes == 0 for c in self.given): return None
+                self.given.append(self.clients.pop(0)); return self.given[-1]
+        class SequentialSockets(Sockets):
+            def listen(self, address, port, backlog):
+                self.calls.append((address, port, backlog)); self.listener = Sequential(self.clients)
+                return self.listener
+            def stop_requested(self): return False
+        clients = [Stream([REQUEST, b'']) for _ in range(1025)]
+        brokers = [Stream([b'\x00\x00']) for _ in range(1024)]
+        sockets, transport = SequentialSockets(clients), Transport(brokers)
+        binding = dataclasses.replace(config(Sockets()).binding, expires_at=10 ** 12, first_sequence=ceiling)
+        cfg = config(sockets, binding=binding, idle_timeout_ms=1000, run_timeout_ms=1200000)
+        outcome = proxy.serve_proxy(cfg, transport)
+        self.assertEqual(outcome.code, 'CAPACITY')
+        self.assertEqual(len(transport.calls), 1024, 'the 1025th CONNECT never opens a vsock')
+        self.assertEqual(bytes(brokers[-1].written), setup('FRONTEND', proxy._MAX_SAFE_INTEGER) + b'\x00\x00')
+        self.assertEqual((bytes(clients[-1].written), clients[-1].closes), (b'', 1))
+        self.assertTrue(all(s.closes == 1 for s in clients + brokers))
+        self.assertEqual((sockets.listener.closes, transport.closes), (1, 1))
+        self.assertEqual(proxy.serve_proxy(cfg, transport).code, 'TERMINAL')
+        # The firstSequence ceiling admits exactly 1024 sequences, at every entry point.
+        for value, code in ((ceiling, 'COMPLETE'), (ceiling + 1, 'CONFIG_DENIED')):
+            with self.subTest(first_sequence=value):
+                sockets = Sockets()
+                cfg = config(sockets, binding=dataclasses.replace(binding, first_sequence=value))
+                self.assertEqual(proxy.serve_proxy(cfg, Transport()).code, code)
+        self.assertEqual(proxy._BOOTSTRAP_RULE['fields']['firstSequence']['max'], ceiling)
+        admit = lambda first: proxy.qualify_native_admission(
+            dataclasses.replace(binding, first_sequence=first), HOSTS.copy(), 10000, 20, 50,
+            runtime_identity='d' * 64, role_policy_identity='c' * 64, handoff_validator=lambda *_: True)
+        self.assertEqual(admit(ceiling).binding.first_sequence, ceiling)
+        with self.assertRaisesRegex(proxy.ProxyError, '^ADMISSION_DENIED$'): admit(ceiling + 1)
+
+    # ---- Task 5: T9-6 STOP or FD3 EOF ends admission at once.
+    def test_stop_or_eof_stops_new_admission_in_every_mode(self):
+        # Legacy loop: STOP at the 2nd check while a tunnel is live; a client at the 5th accept.
+        class Scheduled(Listener):
+            def __init__(self, schedule):
+                super().__init__((), ('127.0.0.1', 3128)); self.schedule, self.accepts = schedule, 0
+            def accept(self):
+                self.accepts += 1; return self.schedule.pop(self.accepts, None)
+        class StopSockets(Sockets):
+            def __init__(self, schedule, stop_at):
+                super().__init__(complete=False); self.schedule, self.stop_at, self.checks = schedule, stop_at, 0
+            def listen(self, address, port, backlog):
+                self.calls.append((address, port, backlog)); self.listener = Scheduled(self.schedule)
+                return self.listener
+            def stop_requested(self):
+                self.checks += 1; return self.checks >= self.stop_at
+        first, late = Stream([REQUEST]), Stream([REQUEST + b'after-stop'])
+        brokers = [Stream(), Stream()]
+        sockets, transport = StopSockets({1: first, 5: late}, 2), Transport(brokers)
+        outcome = proxy.serve_proxy(config(sockets, idle_timeout_ms=1000, run_timeout_ms=1000), transport)
+        self.assertEqual(outcome.code, 'COMPLETE')
+        self.assertEqual((sockets.listener.accepts, len(transport.calls), late.read_bounds), (2, 1, []))
+        self.assertNotIn(b'after-stop', bytes(brokers[1].written))
+        self.assertEqual((first.closes, brokers[0].closes, sockets.listener.closes), (1, 1, 1))
+
+        # Native legacy and composition loops: STOP and FD3 EOF, with a client still queued.
+        for mode in ('legacy', 'composition'):
+            for commands in ([b'STOP'], []):
+                with self.subTest(mode=mode, signal='STOP' if commands else 'EOF'):
+                    if mode == 'legacy':
+                        h = CompositionHarness(self)
+                        h.clients = [[REQUEST], [REQUEST + b'after-stop']]
+                        h.run(legacy=True, legacy_commands=list(commands))
+                        self.assertEqual((h.exit, h.frames[-1]['code']), (0, 'COMPLETE'))
+                    else:
+                        sink = lambda h, owner: h.clients.extend([[REQUEST], [REQUEST + b'after-stop']])
+                        h = CompositionHarness(self, commands=list(commands), sink=sink)
+                        h.run()
+                        self.assertEqual(h.frames[-1]['payload']['code'], 'COMPLETE')
+                    # The first client was admitted and its vsock opened before STOP/EOF; the
+                    # queued one never was, and nothing after STOP reached a vsock.
+                    self.assertEqual(h.clients, [[REQUEST + b'after-stop']])
+                    vsocks = [e for e in h.endpoints if e.family == 40]
+                    self.assertEqual(len(vsocks), 1)
+                    self.assertNotIn(b'after-stop', bytes(vsocks[0].sent))
+                    self.assertTrue(all(e.closes == 1 for e in h.endpoints))
+
+    # ---- Task 5: T9-5 serving-loop header bound.
+    def test_serving_loop_header_without_terminator_denied_at_4096(self):
+        for parts in ([b'C' * 4096], [b'C' * 2048, b'C' * 2048], [b'C' * 4096, b'D' * 4096]):
+            with self.subTest(reads=[len(p) for p in parts]):
+                client = Stream(parts)
+                outcome, _, sockets, transport = self.run_case([client], [Stream()],
+                                                               idle_timeout_ms=1000, run_timeout_ms=1000)
+                self.assertEqual(outcome.code, 'CHANNEL_DENIED')
+                self.assertEqual((transport.calls, bytes(client.written)), ([], b''))
+                self.assertEqual((client.closes, sockets.listener.closes, transport.closes), (1, 1, 1))
+        # One byte under the limit is still an incomplete header, not a denial.
+        client = Stream([b'C' * 4095])
+        outcome, _, _, transport = self.run_case([client], [Stream()], idle_timeout_ms=5)
+        self.assertEqual((outcome.code, transport.calls, client.closes), ('COMPLETE', [], 1))
+
+    def test_serving_loop_header_split_across_reads_crossing_4096(self):
+        exact = REQUEST[:-2] + b'User-Agent: ' + b'x' * (4096 - len(REQUEST) - 14) + b'\r\n\r\n'
+        over = exact[:-4] + b'x\r\n\r\n'
+        self.assertEqual((len(exact), len(over)), (4096, 4097))
+        for split in (1, 2048, 4092, 4095):
+            with self.subTest(accepted_split=split):
+                client, broker = Stream([exact[:split], exact[split:], b'']), Stream([b'\x00\x00'])
+                outcome, _, _, transport = self.run_case([client], [broker], idle_timeout_ms=1000)
+                self.assertEqual(outcome.code, 'COMPLETE')
+                self.assertEqual(bytes(broker.written), setup() + b'\x00\x00')
+        for parts in ([b'C' * 4000, b'C' * 96], [b'C' * 4000, b'C' * 200], [over[:3000], over[3000:]],
+                      [over[:4096], over[4096:]], [b'C' * 3, b'C' * 4093]):
+            with self.subTest(denied=[len(p) for p in parts]):
+                client = Stream(parts)
+                outcome, _, sockets, transport = self.run_case([client], [Stream()], idle_timeout_ms=1000)
+                self.assertEqual(outcome.code, 'CHANNEL_DENIED')
+                self.assertEqual((transport.calls, client.closes, sockets.listener.closes), ([], 1, 1))
+
+    # ---- Task 5: T9-10 cases C and M.
+    def test_bytes_after_logical_eof_latch(self):
+        for record in (b'\x00\x00x', b'\x00\x02ab\x00\x00\x00', b'\x00\x00\x00\x00'):
+            with self.subTest(record=record):
+                client, broker = Stream([REQUEST, None, b'']), Stream([None, record])
+                outcome, _, sockets, transport = self.run_case([client], [broker], idle_timeout_ms=1000)
+                self.assertEqual(outcome.code, 'CHANNEL_DENIED')
+                self.assertEqual(bytes(client.written), OK, 'nothing from a record with trailing bytes')
+                self.assertEqual((client.closes, broker.closes, sockets.listener.closes), (1, 1, 1))
+
+    # ---- Task 6: C4 vsock stream challenge-response (E3, R6, P10, P38).
+    def test_stream_proof_vector(self):
+        # The plan author's vector, used verbatim; BrokerTests binds the host to the same bytes.
+        self.assertEqual(proxy.VSOCK_PROOF_DOMAIN, b'acceptance:vsock-stream:v1\0')
+        key = bytes.fromhex('5814c7147c97464dd6833b65cfd337b5d6f8277a080522efe9c3f7f498d54d00')
+        self.assertEqual(VSOCK_KEY, key)
+        self.assertEqual(
+            proxy.stream_proof(key, bytes(range(16)), '0123456789abcdef0123456789abcdef', 1).hex(),
+            '564c1588db8960fb3a6748fe644fa0b4ffa9d1ca23ce8ae7d21c97020fe42e72')
+        self.assertEqual(proxy.stream_proof(VSOCK_KEY, NONCE, '1' * 32, 7), proof(7))
+        for args in [(key[:31], NONCE, '1' * 32, 1), (bytearray(key), NONCE, '1' * 32, 1),
+                     (key, NONCE[:15], '1' * 32, 1), (key, NONCE + b'\0', '1' * 32, 1),
+                     (key, NONCE, 'A' * 32, 1), (key, NONCE, '1' * 31, 1), (key, NONCE, '1' * 32, 0),
+                     (key, NONCE, '1' * 32, True), (key, NONCE, '1' * 32, proxy._MAX_SAFE_INTEGER + 1)]:
+            with self.subTest(args=args), self.assertRaises(proxy.ProxyError):
+                proxy.stream_proof(*args)
+
+    def test_proxy_never_holds_capability(self):
+        # R6/P10: the proxy receives only k_vsock. Its binding has no capability, the FD3 config
+        # carries vsockKey (64 lowercase hex), and a frame that still carries capability is denied.
+        names = [f.name for f in dataclasses.fields(proxy.RunBinding)]
+        self.assertNotIn('capability', names)
+        self.assertEqual(names[1], 'vsock_key')
+        self.assertFalse(hasattr(config(Sockets()).binding, 'capability'))
+        fields = proxy._BOOTSTRAP_RULE['fields']
+        self.assertNotIn('capability', fields)
+        self.assertEqual(fields['vsockKey'], {'ref': 'Digest'})
+        self.assertFalse(hasattr(proxy.NativeVsockTransport, 'authenticate'))
+        accepted = proxy._decode_bootstrap(self._bootstrap_wire()[2:], Clock(), Sockets())
+        self.assertEqual(accepted.binding.vsock_key, VSOCK_KEY)
+        renamed = lambda value: value.__setitem__('capability', value.pop('vsockKey'))
+        both = lambda value: value.__setitem__('capability', CAPABILITY.hex())
+        for name, change in (('renamed', renamed), ('alongside', both)):
+            with self.subTest(frame=name):
+                with self.assertRaisesRegex(proxy.ProxyError, '^INVALID_CONFIG$'):
+                    proxy._decode_bootstrap(self._bootstrap_wire(change)[2:], Clock(), Sockets())
+                # Through the composition entry: denied before any context, owner or frame.
+                h = CompositionHarness(self, mutate=lambda initial, change=change: change(initial['proxyBootstrap']))
+                h.run()
+                self.assertEqual((h.exit, h.owners, h.events, h.frames, h.endpoints), (1, [], [], [], []))
+
+    def test_control_and_proof_follow_host_challenge_on_every_stream(self):
+        # C4: per stream the proxy first reads the host's challenge (bounded reads: the 18-byte
+        # frame minus what it holds), then writes its control frame, then its proof frame. Nothing
+        # moves before the challenge: no control, no proof, no early client bytes, no 200.
+        nonces = [bytes([0xa0]) * 16, bytes([0xb1]) * 16]
+        seen = []
+        class Watched(Stream):
+            def __init__(self, name, data, client):
+                super().__init__(data); self.name, self.client = name, client
+            def read(self, max_bytes):
+                seen.append((self.name, max_bytes, len(self.written), len(self.client.written)))
+                return super().read(max_bytes)
+        a = Stream([REQUEST + b'abc', None, None, None, None, b''])
+        b = Stream([BACKEND_REQUEST, None, None, None, None, b''])
+        wa, wb = challenge(nonces[0]), challenge(nonces[1])
+        a_broker = Watched('a', [None, wa[:5], None, wa[5:], b'\x00\x01z', b'\x00\x00'], a)
+        b_broker = Watched('b', [wb[:1], wb[1:9], wb[9:], b'\x00\x00'], b)
+        sockets, transport = Sockets([a, b]), Transport([a_broker, b_broker], challenge=None)
+        outcome = proxy.serve_proxy(config(sockets, idle_timeout_ms=1000, run_timeout_ms=1000), transport)
+        self.assertEqual(outcome.code, 'COMPLETE')
+        self.assertEqual(bytes(a_broker.written),
+                         control('FRONTEND', 1) + b'\x00\x20' + proof(1, nonces[0]) + b'\x00\x03abc\x00\x00')
+        self.assertEqual(bytes(b_broker.written),
+                         control('BACKEND', 2) + b'\x00\x20' + proof(2, nonces[1]) + b'\x00\x00')
+        self.assertEqual((bytes(a.written), bytes(b.written)), (OK + b'z', OK))
+        for name, bounds in (('a', [18, 18, 13, 13]), ('b', [18, 17, 9])):
+            reads = [row for row in seen if row[0] == name]
+            self.assertEqual([row[1] for row in reads[:len(bounds)]], bounds)
+            # Until the frame is complete nothing was written to the stream or to its client.
+            self.assertEqual({row[2:] for row in reads[:len(bounds)]}, {(0, 0)})
+
+    def test_short_or_long_challenge_frame_latches(self):
+        # C4: the challenge frame is a 2-byte length of exactly 16, then 16 bytes. Any other
+        # length is a protocol violation that latches the whole run (the established bystander
+        # closes too); a physical EOF inside it is vsock loss. Nothing is written on that stream.
+        cases = [
+            ('length-15', [b'\x00\x0f' + b'x' * 15], 'CHANNEL_DENIED'),
+            ('length-17', [b'\x00\x11' + b'x' * 17], 'CHANNEL_DENIED'),
+            ('length-0', [b'\x00\x00'], 'CHANNEL_DENIED'),
+            ('length-65535', [b'\xff\xff'], 'CHANNEL_DENIED'),
+            ('first-byte', [b'\x01'], 'CHANNEL_DENIED'),
+            ('long-split', [b'\x00', None, b'\x20' + b'x' * 16], 'CHANNEL_DENIED'),
+            ('truncated', [b'\x00\x10' + b'x' * 5, b''], 'TRANSPORT_LOST'),
+            ('eof-first', [b''], 'TRANSPORT_LOST'),
+        ]
+        for name, parts, code in cases:
+            with self.subTest(case=name):
+                by, by_broker = Stream([BACKEND_REQUEST] + [None] * 10), Stream([CHALLENGE])
+                a, a_broker = Stream([None, REQUEST] + [None] * 10), Stream(parts)
+                sockets = Sockets([by, a], complete=False)
+                transport = Transport([by_broker, a_broker], challenge=None)
+                outcome = proxy.serve_proxy(config(sockets, idle_timeout_ms=1000, run_timeout_ms=1000), transport)
+                self.assertEqual(outcome.code, code)
+                self.assertEqual((bytes(a_broker.written), bytes(a.written)), (b'', b''))
+                self.assertEqual(bytes(by_broker.written), setup('BACKEND', 1))
+                self.assertEqual([s.closes for s in (a, a_broker, by, by_broker)], [1, 1, 1, 1])
+        # Read across the idle deadline: a wrong length is still examined and latches; a valid
+        # part of the frame, or no frame at all, is an ordinary idle close of that tunnel.
+        for name, parts, code in (('late-long', [b'\x00\x11'], 'CHANNEL_DENIED'),
+                                  ('late-valid-part', [b'\x00\x10xx'], 'COMPLETE'),
+                                  ('late-none', [], 'COMPLETE')):
+            with self.subTest(case=name):
+                clock = Clock()
+                class Late(Stream):
+                    def read(self, max_bytes):
+                        if not self.read_bounds: clock.mono += 25      # straddles idle (20)
+                        return super().read(max_bytes)
+                a, a_broker = Stream([REQUEST]), Late(parts)
+                sockets = Sockets([a])
+                outcome = proxy.serve_proxy(config(sockets, clock, run_timeout_ms=1000),
+                                            Transport([a_broker], challenge=None))
+                self.assertEqual(outcome.code, code)
+                self.assertEqual((bytes(a_broker.written), bytes(a.written)), (b'', b''))
+                self.assertEqual((a.closes, a_broker.closes, sockets.listener.closes), (1, 1, 1))
+
+    def test_stream_setup_serialized_in_sequence_order(self):
+        # C4 and the T9 broker sequence-ordering note: at most one stream is between its vsock
+        # connect and its fully written proof, and streams open in sequence order. A CONNECT that
+        # completes meanwhile waits without a vsock.
+        class Recording(Transport):
+            def __init__(self, streams):
+                super().__init__(streams, challenge=None); self.opened, self.snapshots = [], []
+            def open(self, cid, service, binding):
+                self.snapshots.append([bytes(s.written) for s in self.opened])
+                stream = super().open(cid, service, binding); self.opened.append(stream)
+                return stream
+        clients = [Stream([wire] + [None] * 30 + [b'']) for wire in (REQUEST, BACKEND_REQUEST, REQUEST)]
+        nonces = [bytes([i]) * 16 for i in range(3)]
+        # Each challenge comes after two empty reads; each setup is written 40 bytes at a time.
+        brokers = [Stream([None, None, challenge(n), None, None, b'\x00\x00'], partial=40) for n in nonces]
+        transport = Recording(brokers)
+        outcome = proxy.serve_proxy(config(Sockets(clients), idle_timeout_ms=1000, run_timeout_ms=1000), transport)
+        self.assertEqual(outcome.code, 'COMPLETE')
+        expected = [setup(d, i + 1, nonces[i]) for i, d in enumerate(('FRONTEND', 'BACKEND', 'FRONTEND'))]
+        self.assertEqual([bytes(s.written) for s in brokers], [e + b'\x00\x00' for e in expected])
+        # When stream i opened, every earlier stream had written its whole control and proof.
+        self.assertEqual(len(transport.snapshots), 3)
+        for i, snapshot in enumerate(transport.snapshots):
+            self.assertEqual([w[:len(expected[j])] for j, w in enumerate(snapshot)], expected[:i])
+
+    def test_sequence_consumed_by_closed_setup_leaves_gap_never_repeat(self):
+        # P38(a), guest side: a stream consumes its sequence when it opens. Closed per tunnel
+        # before its control was delivered (no challenge within the idle deadline, or a setup
+        # write that never drained), it leaves a gap: the next stream takes the next sequence.
+        for name, first_broker in (('no-challenge', Stream()),
+                                   ('setup-unwritten', Stream([CHALLENGE], partial=None))):
+            with self.subTest(case=name):
+                first = Stream([REQUEST])
+                second, second_broker = Stream([BACKEND_REQUEST, b'']), Stream([CHALLENGE, b'\x00\x00'])
+                sockets = AfterSockets([first, second])   # the second arrives after the first closed
+                transport = Transport([first_broker, second_broker], challenge=None)
+                outcome = proxy.serve_proxy(config(sockets, run_timeout_ms=1000), transport)
+                self.assertEqual(outcome.code, 'COMPLETE')
+                self.assertEqual(bytes(first_broker.written), b'')
+                self.assertEqual(bytes(second_broker.written), setup('BACKEND', 2) + b'\x00\x00')
+                self.assertEqual([s.closes for s in (first, first_broker, second, second_broker)], [1, 1, 1, 1])
+
+    def test_host_first_logical_eof_ends_tunnel_normally_and_run_continues(self):
+        # P38(b), guest side: a host that closes an idle slot first sends a zero-length logical
+        # EOF. On the guest that is an ordinary tunnel end: the client gets its data and its
+        # shutdown, later client bytes still go to the host (which discards them), the guest's own
+        # logical EOF follows when the client closes, and the run continues for other tunnels.
+        alert = b'\x15late-alert'
+        a, a_broker = Stream([REQUEST, None, None, alert, None, b'']), Stream([b'\x00\x02hi', b'\x00\x00'])
+        b, b_broker = Stream([None] * 12 + [BACKEND_REQUEST, b'']), Stream([b'\x00\x01k\x00\x00'])
+        outcome, _, sockets, transport = self.run_case([a, b], [a_broker, b_broker],
+                                                       idle_timeout_ms=1000, run_timeout_ms=1000)
+        self.assertEqual(outcome.code, 'COMPLETE')
+        self.assertEqual((bytes(a.written), a.ends), (OK + b'hi', 1))
+        self.assertEqual(bytes(a_broker.written), setup() + len(alert).to_bytes(2, 'big') + alert + b'\x00\x00')
+        self.assertEqual(bytes(b.written), OK + b'k')
+        self.assertEqual(bytes(b_broker.written), setup('BACKEND', 2) + b'\x00\x00')
+        self.assertEqual([s.closes for s in (a, a_broker, b, b_broker)], [1, 1, 1, 1])
+        self.assertEqual((sockets.listener.closes, transport.closes), (1, 1))
+
+    def test_per_tunnel_close_closes_vsock_without_logical_eof(self):
+        # P38(c), guest side: a per-tunnel close (P36 client reset, or idle) closes the vsock
+        # stream without a logical-EOF record. The host treats exactly that physical close as an
+        # event of its slot only (BrokerTests); the guest run continues.
+        for name, a in (('client-reset', Stream([REQUEST + b'ab', oserror(errno.ECONNRESET)])),
+                        ('idle', Stream([REQUEST + b'ab']))):
+            with self.subTest(close=name):
+                a_broker = Stream()
+                b, b_broker = Stream([BACKEND_REQUEST, b'']), Stream([b'\x00\x00'])
+                # b arrives after a closed, so a's close is the only event that ends a.
+                sockets, transport = AfterSockets([a, b]), Transport([a_broker, b_broker])
+                outcome = proxy.serve_proxy(config(sockets, run_timeout_ms=1000), transport)
+                self.assertEqual(outcome.code, 'COMPLETE')
+                self.assertEqual(bytes(a_broker.written), setup() + b'\x00\x02ab', 'no logical EOF')
+                self.assertEqual(bytes(b_broker.written), setup('BACKEND', 2) + b'\x00\x00')
+                self.assertEqual([s.closes for s in (a, a_broker, b, b_broker)], [1, 1, 1, 1])
+
+    def native_vsock(self, *, so_errors=(), ready=True):
+        """Inert AF_VSOCK adapter: pending connect, readiness, and SO_ERROR per created socket."""
+        created = []
+        class Endpoint:
+            def __init__(self, *args):
+                self.args, self.closes, self.sent = args, 0, bytearray()
+                self.error = so_errors[len(created)] if len(created) < len(so_errors) else 0
+                self.incoming = [CHALLENGE]      # C4: the host's challenge, then nothing
+                created.append(self)
+            def setblocking(self, value): pass
+            def connect_ex(self, address): return errno.EINPROGRESS
+            def getsockopt(self, level, option): return self.error
+            def send(self, data): self.sent.extend(data); return len(data)
+            def recvmsg(self, size, ancillary):
+                if not self.incoming: raise BlockingIOError()
+                data = self.incoming.pop(0)
+                if len(data) > size: self.incoming.insert(0, data[size:]); data = data[:size]
+                return data, [], 0, None
+            def shutdown(self, how): pass
+            def close(self): self.closes += 1
+        class SocketModule:
+            AF_VSOCK = 40; SOCK_STREAM = 1; SOCK_NONBLOCK = 2048; SOCK_CLOEXEC = 524288
+            SOL_SOCKET = 1; SO_ERROR = 4; SHUT_WR = 1
+            @staticmethod
+            def CMSG_SPACE(size): return size + 16
+            def socket(self, *args): return Endpoint(*args)
+        class Selectors:
+            EVENT_WRITE = 2
+            class DefaultSelector:
+                def register(self, *args): pass
+                def select(self, timeout): return ((object(), 2),) if ready else ()
+                def close(self): pass
+        return SocketModule(), Selectors, created
+
+    def test_async_vsock_so_error_latches(self):
+        module, selectors, created = self.native_vsock(so_errors=(errno.ECONNREFUSED,))
+        binding = config(Sockets()).binding
+        transport = proxy.NativeVsockTransport(module, selectors, binding, 2, 4050, 20, clock=Clock())
+        transport.claim()
+        stream = transport.open(2, 4050, binding)
+        with self.assertRaises(OSError) as raised: stream.write(b'x')
+        self.assertEqual(raised.exception.errno, errno.ECONNREFUSED)
+        self.assertEqual(bytes(created[0].sent), b'')
+        transport.close()
+        # In the serving loop the asynchronous connect error is vsock loss: the whole run
+        # latches, the bystander's connected vsock closes too, and nothing is sent on it.
+        module, selectors, created = self.native_vsock(so_errors=(0, errno.ECONNREFUSED))
+        clock = Clock()
+        bystander, client = Stream([BACKEND_REQUEST] + [None] * 5), Stream([None, REQUEST])
+        sockets = Sockets([bystander, client], complete=False)
+        transport = proxy.NativeVsockTransport(module, selectors, binding, 2, 4050, 20, clock=clock)
+        outcome = proxy.serve_proxy(config(sockets, clock), transport)
+        self.assertEqual(outcome.code, 'TRANSPORT_LOST')
+        self.assertEqual([bytes(e.sent) for e in created], [setup('BACKEND', 1), b''])
+        self.assertEqual([e.closes for e in created] + [bystander.closes, client.closes], [1, 1, 1, 1])
+
+    def test_vsock_connect_timeout_enforced(self):
+        module, selectors, created = self.native_vsock(ready=False)
+        binding, clock = config(Sockets()).binding, Clock()
+        transport = proxy.NativeVsockTransport(module, selectors, binding, 2, 4050, 20, clock=clock)
+        transport.claim()
+        stream = transport.open(2, 4050, binding)          # opened at mono 10: deadline 30
+        clock.mono = 29
+        self.assertIsNone(stream.write(b'x')); self.assertIsNone(stream.read(16)); transport.check()
+        clock.mono = 30
+        for operation in (lambda: stream.write(b'x'), lambda: stream.read(16), transport.check):
+            with self.assertRaises(OSError) as raised: operation()
+            self.assertEqual(raised.exception.errno, errno.ETIMEDOUT)
+        self.assertEqual(bytes(created[0].sent), b'')
+        transport.close(); self.assertEqual(created[0].closes, 1)
+        # Serving loop with connect timeout == idle timeout (as _inherited_entry sets it): the
+        # stalled connect latches TRANSPORT_LOST and is never turned into a per-tunnel idle close.
+        module, selectors, created = self.native_vsock(ready=False)
+        clock, client = Clock(), Stream([REQUEST])
+        sockets = Sockets([client])
+        transport = proxy.NativeVsockTransport(module, selectors, binding, 2, 4050, 20, clock=clock)
+        outcome = proxy.serve_proxy(config(sockets, clock, run_timeout_ms=1000), transport)
+        self.assertEqual((outcome.code, clock.mono), ('TRANSPORT_LOST', 30))
+        self.assertEqual((bytes(created[0].sent), created[0].closes, client.closes), (b'', 1, 1))
+
     def _bootstrap_wire(self, change=None):
         value = {
             'aggregateBytes': 10000,
-            'capability': '07' * 32,
             'configIdentity': 'a' * 64,
             'expiresAt': 190,
             'firstSequence': 1,
@@ -540,6 +1508,8 @@ class ProxyTests(unittest.TestCase):
             'runTimeoutMs': 50,
             'runtimeIdentity': 'd' * 64,
             'version': 1,
+            # P10/R6: the derived vsock-stream key only; never the run capability.
+            'vsockKey': VSOCK_KEY.hex(),
         }
         if change: change(value)
         body = json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
@@ -578,7 +1548,7 @@ class ProxyTests(unittest.TestCase):
         self.assertTrue(hasattr(proxy, 'qualify_native_admission'))
         self.assertTrue(hasattr(proxy, 'admitted_inherited_main'))
         expected_binding=proxy.RunBinding(
-            '1'*32, b'\x07'*32, 190, 1, 'b'*64, 'a'*64, ORIGINS)
+            '1'*32, VSOCK_KEY, 190, 1, 'b'*64, 'a'*64, ORIGINS)
         validations=[]
         policy=proxy.qualify_native_admission(
             expected_binding, HOSTS.copy(), 10000, 20, 50,
@@ -605,35 +1575,73 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual((cfg.aggregate_bytes, cfg.idle_timeout_ms, cfg.run_timeout_ms),
                          (10000, 20, 50))
         self.assertEqual((transport.host_cid, transport.service), (2, 4050))
+        # T9-9: the vsock connect deadline runs on the run clock, bounded like the idle lease.
+        self.assertIs(transport.clock, cfg.clock)
+        self.assertEqual(transport.connect_timeout_ms, cfg.idle_timeout_ms)
         result = bytes(fake_os.output[8:])
         size = int.from_bytes(result[:2], 'big')
         self.assertEqual(json.loads(result[2:2+size]), {
             'code':'COMPLETE','kind':'PROXY_RESULT','runId':'1'*32,
             'usedBytes':7,'version':1})
 
-        for mutate in [
-            lambda value: value.pop('runtimeIdentity'),
-            lambda value: value.__setitem__('runtimeIdentity', 'e' * 64),
-            lambda value: value['handoff'].__setitem__('commandFd', 9),
-            lambda value: value['handoff'].__setitem__('confined', False),
-            lambda value: value.__setitem__('rolePolicyIdentity', 'e' * 64),
-            lambda value: value.__setitem__('configIdentity', 'e' * 64),
-        ]:
-            with self.subTest(mutate=mutate):
+        # T9-4: a denied case must never reach the runner. The runner records instead of
+        # raising, so the entry's own exception handling cannot hide a reached runner.
+        def setter(field, value):
+            return lambda frame: frame.__setitem__(field, copy.deepcopy(value))
+        denials = [('frame:' + field, setter(field, value)) for field, value in FRAME_FIELD_DENIALS] + [
+            ('runtimeIdentity:absent', lambda value: value.pop('runtimeIdentity')),
+            ('runtimeIdentity', setter('runtimeIdentity', 'e' * 64)),
+            ('handoff:commandFd', lambda value: value['handoff'].__setitem__('commandFd', 9)),
+            ('handoff:confined', lambda value: value['handoff'].__setitem__('confined', False)),
+            ('rolePolicyIdentity', setter('rolePolicyIdentity', 'e' * 64)),
+        ]
+        self.assertEqual(len(denials), 15)
+        for name, mutate in denials:
+            with self.subTest(denial=name):
+                reached=[]
                 denied_os=FakeOS(self._bootstrap_wire(mutate))
                 denied=proxy.qualify_native_bindings(
                     denied_os, FakeSocketModule(), FakeSelectorModule(), FakeTime(),
                     platform_name='linux', machine='aarch64',
-                    runner=lambda *_: self.fail('invalid admission reached runner'))
+                    runner=lambda cfg, transport: reached.append(cfg) or proxy.ProxyOutcome('COMPLETE'))
                 self.assertEqual(proxy.admitted_inherited_main(
                     ('--inherited',), denied, policy), 1)
+                self.assertEqual(reached, [])
+                self.assertEqual(bytes(denied_os.output), b'WAITING\n')
                 self.assertEqual(denied_os.closes, [3, 4])
 
+        # Each comparison in the admission itself is bound on its own. Destinations and the
+        # binding's origins both derive from the frame's origins, so only a direct case can
+        # diverge them (reviewer mutant O3).
+        native=proxy.NativeAdmission('d'*64, 'c'*64)
+        def admitted(**changes):
+            values=dict(destinations=HOSTS.copy(), binding=expected_binding, aggregate_bytes=10000,
+                        idle_timeout_ms=20, run_timeout_ms=50, clock=Clock(), sockets=Sockets(),
+                        native_admission=native)
+            values.update(changes); return proxy.ProxyConfig(**values)
+        self.assertIsNone(proxy._admit_native_config(admitted(), policy))
+        rebound=lambda **change: dict(binding=dataclasses.replace(expected_binding, **change))
+        for name, changes in [
+                ('destinations', dict(destinations={'FRONTEND':'other.example.test','BACKEND':HOSTS['BACKEND']})),
+                ('aggregateBytes', dict(aggregate_bytes=9999)), ('idleTimeoutMs', dict(idle_timeout_ms=21)),
+                ('runTimeoutMs', dict(run_timeout_ms=51)),
+                ('runId', rebound(run_id='2'*32)), ('vsockKey', rebound(vsock_key=b'\x08'*32)),
+                ('expiresAt', rebound(expires_at=191)), ('firstSequence', rebound(first_sequence=2)),
+                ('manifestIdentity', rebound(manifest_identity='e'*64)),
+                ('configIdentity', rebound(config_identity='e'*64)),
+                ('origins', rebound(origins=(('FRONTEND','https://other.example.test'), ORIGINS[1]))),
+                ('runtimeIdentity', dict(native_admission=proxy.NativeAdmission('e'*64, 'c'*64))),
+                ('rolePolicyIdentity', dict(native_admission=proxy.NativeAdmission('d'*64, 'e'*64))),
+                ('admission-absent', dict(native_admission=None))]:
+            with self.subTest(direct=name), self.assertRaisesRegex(proxy.ProxyError, '^ADMISSION_DENIED$'):
+                proxy._admit_native_config(admitted(**changes), policy)
+
+        reached=[]
         denied_os=FakeOS(self._bootstrap_wire())
         denied_bindings=proxy.qualify_native_bindings(
             denied_os, FakeSocketModule(), FakeSelectorModule(), FakeTime(),
             platform_name='linux', machine='aarch64',
-            runner=lambda *_: self.fail('unadmitted handoff reached runner'))
+            runner=lambda cfg, transport: reached.append(cfg) or proxy.ProxyOutcome('COMPLETE'))
         denied_policy=proxy.qualify_native_admission(
             expected_binding, HOSTS.copy(), 10000, 20, 50,
             runtime_identity='d'*64, role_policy_identity='c'*64,
@@ -641,6 +1649,7 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(proxy.admitted_inherited_main(
             ('--inherited',), denied_bindings, denied_policy), 1)
         self.assertEqual(denied_os.reads, [])
+        self.assertEqual(reached, [])
 
     def test_task8_waiting_precedes_bootstrap_and_operational_entry_fails_closed(self):
         class HandshakeOS:
@@ -730,9 +1739,13 @@ class ProxyTests(unittest.TestCase):
         stream.socket.send=lambda data: min(stream.socket.send_limit, original_send(data))
         self.assertEqual(stream.write(b'abc'), 1)
         binding=config(Sockets()).binding
-        transport=proxy.NativeVsockTransport(module, Selector, binding, 2, 4050)
-        self.assertIs(transport.authenticate(binding), binding)
-        with self.assertRaises(OSError): transport.authenticate(binding)
+        bare=proxy.NativeVsockTransport(module, Selector, binding, 2, 4050)
+        bare.claim(); created=len(module.created)
+        with self.assertRaisesRegex(proxy.ProxyError, '^TRANSPORT_DENIED$'): bare.open(2,4050,binding)
+        self.assertEqual(len(module.created), created, 'no vsock socket without a connect deadline clock')
+        transport=proxy.NativeVsockTransport(module, Selector, binding, 2, 4050, clock=Clock())
+        self.assertIsNone(transport.claim())
+        with self.assertRaises(OSError): transport.claim()
         native=transport.open(2,4050,binding)
         self.assertEqual(module.created[-1].created, (40, 1|2048|524288, 0))
         self.assertIn(('connect_ex',(2,4050)), module.created[-1].calls)
@@ -797,8 +1810,8 @@ class ProxyTests(unittest.TestCase):
                 def select(self, seconds): selected.append(seconds); return ((object(), 2),)
                 def close(self): pass
         binding=config(Sockets()).binding
-        transport=proxy.NativeVsockTransport(SocketModule(), Selectors, binding, 2, 4050, 20)
-        transport.authenticate(binding)
+        transport=proxy.NativeVsockTransport(SocketModule(), Selectors, binding, 2, 4050, 20, clock=Clock())
+        transport.claim()
         stream=transport.open(2,4050,binding)
         self.assertEqual(selected, [])
         self.assertEqual(stream.write(b'x'), 1)
@@ -932,38 +1945,64 @@ class ProxyTests(unittest.TestCase):
 
 
 class CompositionHarness:
-    """Real inherited decoder, selector parser and loop; inert OS bytes only."""
-    def __init__(self, test, *, commands=None, mutate=None, sink=None):
+    """Real inherited decoder, selector parser and loop; inert OS bytes only.
+
+    With `channel`, it is the stand-in PROXY child of a bootstrap composition
+    test (E4): FD3 bytes come from the bootstrap's writes, FD4 frames go back to
+    the bootstrap's reads, and the shared `clock` is advanced only by the test.
+    `child_policy` is then the child's own trusted embedding: (binding record,
+    childId, pipeId, channel key, its independently qualified admission policy).
+    """
+    def __init__(self, test, *, commands=None, mutate=None, sink=None, limits=(20, 50), vsock_key=VSOCK_KEY,
+                 channel=None, clock=None, child_policy=None):
         self.test, self.owners, self.frames, self.events = test, [], [], []
-        self.clock = Clock()
-        self.clock.wall, self.clock.mono = 100, 10
+        # (idleTimeoutMs, runTimeoutMs) for both the frame and the independent admission.
+        self.limits = limits
+        # P10: the key the bootstrap passes to the proxy entry, for the frame and the admission.
+        self.vsock_key = vsock_key
+        self.channel, self.child_policy = channel, child_policy
+        self.clock = clock if clock is not None else Clock()
+        if clock is None: self.clock.wall, self.clock.mono = 100, 10
         self.live = {fd: [1, fd + 100, 0 if fd != 4 else 1] for fd in range(5)}
+        # Selector FD -> registered target FDs, served as fdinfo `tfd:` lines.
+        self.targets = {}
         self.next_fd, self.endpoints, self.selectors = 5, [], []
         self.child, self.pipe = object(), (object(), object())
         self.key = b'\x09' * 32
         self.binding = dict(version=1, runId='1'*32, manifestDigest='b'*64,
                             configIdentity='a'*64, rolePolicyDigest='c'*64,
                             epoch=7, expiresAtMs=190)
+        self.child_id, self.pipe_id = '2'*32, '3'*32
+        if child_policy is not None:
+            self.binding, self.child_id, self.pipe_id, self.key, self.admitted = child_policy
         self.output, self.input = bytearray(), bytearray()
         self.pending_commands = commands if commands is not None else [self.command('PROXY_CURRENT'), b'STOP']
         self.on_ready, self.on_sleep, self.on_write = sink, None, None
         self.fail_bind = self.fail_auth = self.fail_close = False
         self.fragment, self.write_fragment = 7, 13
         self.clients = []
+        # Terminal-start double (C1): a set deadline means started; remaining()
+        # never allocates. Tests may pre-set deadline to model an earlier start.
         self.budget = types.SimpleNamespace(clock=self.clock, deadline=None, real_deadline=None)
         self.budget.remaining = self.remaining
+        self.budget.start_terminal = self.start_terminal
+        self.budget.clamp_end = self.clamp_end
         self.budget.call = lambda fn: fn(self.remaining())
         bootstrap = json.loads(ProxyTests()._bootstrap_wire()[2:])
+        bootstrap['idleTimeoutMs'], bootstrap['runTimeoutMs'] = limits
+        bootstrap['vsockKey'] = vsock_key.hex()
         initial = dict(version=2, kind='PROXY_COMPOSITION_INIT', binding=self.binding.copy(),
                        childId='2'*32, pipeId='3'*32, channelKeyHex=self.key.hex(), proxyBootstrap=bootstrap)
         if mutate: mutate(initial)
-        self.input.extend(self.frame(initial))
+        self.initial = initial
+        if channel is None: self.input.extend(self.frame(initial))
         harness = self
 
         class Endpoint:
             def __init__(self, family=2):
                 self.fd = harness.allocate(); self.family = family; self.closes = 0
-                self.data, self.sent = [], bytearray()
+                # C4: every vsock stream first carries the host's challenge frame.
+                self.data, self.sent = ([CHALLENGE] if family == 40 else []), bytearray()
                 harness.endpoints.append(self)
             def fileno(self): return self.fd
             def setblocking(self, value):
@@ -985,7 +2024,10 @@ class CompositionHarness:
             def connect_ex(self, address): return errno.EINPROGRESS
             def getsockopt(self, *args): return 0
             def recvmsg(self, size, ancillary):
-                if self.data: return self.data.pop(0), (), 0, None
+                if self.data:
+                    item = self.data.pop(0)
+                    if isinstance(item, BaseException): raise item
+                    return item, (), 0, None
                 raise BlockingIOError()
             def send(self, data): self.sent.extend(data); return len(data)
             def shutdown(self, how): pass
@@ -999,13 +2041,18 @@ class CompositionHarness:
                 self.fd = harness.allocate(); self.target = None; self.closes = 0
                 harness.selectors.append(self)
             def fileno(self): return self.fd
-            def register(self, target, event): self.target = target
+            def register(self, target, event):
+                self.target = target
+                harness.targets.setdefault(self.fd, set()).add(
+                    target if type(target) is int else target.fileno())
             def select(self, timeout):
+                if harness.channel is not None and not harness.channel.command_ready():
+                    return [(types.SimpleNamespace(fd=4),2)]
                 return [(types.SimpleNamespace(fd=3),1),(types.SimpleNamespace(fd=4),2)]
             def close(self):
                 self.closes += 1
                 if harness.fail_close: raise OSError('inert selector close')
-                harness.live.pop(self.fd, None); self.fd = -1
+                harness.live.pop(self.fd, None); harness.targets.pop(self.fd, None); self.fd = -1
 
         self.Endpoint = Endpoint
         class SelectWriter:
@@ -1018,15 +2065,29 @@ class CompositionHarness:
             socket=lambda family, kind, protocol: Endpoint(family))
         self.selector_module = types.SimpleNamespace(DefaultSelector=Selector,
             SelectSelector=SelectWriter, EVENT_READ=1, EVENT_WRITE=2)
-        self.time = types.SimpleNamespace(time=lambda: self.clock.wall/1000,
-            monotonic=lambda: self.clock.mono/1000, sleep=self.sleep)
+        # Half-millisecond offsets keep int(x * 1000) exact on the shared clock.
+        self.time = types.SimpleNamespace(time=lambda: (self.clock.wall+.5)/1000,
+            monotonic=lambda: (self.clock.mono+.5)/1000, sleep=self.sleep)
         self.files, self.fd_closes = {}, []
+        # P43: /proc/self/fd is listed through a directory FD the inventory opens and
+        # closes itself; os.listdir(fd) reads through a private dup, as the pinned
+        # CPython does. Both take the lowest free number, as the kernel allocates.
+        self.directories, self.directory_closes, self.listings, self.dups = set(), [], [], set()
+        self.directory_opens, self.on_listdir = 0, None
+        # Fault models: a runtime whose listdir(fd) makes no private dup, and a
+        # foreign descriptor that takes (keeps) the reserved number.
+        self.listdir_dups, self.foreign_reserved = True, False
         self.os = types.SimpleNamespace(read=self.read, write=self.write, close=self.close,
-            fstat=self.fstat, listdir=lambda path: [str(fd) for fd in self.live],
-            open=self.open, O_RDONLY=0, O_CLOEXEC=524288)
+            fstat=self.fstat, listdir=self.listdir, dup=self.dup,
+            open=self.open, O_RDONLY=0, O_CLOEXEC=524288, O_DIRECTORY=65536)
 
-    def remaining(self):
+    def start_terminal(self):
         if self.budget.deadline is None: self.budget.deadline = self.clock.mono + 60000
+        return self.remaining()
+    def clamp_end(self, end):
+        self.start_terminal(); self.budget.deadline = min(self.budget.deadline, end)
+    def remaining(self):
+        if self.budget.deadline is None: raise ValueError('CLEANUP_NOT_STARTED')
         return max(0, self.budget.deadline - self.clock.mono)
     def allocate(self):
         fd = self.next_fd; self.next_fd += 1
@@ -1035,11 +2096,51 @@ class CompositionHarness:
         if fd not in self.live: raise OSError('inert missing descriptor')
         dev, inode, flags = self.live[fd]
         return types.SimpleNamespace(st_dev=dev, st_ino=inode)
+    def fdinfo(self, target):
+        """Kernel-format fdinfo text: flags, plus one tfd: line per epoll target."""
+        text = 'pos:\t0\nflags:\t0'+oct(self.live[target][2])[2:]+'\nmnt_id:\t15\nino:\t%d\n' % self.live[target][1]
+        for registered in sorted(self.targets.get(target, ())):
+            text += 'tfd: %8d events: %8x data: %16x  pos:0 ino:%x sdev:%x\n' % (
+                registered, 4, registered, self.live.get(registered, [0, 0])[1], 1)
+        return text.encode()
+    def lowest_free(self):
+        fd = 0
+        while fd in self.live: fd += 1
+        return fd
+    def dup(self, fd):
+        if fd not in self.live: raise OSError('inert missing descriptor')
+        copy = self.lowest_free(); self.live[copy] = list(self.live[fd]); self.dups.add(copy); return copy
+    def listdir(self, target):
+        """Linux /proc/self/fd as seen by CPython: listing by path shows the opendir
+        FD; listing an open directory FD shows it and the private dup read through."""
+        if target == '/proc/self/fd':
+            private = self.lowest_free(); self.live[private] = [1, 9500 + private, 0]
+            try: return [str(fd) for fd in self.live]
+            finally: del self.live[private]
+        if type(target) is not int or target not in self.directories:
+            raise OSError('inert listdir of an unknown directory')
+        private = None
+        if self.listdir_dups:
+            private = self.dup(target); self.dups.discard(private)
+        try:
+            if self.on_listdir: self.on_listdir()
+            names = [str(fd) for fd in self.live]
+            self.listings.append((target, private, list(names)))
+            return names
+        finally:
+            if private is not None: del self.live[private]
     def open(self, path, flags):
+        if path == '/proc/self/fd':
+            if flags != self.os.O_RDONLY | self.os.O_DIRECTORY | self.os.O_CLOEXEC:
+                raise OSError('inert /proc/self/fd open flags')
+            fd = self.lowest_free(); self.live[fd] = [1, 9000 + fd, flags]
+            self.directories.add(fd); self.directory_opens += 1; return fd
         target = int(path.rsplit('/', 1)[1]); fd = 4000
-        self.files[fd] = bytearray(('flags:\t'+oct(self.live[target][2])[2:]+'\n').encode())
+        self.files[fd] = bytearray(self.fdinfo(target))
         return fd
     def read(self, fd, size):
+        if fd == 3 and self.channel is not None:
+            return self.channel.read_command(min(size, self.fragment))
         source = self.input if fd == 3 else self.files[fd]
         if fd == 3 and not source and self.pending_commands:
             item = self.pending_commands.pop(0)
@@ -1048,12 +2149,21 @@ class CompositionHarness:
         return part
     def write(self, fd, data):
         if self.on_write: self.on_write()
-        part = bytes(data[:self.write_fragment]); self.output.extend(part); return len(part)
+        part = bytes(data[:self.write_fragment]); self.output.extend(part)
+        if self.channel is not None: self.channel.write_result(part)
+        return len(part)
     def close(self, fd):
         if fd in self.files: del self.files[fd]
+        elif fd in self.directories:
+            self.directories.discard(fd); self.live.pop(fd, None); self.directory_closes.append(fd)
+        elif fd in self.dups:
+            self.dups.discard(fd)
+            if self.foreign_reserved: self.live[fd] = [1, 8888, 0]  # another descriptor takes it
+            else: self.live.pop(fd, None)
         else: self.fd_closes.append(fd)
     def sleep(self, seconds):
-        self.clock.wait(max(1, int(seconds*1000)))
+        if self.channel is not None: self.channel.idle()
+        else: self.clock.wait(max(1, int(seconds*1000)))
         if self.on_sleep: self.on_sleep()
     @staticmethod
     def frame(value):
@@ -1061,8 +2171,8 @@ class CompositionHarness:
         return len(body).to_bytes(2, 'big') + body
     def command(self, kind, sequence=1, request_id='4'*32, **changes):
         payload = dict(requestId=request_id, generation=1) if kind == 'PROXY_CURRENT' else dict(requestId=request_id, cleanupEndsAtMonotonicMs=25)
-        value = dict(version=2, kind=kind, binding=self.binding, childId='2'*32,
-                     pipeId='3'*32, sequence=sequence, payload=payload)
+        value = dict(version=2, kind=kind, binding=self.binding, childId=self.child_id,
+                     pipeId=self.pipe_id, sequence=sequence, payload=payload)
         value.update(changes)
         body = self.frame(value)[2:]
         value['mac'] = hmac.new(self.key, b'acceptance:bootstrap-composition:v1\0PROXY:FROM_BOOTSTRAP\0'+body, hashlib.sha256).hexdigest()
@@ -1070,18 +2180,25 @@ class CompositionHarness:
     def capture(self, owner):
         self.events.append('owner'); self.owners.append(owner)
         if self.on_ready: self.on_ready(self, owner)
-    def run(self, *, legacy=False, policy_override=None):
-        admitted = proxy.qualify_native_admission(config(Sockets()).binding, HOSTS, 10000, 20, 50,
-            runtime_identity='d'*64, role_policy_identity='c'*64, handoff_validator=lambda *_: True)
+    def run(self, *, legacy=False, policy_override=None, legacy_commands=None):
+        if self.child_policy is not None:
+            admitted = self.admitted
+        else:
+            base = config(Sockets()).binding
+            fields = dataclasses.fields(base)
+            keyed = proxy.RunBinding(base.run_id, self.vsock_key, *(getattr(base, f.name) for f in fields[2:]))
+            admitted = proxy.qualify_native_admission(keyed, HOSTS, 10000, *self.limits,
+                runtime_identity='d'*64, role_policy_identity='c'*64, handoff_validator=lambda *_: True)
         bindings = proxy.qualify_native_bindings(self.os, self.socket, self.selector_module, self.time,
             platform_name='linux', machine='aarch64')
         if legacy:
-            self.input = bytearray(ProxyTests()._bootstrap_wire()); self.pending_commands = [b'STOP']
+            self.input = bytearray(ProxyTests()._bootstrap_wire())
+            self.pending_commands = [b'STOP'] if legacy_commands is None else legacy_commands
         kwargs = {}
         if hasattr(proxy, 'qualify_composition_proxy') and not legacy:
             self.nominal_binding = proxy.CompositionBinding.from_record(self.binding)
             self.policy = proxy.qualify_composition_proxy(self.nominal_binding,
-                child=self.child, pipe=self.pipe, child_id='2'*32, pipe_id='3'*32,
+                child=self.child, pipe=self.pipe, child_id=self.child_id, pipe_id=self.pipe_id,
                 channel_key=self.key, admission_policy=admitted, cleanup_budget=self.budget,
                 provenance_validator=lambda child, pipe: child is self.child and pipe is self.pipe,
                 runtime_sink=self.capture)
@@ -1124,6 +2241,189 @@ class ProxyCompositionTests(unittest.TestCase):
         h = CompositionHarness(self, sink=sink).run(); self.ready(h)
         self.assertEqual(failures, [True])
         self.assertNotIn('PROXY_CURRENT', [f['kind'] for f in h.frames])
+
+    def test_v1_equal_objects_cannot_substitute_listener_transport_sockets_timeline(self):
+        # P1 (compB I-7): an equal copy of any serving original is a substitution,
+        # including the listener retained by the original sockets owner.
+        for target in ('listener', 'sockets.listener', 'transport', 'sockets', 'timeline'):
+            with self.subTest(target=target):
+                seen = []
+                def sink(h, owner, target=target):
+                    self.assertEqual(owner.observe_current(h.nominal_binding).to_record()['status'], 'CURRENT')
+                    if target == 'listener': owner._listener = copy.copy(owner._listener)
+                    elif target == 'sockets.listener': owner._sockets.listener = copy.copy(owner._sockets.listener)
+                    elif target == 'transport': owner._transport = copy.copy(owner._transport)
+                    elif target == 'sockets': owner._sockets = copy.copy(owner._sockets)
+                    else: owner._timeline = copy.copy(owner._timeline)
+                    with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+                    seen.append(True)
+                h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+                self.assertEqual(seen, [True])
+                self.assertNotIn('PROXY_CURRENT', [f['kind'] for f in h.frames])
+                self.assertNotEqual(h.frames[-1]['payload']['code'], 'COMPLETE')
+
+    def test_v1_unknown_extra_fd_fails_runtime_current(self):
+        # P7 (compB I-7): an unknown descriptor in the child's own table is never
+        # tolerated; the owner is terminal even after it disappears again.
+        seen = []
+        def sink(h, owner):
+            self.assertEqual(owner.observe_current(h.nominal_binding).to_record()['status'], 'CURRENT')
+            h.live[19] = [1, 199, 0]
+            with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+            del h.live[19]
+            with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+            seen.append(True)
+        h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+        self.assertEqual(seen, [True])
+        self.assertNotIn('PROXY_CURRENT', [f['kind'] for f in h.frames])
+
+    def test_p43_listing_own_directory_fd_and_private_dup_are_excluded(self):
+        # P43: the native /proc/self/fd listing shows its own directory FD and the
+        # private dup CPython's listdir(fd) reads through. Exactly those two are
+        # excluded, both are closed again, and the strict current() succeeds.
+        seen = []
+        def sink(h, owner):
+            rows = owner.observe_current(h.nominal_binding).to_record()['currentFDs']
+            directory, private, names = h.listings[-1]
+            self.assertEqual((directory, private), (7, 8))
+            self.assertTrue({'7', '8'} <= set(names))
+            self.assertEqual([r['fd'] for r in rows], [0, 1, 2, 3, 4, 5, 6])
+            self.assertEqual((h.directories, h.dups), (set(), set()))
+            self.assertEqual(h.directory_closes[-1], directory)
+            self.assertNotIn(directory, h.live); self.assertNotIn(private, h.live)
+            seen.append(True)
+        h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+        self.assertEqual(seen, [True])
+        self.assertEqual(h.directory_opens, len(h.directory_closes))
+
+    def test_p43_other_extra_fd_and_foreign_reserved_number_still_fail(self):
+        # Any descriptor that is not the listing's own stays visible: an unknown FD
+        # at the number the listing would have used, or a foreign descriptor that
+        # took the reserved number (with or without a private dup).
+        for case in ('unknown-at-lowest-free', 'foreign-reserved', 'foreign-reserved-no-dup'):
+            with self.subTest(case=case):
+                seen = []
+                def sink(h, owner, case=case):
+                    self.assertEqual(owner.observe_current(h.nominal_binding).to_record()['status'], 'CURRENT')
+                    if case == 'unknown-at-lowest-free': h.live[h.lowest_free()] = [1, 777, 0]
+                    else:
+                        h.foreign_reserved = True
+                        h.listdir_dups = case == 'foreign-reserved'
+                    with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+                    self.assertEqual(h.directories, set())
+                    seen.append(True)
+                h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+                self.assertEqual(seen, [True])
+                self.assertNotIn('PROXY_CURRENT', [f['kind'] for f in h.frames])
+
+    def test_p43_closed_fd_check_not_fooled_by_the_listing_reusing_its_number(self):
+        # Retiring a closed endpoint lists /proc/self/fd while its number is the
+        # lowest free one, so the listing's own directory FD takes that number.
+        seen = []
+        def sink(h, owner):
+            stream = owner._transport.open(2, 4050, owner._config.binding)
+            socket_fd, connector_fd = stream.socket.fileno(), stream.connector.fileno()
+            self.assertEqual((socket_fd, connector_fd), (7, 8))
+            stream.close()
+            self.assertTrue(stream.closed)
+            self.assertEqual([listing[0] for listing in h.listings[-2:]], [connector_fd, socket_fd])
+            self.assertFalse({socket_fd, connector_fd} & set(owner._context._inventory.rows))
+            self.assertEqual(owner.observe_current(h.nominal_binding).to_record()['status'], 'CURRENT')
+            seen.append(True)
+        h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+        self.assertEqual(seen, [True])
+
+    def test_p43_directory_fd_closed_on_success_and_error(self):
+        for fault in ('none', 'listdir', 'dup'):
+            with self.subTest(fault=fault):
+                seen = []
+                def sink(h, owner, fault=fault):
+                    before = h.directory_opens
+                    if fault == 'listdir':
+                        def fail(): raise OSError('inert listing failure')
+                        h.on_listdir = fail
+                    elif fault == 'dup':
+                        h.os.dup = lambda fd: (_ for _ in ()).throw(OSError('inert dup failure'))
+                    if fault == 'none':
+                        self.assertEqual(owner.observe_current(h.nominal_binding).to_record()['status'], 'CURRENT')
+                    else:
+                        with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+                    h.on_listdir = None
+                    h.os.dup = h.dup
+                    self.assertEqual(h.directory_opens, before + 1)
+                    self.assertEqual((h.directories, h.dups), (set(), set()))
+                    self.assertFalse(any(row[1] >= 9000 for row in h.live.values()))
+                    seen.append(True)
+                h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+                self.assertEqual(seen, [True])
+                self.assertEqual(h.directory_opens, len(h.directory_closes))
+
+    def test_v1_foreign_binding_observe_current_denied(self):
+        # P6 (compB I-7): only the original composition binding may observe.
+        for change in (dict(epoch=8), dict(runId='5'*32), dict(expiresAtMs=191)):
+            with self.subTest(change=change):
+                seen = []
+                def sink(h, owner, change=change):
+                    foreign = dataclasses.replace(h.nominal_binding, **change)
+                    with self.assertRaises(proxy.ProxyError): owner.observe_current(foreign)
+                    with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+                    seen.append(True)
+                h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+                self.assertEqual(seen, [True])
+                self.assertNotIn('PROXY_CURRENT', [f['kind'] for f in h.frames])
+
+    def test_v1_duplicate_request_id_denied(self):
+        # P5 (compB M-4): a requestId is single-use even at the next command sequence.
+        h = CompositionHarness(self)
+        h.pending_commands = [h.command('PROXY_CURRENT', 1, '4'*32), h.command('PROXY_CURRENT', 2, '4'*32)]
+        h.run(); self.ready(h)
+        self.assertEqual([f['kind'] for f in h.frames], ['PROXY_READY', 'PROXY_CURRENT', 'PROXY_TERMINAL'])
+        self.assertEqual(h.frames[-1]['payload']['code'], 'CHANNEL_DENIED')
+        # Control: a fresh requestId at the same next sequence is served.
+        h = CompositionHarness(self)
+        h.pending_commands = [h.command('PROXY_CURRENT', 1, '4'*32), h.command('PROXY_CURRENT', 2, '5'*32), b'STOP']
+        h.run(); self.ready(h)
+        self.assertEqual([f['kind'] for f in h.frames],
+                         ['PROXY_READY', 'PROXY_CURRENT', 'PROXY_CURRENT', 'PROXY_TERMINAL'])
+        self.assertEqual(h.frames[-1]['payload']['code'], 'COMPLETE')
+
+    def test_v1_report_rows_carry_kernel_facts_and_selector_targets(self):
+        # C5 report rows: exactly {fd, kind, device, inode, flags, tfds}; a selector's
+        # identity is its tfd: set (compA M-3), checked on both sides of the wire.
+        checked = []
+        def sink(h, owner):
+            stream = owner._transport.open(2, 4050, owner._config.binding)
+            rows = owner.observe_current(h.nominal_binding).to_record()['currentFDs']
+            self.assertTrue(all(set(row) == {'fd','kind','device','inode','flags','tfds'} for row in rows))
+            by_kind = {row['kind']: row for row in rows}
+            self.assertEqual(by_kind['PROXY_STOP_SELECTOR']['tfds'], [3, 4])
+            self.assertEqual(by_kind['PROXY_CONNECT_SELECTOR']['tfds'], [stream.socket.fileno()])
+            self.assertEqual(by_kind['PROXY_LISTENER']['tfds'], [])
+            selector = owner._sockets.stop_selector
+            h.targets[selector.fileno()].add(9)
+            with self.assertRaises(proxy.ProxyError): owner.observe_current(h.nominal_binding)
+            checked.append(True)
+        h = CompositionHarness(self, sink=sink).run(); self.ready(h)
+        self.assertEqual(checked, [True])
+        h = CompositionHarness(self).run(); ready = h.frames[0]
+        for mutation in ('stop-target', 'connect-without-stream', 'target-on-socket', 'ownerId'):
+            with self.subTest(mutation=mutation):
+                frame = copy.deepcopy(ready)
+                rows = frame['payload']['observation']['currentFDs']
+                if mutation == 'stop-target': rows[6]['tfds'] = [3]
+                elif mutation == 'connect-without-stream':
+                    rows.append(dict(fd=7, kind='PROXY_CONNECT_SELECTOR', device=rows[6]['device'],
+                                     inode=rows[6]['inode'], flags=rows[6]['flags'], tfds=[5]))
+                elif mutation == 'target-on-socket': rows[5]['tfds'] = [3]
+                else: rows[5]['ownerId'] = '1'*32
+                frame.pop('mac')
+                frame['mac'] = hmac.new(h.key, b'acceptance:bootstrap-composition:v1\0PROXY:TO_BOOTSTRAP\0'+h.frame(frame)[2:], hashlib.sha256).hexdigest()
+                client = proxy.ProxyCompositionClient(h.policy, h.clock)
+                h.clock.mono = 10
+                with self.assertRaises(proxy.ProxyError): client.accept_frame(h.frame(frame))
+        client = proxy.ProxyCompositionClient(h.policy, h.clock)
+        h.clock.mono = 10
+        self.assertEqual(client.accept_frame(h.frame(ready))['status'], 'READY')
 
     def test_v1_inherited_v2_epoch_checked_before_runtime_mint(self):
         self.ready(CompositionHarness(self).run())
@@ -1296,7 +2596,7 @@ class ProxyCompositionTests(unittest.TestCase):
         self.assertEqual(observations, [True])
 
     def test_v1_listener_and_transport_auth_fail_before_mint(self):
-        with patch.object(proxy.NativeVsockTransport, 'authenticate', return_value=None):
+        with patch.object(proxy.NativeVsockTransport, 'claim', side_effect=OSError('inert claim failure')):
             h = CompositionHarness(self).run()
         self.assertEqual((h.owners, h.endpoints), ([], []))
         self.assertEqual(h.frames[-1]['payload']['code'], 'IDENTITY_MISMATCH')
@@ -1379,11 +2679,12 @@ class ProxyCompositionTests(unittest.TestCase):
             with self.assertRaises(proxy.ProxyError):h.owners[0].observe_current(h.nominal_binding)
 
     def test_v1_swapped_os_or_context_policy_cannot_reobserve(self):
-        for target in ('os','policy','transport'):
+        for target in ('os','policy','transport','clock'):
             seen=[]
             def sink(h,owner):
                 if target=='os': owner._sockets.os=copy.copy(h.os)
                 elif target=='policy': owner._context._policy=dataclasses.replace(h.policy)
+                elif target=='clock': owner._transport.clock=Clock()
                 else: owner._transport.host_cid=3
                 with self.assertRaises(proxy.ProxyError):owner.observe_current(h.nominal_binding)
                 seen.append(True)
@@ -1575,7 +2876,7 @@ class ProxyCompositionTests(unittest.TestCase):
                     def setblocking(value):
                         row=owner._context._inventory.rows[endpoint.fd]
                         self.assertEqual(row['flags'],524288)
-                        registered.append(row['ownerId'])
+                        registered.append((row['device'],row['inode']))
                         self.assertIs(value,False)
                         h.live[endpoint.fd][2]|=2048
                         if mutation=='inode':h.live[endpoint.fd][1]+=1
@@ -1597,9 +2898,54 @@ class ProxyCompositionTests(unittest.TestCase):
                 if mutation=='none':
                     self.assertEqual(len(currents),1)
                     row=next(r for r in currents[0]['payload']['observation']['currentFDs'] if r['kind']=='PROXY_ACCEPTED_STREAM')
-                    self.assertEqual((row['ownerId'],row['flags']),(registered[0],524288|2048))
+                    # C5 report rows carry kernel facts only: the original acquisition identity, never relearned.
+                    self.assertEqual(((row['device'],row['inode']),row['flags'],row['tfds']),(registered[0],524288|2048,[]))
                 else:self.assertEqual(currents,[])
                 self.assertTrue(all(e.closes==1 for e in h.endpoints))
 
+
+    def test_v1_composition_entry_pins_every_frame_field(self):
+        self.ready(CompositionHarness(self).run())
+        for field, value in FRAME_FIELD_DENIALS:
+            with self.subTest(field=field):
+                def mutate(initial, field=field, value=value):
+                    initial['proxyBootstrap'][field] = copy.deepcopy(value)
+                h = CompositionHarness(self, mutate=mutate).run()
+                # Denied before any context, descriptor, listener, owner or frame exists.
+                self.assertEqual((h.exit, h.owners, h.events, h.frames), (1, [], [], []))
+                self.assertEqual(h.endpoints, [])
+
+    def test_v1_per_tunnel_close_never_starts_shared_budget(self):
+        import bootstrap_composition_test as fixture
+        state = dict(iteration=0, stop=False, owner=None, seen=[])
+        clients = dict(eof=[b''], reset=[REQUEST, ConnectionResetError(errno.ECONNRESET, 'inert reset')],
+                       idle=[REQUEST])
+        def sink(h, owner):
+            state['owner'] = owner
+            h.clients.extend(clients.values())
+            selector = owner._sockets.stop_selector; original = selector.select
+            selector.select = lambda timeout: [row for row in original(timeout)
+                                               if state['stop'] or row[0].fd != 3]
+        h = CompositionHarness(self, commands=[b'STOP'], sink=sink)
+        h.budget = fixture.t.CleanupBudget(h.clock)
+        def tick():
+            state['iteration'] += 1
+            rows = state['owner']._context._inventory.rows.values()
+            state['seen'].append((state['iteration'], h.budget.started, h.budget.deadline,
+                                  sum(r['kind'] in ('PROXY_ACCEPTED_STREAM', 'PROXY_VSOCK_STREAM') for r in rows)))
+            if state['iteration'] == 30: state['stop'] = True
+        h.on_sleep = tick
+        h.run(); self.ready(h)
+        # All three tunnels (EOF before header, client ECONNRESET, idle) closed on their own,
+        # with proven ledger retirement, and the shared cleanup end was never started.
+        self.assertEqual(len(state['seen']), 30, 'the run must survive all three per-tunnel closes')
+        self.assertEqual(state['seen'][-1], (30, False, None, 0))
+        self.assertTrue(all(started is False and deadline is None for _, started, deadline, _ in state['seen']))
+        self.assertEqual(max(n for *_, n in state['seen']), 2)
+        self.assertEqual(sum(e.family == 40 for e in h.endpoints), 2)
+        self.assertEqual((h.exit, h.frames[-1]['payload']['code'], h.frames[-1]['payload']['cleanupStatus']),
+                         (0, 'COMPLETE', 'PROVEN'))
+        self.assertIs(h.budget.started, True, 'the terminal STOP starts it, once')
+        self.assertTrue(all(e.closes == 1 for e in h.endpoints))
 
 if __name__ == '__main__': unittest.main()

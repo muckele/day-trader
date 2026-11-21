@@ -1,26 +1,49 @@
-"""Fail-closed storage policy over caller-injected, descriptor-relative ports.
+"""Per-role private storage (C7, E5, R8) over caller-injected, descriptor-relative ports.
 
-Importing this module performs no I/O. There is intentionally no native port,
-host fallback, filesystem discovery, or automatic cleanup adapter.
+Each role admits, inventories and cleans only its own five scopes, ROLE_SCOPES[role], as seen inside its own view
+and as its own UID: the per-role pre-exec helper admits before exec, and a fixed confined cleanup child removes
+(guest/confinement.py). /tmp, /var and the role's run directory share the bounded /run tmpfs; /dev/shm is the role's
+own 64 MiB tmpfs; /run/acceptance/crash is the role's directory of the 1 MiB crash tmpfs, read as metadata only.
+The bootstrap only sums the four roles' metadata aggregates.
+
+Pre-exec admission is strict about every node; post-run cleanup (P66) is not: it verifies each scope root exactly as
+admitted, then removes whatever the role created there without following a symlink, crossing a device, exceeding
+MAX_DEPTH or touching an entry another UID owns.
+
+Importing this module performs no I/O. There is intentionally no native port, host fallback, filesystem discovery,
+or automatic cleanup adapter: a trusted embedding injects the filesystem and kernel ports. The role list is this
+module's own (P17); it never imports confinement.
+
+Filesystem port contract (descriptor-relative, run as the role's UID; a native port is Stage 2 work):
+open_root(path) -> (parent_fd, root_fd, name); stat(fd) is fstat; stat_child(fd, name) is fstatat with
+AT_SYMLINK_NOFOLLOW; list_names(fd); open_directory(fd, name, expected) is openat with O_DIRECTORY|O_NOFOLLOW and
+must open exactly EXPECTED; open_file(fd, name, expected) likewise with O_NOFOLLOW; readable(fd); chmod(fd, mode) is
+fchmod on that same descriptor, never a path; unlink(fd, name, expected) is unlinkat without AT_REMOVEDIR, which
+removes a symlink itself and never its target; remove_directory(fd, name, expected) is unlinkat with AT_REMOVEDIR;
+close(fd). Sockets, FIFOs and other non-regular nodes are kind OTHER.
 """
 from dataclasses import dataclass, field
+import hashlib
+import json
 import re
 import threading
+from types import MappingProxyType
 
 
 RUN_BYTES = 256 * 1024 * 1024
 CRASH_BYTES = 1024 * 1024
 SHM_BYTES = 64 * 1024 * 1024
 MAX_SAFE_INTEGER = 9007199254740991
-ROOT_ROWS = (
-    ('/run/acceptance/controller', 10001, 'RUN'),
-    ('/run/acceptance/browser', 10002, 'RUN'),
-    ('/run/acceptance/verifier', 10003, 'RUN'),
-    ('/run/acceptance/proxy', 10004, 'RUN'),
-    ('/run/acceptance/crash', 10001, 'CRASH'),
-)
-MUTABLE_PATHS = ('/run', '/tmp', '/var', '/dev/shm') + tuple(
-    row[0] for row in ROOT_ROWS)
+# Directories nested below a scope root, at most (T18-M3): an explicit bound, never RecursionError.
+MAX_DEPTH = 64
+UIDS = MappingProxyType({'CONTROLLER': 10001, 'BROWSER': 10002, 'VERIFIER': 10003, 'PROXY': 10004})
+# Paths as seen inside each role's own view (C7).
+ROLE_SCOPES = MappingProxyType({
+    role: ('/run/acceptance/' + role.lower(), '/tmp', '/var', '/dev/shm', '/run/acceptance/crash')
+    for role in UIDS})
+_SHM_SCOPE = '/dev/shm'
+_CRASH_SCOPE = '/run/acceptance/crash'
+_DIGEST_DOMAIN = b'acceptance:role-storage-scopes:v1\0'
 _HEX64 = re.compile(r'[0-9a-f]{64}')
 _PROOF_STATES = {}
 _PROOF_STATES_LOCK = threading.Lock()
@@ -59,6 +82,7 @@ class MountObservation:
 
 @dataclass(frozen=True)
 class KernelStorageState:
+    """The appliance's storage facts and the role's own five scope mounts, as the role's kernel port reports them."""
     base_read_only: bool
     writable_disks: int
     active_swaps: tuple
@@ -68,13 +92,6 @@ class KernelStorageState:
     persistent_crash: bool
     host_shares: tuple
     mounts: tuple
-
-
-@dataclass(frozen=True)
-class OwnedRoot:
-    path: str
-    uid: int
-    purpose: str
 
 
 @dataclass(frozen=True)
@@ -93,8 +110,6 @@ class StoragePolicy:
     crash_tmpfs_bytes: int
     shm_bytes: int
     tmpfs_inodes: int
-    roots: tuple
-    mutable_paths: tuple
 
 
 @dataclass(frozen=True)
@@ -115,8 +130,9 @@ class CleanupResult:
 
 
 @dataclass(frozen=True)
-class _RootBinding:
-    spec: OwnedRoot
+class _ScopeBinding:
+    path: str
+    purpose: str
     parent_fd: int = field(repr=False)
     root_fd: int = field(repr=False)
     name: str = field(repr=False)
@@ -124,27 +140,34 @@ class _RootBinding:
 
 
 @dataclass(frozen=True, slots=True)
-class StorageProof:
+class RoleStorageProof:
+    """One role's admission. digest is the fixed 32 bytes the ready frame carries (P17)."""
+    role: str
+    uid: int
     policy_digest: str
-    mutable_paths: tuple
+    scopes: tuple
     mounts: tuple
-    root_count: int
     crash_root_fd: int = field(repr=False)
+    digest: bytes = field(repr=False)
     _identity: object = field(repr=False, compare=False)
 
 
 @dataclass
 class _ProofState:
+    role: str
+    uid: int
     policy_digest: str
-    mutable_paths: tuple
+    scopes: tuple
     mounts: tuple
-    root_count: int
     crash_root_fd: int
+    digest: bytes
     filesystem: object = field(repr=False)
     bindings: tuple = field(repr=False)
-    run_limit: int
-    crash_limit: int
+    limits: dict = field(repr=False)
     inode_limit: int
+    # True for a pre-exec admission (every node inventoried strictly); False for the cleanup child's scope-root
+    # verification (P66), whose crash aggregate is the lenient cleanup walk without removal.
+    contents: bool = True
     used: bool = False
     lock: object = field(default_factory=threading.Lock, repr=False)
 
@@ -215,8 +238,11 @@ def _check_totals(totals, byte_limit, inode_limit):
         _fail()
 
 
+def _purpose(path):
+    return 'CRASH' if path == _CRASH_SCOPE else 'SHM' if path == _SHM_SCOPE else 'RUN'
+
+
 def _policy(value):
-    expected_roots = tuple(OwnedRoot(*row) for row in ROOT_ROWS)
     if (type(value) is not StoragePolicy
             or type(value.policy_digest) is not str
             or _HEX64.fullmatch(value.policy_digest) is None
@@ -231,15 +257,13 @@ def _policy(value):
             or value.crash_tmpfs_bytes != CRASH_BYTES
             or type(value.crash_tmpfs_bytes) is not int
             or value.shm_bytes != SHM_BYTES or type(value.shm_bytes) is not int
-            or not _plain_integer(value.tmpfs_inodes, 1024, 65536)
-            or type(value.roots) is not tuple or value.roots != expected_roots
-            or type(value.mutable_paths) is not tuple
-            or value.mutable_paths != MUTABLE_PATHS):
+            or not _plain_integer(value.tmpfs_inodes, 1024, 65536)):
         _fail()
     return value
 
 
-def _kernel(value, policy):
+def _kernel(value, policy, scopes):
+    """The appliance facts, then exactly the role's five scope mounts, each once, in ROLE_SCOPES order."""
     if (type(value) is not KernelStorageState
             or value.base_read_only is not True
             or value.writable_disks != 0 or type(value.writable_disks) is not int
@@ -250,40 +274,42 @@ def _kernel(value, policy):
             or value.persistent_crash is not False
             or type(value.host_shares) is not tuple or value.host_shares
             or type(value.mounts) is not tuple
-            or len(value.mounts) != len(policy.mutable_paths)):
+            or len(value.mounts) != len(scopes)):
         _fail()
     mounts = {}
     for mount in value.mounts:
         if (type(mount) is not MountObservation or mount.path in mounts
-                or mount.path not in policy.mutable_paths
+                or mount.path not in scopes
                 or mount.filesystem != 'tmpfs' or mount.writable is not True
                 or not _plain_integer(mount.device)
                 or not _plain_integer(mount.capacity_bytes, 1)
-                or mount.inode_limit != policy.tmpfs_inodes
-                or type(mount.inode_limit) is not int):
+                or not _plain_integer(mount.inode_limit, 1)):
             _fail()
-        expected_capacity = (policy.crash_tmpfs_bytes
-                             if mount.path == '/run/acceptance/crash'
-                             else policy.shm_bytes if mount.path == '/dev/shm'
+        purpose = _purpose(mount.path)
+        expected_capacity = (policy.crash_tmpfs_bytes if purpose == 'CRASH'
+                             else policy.shm_bytes if purpose == 'SHM'
                              else policy.run_tmpfs_bytes)
-        if mount.capacity_bytes != expected_capacity:
+        # C7 fixes the role tmpfs mount data (size, mode, uid, gid; no nr_inodes), so /dev/shm keeps the
+        # kernel's default inode limit; its size bounds it, and every traversal stays bounded by tmpfs_inodes.
+        if (mount.capacity_bytes != expected_capacity
+                or (purpose != 'SHM' and mount.inode_limit != policy.tmpfs_inodes)):
             _fail()
         mounts[mount.path] = mount
-    if set(mounts) != set(policy.mutable_paths):
+    if set(mounts) != set(scopes):
         _fail()
-    run_paths = tuple(path for path in policy.mutable_paths
-                      if path not in ('/dev/shm', '/run/acceptance/crash'))
-    run_devices = {mounts[path].device for path in run_paths}
-    crash_device = mounts['/run/acceptance/crash'].device
-    shm_device = mounts['/dev/shm'].device
+    run_devices = {mounts[path].device for path in scopes if _purpose(path) == 'RUN'}
+    crash_device = mounts[_CRASH_SCOPE].device
+    shm_device = mounts[_SHM_SCOPE].device
     if (len(run_devices) != 1 or crash_device in run_devices
             or shm_device in run_devices or shm_device == crash_device):
         _fail()
-    return tuple(mounts[path] for path in policy.mutable_paths)
+    return tuple(mounts[path] for path in scopes)
 
 
 def _inventory(filesystem, directory_fd, uid, purpose, expected_device,
-               byte_limit, inode_limit):
+               byte_limit, inode_limit, depth):
+    """Bounded metadata walk as the role. RUN and SHM files are opened by the role itself and must be readable;
+    CRASH content is never opened."""
     totals = _Totals()
     names = filesystem.list_names(directory_fd)
     if type(names) is not tuple or len(names) > inode_limit:
@@ -297,7 +323,7 @@ def _inventory(filesystem, directory_fd, uid, purpose, expected_device,
             _fail()
         if before.kind == 'FILE':
             _validate_node(before, uid, 'FILE')
-            if purpose == 'RUN':
+            if purpose != 'CRASH':
                 descriptor = filesystem.open_file(directory_fd, name, before)
                 try:
                     opened = _validate_node(filesystem.stat(descriptor), uid, 'FILE')
@@ -315,13 +341,15 @@ def _inventory(filesystem, directory_fd, uid, purpose, expected_device,
             totals.allocated += after.allocated_bytes
         elif before.kind == 'DIRECTORY':
             _validate_node(before, uid, 'DIRECTORY')
+            if depth + 1 > MAX_DEPTH:
+                _fail()
             descriptor = filesystem.open_directory(directory_fd, name, before)
             try:
                 opened = _validate_node(filesystem.stat(descriptor), uid, 'DIRECTORY')
                 if not _same_identity(before, opened):
                     _fail()
                 child = _inventory(filesystem, descriptor, uid, purpose,
-                                   expected_device, byte_limit, inode_limit)
+                                   expected_device, byte_limit, inode_limit, depth + 1)
             finally:
                 filesystem.close(descriptor)
             after = _validate_node(filesystem.stat_child(directory_fd, name), uid,
@@ -338,33 +366,21 @@ def _inventory(filesystem, directory_fd, uid, purpose, expected_device,
     return totals
 
 
-def _binding_inventory(binding, filesystem, run_limit, crash_limit, inode_limit):
-    root_before = _validate_node(filesystem.stat(binding.root_fd),
-                                 binding.spec.uid, 'DIRECTORY')
-    parent_before = _validate_node(
-        filesystem.stat_child(binding.parent_fd, binding.name),
-        binding.spec.uid, 'DIRECTORY')
-    if (not _same_identity(binding.identity, root_before)
-            or not _same_identity(root_before, parent_before)):
+def _root_unchanged(filesystem, binding, uid):
+    root = _validate_node(filesystem.stat(binding.root_fd), uid, 'DIRECTORY')
+    child = _validate_node(filesystem.stat_child(binding.parent_fd, binding.name), uid, 'DIRECTORY')
+    if not _same_identity(binding.identity, root) or not _same_identity(root, child):
         _fail()
-    limit = crash_limit if binding.spec.purpose == 'CRASH' else run_limit
-    totals = _inventory(filesystem, binding.root_fd, binding.spec.uid,
-                        binding.spec.purpose, binding.identity.device,
-                        limit, inode_limit)
-    root_after = _validate_node(filesystem.stat(binding.root_fd),
-                                binding.spec.uid, 'DIRECTORY')
-    parent_after = _validate_node(
-        filesystem.stat_child(binding.parent_fd, binding.name),
-        binding.spec.uid, 'DIRECTORY')
-    if (not _same_identity(root_before, root_after)
-            or not _same_identity(root_after, parent_after)):
-        _fail()
+
+
+def _binding_inventory(binding, filesystem, uid, limits, inode_limit):
+    _root_unchanged(filesystem, binding, uid)
+    limit = limits[binding.purpose]
+    totals = _inventory(filesystem, binding.root_fd, uid, binding.purpose,
+                        binding.identity.device, limit, inode_limit, 0)
+    _root_unchanged(filesystem, binding, uid)
     _check_totals(totals, limit, inode_limit)
     return totals
-
-
-def _close_binding(filesystem, binding):
-    return _close_descriptors(filesystem, (binding.root_fd, binding.parent_fd))
 
 
 def _close_descriptors(filesystem, descriptors):
@@ -381,39 +397,138 @@ def _close_descriptors(filesystem, descriptors):
     return complete
 
 
-def _discard_opened(filesystem, descriptors):
-    _close_descriptors(filesystem, reversed(descriptors))
+def _close_bindings(filesystem, bindings):
+    results = [_close_descriptors(filesystem, (binding.root_fd, binding.parent_fd))
+               for binding in bindings]
+    return all(results)
 
 
-def _register_proof(state):
+def scope_digest(role, uid, identities):
+    """P17: the fixed 32-byte binding of one role's five scope roots, (path, device, inode) in ROLE_SCOPES order.
+
+    The pre-exec helper and the cleanup child send it from their admission proof; a probe family, which admits
+    nothing, sends the same binding of its own view. The bootstrap recomputes it from /proc/<child>/root.
+    """
+    if (type(role) is not str or role not in UIDS or type(uid) is not int or uid != UIDS[role]
+            or type(identities) is not tuple or len(identities) != len(ROLE_SCOPES[role])):
+        _fail()
+    rows = []
+    for path, row in zip(ROLE_SCOPES[role], identities):
+        if (type(row) is not tuple or len(row) != 3 or row[0] != path
+                or not _plain_integer(row[1]) or not _plain_integer(row[2], 1)):
+            _fail()
+        rows.append([path, row[1], row[2]])
+    record = json.dumps({'role': role, 'scopes': rows, 'uid': uid},
+                        sort_keys=True, separators=(',', ':')).encode('ascii')
+    return hashlib.sha256(_DIGEST_DOMAIN + record).digest()
+
+
+def _open_scope(filesystem, path, uid, mount, opened):
+    value = filesystem.open_root(path)
+    if type(value) is tuple:
+        opened.extend(descriptor for descriptor in value[:2] if type(descriptor) is int)
+    if type(value) is not tuple or len(value) != 3:
+        _fail()
+    parent_fd, root_fd, name = value
+    if (type(parent_fd) is not int or type(root_fd) is not int
+            or parent_fd == root_fd):
+        _fail()
+    name = _name(name)
+    if name != path.rsplit('/', 1)[1]:
+        _fail()
+    identity = _validate_node(filesystem.stat(root_fd), uid, 'DIRECTORY')
+    child = _validate_node(filesystem.stat_child(parent_fd, name), uid, 'DIRECTORY')
+    if identity.device != mount.device or not _same_identity(identity, child):
+        _fail()
+    return _ScopeBinding(path, _purpose(path), parent_fd, root_fd, name, identity)
+
+
+def _admit(role, policy, filesystem, kernel_port, opened, contents):
+    if type(role) is not str or role not in UIDS:
+        _fail()
+    uid = UIDS[role]
+    # The port must run as exactly this role (P17): a privileged port could read any mode.
+    observed = kernel_port.uid()
+    if type(observed) is not int or observed != uid:
+        _fail()
+    policy = _policy(policy)
+    scopes = ROLE_SCOPES[role]
+    mounts = _kernel(kernel_port.observe(), policy, scopes)
+    limits = {'RUN': policy.run_tmpfs_bytes, 'SHM': policy.shm_bytes, 'CRASH': policy.crash_tmpfs_bytes}
+    run_totals = _Totals(inodes=0)
+    bindings = []
+    for path, mount in zip(scopes, mounts):
+        binding = _open_scope(filesystem, path, uid, mount, opened)
+        bindings.append(binding)
+        if not contents:
+            continue
+        totals = _binding_inventory(binding, filesystem, uid, limits, policy.tmpfs_inodes)
+        if binding.purpose == 'RUN':
+            run_totals.add(totals)
+            _check_totals(run_totals, policy.run_tmpfs_bytes, policy.tmpfs_inodes)
+    digest = scope_digest(role, uid, tuple((b.path, b.identity.device, b.identity.inode) for b in bindings))
+    crash_fd = next(b.root_fd for b in bindings if b.purpose == 'CRASH')
+    state = _ProofState(role, uid, policy.policy_digest, scopes, mounts, crash_fd, digest, filesystem,
+                        tuple(bindings), limits, policy.tmpfs_inodes, contents)
     identity = object()
     with _PROOF_STATES_LOCK:
         _PROOF_STATES[identity] = state
-    return StorageProof(state.policy_digest, state.mutable_paths, state.mounts,
-                        state.root_count, state.crash_root_fd, identity)
+    return RoleStorageProof(role, uid, policy.policy_digest, scopes, mounts, crash_fd, digest, identity)
+
+
+def admit_role_storage(role, policy, filesystem, kernel_port):
+    """C7 (E5, R8): admit exactly ROLE_SCOPES[role], as UIDS[role], inside the role's own view.
+
+    STORAGE_INVALID unless kernel_port.uid() is the role's UID. Every failure closes the descriptors opened so
+    far and is raised outside any handler, so no native exception (nor a name it holds) is chained (T18-M1).
+    """
+    return _admitted(role, policy, filesystem, kernel_port, True)
+
+
+def verify_role_scopes(role, policy, filesystem, kernel_port):
+    """P66: the storage cleanup child's admission. The same UID, policy, mount and scope-root checks as
+    admit_role_storage (each root's device, inode, owner and mode exactly as admitted), but no inventory of the
+    contents: after a run they are whatever the role created, and cleanup only removes them (remove_role_state)."""
+    return _admitted(role, policy, filesystem, kernel_port, False)
+
+
+def _admitted(role, policy, filesystem, kernel_port, contents):
+    opened = []
+    proof = None
+    try:
+        proof = _admit(role, policy, filesystem, kernel_port, opened, contents)
+    except Exception:
+        pass
+    if proof is None:
+        _close_descriptors(filesystem, reversed(opened))
+        _fail()
+    return proof
 
 
 def _state_for(value):
-    if type(value) is not StorageProof:
+    if type(value) is not RoleStorageProof:
         _fail()
     with _PROOF_STATES_LOCK:
         state = _PROOF_STATES.get(value._identity)
     if (type(state) is not _ProofState
-            or (value.policy_digest, value.mutable_paths, value.mounts,
-                value.root_count, value.crash_root_fd) !=
-               (state.policy_digest, state.mutable_paths, state.mounts,
-                state.root_count, state.crash_root_fd)):
+            or (value.role, value.uid, value.policy_digest, value.scopes, value.mounts,
+                value.crash_root_fd, value.digest) !=
+               (state.role, state.uid, state.policy_digest, state.scopes, state.mounts,
+                state.crash_root_fd, state.digest)
+            or type(state.bindings) is not tuple or len(state.bindings) != len(ROLE_SCOPES[state.role])
+            or state.scopes != ROLE_SCOPES[state.role] or state.uid != UIDS[state.role]
+            or state.limits != {'RUN': RUN_BYTES, 'SHM': SHM_BYTES, 'CRASH': CRASH_BYTES}
+            or not _plain_integer(state.inode_limit, 1024, 65536) or type(state.contents) is not bool):
         _fail()
     return state
 
 
-def _retire_state(proof):
-    with _PROOF_STATES_LOCK:
-        _PROOF_STATES.pop(proof._identity, None)
-
-
-def _claim_cleanup(proof):
-    state = _state_for(proof)
+def _claim(proof):
+    """The proof's one use (removal or release); None when it was used, forged or retired."""
+    try:
+        state = _state_for(proof)
+    except Exception:
+        return None
     with state.lock:
         if state.used:
             return None
@@ -421,196 +536,191 @@ def _claim_cleanup(proof):
         return state
 
 
-def admit_storage(manifest, filesystem, kernel_port):
-    """Admit exact immutable policy and retain only proven owned root handles."""
-    bindings = []
-    opened_descriptors = []
-    try:
-        policy = _policy(manifest)
-        mounts = _kernel(kernel_port.observe(), policy)
-        mount_by_path = {item.path: item for item in mounts}
-        run_totals = _Totals(inodes=0)
-        crash_totals = None
-        for root in policy.roots:
-            opened = filesystem.open_root(root.path)
-            if type(opened) is tuple:
-                opened_descriptors.extend(
-                    descriptor for descriptor in opened[:2]
-                    if type(descriptor) is int)
-            if type(opened) is not tuple or len(opened) != 3:
-                _fail()
-            parent_fd, root_fd, name = opened
-            if (type(parent_fd) is not int or type(root_fd) is not int
-                    or parent_fd == root_fd):
-                _fail()
-            name = _name(name)
-            if name != root.path.rsplit('/', 1)[1]:
-                _fail()
-            identity = _validate_node(filesystem.stat(root_fd), root.uid,
-                                      'DIRECTORY')
-            parent_identity = _validate_node(
-                filesystem.stat_child(parent_fd, name), root.uid, 'DIRECTORY')
-            if (identity.device != mount_by_path[root.path].device
-                    or not _same_identity(identity, parent_identity)):
-                _fail()
-            binding = _RootBinding(root, parent_fd, root_fd, name, identity)
-            bindings.append(binding)
-            totals = _binding_inventory(
-                binding, filesystem, policy.run_tmpfs_bytes,
-                policy.crash_tmpfs_bytes, policy.tmpfs_inodes)
-            if root.purpose == 'CRASH':
-                crash_totals = totals
-            else:
-                run_totals.add(totals)
-                _check_totals(run_totals, policy.run_tmpfs_bytes,
-                              policy.tmpfs_inodes)
-        if crash_totals is None:
-            _fail()
-        crash_binding = next(item for item in bindings
-                             if item.spec.purpose == 'CRASH')
-        return _register_proof(_ProofState(
-            policy.policy_digest, policy.mutable_paths, mounts, len(bindings),
-            crash_binding.root_fd, filesystem, tuple(bindings),
-            policy.run_tmpfs_bytes, policy.crash_tmpfs_bytes,
-            policy.tmpfs_inodes))
-    except StorageFailure:
-        _discard_opened(filesystem, opened_descriptors)
-        raise
-    except Exception:
-        _discard_opened(filesystem, opened_descriptors)
-        _fail()
-
-
-def _proof(value):
-    state = _state_for(value)
-    if (type(state.bindings) is not tuple or len(state.bindings) != 5
-            or state.root_count != 5 or state.mutable_paths != MUTABLE_PATHS
-            or state.run_limit != RUN_BYTES or state.crash_limit != CRASH_BYTES
-            or not _plain_integer(state.inode_limit, 1024, 65536)):
-        _fail()
-    return state
+def _retire(proof):
+    with _PROOF_STATES_LOCK:
+        _PROOF_STATES.pop(proof._identity, None)
 
 
 def crash_aggregate(root_fd: int, *, proof):
-    """Return bounded crash metadata without opening a crash file."""
+    """Return bounded crash metadata of the proof's own role without opening a crash file.
+
+    For a pre-exec admission the crash scope is re-inventoried as strictly as it was admitted. For the cleanup
+    child's scope verification (P66) it is the cleanup walk without removal: only entries the role owns on the crash
+    device, within MAX_DEPTH, never through a symlink, after the crash root is verified as admitted.
+    """
+    aggregate = None
     try:
-        state = _proof(proof)
+        state = _state_for(proof)
         with state.lock:
-            if (type(root_fd) is not int or root_fd != state.crash_root_fd
-                    or state.used):
-                _fail()
-            binding = next(item for item in state.bindings
-                           if item.spec.purpose == 'CRASH')
-            totals = _binding_inventory(
-                binding, state.filesystem, state.run_limit,
-                state.crash_limit, state.inode_limit)
-            return CrashAggregate(state.policy_digest, totals.files,
-                                  totals.directories, totals.logical,
-                                  totals.allocated, False)
-    except StorageFailure:
-        raise
+            if (type(root_fd) is int and root_fd == state.crash_root_fd and not state.used):
+                binding = next(item for item in state.bindings if item.purpose == 'CRASH')
+                if state.contents:
+                    totals = _binding_inventory(binding, state.filesystem, state.uid, state.limits,
+                                                state.inode_limit)
+                else:
+                    totals = _Totals()
+                    _root_unchanged(state.filesystem, binding, state.uid)
+                    _walk(state.filesystem, binding.root_fd, state.uid, binding.identity.device, 0,
+                          _Budget(state.inode_limit), False, totals)
+                    _root_unchanged(state.filesystem, binding, state.uid)
+                    _check_totals(totals, state.limits['CRASH'], state.inode_limit)
+                aggregate = CrashAggregate(state.policy_digest, totals.files, totals.directories,
+                                           totals.logical, totals.allocated, False)
     except Exception:
+        aggregate = None
+    if aggregate is None:
         _fail()
+    return aggregate
 
 
-def _remove_children(filesystem, directory_fd, uid, purpose, expected_device,
-                     byte_limit, inode_limit):
-    totals = _Totals()
+def combine_crash_aggregates(aggregates):
+    """The bootstrap's sum of exactly the four roles' crash aggregates: metadata only, one policy, one 1 MiB tmpfs."""
+    if type(aggregates) is not tuple or len(aggregates) != len(UIDS):
+        _fail()
+    for value in aggregates:
+        if (type(value) is not CrashAggregate or type(value.policy_digest) is not str
+                or _HEX64.fullmatch(value.policy_digest) is None
+                or value.policy_digest != aggregates[0].policy_digest
+                or value.crash_contents_read is not False
+                or not all(_plain_integer(getattr(value, name)) for name in (
+                    'file_count', 'directory_count', 'logical_bytes', 'allocated_bytes'))):
+            _fail()
+    total = CrashAggregate(aggregates[0].policy_digest,
+                           *(sum(getattr(value, name) for value in aggregates) for name in (
+                               'file_count', 'directory_count', 'logical_bytes', 'allocated_bytes')), False)
+    if total.logical_bytes > CRASH_BYTES or total.allocated_bytes > CRASH_BYTES:
+        _fail()
+    return total
+
+
+class _Budget:
+    """At most LIMIT entries are visited in one scope walk (the scope's tmpfs inode bound)."""
+    def __init__(self, limit):
+        self.limit, self.count = limit, 0
+
+    def take(self):
+        self.count += 1
+        return self.count <= self.limit
+
+
+def _same_node(before, after):
+    """The same node for removal: kind, owner, device and inode. Its mode may differ: cleanup restores u+rwx."""
+    return (before.kind, before.uid, before.device, before.inode) == (
+        after.kind, after.uid, after.device, after.inode)
+
+
+def _walk(filesystem, directory_fd, uid, device, depth, budget, remove, totals):
+    """P66: the post-run walk below one verified directory; True when every entry was handled (removed if REMOVE).
+
+    An entry another UID owns, one on another device, or a directory deeper than MAX_DEPTH is left in place and
+    makes the walk incomplete. A symlink is never followed. Any other entry the role owns is counted and, with
+    REMOVE, removed: regular files, symlinks (the link itself), sockets, FIFOs and directories. Admission's mode,
+    link-count, readability and size rules are deliberately not applied to what the role created.
+    """
     names = filesystem.list_names(directory_fd)
-    if (type(names) is not tuple or len(names) > inode_limit
-            or len(set(names)) != len(names)):
-        _fail()
+    if type(names) is not tuple or len(set(names)) != len(names):
+        return False
+    complete = True
     for raw_name in names:
-        name = _name(raw_name)
-        before = _metadata(filesystem.stat_child(directory_fd, name))
-        if before.device != expected_device:
-            _fail()
-        if before.kind == 'FILE':
-            _validate_node(before, uid, 'FILE')
-            if purpose == 'RUN':
-                descriptor = filesystem.open_file(directory_fd, name, before)
-                try:
-                    opened = _validate_node(filesystem.stat(descriptor), uid, 'FILE')
-                    if (not _same_identity(before, opened)
-                            or filesystem.readable(descriptor) is not True):
-                        _fail()
-                finally:
-                    filesystem.close(descriptor)
-            after = _validate_node(filesystem.stat_child(directory_fd, name), uid, 'FILE')
-            if not _same_identity(before, after):
-                _fail()
-            totals.files += 1
-            totals.inodes += 1
-            totals.logical += after.logical_bytes
-            totals.allocated += after.allocated_bytes
-            _check_totals(totals, byte_limit, inode_limit)
-            filesystem.unlink(directory_fd, name, after)
-        elif before.kind == 'DIRECTORY':
-            _validate_node(before, uid, 'DIRECTORY')
-            descriptor = filesystem.open_directory(directory_fd, name, before)
-            try:
-                opened = _validate_node(filesystem.stat(descriptor), uid, 'DIRECTORY')
-                if not _same_identity(before, opened):
-                    _fail()
-                child = _remove_children(filesystem, descriptor, uid, purpose,
-                                         expected_device, byte_limit,
-                                         inode_limit)
-            finally:
-                filesystem.close(descriptor)
-            after = _validate_node(filesystem.stat_child(directory_fd, name), uid,
-                                   'DIRECTORY')
-            if not _same_identity(before, after):
-                _fail()
-            totals.directories += 1
-            totals.logical += after.logical_bytes
-            totals.allocated += after.allocated_bytes
-            totals.add(child)
-            _check_totals(totals, byte_limit, inode_limit)
-            filesystem.remove_directory(directory_fd, name, after)
-        else:
-            _fail()
-    return totals
+        if not budget.take():
+            return False
+        try:
+            handled = _walk_entry(filesystem, directory_fd, raw_name, uid, device, depth, budget, remove, totals)
+        except Exception:
+            handled = False
+        complete = complete and handled
+    return complete
 
 
-def remove_owned_state(proof):
-    """Remove only sealed descriptor-retained roots; never claim host erasure."""
+def _walk_entry(filesystem, directory_fd, raw_name, uid, device, depth, budget, remove, totals):
+    name = _name(raw_name)
+    entry = _metadata(filesystem.stat_child(directory_fd, name))
+    # Never another UID's entry, never across st_dev: both are left exactly as found.
+    if entry.uid != uid or entry.device != device:
+        return False
+    if entry.kind == 'DIRECTORY':
+        if depth + 1 > MAX_DEPTH:
+            return False
+        descriptor = filesystem.open_directory(directory_fd, name, entry)
+        try:
+            opened = _metadata(filesystem.stat(descriptor))
+            if not _same_node(entry, opened):
+                return False
+            if opened.mode & 0o700 != 0o700:
+                # The role's own directory, through the descriptor just opened, never a path (fchmod).
+                filesystem.chmod(descriptor, opened.mode | 0o700)
+            emptied = _walk(filesystem, descriptor, uid, device, depth + 1, budget, remove, totals)
+        finally:
+            filesystem.close(descriptor)
+        totals.directories += 1
+        totals.inodes += 1
+        totals.logical += entry.logical_bytes
+        totals.allocated += entry.allocated_bytes
+        if not remove:
+            return emptied
+        if not emptied:
+            return False
+        after = _metadata(filesystem.stat_child(directory_fd, name))
+        if not _same_node(entry, after):
+            return False
+        filesystem.remove_directory(directory_fd, name, after)
+        return True
+    totals.files += 1
+    totals.inodes += 1
+    totals.logical += entry.logical_bytes
+    totals.allocated += entry.allocated_bytes
+    if not remove:
+        return True
+    # Removal-time re-stat (T18-M3, M18-4): the node unlinked is the node just checked.
+    after = _metadata(filesystem.stat_child(directory_fd, name))
+    if not _same_node(entry, after):
+        return False
+    filesystem.unlink(directory_fd, name, after)
+    return True
+
+
+def _remove_scope(state, binding):
+    """Remove one scope's contents; the scope root, the role's mount point, stays and is verified as admitted
+    (device, inode, owner, mode) before and after. False when anything was left."""
     try:
-        state = _claim_cleanup(proof)
+        _root_unchanged(state.filesystem, binding, state.uid)
+        emptied = _walk(state.filesystem, binding.root_fd, state.uid, binding.identity.device, 0,
+                        _Budget(state.inode_limit), True, _Totals())
+        _root_unchanged(state.filesystem, binding, state.uid)
+        return emptied
     except Exception:
-        return CleanupResult(False, False, 'CLEANUP_INCOMPLETE')
+        return False
+
+
+def remove_role_state(proof):
+    """Remove only the proof's own role's scope contents; never claim host erasure.
+
+    P66: each scope root is verified as admitted, then whatever the role created inside it is removed without
+    following a symlink, crossing a device or exceeding MAX_DEPTH; another UID's entry is left in place. Best effort
+    across every entry and every scope root (T18-M2): anything left, or a descriptor close failure, makes the
+    one-use result incomplete (sticky).
+    """
+    state = _claim(proof)
     if state is None:
         return CleanupResult(False, False, 'CLEANUP_INCOMPLETE')
-    filesystem = state.filesystem
-    complete = False
-    try:
-        for binding in state.bindings:
-            root_before = _validate_node(filesystem.stat(binding.root_fd),
-                                         binding.spec.uid, 'DIRECTORY')
-            parent_before = _validate_node(
-                filesystem.stat_child(binding.parent_fd, binding.name),
-                binding.spec.uid, 'DIRECTORY')
-            if (not _same_identity(binding.identity, root_before)
-                    or not _same_identity(root_before, parent_before)):
-                _fail()
-            limit = (state.crash_limit if binding.spec.purpose == 'CRASH'
-                     else state.run_limit)
-            _remove_children(filesystem, binding.root_fd, binding.spec.uid,
-                             binding.spec.purpose, binding.identity.device,
-                             limit, state.inode_limit)
-            current = _validate_node(
-                filesystem.stat_child(binding.parent_fd, binding.name),
-                binding.spec.uid, 'DIRECTORY')
-            if not _same_identity(binding.identity, current):
-                _fail()
-            filesystem.remove_root(binding.parent_fd, binding.name, current)
-        complete = True
-    except Exception:
+    complete = True
+    for binding in state.bindings:
+        if not _remove_scope(state, binding):
+            complete = False
+    if not _close_bindings(state.filesystem, state.bindings):
         complete = False
-    finally:
-        close_results = tuple(_close_binding(filesystem, binding)
-                              for binding in state.bindings)
-        close_complete = all(close_results)
-        complete = complete and close_complete
-        _retire_state(proof)
-    return CleanupResult(complete, False,
-                         'COMPLETE' if complete else 'CLEANUP_INCOMPLETE')
+    _retire(proof)
+    return CleanupResult(complete, False, 'COMPLETE' if complete else 'CLEANUP_INCOMPLETE')
+
+
+def release_role_storage(proof):
+    """The pre-exec helper keeps only proof.digest: close every admitted descriptor and retire the proof.
+
+    True only when this was the proof's one use and every descriptor closed.
+    """
+    state = _claim(proof)
+    if state is None:
+        return False
+    closed = _close_bindings(state.filesystem, state.bindings)
+    _retire(proof)
+    return closed

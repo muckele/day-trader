@@ -9,6 +9,8 @@ const fs = require('node:fs');
 const test = require('node:test');
 const { chromium } = require('playwright');
 const pkg = require('../../package.json');
+// Task 16 (T13 I-6, m-1): the worker's own descriptor classification and status reader.
+const { classifyDescriptor, socketInodeFamilies, procStatus: workerStatus } = require('../../guest/browser-worker.cjs');
 
 const EXPECTED = pkg.acceptanceRuntime;
 const FIXTURE_PATH = '/run/acceptance/task13-owned-fixture.json';
@@ -38,9 +40,15 @@ function ownedFixture() {
   return Object.freeze({ allowed: value.allowedOrigin, forbidden: value.forbiddenOrigin });
 }
 function procStatus(pid) { return fs.readFileSync(`/proc/${pid}/status`, 'utf8'); }
+// Task 16 fix round 1 (I-1): a child is filed under the thread that forked it, so every thread's
+// children file is read (kernel/fork.c:2632, :2690; fs/proc/array.c:720-770).
 function childPids(pid) {
-  const children = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, 'ascii').trim();
-  return children ? children.split(/\s+/).map(Number) : [];
+  const children = [];
+  for (const tid of fs.readdirSync(`/proc/${pid}/task`)) {
+    const text = fs.readFileSync(`/proc/${pid}/task/${tid}/children`, 'ascii').trim();
+    for (const child of text ? text.split(/\s+/).map(Number) : []) if (!children.includes(child)) children.push(child);
+  }
+  return children;
 }
 function launchOptions() {
   return {
@@ -75,14 +83,31 @@ test('actual_chromium_sandbox_children_and_tmpfs', async () => {
     const family = new Set(roots), queue = [...roots];
     while (queue.length) for (const child of childPids(queue.shift())) if (!family.has(child)) { family.add(child); queue.push(child); }
     assert.ok(family.size > 1, 'Chromium descendants are absent');
+    // Task 16c (E1, P79): status is 0444 (fs/proc/base.c:3259), so the members' status rows stay readable
+    // here. Their descriptor tables do not: a non-dumpable child's 0500 /proc/<pid>/fd belongs to root
+    // (fs/proc/base.c:1845-1861, :3250), so the bootstrap inspects the family's descriptors, never uid 10002.
     for (const pid of family) {
-      const status = procStatus(pid);
+      const status = procStatus(pid), parsed = workerStatus(fs, pid);
       assert.match(status, /^Uid:\s+10002\s+10002\s+10002\s+10002$/m);
+      assert.match(status, /^Gid:\s+10002\s+10002\s+10002\s+10002$/m);
       assert.match(status, /^NoNewPrivs:\s+1$/m);
-      assert.equal(fs.readdirSync(`/proc/${pid}/fd`).some(fd => {
-        try { return fs.readlinkSync(`/proc/${pid}/fd/${fd}`).includes('vsock'); } catch { return false; }
-      }), false);
+      // Seccomp mode 2 (filter) with at least the inherited filter; Chromium adds its own.
+      assert.match(status, /^Seccomp:\s+2$/m);
+      assert.equal(parsed.seccomp, 2);
+      assert.ok(Number.isSafeInteger(parsed.seccompFilters) && parsed.seccompFilters >= 1, `${pid} Seccomp_filters ${parsed.seccompFilters}`);
     }
+    // The worker's own descriptors: sockets are attributed only from /proc/net/{unix,tcp,tcp6,udp,udp6};
+    // vsock has no table.
+    const sockets = socketInodeFamilies(fs), directory = fs.opendirSync('/proc/self/fd'), kinds = [];
+    try {
+      for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+        let link = null;
+        try { link = fs.readlinkSync(`/proc/self/fd/${entry.name}`); } catch { link = null; }
+        kinds.push([entry.name, link, classifyDescriptor(link, sockets)]);
+      }
+    } finally { directory.closeSync(); }
+    for (const forbidden of ['CONSOLE', 'UNKNOWN_SOCKET', 'UNREADABLE'])
+      assert.deepEqual(kinds.filter(row => row[2] === forbidden), [], `self ${forbidden}`);
     for (const path of ['/run/acceptance/browser/support', '/run/acceptance/browser/profile', '/run/acceptance/browser/cache', '/dev/shm']) {
       const mount = fs.readFileSync('/proc/self/mountinfo', 'utf8').split('\n').find(line => line.split(' ')[4] === path);
       assert.ok(mount && mount.includes(' - tmpfs '), `${path} is not tmpfs`);

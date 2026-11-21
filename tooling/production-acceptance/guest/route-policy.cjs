@@ -10,6 +10,26 @@ const factsKeys = ['requestId', 'sequence', 'rawTarget', 'origin', 'method', 'pa
 const browserEvidenceKeys = ['runId', 'requestId', 'sequence', 'method', 'url', 'headers', 'byteLength', 'schema'];
 const snapshotKeys = ['runId', 'sequence', 'phase', 'redirectObserved', 'policyEpoch', 'gateEpoch', 'sessionEpoch', 'sessionIssued', 'sessionHandle', 'documentPath', 'homeTransition', 'homeArmedAt', 'holdStartedAt', 'expiresAt', 'preauth', 'maintenance', 'owner', 'readiness', 'restart', 'preauthResponse', 'marketResponse'];
 const bindingKeys = snapshotKeys;
+// P69 (Task 15 fix round 1): `accept` is admitted only by exact string match
+// against this table. There is no wildcard, list or q-value parsing. The browser
+// values are the pinned Chromium 145.0.7632.6 (Playwright 1.58.2, browser
+// revision 1208) defaults per request kind; every row is to be confirmed on the
+// pinned Chromium in Stage 2. Any other value, including a reordering, a
+// whitespace or case change or a different q-value, is denied.
+const STAGE2_CONFIRM = 'Stage 2 confirm on the pinned Chromium';
+const ACCEPT_VALUES = freeze([
+  { value: 'application/json', kind: 'API: the worker fixedGet fetch (readiness, /api/me)', stage2: STAGE2_CONFIRM },
+  { value: 'application/json, text/plain, */*', kind: 'API: frontend axios XHR default', stage2: STAGE2_CONFIRM },
+  { value: '*/*', kind: 'script (classic or module), font, web-app manifest, fetch() default', stage2: STAGE2_CONFIRM },
+  { value: 'text/html', kind: 'existing value, kept unchanged (not a Chromium default)', stage2: STAGE2_CONFIRM },
+  { value: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    kind: 'document navigation (frame accept with the signed-exchange suffix)', stage2: STAGE2_CONFIRM },
+  { value: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    kind: 'document navigation (frame accept without the signed-exchange suffix)', stage2: STAGE2_CONFIRM },
+  { value: 'text/css,*/*;q=0.1', kind: 'stylesheet', stage2: STAGE2_CONFIRM },
+  { value: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8', kind: 'image (favicon, logos)', stage2: STAGE2_CONFIRM },
+]);
+const acceptValues = new Set(ACCEPT_VALUES.map(row => row.value));
 const safe = x => Number.isSafeInteger(x) && x >= 0 && !Object.is(x, -0);
 const handle = x => x !== null && typeof x === 'object';
 const fail = (code = 'ROUTE_DENIED') => Object.freeze({ kind: 'FAIL', code: failureCodes.has(code) ? code : 'INTERNAL_FAILURE' });
@@ -192,7 +212,7 @@ function parseRequest(request, state, s) {
     headers.set(name, value);
   }
   if (headers.has('origin') && headers.get('origin') !== state.releaseFacts.origins.FRONTEND) invalid();
-  if (headers.has('accept') && !['application/json', 'application/json, text/plain, */*', '*/*', 'text/html'].includes(headers.get('accept'))) invalid();
+  if (headers.has('accept') && !acceptValues.has(headers.get('accept'))) invalid();
   if (f.method === 'OPTIONS') {
     if (headers.get('origin') !== state.releaseFacts.origins.FRONTEND || headers.get('access-control-request-method') !== 'POST' || headers.get('access-control-request-headers') !== 'content-type' || headers.has('content-type')) invalid();
   } else {
@@ -389,4 +409,4 @@ function revalidateBudgetEligibility(claim, request, policy, ledgerReceipt, ledg
   try { return validate(record, request, policy, { receipt: ledgerReceipt, trust: ledgerTrust }); }
   catch (e) { if (record) { record.invalid = true; fatal(record.state, errorCode(e)); } return fatal(policies.get(policy), errorCode(e)); }
 }
-module.exports = { revalidateBudgetEligibility, createPolicy, admitRequest, claimEligibility, revalidateEligibility };
+module.exports = { ACCEPT_VALUES, revalidateBudgetEligibility, createPolicy, admitRequest, claimEligibility, revalidateEligibility };

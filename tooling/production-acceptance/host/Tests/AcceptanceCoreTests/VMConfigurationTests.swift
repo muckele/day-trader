@@ -21,7 +21,7 @@ struct ApplianceFixture {
     func legacyObject() -> [String:Any] {
         var x = object, policy = x["policy"] as! [String:Any], layout = policy["layout"] as! [String:Any]
         layout.removeValue(forKey:"browserWorker"); policy["layout"] = layout; policy.removeValue(forKey:"bootstrapComposition")
-        policy["kernelFeatures"] = (policy["kernelFeatures"] as! [String]).filter { !["CONFIG_AUDIT","CONFIG_AUDITSYSCALL","CONFIG_INOTIFY_USER"].contains($0) }
+        policy["kernelFeatures"] = (policy["kernelFeatures"] as! [String]).filter { !["CONFIG_AUDIT","CONFIG_AUDITSYSCALL","CONFIG_INOTIFY_USER","CONFIG_PROC_CHILDREN"].contains($0) }
         x["policy"] = policy; x["manifestVersion"] = 1
         x["components"] = (x["components"] as! [[String:Any]]).filter { $0["id"] as? String != "browserWorker" }
         return x
@@ -55,6 +55,15 @@ struct ApplianceFixture {
         var x = f.object, policy = p, changed = composition
         changed["referenceDigest"] = String(repeating:"0",count:64); policy["bootstrapComposition"] = changed; x["policy"] = policy
         #expect(throws:ApplianceFailure.policy) { _ = try ApplianceManifest.decode(f.wire(x)) }
+    }
+    @Test func v1_proc_children_required_for_composition_only() throws {
+        let f = try ApplianceFixture(), p = f.object["policy"] as! [String:Any], features = p["kernelFeatures"] as! [String]
+        #expect(features.contains("CONFIG_PROC_CHILDREN")); #expect(features == features.sorted())
+        var x = f.object, policy = p; policy["kernelFeatures"] = features.filter { $0 != "CONFIG_PROC_CHILDREN" }; x["policy"] = policy
+        #expect(throws:ApplianceFailure.kernelFeature) { _ = try ApplianceManifest.decode(f.wire(x)) }
+        let legacy = f.legacyObject(), lf = (legacy["policy"] as! [String:Any])["kernelFeatures"] as! [String]
+        #expect(!lf.contains("CONFIG_PROC_CHILDREN")); #expect(lf.count == 11)
+        #expect(throws:Never.self) { _ = try ApplianceManifest.decode(f.wire(legacy)) }
     }
     @Test func v1_legacy_manifest_cannot_admit_bootstrap() throws {
         let f = try ApplianceFixture(), raw = try f.wire(f.legacyObject()), legacy = try ApplianceManifest.decode(raw)

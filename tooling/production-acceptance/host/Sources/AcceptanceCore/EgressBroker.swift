@@ -1,8 +1,37 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 public enum BrokerFailure: String, Error, Sendable { case invalidControl, identity, expired, replay, capacity, address, transport, clock, limits, cancelled, terminal, descriptor, bootstrap }
 public enum Destination: String, Sendable { case frontend = "FRONTEND", backend = "BACKEND" }
+// C4 (E3, R5): the host challenges every guest vsock stream. It writes a 16-byte nonce first;
+// the guest proxy answers with its control frame and then
+//   proof = HMAC-SHA256(k_vsock, "acceptance:vsock-stream:v1\0" || nonce || runId (32 ASCII hex)
+//                       || sequence (8-byte big-endian)),
+// k_vsock = ChannelKeys.derive(capability, "vsock-stream"). The broker verifies the proof in
+// constant time before sequence admission. A future VZ relay forwards bytes only.
+public protocol BrokerNonceSource: Sendable { func nonce() throws -> Data }  // exactly 16 bytes
+public struct SystemBrokerNonceSource: BrokerNonceSource {
+    public init() {}
+    public func nonce() throws -> Data {
+        var bytes = [UInt8](repeating: 0, count: 16); arc4random_buf(&bytes, bytes.count); return Data(bytes)
+    }
+}
+enum VsockStreamProof {
+    static let domain = Data("acceptance:vsock-stream:v1\0".utf8)
+    static func compute(key: Data, nonce: Data, runID: String, sequence: Int) -> Data {
+        var message = domain
+        message.append(nonce); message.append(contentsOf: Array(runID.utf8))
+        withUnsafeBytes(of: UInt64(truncatingIfNeeded: sequence).bigEndian) { message.append(contentsOf: $0) }
+        return Data(HMAC<SHA256>.authenticationCode(for: message, using: SymmetricKey(data: key)))
+    }
+}
+// P38: per-slot ends. Neither is a BrokerFailure, so any caller that does not handle one maps it
+// to .transport and fails the run (fail closed).
+struct SlotEnded: Error { let guestClosed: Bool }  // one tunnel ended alone: idle, or its guest closed
+struct GuestStreamClosed: Error {}                 // the launcher's END: the guest connection has ended (P40)
+// P40: the launcher's pipe failed or broke the lane record format. Always whole-run (.transport).
+struct LaneFailure: Error {}
 public struct ClockSample: Sendable {
     public let wall: Int, monotonic: Int
     public init(wall: Int, monotonic: Int) { self.wall = wall; self.monotonic = monotonic }
@@ -189,8 +218,8 @@ public final class Tunnel: @unchecked Sendable {
         try await withTaskCancellationHandler {
             do {
                 try await withThrowingTaskGroup(of: Int.self) { group in
-                    group.addTask { try await self.pump(self.input.stream,self.output.stream); return 1 }
-                    group.addTask { try await self.pump(self.output.stream,self.input.stream); return 1 }
+                    group.addTask { try await self.pump(self.input.stream,self.output.stream,toGuest:false); return 1 }
+                    group.addTask { try await self.pump(self.output.stream,self.input.stream,toGuest:true); return 1 }
                     var done = 0
                     do {
                         while let result = try await group.next() {
@@ -214,7 +243,26 @@ public final class Tunnel: @unchecked Sendable {
             Task { await self.broker.fail(.cancelled) }
         }
     }
-    private func pump(_ source: any ByteStream, _ destination: any ByteStream) async throws {
+    private func pump(_ source: any ByteStream, _ destination: any ByteStream, toGuest: Bool) async throws {
+        var ended = false
+        do {
+            try await forward(source, destination, ended: &ended)
+        } catch {
+            // P38: a per-slot end (idle, or the launcher's END for the guest's connection, P40) ends
+            // this tunnel only. The pump toward the guest sends its logical EOF first (b), unless the
+            // guest's connection has ended (c). Every other error still fails the run, and a protocol
+            // or limit violation fails it even after the slot ended (fix round 1, I-1).
+            if let failure = error as? BrokerFailure, failure == .limits || failure == .invalidControl { throw error }
+            if error is LaneFailure { throw error }  // P40: the launcher's pipe is gone or broken: whole run
+            if error is GuestStreamClosed { await broker.endSlot(id, guestClosed: true) }
+            guard let end = await broker.endedSlot(id) else { throw error }
+            if toGuest, !ended, !end.guestClosed {
+                // A launcher END that arrives first still ends only this slot (P40).
+                do { try await destination.endWrite() } catch is GuestStreamClosed { await broker.endSlot(id, guestClosed: true) }
+            }
+        }
+    }
+    private func forward(_ source: any ByteStream, _ destination: any ByteStream, ended: inout Bool) async throws {
         while true {
             try lock.withLock { guard !closed else { throw BrokerFailure.terminal } }
             try Task.checkCancellation()
@@ -226,6 +274,7 @@ public final class Tunnel: @unchecked Sendable {
             guard data.count <= 4096 else { throw BrokerFailure.limits }
             if data.isEmpty {
                 try await destination.endWrite()
+                ended = true
                 try await broker.check(id)
                 return
             }
@@ -254,13 +303,18 @@ public actor EgressBroker {
         var lastProgress: Int
         var watch: Task<Void, Never>?
         var pending: (any PendingWork)?
+        var ended = false, guestClosed = false  // P38: ended alone; its guest closed first
     }
     private let release: VerifiedRelease, authority: ReleaseAuthority, binding: RunBinding, limits: BrokerLimits
     private let resolver: any Resolver, connector: any Connector, clock: any BrokerClock
     private let physicalOwners: [OwnedStream]
     private let runEnd: Int
     private var last: ClockSample
+    // P38(a): the lowest sequence the next stream may use; sequences strictly increase, with gaps.
     private var sequence: Int
+    // C4: k_vsock, derived from the run capability (R6), and every challenge already answered.
+    private let vsockKey: Data
+    private var answered = Set<Data>()
     private var usedBytes = 0
     private var failure: BrokerFailure?
     private var slots = [UUID: Slot]()
@@ -269,7 +323,6 @@ public actor EgressBroker {
         release: VerifiedRelease,
         authority: ReleaseAuthority,
         binding: RunBinding,
-        authenticatedCapability: Data,
         limits: BrokerLimits,
         resolver: any Resolver,
         connector: any Connector,
@@ -295,8 +348,9 @@ public actor EgressBroker {
               binding.firstSequence > 0, binding.firstSequence <= 9007199254740991 else {
             throw BrokerFailure.limits
         }
-        guard binding.capability.count == 32, authenticatedCapability.count == 32,
-              zip(binding.capability,authenticatedCapability).reduce(UInt8(0),{ $0 | ($1.0 ^ $1.1) }) == 0,
+        // R6: the host keeps the run capability and derives k_vsock from it (C3); there is no
+        // second, "authenticated" capability. Stream proofs use only k_vsock (C4).
+        guard let vsockKey = try? ChannelKeys.derive(capability:binding.capability,label:ChannelKeys.vsockStream),
               let r = ReceiptVerifier.inspectRelease(release,authority:authority,atWallTime:sample.wall), r["runId"] as? String == binding.runID,
               r["configIdentity"] as? String == binding.configIdentity,
               binding.manifest.identity.utf8.count == 64,
@@ -310,6 +364,7 @@ public actor EgressBroker {
         self.release = release
         self.authority = authority
         self.binding = binding
+        self.vsockKey = vsockKey
         self.limits = limits
         self.resolver = resolver
         self.connector = connector
@@ -369,29 +424,40 @@ public actor EgressBroker {
         }
         return sample
     }
-    public func accept(control: Data, stream: any ByteStream) async throws -> Tunnel {
-        let input = OwnedStream(stream)
+    public func accept(request: RelayRequest) async throws -> Tunnel {
+        let input = OwnedStream(request.stream)
         return try await withTaskCancellationHandler {
-            try await admit(control:control,input:input)
+            try await admit(request:request,input:input)
         } onCancel: {
             input.close()
             Task { await self.fail(.cancelled) }
         }
     }
-    private func admit(control: Data, input: OwnedStream) async throws -> Tunnel {
+    private func admit(request: RelayRequest, input: OwnedStream) async throws -> Tunnel {
         var reserved: UUID?
         do {
             try Task.checkCancellation()
             let sample = try validate()
             let f: ValidatedFrame
             do {
-                f = try Contracts.decode(control, kind: .control)
+                f = try Contracts.decode(request.control, kind: .control)
             } catch {
                 throw BrokerFailure.invalidControl
             }
             let p = f.value["payload"] as! [String:Any]
-            guard f.value["runId"] as? String == binding.runID else { throw BrokerFailure.identity }
-            guard f.value["sequence"] as? Int == sequence else { throw BrokerFailure.replay }
+            guard f.value["runId"] as? String == binding.runID, let claimed = f.value["sequence"] as? Int else { throw BrokerFailure.identity }
+            // C4: the stream's proof, compared in constant time before sequence admission. Each
+            // challenge value answers one stream only.
+            let expected = VsockStreamProof.compute(key: vsockKey, nonce: request.nonce, runID: binding.runID, sequence: claimed)
+            guard request.nonce.count == 16, request.proof.count == expected.count,
+                  zip(expected, request.proof).reduce(UInt8(0), { $0 | ($1.0 ^ $1.1) }) == 0,
+                  answered.insert(request.nonce).inserted else { throw BrokerFailure.identity }
+            // P38(a): strictly increasing, gaps allowed (a guest stream closed before its control
+            // was delivered); never a repeat or a decrease.
+            guard claimed >= sequence else { throw BrokerFailure.replay }
+            // T9-7 (C9): the proxy and the broker are phase-unaware. The guest sends CONTROL.phase
+            // and .event as fixed constants, so this check is not phase enforcement; the route
+            // gate is the phase authority for egress.
             guard let destination = Destination(rawValue: p["destination"] as! String),
                   !["DONE", "FAILED", "FINALIZE"].contains(p["phase"] as! String),
                   p["event"] as? String != "abort" else { throw BrokerFailure.invalidControl }
@@ -405,13 +471,14 @@ public actor EgressBroker {
             let id = UUID()
             reserved = id
             slots[id] = Slot(input: input, lastProgress: sample.monotonic)
-            sequence += 1
+            sequence = claimed + 1
             // This watchdog starts while the slot is pending, before DNS or connect.
             slots[id]?.watch = Task {
                 do {
                     try await self.watch(id)
                 } catch {
                     if error is CancellationError, Task.isCancelled { return }
+                    if error is SlotEnded { return }  // P38: per slot, never a run failure
                     self.fail(error as? BrokerFailure ?? .clock)
                 }
             }
@@ -443,6 +510,20 @@ public actor EgressBroker {
             guard slots[id] != nil else { throw BrokerFailure.terminal }
             return Tunnel(id: id, broker: self, input: input, output: output)
         } catch {
+            // P38(b): a pending slot that went idle ends only itself. Its guest stream gets the
+            // logical EOF before it closes; a launcher END that came first is the same end (P40),
+            // and any other failure to write it is a run failure. Only the end's own signals
+            // (SlotEnded from check, or the cancellation endSlot delivers) are per-slot: a resolver,
+            // connector, address or protocol error still fails the run (fix round 2).
+            if let reserved, let end = endedSlot(reserved), error is SlotEnded || error is CancellationError {
+                var failed = false
+                if !end.guestClosed {
+                    do { try await input.stream.endWrite() } catch is GuestStreamClosed {} catch { failed = true }
+                }
+                input.close(); finish(reserved)
+                guard !failed else { fail(.transport); throw BrokerFailure.transport }
+                throw end
+            }
             input.close()
             if let reserved { finish(reserved) }
             let code: BrokerFailure = error is CancellationError ? .cancelled : error as? BrokerFailure ?? .transport
@@ -472,12 +553,34 @@ public actor EgressBroker {
         slot.input.close()
         slot.output?.close()
     }
+    // P38: end one slot without failing the run. Its origin connection closes now; its tunnel then
+    // sends the guest a logical EOF (unless the guest's connection ended first) and finishes.
+    fileprivate func endSlot(_ id: UUID, guestClosed: Bool) {
+        guard failure == nil, let slot = slots[id] else { return }
+        if guestClosed { slots[id]?.guestClosed = true }
+        guard !slot.ended else { return }
+        slots[id]?.ended = true
+        slot.watch?.cancel()
+        slot.pending?.cancel()
+        slot.output?.close()
+        // P38(b), P40: on a relay lane the broker ends the stream now (its logical EOF, then END,
+        // after any lane write in progress). The guest's later records are still read and checked.
+        if !guestClosed, let relay = slot.input.stream as? RelayStream {
+            Task { do { try await relay.hostEnd() } catch { self.fail(.transport) } }
+        }
+    }
+    fileprivate func endedSlot(_ id: UUID) -> SlotEnded? {
+        guard failure == nil, let slot = slots[id], slot.ended else { return nil }
+        return SlotEnded(guestClosed: slot.guestClosed)
+    }
     fileprivate func check(_ id: UUID) throws {
         let sample = try validate()
         guard let slot = slots[id] else { throw BrokerFailure.terminal }
+        if slot.ended { throw SlotEnded(guestClosed: slot.guestClosed) }
         guard sample.monotonic - slot.lastProgress < limits.idleMs else {
-            fail(.expired)
-            throw BrokerFailure.expired
+            // T9-2, P38(b): an idle slot closes only itself; the run continues.
+            endSlot(id, guestClosed: false)
+            throw SlotEnded(guestClosed: false)
         }
     }
     fileprivate func progress(_ id: UUID) throws {
@@ -692,50 +795,189 @@ private func writeAll(_ stream:any ByteStream,_ data:Data) async throws {
         guard n > 0, n <= part.count else { throw BrokerFailure.transport }; offset += n
     }
 }
-private func readLength(_ stream:any ByteStream) async throws -> Int {
-    let d = try await readExact(stream,2); return Int(d[0]) << 8 | Int(d[1])
+// The first length byte is read and checked on its own: a byte that already proves an out-of-range
+// length is a protocol violation at once, even if the guest's connection then ends (fix round 1).
+private func readLength(_ lane:Lane,_ stream:StreamState,firstAtMost:UInt8,violation:BrokerFailure) async throws -> Int {
+    let high = try await lane.guest(1,stream)[0]
+    guard high <= firstAtMost else { throw violation }
+    return Int(high) << 8 | Int(try await lane.guest(1,stream)[0])
 }
 private func framed(_ data:Data) -> Data { Data([UInt8(data.count >> 8),UInt8(data.count & 255)]) + data }
-private final class RelayState: @unchecked Sendable {
-    let lock = NSLock(); var inputEOF = false, outputEOF = false, closed = false
-    var reusable: Bool { lock.withLock { inputEOF && outputEOF && closed } }
+
+// P40: each relay pipe pair is a reusable lane carrying one guest vsock connection at a time. Every
+// byte on a lane, both ways, is inside a lane record: type (1) | length (2, big-endian) | payload.
+// Launcher -> broker: OPEN (length 0), DATA (1...16384, the connection's bytes), END (length 0).
+// Broker -> launcher: DATA, END. A stream is over once the broker has sent END and received END;
+// the lane is then IDLE again. Guest records are reassembled from DATA payloads, so guest bytes can
+// never be read as lane records. The guest-visible C4 bytes are unchanged.
+private let laneOpen: UInt8 = 0x01, laneData: UInt8 = 0x02, laneEnd: UInt8 = 0x03, laneDataLimit = 16384
+private final class StreamState: @unchecked Sendable {
+    let lock = NSLock()
+    var inputEOF = false, outputEOF = false, closed = false  // guest logical EOF read; host EOF written; tunnel done
+    var launcherEnded = false, brokerEnded = false           // END received; END sent
+    var buffer = Data()                                       // guest bytes from DATA not yet parsed
+}
+private final class Lane: @unchecked Sendable {
+    let physical:any ByteStream, writer:LaneWriter
+    init(_ physical:any ByteStream) { self.physical = physical; writer = LaneWriter(physical) }
+    // One lane record. A pipe EOF or failure, or a malformed record, is whole-run (P40). One reader
+    // at a time: the lane's RelayChannel, then the stream's tunnel.
+    func record() async throws -> (UInt8, Data) {
+        let head = try await pipe(3), type = head[0], length = Int(head[1]) << 8 | Int(head[2])
+        switch type {
+        case laneOpen, laneEnd: guard length == 0 else { throw LaneFailure() }; return (type, Data())
+        case laneData: guard length >= 1, length <= laneDataLimit else { throw LaneFailure() }; return (type, try await pipe(length))
+        default: throw LaneFailure()
+        }
+    }
+    private func pipe(_ count:Int) async throws -> Data {
+        do { return try await readExact(physical,count) }
+        catch let error where error is CancellationError || error as? BrokerFailure == .cancelled { throw error }
+        catch { throw LaneFailure() }
+    }
+    // The next COUNT guest bytes of STREAM, across DATA record boundaries. The launcher's END ends
+    // this stream only (P38(c)); an OPEN while the stream is live or draining is malformed.
+    func guest(_ count:Int,_ stream:StreamState) async throws -> Data {
+        while true {
+            let ready = stream.lock.withLock { () -> Data? in
+                guard stream.buffer.count >= count else { return nil }
+                let bytes = Data(stream.buffer.prefix(count)); stream.buffer.removeFirst(count); return bytes
+            }
+            if let ready { return ready }
+            let (type, payload) = try await record()
+            switch type {
+            case laneData: stream.lock.withLock { stream.buffer.append(payload) }
+            case laneEnd: stream.lock.withLock { stream.launcherEnded = true; stream.buffer.removeAll() }; throw GuestStreamClosed()
+            default: throw LaneFailure()
+            }
+        }
+    }
+}
+// Every broker write on a lane, one lane record at a time; a call waits for the write in progress.
+private actor LaneWriter {
+    private let physical:any ByteStream
+    private var busy = false, waiting = [CheckedContinuation<Void, Never>]()
+    init(_ physical:any ByteStream) { self.physical = physical }
+    // DATA for STREAM, never after either side's END (P40).
+    func data(_ payload:Data,_ stream:StreamState) async throws {
+        await acquire(); defer { release() }
+        let (launcher, broker) = stream.lock.withLock { (stream.launcherEnded, stream.brokerEnded) }
+        if launcher { throw GuestStreamClosed() }
+        if broker { throw BrokerFailure.terminal }
+        try await put(laneData,payload)
+    }
+    // The host's logical EOF (DATA 00 00), once, and never after either END.
+    func logicalEOF(_ stream:StreamState) async throws {
+        await acquire(); defer { release() }
+        let (launcher, done) = stream.lock.withLock { (stream.launcherEnded, stream.outputEOF || stream.brokerEnded) }
+        if done { return }
+        if launcher { throw GuestStreamClosed() }
+        try await put(laneData,Data([0,0])); stream.lock.withLock { stream.outputEOF = true }
+    }
+    // The broker's END, once: after its logical EOF unless the launcher ended first (P38(b), P40).
+    func end(_ stream:StreamState) async throws {
+        await acquire(); defer { release() }
+        let (launcher, eof, ended) = stream.lock.withLock { (stream.launcherEnded, stream.outputEOF, stream.brokerEnded) }
+        if ended { return }
+        if !launcher, !eof { try await put(laneData,Data([0,0])); stream.lock.withLock { stream.outputEOF = true } }
+        try await put(laneEnd,Data()); stream.lock.withLock { stream.brokerEnded = true }
+    }
+    private func put(_ type:UInt8,_ payload:Data) async throws {
+        do { try await writeAll(physical,Data([type,UInt8(payload.count >> 8),UInt8(payload.count & 255)]) + payload) }
+        catch let error where error is CancellationError || error as? BrokerFailure == .cancelled { throw error }
+        catch { throw LaneFailure() }  // P40: the launcher's pipe is gone (reverses P39(b))
+    }
+    private func acquire() async {
+        if !busy { busy = true; return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+    private func release() { if waiting.isEmpty { busy = false } else { waiting.removeFirst().resume() } }
 }
 private final class RelayStream: ByteStream, @unchecked Sendable {
-    let physical:any ByteStream, state:RelayState
-    init(_ physical:any ByteStream,_ state:RelayState) { self.physical = physical; self.state = state }
+    let lane:Lane, state:StreamState
+    init(_ lane:Lane,_ state:StreamState) { self.lane = lane; self.state = state }
     func read(maxBytes:Int) async throws -> Data {
         guard maxBytes > 0, maxBytes <= 4096 else { throw BrokerFailure.limits }
         let ended = try state.lock.withLock { guard !state.closed else { throw BrokerFailure.terminal }; return state.inputEOF }
         if ended { return Data() }
-        let n = try await readLength(physical)
+        let n = try await readLength(lane,state,firstAtMost:0x10,violation:.limits)
         guard n <= 4096, n <= maxBytes else { throw BrokerFailure.limits }
         if n == 0 { state.lock.withLock { state.inputEOF = true }; return Data() }
-        return try await readExact(physical,n)
+        return try await lane.guest(n,state)
     }
     func write(_ data:Data) async throws -> Int {
         guard !data.isEmpty, data.count <= 4096 else { throw BrokerFailure.limits }
         try state.lock.withLock { guard !state.closed, !state.outputEOF else { throw BrokerFailure.terminal } }
-        try await writeAll(physical,framed(data)); return data.count
+        try await lane.writer.data(framed(data),state); return data.count
     }
     func endWrite() async throws {
-        let already = try state.lock.withLock { guard !state.closed else { throw BrokerFailure.terminal }; return state.outputEOF }
-        if !already { try await writeAll(physical,Data([0,0])); state.lock.withLock { state.outputEOF = true } }
+        try state.lock.withLock { guard !state.closed else { throw BrokerFailure.terminal } }
+        try await lane.writer.logicalEOF(state)
     }
     func close() { state.lock.withLock { state.closed = true } }
+    // P38(b), P40: the broker ends this stream first: its logical EOF, then END.
+    func hostEnd() async throws { try await lane.writer.end(state) }
 }
-public struct RelayRequest: Sendable { public let control:Data, stream:any ByteStream }
+public struct RelayRequest: Sendable { public let control:Data, nonce:Data, proof:Data, stream:any ByteStream }
 public actor RelayChannel {
-    private let physical:any ByteStream
-    private var previous:RelayState?, loading = false
-    public init(physical:any ByteStream) { self.physical = physical }
+    private let lane:Lane, nonces:any BrokerNonceSource
+    private var previous:StreamState?, loading = false
+    public init(physical:any ByteStream,nonces:any BrokerNonceSource) { lane = Lane(physical); self.nonces = nonces }
     public func next() async throws -> RelayRequest {
-        guard !loading, previous == nil || previous!.reusable else { throw BrokerFailure.terminal }
+        guard !loading else { throw BrokerFailure.terminal }
         loading = true; defer { loading = false }
-        let n = try await readLength(physical)
-        guard n > 0, n <= 256 else { throw BrokerFailure.invalidControl }
-        let control = try await readExact(physical,n), state = RelayState()
-        previous = state
-        return RelayRequest(control:control,stream:RelayStream(physical,state))
+        if let previous {
+            guard previous.lock.withLock({ previous.closed }) else { throw BrokerFailure.terminal }
+            self.previous = nil
+            try await finish(previous)
+        }
+        while true {
+            // P40: an IDLE lane accepts only OPEN, and the challenge is written after it, never before.
+            guard try await lane.record().0 == laneOpen else { throw LaneFailure() }
+            let state = StreamState()
+            guard let nonce = try? nonces.nonce(), nonce.count == 16 else { throw BrokerFailure.identity }
+            do {
+                // C4: the challenge frame (length 16, then a fresh nonce) is the stream's first DATA.
+                try await lane.writer.data(framed(nonce),state)
+                let n = try await readLength(lane,state,firstAtMost:0x01,violation:.invalidControl)
+                guard n > 0, n <= 256 else { throw BrokerFailure.invalidControl }
+                let control = try await lane.guest(n,state)
+                guard try await readLength(lane,state,firstAtMost:0x00,violation:.invalidControl) == 32 else { throw BrokerFailure.invalidControl }
+                let proof = try await lane.guest(32,state)
+                previous = state
+                return RelayRequest(control:control,nonce:nonce,proof:proof,stream:RelayStream(lane,state))
+            } catch is GuestStreamClosed {
+                // P38(c), P40: the launcher ended this stream in the handshake. Only this stream ends and
+                // no sequence is consumed; the broker answers END and the lane is IDLE again.
+                try await finish(state)
+            }
+        }
+    }
+    // P40, P41: end a stream. The broker sends END (after its logical EOF, unless the launcher ended
+    // first), then reads the stream up to the launcher's END. Until the guest's logical EOF, its
+    // records are parsed with the stream's checks and discarded, never forwarded or read as the next
+    // stream's control or proof. Any byte after that EOF is a protocol violation. The launcher's END,
+    // inside a record or not, ends only this stream. No deadline of its own: the launcher sends END
+    // when the guest connection ends.
+    private func finish(_ stream:StreamState) async throws {
+        try await lane.writer.end(stream)
+        do {
+            while !stream.lock.withLock({ stream.launcherEnded }) {
+                let (eof, leftover) = stream.lock.withLock { (stream.inputEOF, !stream.buffer.isEmpty) }
+                if eof {
+                    guard !leftover else { throw BrokerFailure.invalidControl }
+                    switch try await lane.record().0 {
+                    case laneEnd: stream.lock.withLock { stream.launcherEnded = true }
+                    case laneData: throw BrokerFailure.invalidControl  // bytes after the guest's logical EOF
+                    default: throw LaneFailure()                       // OPEN while draining
+                    }
+                } else {
+                    let n = try await readLength(lane,stream,firstAtMost:0x10,violation:.limits)
+                    guard n <= 4096 else { throw BrokerFailure.limits }
+                    if n == 0 { stream.lock.withLock { stream.inputEOF = true } } else { _ = try await lane.guest(n,stream) }
+                }
+            }
+        } catch is GuestStreamClosed {}
     }
 }
 
@@ -848,7 +1090,7 @@ public struct BootstrapConfiguration: Sendable {
         let sample: ClockSample
         do { sample = try clock.sample() } catch { throw BrokerFailure.clock }
         let release = try ReceiptVerifier.verifyRelease(candidateRelease,authority:authority,atWallTime:sample.wall)
-        return try EgressBroker(release:release,authority:authority,binding:binding,authenticatedCapability:binding.capability,limits:limits,resolver:resolver,connector:connector,clock:clock,physicalChannels:physicalChannels)
+        return try EgressBroker(release:release,authority:authority,binding:binding,limits:limits,resolver:resolver,connector:connector,clock:clock,physicalChannels:physicalChannels)
     }
 }
 extension BrokerBootstrap {
@@ -949,22 +1191,24 @@ public enum BrokerExecutable {
             }
             let configuration = try await BrokerBootstrap.load(stream:bootstrap,clock:clock,timeoutMs:120000)
             let broker = try configuration.makeBroker(resolver:NativeResolver(native:native),connector:NativeConnector(native:native),clock:clock,physicalChannels:physical)
-            try await runRelays(broker: broker, physical: physical)
+            try await runRelays(broker: broker, physical: physical, nonces: SystemBrokerNonceSource())
         } catch { throw error as? BrokerFailure ?? .bootstrap }
     }
 
     // Shared finite relay supervision; tests inject only memory streams here.
-    static func runRelays(broker: EgressBroker, physical: [any ByteStream]) async throws {
+    static func runRelays(broker: EgressBroker, physical: [any ByteStream], nonces: any BrokerNonceSource) async throws {
         try await withThrowingTaskGroup(of: Void.self) { group in
             for pair in physical {
                 group.addTask {
-                    let channel = RelayChannel(physical: pair)
+                    let channel = RelayChannel(physical: pair, nonces: nonces)
                     do {
                         while true {
                             try Task.checkCancellation()
                             let request = try await channel.next()
-                            let tunnel = try await broker.accept(control: request.control, stream: request.stream)
-                            try await tunnel.run()
+                            do {
+                                let tunnel = try await broker.accept(request: request)
+                                try await tunnel.run()
+                            } catch is SlotEnded { continue }  // P38: one slot ended; the lane serves the next stream
                         }
                     } catch {
                         let code = error as? BrokerFailure ?? .transport
@@ -981,6 +1225,11 @@ public enum BrokerExecutable {
                 await broker.fail(error as? BrokerFailure ?? .transport)
                 throw error
             }
+            // Fail-closed backstop (M-6): lanes never retire (P40), so a lane task ends only by
+            // failing the run. If every lane task still returns (today only with no lanes at all),
+            // the guest side is gone: transport loss for the run, never a normal return.
+            await broker.fail(.transport)
+            throw BrokerFailure.transport
         }
     }
 }
